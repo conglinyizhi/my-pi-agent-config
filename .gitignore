@@ -1,0 +1,6 @@
+auth.json
+sessions/
+npm/
+git/
+node_modules/
+.DS_Store
