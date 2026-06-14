@@ -1,6 +1,6 @@
 ---
 name: pi-docs
-description: Guides the agent on how to read pi's own documentation, SDK, extensions, themes, skills, and TUI. Use only when the user asks about pi itself or its built-in features.
+description: 指导智能体如何阅读pi自身的文档、SDK、扩展、主题、技能和TUI。仅当用户询问pi本身或其内置功能时使用。包括部分 Pi 扩展插件
 ---
 
 # Pi 文档参考
