@@ -2,6 +2,7 @@
   "compilerOptions": {
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "target": "ES2024",
     "jsx": "react-jsx",
     "checkJs": false,

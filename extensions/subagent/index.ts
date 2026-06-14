@@ -22,6 +22,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
   getMarkdownTheme,
+  type ThemeColor,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
@@ -90,7 +91,7 @@ function formatUsageStats(
 function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
-  themeFg: (color: any, text: string) => string,
+  themeFg: (color: ThemeColor, text: string) => string,
 ): string {
   /**
    * 将用户主目录前缀替换为 ~，缩短路径显示。
@@ -272,7 +273,7 @@ function truncateParallelOutput(output: string): string {
 
 type DisplayItem =
   | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; args: Record<string, any> };
+  | { type: "toolCall"; name: string; args: Record<string, unknown> };
 
 /**
  * 将消息列表转换为可展示的文本/工具调用项。
@@ -438,6 +439,14 @@ function createEmitUpdate(
 }
 
 /**
+ * 子进程输出的一行 JSON 事件。
+ */
+interface SubagentEvent {
+	type?: string;
+	message?: unknown;
+}
+
+/**
  * 创建解析并处理子进程输出 JSON 事件的回调函数。
  *
  * @param currentResult - 当前执行结果对象
@@ -450,9 +459,9 @@ function createProcessLine(
 ): (line: string) => void {
   return (line: string) => {
     if (!line.trim()) return;
-    let event: any;
+    let event: SubagentEvent;
     try {
-      event = JSON.parse(line);
+      event = JSON.parse(line) as SubagentEvent;
     } catch {
       return;
     }
