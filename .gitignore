@@ -4,3 +4,4 @@ npm/
 git/
 node_modules/
 .DS_Store
+mcp-cache.json
