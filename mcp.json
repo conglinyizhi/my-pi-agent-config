@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "better-edit-tools": {
+      "command": "/home/clyzhi/.local/share/better-edit-tools/bin/better-edit-tools",
+      "args": ["--lang", "zh"],
+      "directTools": true
+    }
+  },
+  "settings": {
+    "toolPrefix": "none"
+  }
+}
