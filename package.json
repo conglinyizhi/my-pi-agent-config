@@ -1,0 +1,10 @@
+{
+	"devDependencies": {
+		"@earendil-works/pi-agent-core": "^0.79.2",
+		"@earendil-works/pi-ai": "^0.79.2",
+		"@earendil-works/pi-coding-agent": "^0.79.2",
+		"@earendil-works/pi-tui": "^0.79.2",
+		"@types/node": "^25.9.3",
+		"typebox": "^1.2.8"
+	}
+}
