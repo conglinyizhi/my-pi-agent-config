@@ -9,18 +9,18 @@ import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 export type AgentScope = "user" | "project" | "both";
 
 export interface AgentConfig {
-	name: string;
-	description: string;
-	tools?: string[];
-	model?: string;
-	systemPrompt: string;
-	source: "user" | "project";
-	filePath: string;
+  name: string;
+  description: string;
+  tools?: string[];
+  model?: string;
+  systemPrompt: string;
+  source: "user" | "project";
+  filePath: string;
 }
 
 export interface AgentDiscoveryResult {
-	agents: AgentConfig[];
-	projectAgentsDir: string | null;
+  agents: AgentConfig[];
+  projectAgentsDir: string | null;
 }
 
 /**
@@ -30,11 +30,11 @@ export interface AgentDiscoveryResult {
  * @returns 解析后的工具数组；为空时返回 undefined
  */
 function parseTools(toolsString: string | undefined): string[] | undefined {
-	const tools = toolsString
-		?.split(",")
-		.map((t) => t.trim())
-		.filter(Boolean);
-	return tools && tools.length > 0 ? tools : undefined;
+  const tools = toolsString
+    ?.split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return tools && tools.length > 0 ? tools : undefined;
 }
 
 /**
@@ -44,29 +44,33 @@ function parseTools(toolsString: string | undefined): string[] | undefined {
  * @param source - agent 来源
  * @returns 解析后的 agent 配置；解析失败时返回 undefined
  */
-function parseAgentFile(filePath: string, source: "user" | "project"): AgentConfig | undefined {
-	let content: string;
-	try {
-		content = fs.readFileSync(filePath, "utf-8");
-	} catch {
-		return undefined;
-	}
+function parseAgentFile(
+  filePath: string,
+  source: "user" | "project",
+): AgentConfig | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return undefined;
+  }
 
-	const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+  const { frontmatter, body } =
+    parseFrontmatter<Record<string, string>>(content);
 
-	if (!frontmatter.name || !frontmatter.description) {
-		return undefined;
-	}
+  if (!frontmatter.name || !frontmatter.description) {
+    return undefined;
+  }
 
-	return {
-		name: frontmatter.name,
-		description: frontmatter.description,
-		tools: parseTools(frontmatter.tools),
-		model: frontmatter.model,
-		systemPrompt: body,
-		source,
-		filePath,
-	};
+  return {
+    name: frontmatter.name,
+    description: frontmatter.description,
+    tools: parseTools(frontmatter.tools),
+    model: frontmatter.model,
+    systemPrompt: body,
+    source,
+    filePath,
+  };
 }
 
 /**
@@ -76,30 +80,33 @@ function parseAgentFile(filePath: string, source: "user" | "project"): AgentConf
  * @param source - agent 来源（user 或 project）
  * @returns 解析后的 agent 配置数组
  */
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
-	const agents: AgentConfig[] = [];
+function loadAgentsFromDir(
+  dir: string,
+  source: "user" | "project",
+): AgentConfig[] {
+  const agents: AgentConfig[] = [];
 
-	if (!fs.existsSync(dir)) {
-		return agents;
-	}
+  if (!fs.existsSync(dir)) {
+    return agents;
+  }
 
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return agents;
-	}
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return agents;
+  }
 
-	for (const entry of entries) {
-		if (!entry.name.endsWith(".md")) continue;
-		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+  for (const entry of entries) {
+    if (!entry.name.endsWith(".md")) continue;
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
-		const filePath = path.join(dir, entry.name);
-		const agent = parseAgentFile(filePath, source);
-		if (agent) agents.push(agent);
-	}
+    const filePath = path.join(dir, entry.name);
+    const agent = parseAgentFile(filePath, source);
+    if (agent) agents.push(agent);
+  }
 
-	return agents;
+  return agents;
 }
 
 /**
@@ -109,11 +116,11 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
  * @returns 如果是目录则返回 true，否则返回 false
  */
 function isDirectory(p: string): boolean {
-	try {
-		return fs.statSync(p).isDirectory();
-	} catch {
-		return false;
-	}
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -123,15 +130,15 @@ function isDirectory(p: string): boolean {
  * @returns 找到的目录路径；未找到则返回 null
  */
 function findNearestProjectAgentsDir(cwd: string): string | null {
-	let currentDir = cwd;
-	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
-		if (isDirectory(candidate)) return candidate;
+  let currentDir = cwd;
+  while (true) {
+    const candidate = path.join(currentDir, ".pi", "agents");
+    if (isDirectory(candidate)) return candidate;
 
-		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) return null;
-		currentDir = parentDir;
-	}
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) return null;
+    currentDir = parentDir;
+  }
 }
 
 /**
@@ -143,22 +150,22 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
  * @returns 合并后的 agent 映射
  */
 function buildAgentMap(
-	userAgents: AgentConfig[],
-	projectAgents: AgentConfig[],
-	scope: AgentScope,
+  userAgents: AgentConfig[],
+  projectAgents: AgentConfig[],
+  scope: AgentScope,
 ): Map<string, AgentConfig> {
-	const agentMap = new Map<string, AgentConfig>();
+  const agentMap = new Map<string, AgentConfig>();
 
-	if (scope === "both") {
-		for (const agent of userAgents) agentMap.set(agent.name, agent);
-		for (const agent of projectAgents) agentMap.set(agent.name, agent);
-	} else if (scope === "user") {
-		for (const agent of userAgents) agentMap.set(agent.name, agent);
-	} else {
-		for (const agent of projectAgents) agentMap.set(agent.name, agent);
-	}
+  if (scope === "both") {
+    for (const agent of userAgents) agentMap.set(agent.name, agent);
+    for (const agent of projectAgents) agentMap.set(agent.name, agent);
+  } else if (scope === "user") {
+    for (const agent of userAgents) agentMap.set(agent.name, agent);
+  } else {
+    for (const agent of projectAgents) agentMap.set(agent.name, agent);
+  }
 
-	return agentMap;
+  return agentMap;
 }
 
 /**
@@ -168,16 +175,23 @@ function buildAgentMap(
  * @param scope - 搜索范围：user、project 或 both
  * @returns 发现的 agents 及项目本地 agents 目录
  */
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
-	const userDir = path.join(getAgentDir(), "agents");
-	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+export function discoverAgents(
+  cwd: string,
+  scope: AgentScope,
+): AgentDiscoveryResult {
+  const userDir = path.join(getAgentDir(), "agents");
+  const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+  const userAgents =
+    scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
+  const projectAgents =
+    scope === "user" || !projectAgentsDir
+      ? []
+      : loadAgentsFromDir(projectAgentsDir, "project");
 
-	const agentMap = buildAgentMap(userAgents, projectAgents, scope);
+  const agentMap = buildAgentMap(userAgents, projectAgents, scope);
 
-	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+  return { agents: Array.from(agentMap.values()), projectAgentsDir };
 }
 
 /**
@@ -187,12 +201,17 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
  * @param maxItems - 最多显示的条目数
  * @returns 包含格式化文本和剩余条目数的对象
  */
-export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {
-	if (agents.length === 0) return { text: "none", remaining: 0 };
-	const listed = agents.slice(0, maxItems);
-	const remaining = agents.length - listed.length;
-	return {
-		text: listed.map((a) => `${a.name} (${a.source}): ${a.description}`).join("; "),
-		remaining,
-	};
+export function formatAgentList(
+  agents: AgentConfig[],
+  maxItems: number,
+): { text: string; remaining: number } {
+  if (agents.length === 0) return { text: "none", remaining: 0 };
+  const listed = agents.slice(0, maxItems);
+  const remaining = agents.length - listed.length;
+  return {
+    text: listed
+      .map((a) => `${a.name} (${a.source}): ${a.description}`)
+      .join("; "),
+    remaining,
+  };
 }
