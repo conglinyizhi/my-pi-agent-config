@@ -21,7 +21,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, getMarkdownTheme, type ThemeColor, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -49,18 +49,7 @@ function formatTokens(count: number): string {
  * @param model - 可选的模型名称
  * @returns 格式化后的用量字符串
  */
-function formatUsageStats(
-  usage: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    contextTokens?: number;
-    turns?: number;
-  },
-  model?: string,
-): string {
+function formatUsageStats(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (usage.turns) parts.push(`${usage.turns} 轮`);
   if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
@@ -155,9 +144,11 @@ interface UsageStats {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
-  contextTokens: number;
+  contextTokens?: number;
   turns: number;
 }
+
+type PiInvocation = { command: string; args: string[] };
 
 interface SingleResult {
   agent: string;
@@ -332,7 +323,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
  * @param args - 传递给 pi 的参数
  * @returns 包含 command 和 args 的对象
  */
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+function getPiInvocation(args: string[]): PiInvocation {
   const currentScript = process.argv[1];
   const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
   if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
@@ -456,7 +447,7 @@ function createProcessLine(currentResult: SingleResult, emitUpdate: () => void):
  * @returns 包含退出码和中止标志的对象
  */
 async function spawnPiProcess(
-  invocation: { command: string; args: string[] },
+  invocation: PiInvocation,
   cwd: string,
   signal: AbortSignal | undefined,
   onLine: (line: string) => void,
@@ -664,6 +655,8 @@ const SubagentParams = Type.Object({
   cwd: Type.Optional(Type.String({ description: "agent 进程的工作目录（单任务模式）" })),
 });
 
+type TaskItemInput = Static<typeof TaskItem>;
+
 /**
  * 创建根据当前模式构造 SubagentDetails 对象的工厂函数。
  *
@@ -754,7 +747,7 @@ function createEmitParallelUpdate(
 async function runParallelTask(
   cwd: string,
   agents: AgentConfig[],
-  task: { agent: string; task: string; cwd?: string },
+  task: TaskItemInput,
   index: number,
   allResults: SingleResult[],
   signal: AbortSignal | undefined,

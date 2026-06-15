@@ -183,7 +183,9 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
  * @param maxItems - 最多显示的条目数
  * @returns 包含格式化文本和剩余条目数的对象
  */
-export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {
+export type AgentListFormat = { text: string; remaining: number };
+
+export function formatAgentList(agents: AgentConfig[], maxItems: number): AgentListFormat {
   if (agents.length === 0) return { text: "none", remaining: 0 };
   const listed = agents.slice(0, maxItems);
   const remaining = agents.length - listed.length;

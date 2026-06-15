@@ -5,9 +5,10 @@
  * 多个问题：标签页导航在问题之间切换
  */
 
-import type { ExtensionAPI, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 
 // 类型定义
 interface QuestionOption {
@@ -25,11 +26,6 @@ interface Question {
   options: QuestionOption[];
   allowOther: boolean;
 }
-
-type QuestionInput = Omit<Question, "label" | "allowOther"> & {
-  label?: string;
-  allowOther?: boolean;
-};
 
 interface Answer {
   id: string;
@@ -76,7 +72,10 @@ const QuestionnaireParams = Type.Object({
   }),
 });
 
-function errorResult(message: string, questions: Question[] = []): { content: { type: "text"; text: string }[]; details: QuestionnaireResult } {
+type QuestionnaireInput = Static<typeof QuestionnaireParams>;
+type QuestionnaireToolResult = AgentToolResult<QuestionnaireResult>;
+
+function errorResult(message: string, questions: Question[] = []): QuestionnaireToolResult {
   return {
     content: [{ type: "text", text: message }],
     details: { questions, answers: [], cancelled: true },
@@ -86,29 +85,7 @@ function errorResult(message: string, questions: Question[] = []): { content: { 
 /**
  * 处理问卷交互逻辑
  */
-async function handleQuestionnaire(
-  ctx: {
-    mode: string;
-    ui: {
-      custom: <T>(
-        factory: (
-          tui: TUI,
-          theme: Theme,
-          keybindings: KeybindingsManager,
-          done: (result: T) => void,
-        ) => {
-          render: (width: number) => string[];
-          invalidate: () => void;
-          handleInput: (data: string) => void;
-        },
-      ) => Promise<T>;
-    };
-  },
-  params: { questions: QuestionInput[] },
-): Promise<{
-  content: { type: "text"; text: string }[];
-  details: QuestionnaireResult;
-}> {
+async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireInput): Promise<QuestionnaireToolResult> {
   if (ctx.mode !== "tui") {
     return errorResult("Error: UI not available (running in non-interactive mode)");
   }

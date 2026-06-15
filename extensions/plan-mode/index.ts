@@ -14,13 +14,35 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // 工具集合
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
+
+// 计划模式持久化状态
+type PlanModeState = {
+  enabled: boolean;
+  todos?: TodoItem[];
+  executing?: boolean;
+};
+
+type PlanModeEntry = SessionEntry & { type: "custom"; customType: "plan-mode"; data?: PlanModeState };
+type PlanModeExecuteEntry = SessionEntry & { type: "custom"; customType: "plan-mode-execute" };
+
+function isPlanModeEntry(entry: SessionEntry): entry is PlanModeEntry {
+  return entry.type === "custom" && entry.customType === "plan-mode";
+}
+
+function isPlanModeExecuteEntry(entry: SessionEntry): entry is PlanModeExecuteEntry {
+  return entry.type === "custom" && entry.customType === "plan-mode-execute";
+}
+
+function isPlanModeContextMessage(m: AgentMessage): m is AgentMessage & { customType: "plan-mode-context" } {
+  return (m as AgentMessage & { customType?: string }).customType === "plan-mode-context";
+}
 
 // assistant 消息的类型守卫
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
@@ -135,16 +157,15 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
     return {
       messages: event.messages.filter((m) => {
-        const msg = m as AgentMessage & { customType?: string };
-        if (msg.customType === "plan-mode-context") return false;
-        if (msg.role !== "user") return true;
+        if (isPlanModeContextMessage(m)) return false;
+        if (m.role !== "user") return true;
 
-        const content = msg.content;
+        const content = m.content;
         if (typeof content === "string") {
           return !content.includes("[PLAN MODE ACTIVE]");
         }
         if (Array.isArray(content)) {
-          return !content.some((c) => c.type === "text" && (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"));
+          return !content.some((c) => c.type === "text" && c.text.includes("[PLAN MODE ACTIVE]"));
         }
         return true;
       }),
@@ -297,9 +318,7 @@ ${todoList}
     const entries = ctx.sessionManager.getEntries();
 
     // 恢复持久化状态
-    const planModeEntry = entries.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode").pop() as
-      | { data?: { enabled: boolean; todos?: TodoItem[]; executing?: boolean } }
-      | undefined;
+    const planModeEntry = entries.find(isPlanModeEntry);
 
     if (planModeEntry?.data) {
       planModeEnabled = planModeEntry.data.enabled ?? planModeEnabled;
@@ -314,8 +333,7 @@ ${todoList}
       // 找到最后一个 plan-mode-execute 条目的索引（表示当前执行开始的位置）
       let executeIndex = -1;
       for (let i = entries.length - 1; i >= 0; i--) {
-        const entry = entries[i] as { type: string; customType?: string };
-        if (entry.customType === "plan-mode-execute") {
+        if (isPlanModeExecuteEntry(entries[i])) {
           executeIndex = i;
           break;
         }
@@ -325,8 +343,8 @@ ${todoList}
       const messages: AssistantMessage[] = [];
       for (let i = executeIndex + 1; i < entries.length; i++) {
         const entry = entries[i];
-        if (entry.type === "message" && "message" in entry && isAssistantMessage(entry.message as AgentMessage)) {
-          messages.push(entry.message as AssistantMessage);
+        if (entry.type === "message" && isAssistantMessage(entry.message)) {
+          messages.push(entry.message);
         }
       }
       const allText = messages.map(getTextContent).join("\n");
