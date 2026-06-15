@@ -44,10 +44,7 @@ function parseTools(toolsString: string | undefined): string[] | undefined {
  * @param source - agent 来源
  * @returns 解析后的 agent 配置；解析失败时返回 undefined
  */
-function parseAgentFile(
-  filePath: string,
-  source: "user" | "project",
-): AgentConfig | undefined {
+function parseAgentFile(filePath: string, source: "user" | "project"): AgentConfig | undefined {
   let content: string;
   try {
     content = fs.readFileSync(filePath, "utf-8");
@@ -55,8 +52,7 @@ function parseAgentFile(
     return undefined;
   }
 
-  const { frontmatter, body } =
-    parseFrontmatter<Record<string, string>>(content);
+  const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
 
   if (!frontmatter.name || !frontmatter.description) {
     return undefined;
@@ -80,10 +76,7 @@ function parseAgentFile(
  * @param source - agent 来源（user 或 project）
  * @returns 解析后的 agent 配置数组
  */
-function loadAgentsFromDir(
-  dir: string,
-  source: "user" | "project",
-): AgentConfig[] {
+function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
   const agents: AgentConfig[] = [];
 
   if (!fs.existsSync(dir)) {
@@ -149,11 +142,7 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
  * @param scope - 搜索范围
  * @returns 合并后的 agent 映射
  */
-function buildAgentMap(
-  userAgents: AgentConfig[],
-  projectAgents: AgentConfig[],
-  scope: AgentScope,
-): Map<string, AgentConfig> {
+function buildAgentMap(userAgents: AgentConfig[], projectAgents: AgentConfig[], scope: AgentScope): Map<string, AgentConfig> {
   const agentMap = new Map<string, AgentConfig>();
 
   if (scope === "both") {
@@ -175,19 +164,12 @@ function buildAgentMap(
  * @param scope - 搜索范围：user、project 或 both
  * @returns 发现的 agents 及项目本地 agents 目录
  */
-export function discoverAgents(
-  cwd: string,
-  scope: AgentScope,
-): AgentDiscoveryResult {
+export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
   const userDir = path.join(getAgentDir(), "agents");
   const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-  const userAgents =
-    scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-  const projectAgents =
-    scope === "user" || !projectAgentsDir
-      ? []
-      : loadAgentsFromDir(projectAgentsDir, "project");
+  const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
+  const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
   const agentMap = buildAgentMap(userAgents, projectAgents, scope);
 
@@ -201,17 +183,12 @@ export function discoverAgents(
  * @param maxItems - 最多显示的条目数
  * @returns 包含格式化文本和剩余条目数的对象
  */
-export function formatAgentList(
-  agents: AgentConfig[],
-  maxItems: number,
-): { text: string; remaining: number } {
+export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {
   if (agents.length === 0) return { text: "none", remaining: 0 };
   const listed = agents.slice(0, maxItems);
   const remaining = agents.length - listed.length;
   return {
-    text: listed
-      .map((a) => `${a.name} (${a.source}): ${a.description}`)
-      .join("; "),
+    text: listed.map((a) => `${a.name} (${a.source}): ${a.description}`).join("; "),
     remaining,
   };
 }

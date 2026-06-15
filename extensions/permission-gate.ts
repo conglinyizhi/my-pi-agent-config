@@ -8,11 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  const dangerousPatterns = [
-    /\brm\s+(-rf?|--recursive)/i,
-    /\bsudo\b/i,
-    /\b(chmod|chown)\b.*777/i,
-  ];
+  const dangerousPatterns = [/\brm\s+(-rf?|--recursive)/i, /\bsudo\b/i, /\b(chmod|chown)\b.*777/i];
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
@@ -26,10 +22,7 @@ export default function (pi: ExtensionAPI) {
         return { block: true, reason: "危险命令已阻止（没有可用于确认的 UI）" };
       }
 
-      const choice = await ctx.ui.select(
-        `⚠️ 危险命令：\n\n  ${command}\n\n是否允许？`,
-        ["Yes", "No"],
-      );
+      const choice = await ctx.ui.select(`⚠️ 危险命令：\n\n  ${command}\n\n是否允许？`, ["Yes", "No"]);
 
       if (choice !== "Yes") {
         return { block: true, reason: "已被用户阻止" };

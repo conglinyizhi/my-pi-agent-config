@@ -14,17 +14,9 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import {
-  extractTodoItems,
-  isSafeCommand,
-  markCompletedSteps,
-  type TodoItem,
-} from "./utils.ts";
+import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // 工具集合
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
@@ -58,10 +50,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     // 底部状态
     if (executionMode && todoItems.length > 0) {
       const completed = todoItems.filter((t) => t.completed).length;
-      ctx.ui.setStatus(
-        "plan-mode",
-        ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`),
-      );
+      ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
     } else if (planModeEnabled) {
       ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "⏸ plan"));
     } else {
@@ -72,10 +61,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     if (executionMode && todoItems.length > 0) {
       const lines = todoItems.map((item) => {
         if (item.completed) {
-          return (
-            ctx.ui.theme.fg("success", "☑ ") +
-            ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text))
-          );
+          return ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text));
         }
         return `${ctx.ui.theme.fg("muted", "☐ ")}${item.text}`;
       });
@@ -120,11 +106,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
         ctx.ui.notify("当前没有待办。先用 /plan 制定计划。", "info");
         return;
       }
-      const list = todoItems
-        .map(
-          (item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`,
-        )
-        .join("\n");
+      const list = todoItems.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
       ctx.ui.notify(`计划进度：\n${list}`, "info");
     },
   });
@@ -162,11 +144,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
           return !content.includes("[PLAN MODE ACTIVE]");
         }
         if (Array.isArray(content)) {
-          return !content.some(
-            (c) =>
-              c.type === "text" &&
-              (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
-          );
+          return !content.some((c) => c.type === "text" && (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"));
         }
         return true;
       }),
@@ -260,9 +238,7 @@ ${todoList}
     if (!planModeEnabled || !ctx.hasUI) return;
 
     // 从最后一条 assistant 消息中提取待办
-    const lastAssistant = [...event.messages]
-      .reverse()
-      .find(isAssistantMessage);
+    const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
     if (lastAssistant) {
       const extracted = extractTodoItems(getTextContent(lastAssistant));
       if (extracted.length > 0) {
@@ -272,9 +248,7 @@ ${todoList}
 
     // 展示计划步骤并询问下一步操作
     if (todoItems.length > 0) {
-      const todoListText = todoItems
-        .map((t, i) => `${i + 1}. ☐ ${t.text}`)
-        .join("\n");
+      const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
       pi.sendMessage(
         {
           customType: "plan-todo-list",
@@ -297,10 +271,7 @@ ${todoList}
       pi.setActiveTools(NORMAL_MODE_TOOLS);
       updateStatus(ctx);
 
-      const execMessage =
-        todoItems.length > 0
-          ? `执行计划。先从这里开始：${todoItems[0].text}`
-          : "执行你刚刚创建的计划。";
+      const execMessage = todoItems.length > 0 ? `执行计划。先从这里开始：${todoItems[0].text}` : "执行你刚刚创建的计划。";
       pi.sendMessage(
         {
           customType: "plan-mode-execute",
@@ -326,12 +297,7 @@ ${todoList}
     const entries = ctx.sessionManager.getEntries();
 
     // 恢复持久化状态
-    const planModeEntry = entries
-      .filter(
-        (e: { type: string; customType?: string }) =>
-          e.type === "custom" && e.customType === "plan-mode",
-      )
-      .pop() as
+    const planModeEntry = entries.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode").pop() as
       | { data?: { enabled: boolean; todos?: TodoItem[]; executing?: boolean } }
       | undefined;
 
@@ -359,11 +325,7 @@ ${todoList}
       const messages: AssistantMessage[] = [];
       for (let i = executeIndex + 1; i < entries.length; i++) {
         const entry = entries[i];
-        if (
-          entry.type === "message" &&
-          "message" in entry &&
-          isAssistantMessage(entry.message as AgentMessage)
-        ) {
+        if (entry.type === "message" && "message" in entry && isAssistantMessage(entry.message as AgentMessage)) {
           messages.push(entry.message as AssistantMessage);
         }
       }

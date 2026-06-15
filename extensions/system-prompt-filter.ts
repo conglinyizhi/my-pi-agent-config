@@ -1,9 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  getDocsPath,
-  getExamplesPath,
-  getReadmePath,
-} from "@earendil-works/pi-coding-agent";
+import { getDocsPath, getExamplesPath, getReadmePath } from "@earendil-works/pi-coding-agent";
 
 /**
  * 自定义最终的 system prompt，去掉 pi 自动追加的日期和当前工作目录。
@@ -20,21 +16,12 @@ export default function (pi: ExtensionAPI): void {
     let systemPrompt = event.systemPrompt;
 
     // 把 SYSTEM.md 里的占位符替换成当前 pi 安装的实际路径
-    systemPrompt = systemPrompt.replaceAll(
-      "{{PI_README_PATH}}",
-      getReadmePath(),
-    );
+    systemPrompt = systemPrompt.replaceAll("{{PI_README_PATH}}", getReadmePath());
     systemPrompt = systemPrompt.replaceAll("{{PI_DOCS_PATH}}", getDocsPath());
-    systemPrompt = systemPrompt.replaceAll(
-      "{{PI_EXAMPLES_PATH}}",
-      getExamplesPath(),
-    );
+    systemPrompt = systemPrompt.replaceAll("{{PI_EXAMPLES_PATH}}", getExamplesPath());
 
     // 去掉自动追加的日期
-    systemPrompt = systemPrompt.replace(
-      /\nCurrent date: \d{4}-\d{2}-\d{2}/,
-      "",
-    );
+    systemPrompt = systemPrompt.replace(/\nCurrent date: \d{4}-\d{2}-\d{2}/, "");
     // 去掉自动追加的当前工作目录
     systemPrompt = systemPrompt.replace(/\nCurrent working directory: .+/, "");
 
