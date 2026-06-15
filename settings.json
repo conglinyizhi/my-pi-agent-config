@@ -1,8 +1,15 @@
 {
-  "lastChangelogVersion": "0.79.3",
+  "lastChangelogVersion": "0.79.4",
   "defaultProvider": "xiaomi-token-plan-cn",
   "defaultModel": "mimo-v2.5",
   "defaultThinkingLevel": "medium",
-  "npmCommand": ["pnpm", "install", "--ignore-scripts"],
-  "packages": ["npm:pi-mcp-adapter"]
+  "npmCommand": [
+    "pnpm",
+    "install",
+    "--ignore-scripts"
+  ],
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ],
+  "theme": "dark"
 }
