@@ -9,7 +9,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import { notifyQuestion, notifyTaskComplete } from "../lib/notify-send";
+import { notifyQuestion } from "../lib/notify-send";
 
 interface QuestionOption {
   value: string;
@@ -406,14 +406,6 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
     }
     return `${qLabel}: user selected: ${a.index}. ${a.label}`;
   });
-
-  // 发送通知：问卷填写完成
-  try {
-    const answerSummary = answerLines.length === 1 ? answerLines[0] : `${answerLines.length} 个问题已回答`;
-    await notifyTaskComplete(`问卷填写完成: ${answerSummary}`);
-  } catch (error) {
-    console.warn("发送完成通知失败:", error);
-  }
   return {
     content: [{ type: "text", text: answerLines.join("\n") }],
     details: result,
