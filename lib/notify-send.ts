@@ -3,13 +3,14 @@
  * 支持 Linux、Windows、macOS 等操作系统
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * 默认通知自动消失等待时长（毫秒）
@@ -129,34 +130,26 @@ function getOS(): "linux" | "windows" | "macos" | "unknown" {
  * 使用 notify-send 命令（需要 libnotify）
  */
 async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
-  const {
-    title,
-    message,
-    urgency = "normal",
-    timeout = DEFAULT_TIMEOUT,
-    icon,
-    sound = false,
-    soundFile,
-  } = options;
+  const { title, message, urgency = "normal", timeout = DEFAULT_TIMEOUT, icon, sound = false, soundFile } = options;
 
   const args: string[] = [];
 
   if (urgency) {
-    args.push(`-u ${urgency}`);
+    args.push("-u", urgency);
   }
 
   if (icon) {
-    args.push(`-i "${icon}"`);
+    args.push("-i", icon);
   }
 
   if (timeout) {
-    args.push(`-t ${timeout}`);
+    args.push("-t", String(timeout));
   }
 
-  const command = `notify-send ${args.join(" ")} "${title}" "${message}"`;
+  args.push(title, message);
 
   try {
-    await execAsync(command);
+    await execFileAsync("notify-send", args);
   } catch (error: any) {
     if (error.stderr) {
       console.warn(`执行 notify-send 命令失败: ${error.stderr}`);
@@ -173,10 +166,11 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
 
 /**
  * Linux 声音播放
- * 优先播放自定义音频文件，否则使用 canberra-gtk-play 主题音，再降级到 paplay / ffplay 播放系统提示音
+ * 按优先级尝试：paplay -> ffplay -> canberra-gtk-play -> 系统提示音
  */
 async function playLinuxSound(soundFile?: string): Promise<void> {
-  if (soundFile && (await fileExists(soundFile))) {
+  // 播放自定义音频文件
+  if (soundFile) {
     try {
       await execAsync(`paplay "${soundFile}"`);
       return;
@@ -394,13 +388,7 @@ export async function notifyTaskStart(taskDescription: string): Promise<boolean>
 /**
  * 默认任务完成音效路径
  */
-const DEFAULT_TASK_COMPLETE_SOUND = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "assets",
-  "sounds",
-  "task-complete.wav",
-);
+const DEFAULT_TASK_COMPLETE_SOUND = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "sounds", "task-complete.wav");
 
 /**
  * 发送任务完成通知
