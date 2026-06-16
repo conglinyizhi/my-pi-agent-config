@@ -4,10 +4,10 @@
  */
 
 import { exec, execFile } from "node:child_process";
-import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { getOS, isWindows } from "./get-os";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -95,7 +95,7 @@ export async function checkNotificationSupport(): Promise<NotificationSupport> {
 async function isCommandAvailable(command: string): Promise<boolean> {
   try {
     const os = getOS();
-    if (os === "windows") {
+    if (isWindows()) {
       await execAsync(`powershell -Command "Get-Command ${command} -ErrorAction SilentlyContinue"`, {
         windowsHide: true,
       });
@@ -105,23 +105,6 @@ async function isCommandAvailable(command: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/**
- * 检测当前操作系统类型
- */
-function getOS(): "linux" | "windows" | "macos" | "unknown" {
-  const os = platform();
-  switch (os) {
-    case "linux":
-      return "linux";
-    case "win32":
-      return "windows";
-    case "darwin":
-      return "macos";
-    default:
-      return "unknown";
   }
 }
 
