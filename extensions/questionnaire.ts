@@ -93,13 +93,11 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
     return errorResult("Error: No questions provided");
   }
 
-  // 发送通知：有问题需要用户回答
-  try {
-    const questionSummary = params.questions.length === 1 ? params.questions[0].prompt : `${params.questions.length} 个问题需要回答`;
-    await notifyQuestion(questionSummary);
-  } catch (error) {
+  // 发送通知：有问题需要用户回答（异步，不阻塞主程序）
+  const questionSummary = params.questions.length === 1 ? params.questions[0].prompt : `${params.questions.length} 个问题需要回答`;
+  notifyQuestion(questionSummary).catch((error) => {
     console.warn("发送问题通知失败:", error);
-  }
+  });
 
   // 规范化问题并设置默认值
   const questions: Question[] = params.questions.map((q, i) => ({
