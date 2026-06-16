@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { notifyQuestion, notifyTaskComplete } from "../lib/notify-send";
-// 类型定义
+
 interface QuestionOption {
   value: string;
   label: string;
@@ -95,12 +95,10 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
 
   // 发送通知：有问题需要用户回答
   try {
-    const questionSummary = params.questions.length === 1 
-      ? params.questions[0].prompt 
-      : `${params.questions.length} 个问题需要回答`;
+    const questionSummary = params.questions.length === 1 ? params.questions[0].prompt : `${params.questions.length} 个问题需要回答`;
     await notifyQuestion(questionSummary);
   } catch (error) {
-    console.warn('发送问题通知失败:', error);
+    console.warn("发送问题通知失败:", error);
   }
 
   // 规范化问题并设置默认值
@@ -409,15 +407,12 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
     return `${qLabel}: user selected: ${a.index}. ${a.label}`;
   });
 
-
   // 发送通知：问卷填写完成
   try {
-    const answerSummary = answerLines.length === 1 
-      ? answerLines[0] 
-      : `${answerLines.length} 个问题已回答`;
+    const answerSummary = answerLines.length === 1 ? answerLines[0] : `${answerLines.length} 个问题已回答`;
     await notifyTaskComplete(`问卷填写完成: ${answerSummary}`);
   } catch (error) {
-    console.warn('发送完成通知失败:', error);
+    console.warn("发送完成通知失败:", error);
   }
   return {
     content: [{ type: "text", text: answerLines.join("\n") }],
