@@ -5,6 +5,8 @@
 
 import { exec } from "node:child_process";
 import { platform } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -21,6 +23,8 @@ export interface NotifyOptions {
   timeout?: number; // 毫秒
   icon?: string;
   sound?: boolean;
+  /** 自定义音频文件路径（优先于系统默认声音） */
+  soundFile?: string;
 }
 
 /**
@@ -45,18 +49,13 @@ export async function checkNotificationSupport(): Promise<NotificationSupport> {
 
   switch (os) {
     case "linux": {
-      const missing: string[] = [];
-      for (const cmd of ["notify-send", "zenity"]) {
-        if (!(await isCommandAvailable(cmd))) {
-          missing.push(cmd);
-        }
-      }
-      // notify-send 与 zenity 至少有一个可用即可
-      const supported = missing.length < 2;
+      // 只使用 notify-send 发送桌面通知；对话框工具不作为降级方案
+      const supported = await isCommandAvailable("notify-send");
       return {
         supported,
-        missing,
-        installHint: "请安装 libnotify 或 zenity：\n  Debian/Ubuntu: sudo apt install libnotify-bin zenity\n  Fedora/RHEL:  sudo dnf install libnotify zenity\n  Arch:         sudo pacman -S libnotify zenity",
+        missing: supported ? [] : ["notify-send"],
+        installHint:
+          "请安装 libnotify：\n  Debian/Ubuntu: sudo apt install libnotify-bin\n  Fedora/RHEL:  sudo dnf install libnotify\n  Arch:         sudo pacman -S libnotify",
         os,
       };
     }
@@ -130,7 +129,15 @@ function getOS(): "linux" | "windows" | "macos" | "unknown" {
  * 使用 notify-send 命令（需要 libnotify）
  */
 async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
-  const { title, message, urgency = "normal", timeout = DEFAULT_TIMEOUT, icon } = options;
+  const {
+    title,
+    message,
+    urgency = "normal",
+    timeout = DEFAULT_TIMEOUT,
+    icon,
+    sound = false,
+    soundFile,
+  } = options;
 
   const args: string[] = [];
 
@@ -151,13 +158,85 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
   try {
     await execAsync(command);
   } catch {
-    // 如果 notify-send 不可用，尝试使用 zenity
+    throw new Error("Linux 通知发送失败：请安装 libnotify-bin（notify-send）");
+  }
+
+  if (sound || soundFile) {
+    await playLinuxSound(soundFile).catch(() => {
+      // 声音播放失败不影响通知本身
+    });
+  }
+}
+
+/**
+ * Linux 声音播放
+ * 优先播放自定义音频文件，否则使用 canberra-gtk-play 主题音，再降级到 paplay / ffplay 播放系统提示音
+ */
+async function playLinuxSound(soundFile?: string): Promise<void> {
+  if (soundFile && (await fileExists(soundFile))) {
     try {
-      const zenityCommand = `zenity --info --title="${title}" --text="${message}" --timeout=${Math.floor(timeout / 1000)}`;
-      await execAsync(zenityCommand);
+      await execAsync(`paplay "${soundFile}"`);
+      return;
     } catch {
-      throw new Error("Linux 通知发送失败：请安装 notify-send 或 zenity");
+      // paplay 失败，尝试 ffplay
     }
+
+    try {
+      // -nodisp 禁止显示窗口，-autoexit 播放完自动退出
+      await execAsync(`ffplay -nodisp -autoexit "${soundFile}"`);
+      return;
+    } catch {
+      throw new Error(`Linux 声音播放失败：无法播放自定义音频 ${soundFile}`);
+    }
+  }
+
+  try {
+    await execAsync("canberra-gtk-play -i message");
+    return;
+  } catch {
+    // canberra 不可用或主题音缺失，继续尝试 paplay
+  }
+
+  const candidateSounds = [
+    "/usr/share/sounds/freedesktop/stereo/message.oga",
+    "/usr/share/sounds/deepin/stereo/message.ogg",
+    "/usr/share/sounds/gnome/default/alerts/glass.ogg",
+    "/usr/share/sounds/ubuntu/notifications/Positive.ogg",
+  ];
+
+  for (const soundPath of candidateSounds) {
+    if (!(await fileExists(soundPath))) {
+      continue;
+    }
+
+    try {
+      await execAsync(`paplay "${soundPath}"`);
+      return;
+    } catch {
+      // paplay 失败，尝试 ffplay
+    }
+
+    try {
+      // -nodisp 禁止显示窗口，-autoexit 播放完自动退出
+      await execAsync(`ffplay -nodisp -autoexit "${soundPath}"`);
+      return;
+    } catch {
+      // ffplay 也失败，尝试下一个候选文件
+    }
+  }
+
+  throw new Error("Linux 声音播放失败：未找到可用的声音工具或系统提示音");
+}
+
+/**
+ * 检查文件是否存在
+ */
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await execAsync(`test -f "${filePath}"`);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -166,9 +245,10 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
  * 使用 PowerShell 的 BurntToast 模块或系统通知
  */
 async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
-  const { title, message } = options;
+  const { title, message, sound = false, soundFile } = options;
 
   // 使用 PowerShell 发送 Toast 通知
+  const audioXml = sound && !soundFile ? '<audio src="ms-winsoundevent:Notification.Default" />' : "";
   const psScript = `
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
@@ -181,6 +261,7 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
           <text>${message}</text>
         </binding>
       </visual>
+      ${audioXml}
     </toast>
 "@
     
@@ -195,13 +276,29 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
       windowsHide: true,
     });
   } catch {
-    // 备用方案：使用 msg 命令
-    try {
-      await execAsync(`msg * /time:5 "${title}: ${message}"`);
-    } catch {
-      throw new Error("Windows 通知发送失败：请确保 PowerShell 可用");
-    }
+    throw new Error("Windows 通知发送失败：请确保 PowerShell 可用");
   }
+
+  if (soundFile) {
+    await playWindowsSound(soundFile).catch(() => {
+      // 声音播放失败不影响通知本身
+    });
+  }
+}
+
+/**
+ * Windows 声音播放
+ * 使用 PowerShell 的 SoundPlayer 播放自定义音频文件
+ */
+async function playWindowsSound(soundFile: string): Promise<void> {
+  const playScript = `
+    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '\"')}"
+    $player.PlaySync()
+  `;
+
+  await execAsync(`powershell -Command "${playScript.replace(/"/g, '\\"')}"`, {
+    windowsHide: true,
+  });
 }
 
 /**
@@ -209,10 +306,10 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
  * 使用 osascript 或 terminal-notifier
  */
 async function sendMacNotification(options: NotifyOptions): Promise<void> {
-  const { title, message, sound = true } = options;
+  const { title, message, sound = true, soundFile } = options;
 
   // 使用 osascript 发送通知
-  const soundParam = sound ? 'sound name "default"' : "";
+  const soundParam = sound && !soundFile ? 'sound name "default"' : "";
   const script = `display notification "${message}" with title "${title}" ${soundParam}`;
 
   try {
@@ -225,6 +322,20 @@ async function sendMacNotification(options: NotifyOptions): Promise<void> {
       throw new Error("macOS 通知发送失败：请确保 osascript 可用");
     }
   }
+
+  if (soundFile) {
+    await playMacSound(soundFile).catch(() => {
+      // 声音播放失败不影响通知本身
+    });
+  }
+}
+
+/**
+ * macOS 声音播放
+ * 使用 afplay 播放自定义音频文件
+ */
+async function playMacSound(soundFile: string): Promise<void> {
+  await execAsync(`afplay "${soundFile}"`);
 }
 
 /**
@@ -278,12 +389,25 @@ export async function notifyTaskStart(taskDescription: string): Promise<boolean>
 }
 
 /**
+ * 默认任务完成音效路径
+ */
+const DEFAULT_TASK_COMPLETE_SOUND = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "assets",
+  "sounds",
+  "task-complete.wav",
+);
+
+/**
  * 发送任务完成通知
  */
 export async function notifyTaskComplete(taskDescription: string): Promise<boolean> {
   return notify("Pi Agent", `任务完成: ${taskDescription}`, {
     urgency: "normal",
     timeout: DEFAULT_TIMEOUT,
+    sound: true,
+    soundFile: DEFAULT_TASK_COMPLETE_SOUND,
   });
 }
 
@@ -326,7 +450,7 @@ export async function isNotificationAvailable(): Promise<boolean> {
   try {
     switch (os) {
       case "linux":
-        await execAsync("which notify-send || which zenity");
+        await execAsync("which notify-send");
         return true;
       case "windows":
         await execAsync('powershell -Command "Get-Command New-BurntToastNotification -ErrorAction SilentlyContinue"');
@@ -350,7 +474,7 @@ export function getNotificationInfo(): { os: string; supported: boolean; method:
 
   switch (os) {
     case "linux":
-      return { os, supported: true, method: "notify-send/zenity" };
+      return { os, supported: true, method: "notify-send" };
     case "windows":
       return { os, supported: true, method: "PowerShell Toast" };
     case "macos":

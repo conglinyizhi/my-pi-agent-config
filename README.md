@@ -115,6 +115,46 @@ bun uninstall -g @earendil-works/pi-coding-agent
 
 > 卸载后，`~/.pi/agent/` 中的设置、凭据、会话和已安装的 Pi 包不会自动删除。
 
+## 7. 通知与音效
+
+Pi Agent 完成任务后会在桌面弹出一条通知，并播放提示音。
+
+### 7.1 桌面通知
+
+通知由 `extensions/task-notification.ts` 扩展控制：
+
+- 在 agent 任务循环结束时（`agent_end`）触发，每个任务只通知一次，避免多轮对话时刷屏
+- 自动检测操作系统并调用对应原生通知 API：
+  - Linux：`notify-send`（libnotify）
+  - Windows：PowerShell Toast 通知
+  - macOS：`osascript display notification`
+
+如果当前系统缺少通知工具，扩展会在终端和 TUI 中提示安装方式。
+
+### 7.2 提示音
+
+任务完成通知默认会播放 `assets/sounds/task-complete.wav`。
+
+跨平台播放策略如下：
+
+| 平台 | 自定义音频 | 系统默认音效 |
+| ---- | ---------- | ------------ |
+| Linux | `paplay` / `ffplay -nodisp -autoexit` | `canberra-gtk-play` |
+| Windows | `System.Media.SoundPlayer` | Toast `<audio>` 元素 |
+| macOS | `afplay` | `osascript sound name` |
+
+自定义音频文件通过 `NotifyOptions.soundFile` 指定。声音播放失败不会影响通知本身。
+
+### 7.3 音效素材授权
+
+默认任务完成音效 `assets/sounds/task-complete.wav` 源自 Freesound：
+
+- **Original title:** Fantasy UI Stinger - Magical Level Up 01
+- **Author:** Coghezzi
+- **Source:** https://freesound.org/s/853772/
+- **License:** Attribution 4.0 International (CC BY 4.0)
+- 详见 [`assets/sounds/ATTRIBUTION.md`](assets/sounds/ATTRIBUTION.md)
+
 ## 参考
 
 - [Pi 官方文档](https://pi.dev/docs)
