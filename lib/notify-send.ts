@@ -392,26 +392,8 @@ export async function notifyQuestion(question: string): Promise<boolean> {
   return notify("Pi Agent", `需要您的输入: ${question}`, {
     urgency: "normal",
     timeout: DEFAULT_TIMEOUT,
-  });
-}
-
-/**
- * 发送错误通知
- */
-export async function notifyError(errorMessage: string): Promise<boolean> {
-  return notify("Pi Agent - 错误", errorMessage, {
-    urgency: "critical",
-    timeout: DEFAULT_TIMEOUT,
-  });
-}
-
-/**
- * 发送警告通知
- */
-export async function notifyWarning(warningMessage: string): Promise<boolean> {
-  return notify("Pi Agent - 警告", warningMessage, {
-    urgency: "normal",
-    timeout: DEFAULT_TIMEOUT,
+    sound: true,
+    soundFile: DEFAULT_TASK_COMPLETE_SOUND,
   });
 }
 
