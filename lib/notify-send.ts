@@ -157,7 +157,10 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
 
   try {
     await execAsync(command);
-  } catch {
+  } catch (error: any) {
+    if (error.stderr) {
+      console.warn(`执行 notify-send 命令失败: ${error.stderr}`);
+    }
     throw new Error("Linux 通知发送失败：请安装 libnotify-bin（notify-send）");
   }
 
