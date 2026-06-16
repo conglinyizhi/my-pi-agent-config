@@ -29,8 +29,8 @@ argument-hint: "可指定 issue 编号，如 23 24；默认拉取所有 agent:to
 
 ## 为每个 issue 创建独立的 worktree
 
-- 在当前仓库根目录下创建子目录：`./.worktree/issue-<编号>/`。
-- 运行：`git worktree add ./.worktree/issue-<编号> -b todo/issue-<编号>`。
+- 在当前仓库根目录下创建子目录：`./.worktree/todo-<编号>/`。
+- 运行：`git worktree add ./.worktree/todo-<编号> -b doing/todo-<编号>`。
 - 将 `/.worktree/` 加入 `.gitignore`（如果尚未存在则追加一行 `/.worktree/`）。
 - 确保这些目录不会被主仓库误认为子模块或未跟踪文件。
 
