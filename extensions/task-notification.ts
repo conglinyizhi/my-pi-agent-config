@@ -11,25 +11,18 @@ import { checkNotificationSupport, notify, notifyTaskComplete } from "../lib/not
 export default async function taskNotification(pi: ExtensionAPI) {
   // 初始化时检查通知指令是否可用，不满足时提示用户如何安装
   const support = await checkNotificationSupport();
-  let notificationReady = support.supported;
+  const notificationReady = support.supported;
 
   if (!support.supported) {
     const missingDesc = support.missing.length > 0 ? support.missing.join(", ") : "无可用通知工具";
-    console.warn(
-      `[task-notification] 桌面通知不可用（${support.os}，缺失: ${missingDesc}）。\n${support.installHint}`,
-    );
-  }
+    const unavailableHint = `桌面通知不可用（${support.os}，缺失: ${missingDesc}）。请在终端查看安装提示。`;
+    console.warn(`[task-notification] ${unavailableHint}\n${support.installHint}`);
 
-  // 监听 session_start：在 TUI 中提示用户（若不可用）
-  pi.on("session_start", async (_event, ctx) => {
-    if (notificationReady) return;
-    if (!ctx.hasUI) return;
-    const missingDesc = support.missing.length > 0 ? support.missing.join(", ") : "无可用通知工具";
-    ctx.ui.notify(
-      `桌面通知不可用（${support.os}，缺失: ${missingDesc}）。请在终端查看安装提示。`,
-      "warning",
-    );
-  });
+    // 在 TUI 中也提示一次（终端已有详细安装指引）
+    pi.on("session_start", async (_event, ctx) => {
+      if (ctx.hasUI) ctx.ui.notify(unavailableHint, "warning");
+    });
+  }
 
   // 监听 turn_end 事件：当 agent 完成一轮回复时触发
   pi.on("turn_end", async (event, ctx) => {
@@ -44,23 +37,14 @@ export default async function taskNotification(pi: ExtensionAPI) {
       // 从消息中提取摘要信息
       let summary = "任务处理完成";
 
-      if (message.type === "assistant" && message.content) {
+      if (message.role === "assistant") {
         // 尝试从 assistant 消息中提取文本摘要
-        const textParts = message.content.filter((c: { type: string }) => c.type === "text");
+        const textParts = message.content.filter((c) => c.type === "text");
         if (textParts.length > 0) {
-          const fullText = textParts.map((c: { text: string }) => c.text).join(" ");
+          const fullText = textParts.map((c) => c.text).join(" ");
           // 截取前 100 个字符作为摘要
           summary = fullText.length > 100 ? `${fullText.slice(0, 100)}...` : fullText;
         }
-      }
-
-      // 检查是否有工具调用结果
-      const toolResults = event.toolResults || [];
-      if (toolResults.length > 0) {
-        const toolNames = toolResults
-          .map((r: { toolName?: string }) => r.toolName || "unknown")
-          .filter((name: string, index: number, arr: string[]) => arr.indexOf(name) === index);
-        summary += ` (使用了工具: ${toolNames.join(", ")})`;
       }
 
       await notifyTaskComplete(summary);
