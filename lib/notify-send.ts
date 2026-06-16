@@ -9,6 +9,11 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
+/**
+ * 默认通知自动消失等待时长（毫秒）
+ */
+const DEFAULT_TIMEOUT = 60_000; // 1 分钟
+
 export interface NotifyOptions {
   title: string;
   message: string;
@@ -16,6 +21,91 @@ export interface NotifyOptions {
   timeout?: number; // 毫秒
   icon?: string;
   sound?: boolean;
+}
+
+/**
+ * 通知可用性诊断结果
+ */
+export interface NotificationSupport {
+  supported: boolean;
+  /** 缺失的必需命令（用于提示用户安装） */
+  missing: string[];
+  /** 安装提示命令 */
+  installHint: string;
+  /** 当前操作系统 */
+  os: string;
+}
+
+/**
+ * 检查当前系统的通知能力
+ * 返回是否支持、缺失的命令以及安装提示
+ */
+export async function checkNotificationSupport(): Promise<NotificationSupport> {
+  const os = getOS();
+
+  switch (os) {
+    case "linux": {
+      const missing: string[] = [];
+      for (const cmd of ["notify-send", "zenity"]) {
+        if (!(await isCommandAvailable(cmd))) {
+          missing.push(cmd);
+        }
+      }
+      // notify-send 与 zenity 至少有一个可用即可
+      const supported = missing.length < 2;
+      return {
+        supported,
+        missing,
+        installHint: "请安装 libnotify 或 zenity：\n  Debian/Ubuntu: sudo apt install libnotify-bin zenity\n  Fedora/RHEL:  sudo dnf install libnotify zenity\n  Arch:         sudo pacman -S libnotify zenity",
+        os,
+      };
+    }
+    case "windows": {
+      // Windows 内置 PowerShell，通常可用
+      const hasPowershell = await isCommandAvailable("powershell");
+      return {
+        supported: hasPowershell,
+        missing: hasPowershell ? [] : ["powershell"],
+        installHint: "请确保 Windows PowerShell 可用（通常系统自带）。",
+        os,
+      };
+    }
+    case "macos": {
+      const hasOsascript = await isCommandAvailable("osascript");
+      return {
+        supported: hasOsascript,
+        missing: hasOsascript ? [] : ["osascript"],
+        installHint: "macOS 通常自带 osascript。如缺失，请检查系统完整性。",
+        os,
+      };
+    }
+    default:
+      return {
+        supported: false,
+        missing: [],
+        installHint: `不支持的操作系统: ${os}，暂无通知支持。`,
+        os,
+      };
+  }
+}
+
+/**
+ * 检查某个命令是否可用（跨平台）
+ */
+async function isCommandAvailable(command: string): Promise<boolean> {
+  try {
+    const os = getOS();
+    if (os === "windows") {
+      await execAsync(`powershell -Command "Get-Command ${command} -ErrorAction SilentlyContinue"`, {
+        windowsHide: true,
+      });
+    } else {
+      await execAsync(`command -v ${command}`);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -40,7 +130,7 @@ function getOS(): "linux" | "windows" | "macos" | "unknown" {
  * 使用 notify-send 命令（需要 libnotify）
  */
 async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
-  const { title, message, urgency = "normal", timeout, icon } = options;
+  const { title, message, urgency = "normal", timeout = DEFAULT_TIMEOUT, icon } = options;
 
   const args: string[] = [];
 
@@ -63,7 +153,7 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
   } catch {
     // 如果 notify-send 不可用，尝试使用 zenity
     try {
-      const zenityCommand = `zenity --info --title="${title}" --text="${message}" --timeout=${Math.floor((timeout || 5000) / 1000)}`;
+      const zenityCommand = `zenity --info --title="${title}" --text="${message}" --timeout=${Math.floor(timeout / 1000)}`;
       await execAsync(zenityCommand);
     } catch {
       throw new Error("Linux 通知发送失败：请安装 notify-send 或 zenity");
@@ -183,7 +273,7 @@ export async function notify(title: string, message: string, options?: Partial<N
 export async function notifyTaskStart(taskDescription: string): Promise<boolean> {
   return notify("Pi Agent", `任务开始: ${taskDescription}`, {
     urgency: "low",
-    timeout: 3000,
+    timeout: DEFAULT_TIMEOUT,
   });
 }
 
@@ -193,7 +283,7 @@ export async function notifyTaskStart(taskDescription: string): Promise<boolean>
 export async function notifyTaskComplete(taskDescription: string): Promise<boolean> {
   return notify("Pi Agent", `任务完成: ${taskDescription}`, {
     urgency: "normal",
-    timeout: 5000,
+    timeout: DEFAULT_TIMEOUT,
   });
 }
 
@@ -203,7 +293,7 @@ export async function notifyTaskComplete(taskDescription: string): Promise<boole
 export async function notifyQuestion(question: string): Promise<boolean> {
   return notify("Pi Agent", `需要您的输入: ${question}`, {
     urgency: "normal",
-    timeout: 5000,
+    timeout: DEFAULT_TIMEOUT,
   });
 }
 
@@ -213,7 +303,7 @@ export async function notifyQuestion(question: string): Promise<boolean> {
 export async function notifyError(errorMessage: string): Promise<boolean> {
   return notify("Pi Agent - 错误", errorMessage, {
     urgency: "critical",
-    timeout: 10000,
+    timeout: DEFAULT_TIMEOUT,
   });
 }
 
@@ -223,7 +313,7 @@ export async function notifyError(errorMessage: string): Promise<boolean> {
 export async function notifyWarning(warningMessage: string): Promise<boolean> {
   return notify("Pi Agent - 警告", warningMessage, {
     urgency: "normal",
-    timeout: 5000,
+    timeout: DEFAULT_TIMEOUT,
   });
 }
 
