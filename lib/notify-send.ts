@@ -94,7 +94,6 @@ export async function checkNotificationSupport(): Promise<NotificationSupport> {
  */
 async function isCommandAvailable(command: string): Promise<boolean> {
   try {
-    const os = getOS();
     if (isWindows()) {
       await execAsync(`powershell -Command "Get-Command ${command} -ErrorAction SilentlyContinue"`, {
         windowsHide: true,
@@ -133,9 +132,10 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
 
   try {
     await execFileAsync("notify-send", args);
-  } catch (error: any) {
-    if (error.stderr) {
-      console.warn(`执行 notify-send 命令失败: ${error.stderr}`);
+  } catch (error: unknown) {
+    const err = error as { stderr?: string };
+    if (err.stderr) {
+      console.warn(`执行 notify-send 命令失败: ${err.stderr}`);
     }
     throw new Error("Linux 通知发送失败：请安装 libnotify-bin（notify-send）");
   }
@@ -272,7 +272,7 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
  */
 async function playWindowsSound(soundFile: string): Promise<void> {
   const playScript = `
-    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '\"')}"
+    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '"')}"
     $player.PlaySync()
   `;
 
