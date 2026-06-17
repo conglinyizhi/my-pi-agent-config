@@ -1,12 +1,11 @@
 /**
- * OpenCode Models Extension for pi
+ * OpenCode 模型扩展
  *
- * Reads the OpenCode API key from ~/.local/share/opencode/auth.json,
- * discovers available opencode/ models via the `opencode` CLI, and registers
- * them as a pi provider named `opencode`.
+ * 从 ~/.local/share/opencode/auth.json 读取 OpenCode API 密钥，
+ * 通过 opencode CLI 发现可用的 opencode/ 模型，并将其注册为名为 opencode 的 pi provider。
  *
- * Switch models with: /model-more opencode:<model-id>
- * Or run /model-more without arguments to open an interactive TUI selector.
+ * 使用 /model-more opencode:<model-id> 切换模型，
+ * 或直接运行 /model-more 打开交互式 TUI 选择器。
  */
 
 import {
@@ -32,16 +31,21 @@ import {
   type Focusable,
   type SelectItem,
 } from "@earendil-works/pi-tui";
-import { execSync } from "node:child_process";
+import { exec, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 const HOME = homedir();
-const OPENCODE_BIN_CANDIDATES = [process.env.OPENCODE_BIN, `${HOME}/.opencode/bin/opencode`, "/usr/local/bin/opencode", "/usr/bin/opencode"];
+const OPENCODE_BIN_CANDIDATES = [
+  process.env.OPENCODE_BIN,
+  `${HOME}/.opencode/bin/opencode`,
+  "/usr/local/bin/opencode",
+  "/usr/bin/opencode",
+];
 const AUTH_PATH = `${HOME}/.local/share/opencode/auth.json`;
 const PROVIDER_ID = "opencode";
 
-type NewType = {
+type MediaCapabilities = {
   text: boolean;
   image: boolean;
   audio: boolean;
@@ -60,8 +64,8 @@ interface OpencodeModel {
   };
   capabilities: {
     reasoning: boolean;
-    input: NewType;
-    output: NewType;
+    input: MediaCapabilities;
+    output: MediaCapabilities;
   };
   limit: {
     context: number;
@@ -120,7 +124,7 @@ function parseOpencodeModels(output: string): OpencodeModel[] {
         models.push(parsed);
       }
     } catch {
-      // ignore malformed entries
+      // 忽略格式错误的条目
     }
   };
 
@@ -138,17 +142,16 @@ function parseOpencodeModels(output: string): OpencodeModel[] {
   return models;
 }
 
-function discoverOpencodeModels(bin: string): OpencodeModel[] {
-  try {
-    const output = execSync(`"${bin}" models ${PROVIDER_ID} --verbose`, {
-      encoding: "utf8",
-      timeout: 15000,
-      stdio: ["pipe", "pipe", "ignore"],
+async function discoverOpencodeModelsAsync(bin: string): Promise<OpencodeModel[]> {
+  return new Promise((resolve) => {
+    exec(`"${bin}" models ${PROVIDER_ID} --verbose`, { encoding: "utf8", timeout: 15000 }, (error, stdout) => {
+      if (error) {
+        resolve([]);
+        return;
+      }
+      resolve(parseOpencodeModels(stdout));
     });
-    return parseOpencodeModels(output);
-  } catch {
-    return [];
-  }
+  });
 }
 
 function mapApiType(npmPackage: string): ProviderModelConfig["api"] {
@@ -226,7 +229,9 @@ class SearchableModelSelector implements Component, Focusable {
 
     this.container = new Container();
     this.container.addChild(new Text(theme.fg("accent", theme.bold("选择 OpenCode 模型")), 1, 0));
-    this.container.addChild(new Text(theme.fg("dim", "输入文字过滤模型 • ↑↓ 移动 • 回车确认 • Esc 取消"), 1, 0));
+    this.container.addChild(
+      new Text(theme.fg("dim", "输入文字过滤模型 • ↑↓ 移动 • 回车确认 • Esc 取消"), 1, 0),
+    );
   }
 
   private updateFilter() {
@@ -234,7 +239,9 @@ class SearchableModelSelector implements Component, Focusable {
     if (!query) {
       this.filteredItems = this.allItems;
     } else {
-      this.filteredItems = fuzzyFilter(this.allItems, query, (item) => `${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase());
+      this.filteredItems = fuzzyFilter(this.allItems, query, (item) =>
+        `${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase(),
+      );
     }
     this.selectList = buildSelectList(this.filteredItems, this.theme);
     this.selectList.onSelect = (item) => this.onDone(item.value);
@@ -292,7 +299,7 @@ class SearchableModelSelector implements Component, Focusable {
   }
 }
 
-async function confirmSaveDefault(ctx: ExtensionContext, modelId: string, modelName: string): Promise<"yes" | "no" | "cancel"> {
+async function confirmSaveDefault(  ctx: ExtensionContext,  modelId: string,  modelName: string): Promise<"yes" | "no" | "cancel"> {
   const title = `已选择模型：opencode:${modelId}（${modelName}）\n是否将其设为默认模型并写入 settings.json？`;
   const options = ["是 - 保存为默认模型并切换", "否 - 仅切换当前会话", "取消 - 放弃选择"];
   const selected = await ctx.ui.select(title, options);
@@ -330,57 +337,61 @@ async function showModelSelector(ctx: ExtensionContext, models: OpencodeModel[])
   return { modelId, saveAsDefault: choice === "yes" };
 }
 
-export default function opencodeModelsExtension(pi: ExtensionAPI) {
+export default async function opencodeModelsExtension(pi: ExtensionAPI) {
   const apiKey = readOpencodeKey();
   const bin = findOpencodeBin();
 
   if (!apiKey) {
     pi.on("session_start", async (_event, ctx) => {
-      ctx.ui.notify(`OpenCode key not found in ${AUTH_PATH}. Run \`opencode providers login\`.`, "warning");
+      ctx.ui.notify(`未在 ${AUTH_PATH} 找到 OpenCode 密钥。请运行 \`opencode providers login\`。`, "warning");
     });
     return;
   }
 
   if (!bin) {
     pi.on("session_start", async (_event, ctx) => {
-      ctx.ui.notify("OpenCode CLI not found. Set OPENCODE_BIN or add opencode to PATH.", "warning");
+      ctx.ui.notify("未找到 OpenCode CLI。请设置 OPENCODE_BIN 或将 opencode 加入 PATH。", "warning");
     });
     return;
   }
 
-  const models = discoverOpencodeModels(bin);
+  // 立即开始异步加载模型，/new 不会被阻塞；/model-more 会等待该 Promise。
+  const modelsPromise = discoverOpencodeModelsAsync(bin);
 
-  if (models.length === 0) {
-    pi.on("session_start", async (_event, ctx) => {
-      ctx.ui.notify("Failed to discover OpenCode models. Try `opencode models opencode --verbose`.", "warning");
-    });
-    return;
-  }
+  modelsPromise.then((models) => {
+    if (models.length === 0) {
+      pi.on("session_start", async (_event, ctx) => {
+        ctx.ui.notify("获取 OpenCode 模型列表失败。请尝试运行 `opencode models opencode --verbose`。", "warning");
+      });
+      return;
+    }
 
-  pi.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
-
-  const modelMap = new Map(models.map((m) => [m.id, m]));
+    pi.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
+  });
 
   pi.registerCommand("model-more", {
-    description: "Switch to an OpenCode model (opencode:<model-id>)",
-    getArgumentCompletions: (prefix) => {
-      const normalized = prefix.replace(/^opencode:/, "");
-      const matches = models
-        .filter((m) => m.id.startsWith(normalized) || `opencode:${m.id}`.startsWith(prefix))
-        .map((m) => ({
-          value: `opencode:${m.id}`,
-          label: `${m.name} (${m.api.npm})`,
-        }));
-      return matches.length > 0 ? matches : null;
+    description: "切换到 OpenCode 模型（opencode:<model-id>）",
+    getArgumentCompletions: (_prefix) => {
+      // 补全无法异步，模型尚未就绪时返回空。
+      return null;
     },
     handler: async (args, ctx) => {
+      ctx.ui.notify("正在加载 OpenCode 模型列表，请稍候...", "info");
+      const models = await modelsPromise;
+
+      if (models.length === 0) {
+        ctx.ui.notify("未能获取 OpenCode 模型列表，请检查 opencode CLI 是否可用。", "error");
+        return;
+      }
+
+      const modelMap = new Map(models.map((m) => [m.id, m]));
       let modelId: string;
       let saveAsDefault = false;
 
       const trimmed = args.trim();
       if (!trimmed) {
         if (!ctx.hasUI) {
-          ctx.ui.notify("Interactive selector requires a TUI. Usage: /model-more opencode:<model-id>", "warning");
+          ctx.ui.notify("交互式选择器需要 TUI。用法：/model-more opencode:<model-id>", "warning");
           return;
         }
         const selection = await showModelSelector(ctx, models);
@@ -393,13 +404,13 @@ export default function opencodeModelsExtension(pi: ExtensionAPI) {
 
       const meta = modelMap.get(modelId);
       if (!meta) {
-        ctx.ui.notify(`Unknown OpenCode model: ${modelId}`, "error");
+        ctx.ui.notify(`未知 OpenCode 模型：${modelId}`, "error");
         return;
       }
 
       const model = ctx.modelRegistry.find(PROVIDER_ID, modelId);
       if (!model) {
-        ctx.ui.notify(`OpenCode model ${modelId} is not registered.`, "error");
+        ctx.ui.notify(`OpenCode 模型 ${modelId} 尚未注册。`, "error");
         return;
       }
 
@@ -413,7 +424,7 @@ export default function opencodeModelsExtension(pi: ExtensionAPI) {
 
       const success = await pi.setModel(model);
       if (!success) {
-        ctx.ui.notify(`Failed to activate ${modelId} (API key issue?)`, "error");
+        ctx.ui.notify(`激活 ${modelId} 失败（可能是 API 密钥问题）`, "error");
         return;
       }
 
