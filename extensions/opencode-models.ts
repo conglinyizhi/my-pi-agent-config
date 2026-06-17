@@ -32,7 +32,7 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { exec, execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 const HOME = homedir();
@@ -308,10 +308,24 @@ async function confirmSaveDefault(  ctx: ExtensionContext,  modelId: string,  mo
   return "cancel";
 }
 
-async function saveDefaultModel(cwd: string, provider: string, modelId: string): Promise<void> {
-  const settings = SettingsManager.create(cwd, getAgentDir());
-  settings.setDefaultModelAndProvider(provider, modelId);
-  await settings.flush();
+const SETTINGS_PATH = `${getAgentDir()}/settings.json`;
+
+async function saveDefaultModelPreservingFormat(provider: string, modelId: string): Promise<void> {
+  const raw = readFileSync(SETTINGS_PATH, "utf8");
+  // 仅替换 defaultProvider 和 defaultModel 的值，保留文件其余格式、缩进与注释。
+  let updated = raw;
+  updated = updated.replace(/("defaultProvider"\s*:\s*)"[^"]*"/, `$1"${provider}"`);
+  updated = updated.replace(/("defaultModel"\s*:\s*)"[^"]*"/, `$1"${modelId}"`);
+
+  // 如果正则未命中（键不存在或格式异常），回退到 SettingsManager。
+  if (updated === raw) {
+    const settings = SettingsManager.create(".", getAgentDir());
+    settings.setDefaultModelAndProvider(provider, modelId);
+    await settings.flush();
+    return;
+  }
+
+  writeFileSync(SETTINGS_PATH, updated, "utf8");
 }
 
 async function showModelSelector(ctx: ExtensionContext, models: OpencodeModel[]): Promise<ModelSelection | null> {
@@ -416,7 +430,7 @@ export default async function opencodeModelsExtension(pi: ExtensionAPI) {
 
       if (saveAsDefault) {
         try {
-          await saveDefaultModel(ctx.cwd, PROVIDER_ID, modelId);
+          await saveDefaultModelPreservingFormat(PROVIDER_ID, modelId);
         } catch (err) {
           ctx.ui.notify(`模型已切换，但保存默认设置失败：${err instanceof Error ? err.message : String(err)}`, "warning");
         }
