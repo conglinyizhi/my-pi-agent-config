@@ -369,18 +369,17 @@ export default async function opencodeModelsExtension(pi: ExtensionAPI) {
     return;
   }
 
-  // 立即开始异步加载模型，/new 不会被阻塞；/model-more 会等待该 Promise。
+  // 立即开始异步加载模型，不阻塞扩展加载；/model-more 会等待该 Promise。
   const modelsPromise = discoverOpencodeModelsAsync(bin);
 
-  modelsPromise.then((models) => {
+  // 在 session_start 中通过 ctx.modelRegistry 注册 provider（不依赖 pi 的活性）
+  pi.on("session_start", async (_event, ctx) => {
+    const models = await modelsPromise;
     if (models.length === 0) {
-      pi.on("session_start", async (_event, ctx) => {
-        ctx.ui.notify("获取 OpenCode 模型列表失败。请尝试运行 `opencode models opencode --verbose`。", "warning");
-      });
+      ctx.ui.notify("获取 OpenCode 模型列表失败。请尝试运行 `opencode models opencode --verbose`。", "warning");
       return;
     }
-
-    pi.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
+    ctx.modelRegistry.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
   });
 
   pi.registerCommand("model-more", {
@@ -436,7 +435,13 @@ export default async function opencodeModelsExtension(pi: ExtensionAPI) {
         }
       }
 
-      const success = await pi.setModel(model);
+      let success: boolean;
+      try {
+        success = await pi.setModel(model);
+      } catch (err) {
+        ctx.ui.notify(`模型切换失败：${err instanceof Error ? err.message : String(err)}。请执行 /reload 后重试。`, "error");
+        return;
+      }
       if (!success) {
         ctx.ui.notify(`激活 ${modelId} 失败（可能是 API 密钥问题）`, "error");
         return;
