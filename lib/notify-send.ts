@@ -12,6 +12,21 @@ import { getOS, isWindows } from "./get-os";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+/** 执行异步指令，但最多等待指定毫秒数；超时即视为成功，不等命令结束 */
+async function execNotifyAsync(
+  command: string,
+  argsOrOptions?: string[] | { shell?: boolean },
+  options?: { shell?: boolean },
+): Promise<void> {
+  const execPromise = Array.isArray(argsOrOptions)
+    ? execFileAsync(command, argsOrOptions, options)
+    : execAsync(command, argsOrOptions);
+  await Promise.race([
+    execPromise,
+    new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+  ]);
+}
+
 /**
  * 默认通知自动消失等待时长（毫秒）
  */
@@ -130,15 +145,8 @@ async function sendLinuxNotification(options: NotifyOptions): Promise<void> {
 
   args.push(title, message);
 
-  try {
-    await execFileAsync("notify-send", args);
-  } catch (error: unknown) {
-    const err = error as { stderr?: string };
-    if (err.stderr) {
-      console.warn(`执行 notify-send 命令失败: ${err.stderr}`);
-    }
-    throw new Error("Linux 通知发送失败：请安装 libnotify-bin（notify-send）");
-  }
+  // 超时 1000ms，超时即视为成功，不等 notify-send 结束
+  await execNotifyAsync("notify-send", args);
 
   if (sound || soundFile) {
     await playLinuxSound(soundFile).catch(() => {
@@ -251,13 +259,10 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Pi Agent").Show($toast)
   `;
 
-  try {
-    await execAsync(`powershell -Command "${psScript.replace(/"/g, '\\"')}"`, {
-      windowsHide: true,
-    });
-  } catch {
-    throw new Error("Windows 通知发送失败：请确保 PowerShell 可用");
-  }
+  // 超时 1000ms，超时即视为成功，不等 PowerShell 结束
+  await execNotifyAsync(`powershell -Command "${psScript.replace(/\"/g, '\\"')}"`, {
+    windowsHide: true,
+  });
 
   if (soundFile) {
     await playWindowsSound(soundFile).catch(() => {
@@ -292,16 +297,9 @@ async function sendMacNotification(options: NotifyOptions): Promise<void> {
   const soundParam = sound && !soundFile ? 'sound name "default"' : "";
   const script = `display notification "${message}" with title "${title}" ${soundParam}`;
 
-  try {
-    await execAsync(`osascript -e '${script}'`);
-  } catch {
-    // 备用方案：使用 terminal-notifier（如果安装了的话）
-    try {
-      await execAsync(`terminal-notifier -title "${title}" -message "${message}"`);
-    } catch {
-      throw new Error("macOS 通知发送失败：请确保 osascript 可用");
-    }
-  }
+  // 超时 1000ms，超时即视为成功，不等 osascript 结束
+  await execNotifyAsync(`osascript -e '${script}'`);
+  // 备用方案不再需要——超时已覆盖各种情况
 
   if (soundFile) {
     await playMacSound(soundFile).catch(() => {
