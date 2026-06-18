@@ -163,7 +163,7 @@ async function playLinuxSound(soundFile?: string): Promise<void> {
   // 播放自定义音频文件
   if (soundFile) {
     try {
-      await execAsync(`paplay "${soundFile}"`);
+      await execNotifyAsync(`paplay "${soundFile}"`);
       return;
     } catch {
       // paplay 失败，尝试 ffplay
@@ -171,7 +171,7 @@ async function playLinuxSound(soundFile?: string): Promise<void> {
 
     try {
       // -nodisp 禁止显示窗口，-autoexit 播放完自动退出
-      await execAsync(`ffplay -nodisp -autoexit "${soundFile}"`);
+      await execNotifyAsync(`ffplay -nodisp -autoexit "${soundFile}"`);
       return;
     } catch {
       throw new Error(`Linux 声音播放失败：无法播放自定义音频 ${soundFile}`);
@@ -179,7 +179,7 @@ async function playLinuxSound(soundFile?: string): Promise<void> {
   }
 
   try {
-    await execAsync("canberra-gtk-play -i message");
+    await execNotifyAsync("canberra-gtk-play -i message");
     return;
   } catch {
     // canberra 不可用或主题音缺失，继续尝试 paplay
@@ -198,7 +198,7 @@ async function playLinuxSound(soundFile?: string): Promise<void> {
     }
 
     try {
-      await execAsync(`paplay "${soundPath}"`);
+      await execNotifyAsync(`paplay "${soundPath}"`);
       return;
     } catch {
       // paplay 失败，尝试 ffplay
@@ -206,7 +206,7 @@ async function playLinuxSound(soundFile?: string): Promise<void> {
 
     try {
       // -nodisp 禁止显示窗口，-autoexit 播放完自动退出
-      await execAsync(`ffplay -nodisp -autoexit "${soundPath}"`);
+      await execNotifyAsync(`ffplay -nodisp -autoexit "${soundPath}"`);
       return;
     } catch {
       // ffplay 也失败，尝试下一个候选文件
@@ -277,11 +277,11 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
  */
 async function playWindowsSound(soundFile: string): Promise<void> {
   const playScript = `
-    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '"')}"
+    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '\"')}"
     $player.PlaySync()
   `;
 
-  await execAsync(`powershell -Command "${playScript.replace(/"/g, '\\"')}"`, {
+  await execNotifyAsync(`powershell -Command "${playScript.replace(/"/g, '\\"')}"`, {
     windowsHide: true,
   });
 }
@@ -313,7 +313,7 @@ async function sendMacNotification(options: NotifyOptions): Promise<void> {
  * 使用 afplay 播放自定义音频文件
  */
 async function playMacSound(soundFile: string): Promise<void> {
-  await execAsync(`afplay "${soundFile}"`);
+  await execNotifyAsync(`afplay "${soundFile}"`);
 }
 
 /**
