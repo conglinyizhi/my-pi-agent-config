@@ -92,7 +92,9 @@ Closes #<编号>"
 - 如果某个分支合并失败，保留该 worktree 和分支，不要删除，记录失败原因后跳过该 issue，继续处理下一个。
 - 所有正常任务完成后，进入汇总阶段。主代理统一分析并手动解决之前保留的冲突分支：读取冲突文件，保留各方有效改动，解决后重新运行测试并提交合并。
 - 合并完成后删除 worktree 及分支：
-  `git worktree remove ./.worktree/todo-<safe_id>`（如果 worktree 中存在未提交改动导致删除失败，询问用户如何处理，可选项目：委托Agent自动处理异动、使用强制指令 `--force` 删除）
+  `git worktree remove ./.worktree/todo-<safe_id>`
+  - 如果删除失败是因为存在未提交改动，先尝试自动处理：将改动提交到当前分支，或迁移到主仓库的临时目录/补丁文件中，然后再次尝试删除。
+  - 若自动处理仍失败，保留该 worktree 并记录原因，进入汇总阶段由主 agent 统一处理；非必要不使用 `--force`，避免静默丢失改动。
   `git branch -d doing/todo-<safe_id>`
 
 ## 最终验证
