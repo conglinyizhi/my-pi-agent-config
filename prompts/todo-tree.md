@@ -47,7 +47,7 @@ argument-hint: "可指定 issue 编号，如 23 24；默认拉取所有 agent:to
 - 输出一个简短的计划表格：issue/任务编号、标题、工作区目录、预计无冲突依据。
 - 确认无误后继续执行。
 
-## 为每个 issue 创建独立的 worktree
+## 为每个细分任务创建独立的 worktree
 
 统一命名规范（以当前仓库根目录为基准）：
 
@@ -56,15 +56,15 @@ argument-hint: "可指定 issue 编号，如 23 24；默认拉取所有 agent:to
 
 其中 `<safe_id>` 要求：
 
-- 优先使用 issue 编号（纯数字，如 `23`）。
+- 优先使用 issue 编号（纯数字，如 `23`），如果某个 issue 任务过于庞大，可以考虑采用数字+子序号的方式（`23-1`）
 - 自定义任务使用任务简称的 kebab-case 形式（如 `fix-auth-refresh`），或使用稳定短哈希（仅小写字母和数字，长度 8）。
 - 禁止使用空格、特殊字符、大写字母或连续连字符。
 
 操作步骤：
 
 - 在当前仓库根目录下创建子目录：`./.worktree/todo-<safe_id>/`。
-- 运行：`git worktree add ./.worktree/todo-<safe_id> -b doing/todo-<safe_id>`。
-- 将 `/.worktree/` 加入 `.gitignore`（如果尚未存在则追加一行 `/.worktree/`）。
+- 运行：`git worktree add ./.worktree/todo-<safe_id> -b doing/todo-<safe_id>`
+- 确保 `/.worktree/` 已加入 `.gitignore`（没有就现写一行 `/.worktree/`）
 - 确保这些目录不会被主仓库误认为子模块或未跟踪文件。
 
 ## 并行修复
@@ -92,7 +92,7 @@ Closes #<编号>"
 - 如果某个分支合并失败，保留该 worktree 和分支，不要删除，记录失败原因后跳过该 issue，继续处理下一个。
 - 所有正常任务完成后，进入汇总阶段。主代理统一分析并手动解决之前保留的冲突分支：读取冲突文件，保留各方有效改动，解决后重新运行测试并提交合并。
 - 合并完成后删除 worktree 及分支：
-  `git worktree remove ./.worktree/todo-<safe_id>`（如果 worktree 中存在未提交改动导致删除失败，可先处理改动或使用 `--force`）
+  `git worktree remove ./.worktree/todo-<safe_id>`（如果 worktree 中存在未提交改动导致删除失败，询问用户如何处理，可选项目：委托Agent自动处理异动、使用强制指令 `--force` 删除）
   `git branch -d doing/todo-<safe_id>`
 
 ## 最终验证
