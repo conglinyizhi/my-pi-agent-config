@@ -55,6 +55,7 @@ argument-hint: "可指定 issue 编号，如 23 24；默认拉取所有 agent:to
 - 对应分支：`doing/todo-<safe_id>`
 
 其中 `<safe_id>` 要求：
+
 - 优先使用 issue 编号（纯数字，如 `23`）。
 - 自定义任务使用任务简称的 kebab-case 形式（如 `fix-auth-refresh`），或使用稳定短哈希（仅小写字母和数字，长度 8）。
 - 禁止使用空格、特殊字符、大写字母或连续连字符。
@@ -97,13 +98,12 @@ Closes #<编号>"
 ## 最终验证
 
 - 回到 main 分支，根据仓库类型选择对应的全量测试与构建命令：
-
-  - **Go**：`go test ./... && go build ./...`
-  - **Node.js / TypeScript**：`npm test && npm run build`（或 `pnpm test && pnpm build`、`yarn test && yarn build`）
-  - **Rust**：`cargo test && cargo build`
-  - **Python**：`pytest` 或 `python -m unittest`（如有构建步骤则一并执行）
-  - **MoonBit**：`moon test && moon build`
-  - **其他**：检测 `Makefile`、CI 配置文件或项目 README 中声明的测试/构建命令，优先使用项目约定命令。
+  - Go：`go test ./... && go build ./...`
+  - Node.js / TypeScript：`npm test && npm run build`（或 `pnpm test && pnpm build`、`yarn test && yarn build`）
+  - Rust：`cargo test && cargo build`
+  - Python：`pytest` 或 `python -m unittest`（如有构建步骤则一并执行）
+  - MoonBit：`moon test && moon build`
+  - 其他：检测 `Makefile`、CI 配置文件或项目 README 中声明的测试/构建命令，优先使用项目约定命令。
 
 - 若无法自动推断仓库类型，要求子 agent 在提交前汇报并确认测试命令。
 - 确认无回归后再清理最后一个 worktree。
