@@ -23,7 +23,7 @@ async function execNotifyAsync(
     : execAsync(command, argsOrOptions);
   await Promise.race([
     execPromise,
-    new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+    new Promise<void>((resolve) => setTimeout(resolve, 250)),
   ]);
 }
 
