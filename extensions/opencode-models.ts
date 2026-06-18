@@ -384,6 +384,7 @@ export default async function opencodeModelsExtension(pi: ExtensionAPI) {
         return;
       }
       registry.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
+      notify(`已加载 ${models.length} 个 OpenCode 模型`, "info");
     });
   });
 
