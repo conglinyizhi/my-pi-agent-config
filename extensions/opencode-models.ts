@@ -373,13 +373,18 @@ export default async function opencodeModelsExtension(pi: ExtensionAPI) {
   const modelsPromise = discoverOpencodeModelsAsync(bin);
 
   // 在 session_start 中通过 ctx.modelRegistry 注册 provider（不依赖 pi 的活性）
-  pi.on("session_start", async (_event, ctx) => {
-    const models = await modelsPromise;
-    if (models.length === 0) {
-      ctx.ui.notify("获取 OpenCode 模型列表失败。请尝试运行 `opencode models opencode --verbose`。", "warning");
-      return;
-    }
-    ctx.modelRegistry.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
+  // 使用 .then() 异步注册，不 await modelsPromise，避免阻塞 /new 等会话创建流程
+  pi.on("session_start", (_event, ctx) => {
+    const registry = ctx.modelRegistry;
+    const notify = ctx.ui.notify.bind(ctx.ui);
+
+    modelsPromise.then((models) => {
+      if (models.length === 0) {
+        notify("获取 OpenCode 模型列表失败。请尝试运行 `opencode models opencode --verbose`。", "warning");
+        return;
+      }
+      registry.registerProvider(PROVIDER_ID, buildProviderConfig(apiKey, models));
+    });
   });
 
   pi.registerCommand("model-more", {
