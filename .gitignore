@@ -5,3 +5,5 @@ git/
 node_modules/
 .DS_Store
 mcp-cache.json
+docs/superpowers
+.worktrees/
