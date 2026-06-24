@@ -1,5 +1,5 @@
-import { parse } from "smol-toml";
 import { readFileSync } from "node:fs";
+import { parse } from "smol-toml";
 import type { InputCapability, ModelOverride, ProviderDefaults, ProvidersConfig, RawProvider } from "./types.ts";
 
 export function parseProvidersToml(raw: string): ProvidersConfig {
@@ -31,7 +31,7 @@ function normalizeProvider(raw: Record<string, unknown>): RawProvider {
     name: raw.name as string | undefined,
     baseUrl: raw.base_url as string,
     api: raw.api as RawProvider["api"],
-    models: typeof models === "string" ? models : (Array.isArray(models) ? models.map(normalizeModelOverride) : undefined),
+    models: typeof models === "string" ? models : Array.isArray(models) ? models.map(normalizeModelOverride) : undefined,
     defaults: defaults ? normalizeDefaults(defaults) : undefined,
   };
 }

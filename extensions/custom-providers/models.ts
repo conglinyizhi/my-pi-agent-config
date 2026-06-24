@@ -1,5 +1,5 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import type { InputCapability, ModelOverride, ProviderDefaults, RawProvider, ResolvedApiFormat } from "./types.ts";
+import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
@@ -24,7 +24,10 @@ const ANTHROPIC_MODELS: AnthropicMeta[] = [
 ];
 
 export function parseModelIds(models: string): string[] {
-  return models.split(",").map((s) => s.trim()).filter(Boolean);
+  return models
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export async function resolveModels(
@@ -55,11 +58,7 @@ export async function resolveModels(
   });
 }
 
-async function fetchModelIds(
-  format: ResolvedApiFormat["format"],
-  baseUrl: string,
-  apiKey: string,
-): Promise<string[]> {
+async function fetchModelIds(format: ResolvedApiFormat["format"], baseUrl: string, apiKey: string): Promise<string[]> {
   if (format === "anthropic") {
     return ANTHROPIC_MODELS.map((m) => m.id);
   }
@@ -76,11 +75,7 @@ async function fetchModelIds(
   return (data.data ?? []).map((m) => m.id).sort();
 }
 
-export function buildModelConfig(
-  id: string,
-  provider: RawProvider,
-  override?: ModelOverride,
-): Omit<ProviderModelConfig, "api"> {
+export function buildModelConfig(id: string, provider: RawProvider, override?: ModelOverride): Omit<ProviderModelConfig, "api"> {
   const defaults = provider.defaults ?? {};
   const anthropic = ANTHROPIC_MODELS.find((m) => m.id === id);
 

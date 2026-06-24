@@ -1,10 +1,5 @@
-import {
-  getAgentDir,
-  type ExtensionAPI,
-  type ProviderConfig,
-  type ProviderModelConfig,
-} from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync } from "node:fs";
+import { type ExtensionAPI, getAgentDir, type ProviderConfig, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
 import { resolveModels, toPiApi } from "./models.ts";
@@ -78,10 +73,13 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       return;
     }
 
-    const choice = await ctx.ui.select(
-      `Provider "${providerId}" needs to detect API format / fetch models.`,
-      ["Detect automatically", "Set to openai-new", "Set to openai-old", "Set to anthropic", "Skip"],
-    );
+    const choice = await ctx.ui.select(`Provider "${providerId}" needs to detect API format / fetch models.`, [
+      "Detect automatically",
+      "Set to openai-new",
+      "Set to openai-old",
+      "Set to anthropic",
+      "Skip",
+    ]);
 
     if (!choice || choice === "Skip") return;
 
@@ -124,12 +122,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
   });
 }
 
-function buildProviderConfig(
-  provider: RawProvider,
-  baseUrl: string,
-  api: ProviderModelConfig["api"],
-  models: ProviderModelConfig[],
-): ProviderConfig {
+function buildProviderConfig(provider: RawProvider, baseUrl: string, api: ProviderModelConfig["api"], models: ProviderModelConfig[]): ProviderConfig {
   return {
     name: provider.name ?? provider.id,
     baseUrl,
@@ -146,16 +139,18 @@ function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider) {
     baseUrl: provider.baseUrl,
     api: guessedApi,
     authHeader: true,
-    models: [{
-      id: PLACEHOLDER_MODEL,
-      name: "Auto-detect...",
-      api: guessedApi,
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 1,
-      maxTokens: 1,
-    }],
+    models: [
+      {
+        id: PLACEHOLDER_MODEL,
+        name: "Auto-detect...",
+        api: guessedApi,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1,
+        maxTokens: 1,
+      },
+    ],
   });
 }
 

@@ -16,7 +16,8 @@ defaults.context_window = 64000
 `;
     const result = parseProvidersToml(toml);
     assert.strictEqual(result.providers?.length, 1);
-    const p = result.providers![0];
+    const p = result.providers?.[0];
+    assert.ok(p);
     assert.strictEqual(p.id, "deepseek");
     assert.strictEqual(p.name, "DeepSeek");
     assert.strictEqual(p.baseUrl, "https://api.deepseek.com");
