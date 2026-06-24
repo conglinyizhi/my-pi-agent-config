@@ -3,7 +3,7 @@
  * 支持 Linux、Windows、macOS 等操作系统
  */
 
-import { exec, execFile } from "node:child_process";
+import { type ExecFileOptions, type ExecOptions, exec, execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -13,18 +13,9 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /** 执行异步指令，但最多等待指定毫秒数；超时即视为成功，不等命令结束 */
-async function execNotifyAsync(
-  command: string,
-  argsOrOptions?: string[] | { shell?: boolean },
-  options?: { shell?: boolean },
-): Promise<void> {
-  const execPromise = Array.isArray(argsOrOptions)
-    ? execFileAsync(command, argsOrOptions, options)
-    : execAsync(command, argsOrOptions);
-  await Promise.race([
-    execPromise,
-    new Promise<void>((resolve) => setTimeout(resolve, 250)),
-  ]);
+async function execNotifyAsync(command: string, argsOrOptions?: string[] | ExecOptions, options?: ExecFileOptions): Promise<void> {
+  const execPromise = Array.isArray(argsOrOptions) ? execFileAsync(command, argsOrOptions, options) : execAsync(command, argsOrOptions);
+  await Promise.race([execPromise, new Promise<void>((resolve) => setTimeout(resolve, 250))]);
 }
 
 /**
@@ -260,7 +251,7 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
   `;
 
   // 超时 1000ms，超时即视为成功，不等 PowerShell 结束
-  await execNotifyAsync(`powershell -Command "${psScript.replace(/\"/g, '\\"')}"`, {
+  await execNotifyAsync(`powershell -Command "${psScript.replace(/"/g, '\\"')}"`, {
     windowsHide: true,
   });
 
@@ -277,7 +268,7 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
  */
 async function playWindowsSound(soundFile: string): Promise<void> {
   const playScript = `
-    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '\"')}"
+    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '"')}"
     $player.PlaySync()
   `;
 

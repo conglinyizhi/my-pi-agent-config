@@ -12,6 +12,7 @@
     "strict": true,
     "sourceMap": true,
     "types": ["node"],
+    "skipLibCheck": true,
     "noEmit": true
   },
   "exclude": ["node_modules", "**/node_modules/*"]
