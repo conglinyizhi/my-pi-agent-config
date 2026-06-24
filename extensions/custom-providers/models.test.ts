@@ -16,7 +16,7 @@ describe("models", () => {
       defaults: { contextWindow: 64000, maxTokens: 8192 },
       models: [{ id: "m1", name: "Model One", maxTokens: 4096 }],
     };
-    const config = buildModelConfig("m1", provider, provider.models[0]);
+    const config = buildModelConfig("m1", provider, (provider.models as { id: string; name: string; maxTokens: number }[])[0]);
     assert.strictEqual(config.name, "Model One");
     assert.strictEqual(config.contextWindow, 64000);
     assert.strictEqual(config.maxTokens, 4096);

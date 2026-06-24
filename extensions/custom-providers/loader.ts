@@ -13,7 +13,7 @@ export function loadProvidersConfig(configPath: string): { providers: RawProvide
   try {
     const raw = readFileSync(configPath, "utf8");
     const { providers } = parseProvidersToml(raw);
-    return { providers, raw };
+    return { providers: providers ?? [], raw };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
