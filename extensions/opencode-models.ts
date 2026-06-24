@@ -8,40 +8,36 @@
  * 或直接运行 /model-more 打开交互式 TUI 选择器。
  */
 
+import { exec, execSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import {
-  getAgentDir,
-  SettingsManager,
   type ExtensionAPI,
   type ExtensionContext,
+  getAgentDir,
   type ProviderConfig,
   type ProviderModelConfig,
+  SettingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
+  type Component,
   Container,
+  type Focusable,
   fuzzyFilter,
   getKeybindings,
   Input,
   Key,
   matchesKey,
+  type SelectItem,
   SelectList,
   Text,
   truncateToWidth,
-  type Component,
-  type Focusable,
-  type SelectItem,
 } from "@earendil-works/pi-tui";
-import { exec, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { loadAuthJsonPath } from "../lib/auth.ts";
 
 const HOME = homedir();
-const OPENCODE_BIN_CANDIDATES = [
-  process.env.OPENCODE_BIN,
-  `${HOME}/.opencode/bin/opencode`,
-  "/usr/local/bin/opencode",
-  "/usr/bin/opencode",
-];
+const OPENCODE_BIN_CANDIDATES = [process.env.OPENCODE_BIN, `${HOME}/.opencode/bin/opencode`, "/usr/local/bin/opencode", "/usr/bin/opencode"];
 const AUTH_PATH = `${HOME}/.local/share/opencode/auth.json`;
 const PROVIDER_ID = "opencode";
 
@@ -101,13 +97,8 @@ function findOpencodeBin(): string | undefined {
 }
 
 function readOpencodeKey(): string | undefined {
-  try {
-    const raw = readFileSync(AUTH_PATH, "utf8");
-    const auth = JSON.parse(raw) as Record<string, { type?: string; key?: string }>;
-    return auth.opencode?.key;
-  } catch {
-    return undefined;
-  }
+  const auth = loadAuthJsonPath(AUTH_PATH);
+  return auth.opencode?.key;
 }
 
 function parseOpencodeModels(output: string): OpencodeModel[] {
@@ -229,9 +220,7 @@ class SearchableModelSelector implements Component, Focusable {
 
     this.container = new Container();
     this.container.addChild(new Text(theme.fg("accent", theme.bold("选择 OpenCode 模型")), 1, 0));
-    this.container.addChild(
-      new Text(theme.fg("dim", "输入文字过滤模型 • ↑↓ 移动 • 回车确认 • Esc 取消"), 1, 0),
-    );
+    this.container.addChild(new Text(theme.fg("dim", "输入文字过滤模型 • ↑↓ 移动 • 回车确认 • Esc 取消"), 1, 0));
   }
 
   private updateFilter() {
@@ -239,9 +228,7 @@ class SearchableModelSelector implements Component, Focusable {
     if (!query) {
       this.filteredItems = this.allItems;
     } else {
-      this.filteredItems = fuzzyFilter(this.allItems, query, (item) =>
-        `${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase(),
-      );
+      this.filteredItems = fuzzyFilter(this.allItems, query, (item) => `${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase());
     }
     this.selectList = buildSelectList(this.filteredItems, this.theme);
     this.selectList.onSelect = (item) => this.onDone(item.value);
@@ -299,7 +286,7 @@ class SearchableModelSelector implements Component, Focusable {
   }
 }
 
-async function confirmSaveDefault(  ctx: ExtensionContext,  modelId: string,  modelName: string): Promise<"yes" | "no" | "cancel"> {
+async function confirmSaveDefault(ctx: ExtensionContext, modelId: string, modelName: string): Promise<"yes" | "no" | "cancel"> {
   const title = `已选择模型：opencode:${modelId}（${modelName}）\n是否将其设为默认模型并写入 settings.json？`;
   const options = ["是 - 保存为默认模型并切换", "否 - 仅切换当前会话", "取消 - 放弃选择"];
   const selected = await ctx.ui.select(title, options);

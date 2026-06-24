@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { type ExtensionAPI, getAgentDir, type ProviderConfig, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
 import { resolveModels, toPiApi } from "./models.ts";
@@ -7,7 +8,6 @@ import type { RawProvider, ResolvedApiFormat } from "./types.ts";
 
 const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
-const AUTH_PATH = `${getAgentDir()}/auth.json`;
 
 export default async function customProvidersExtension(pi: ExtensionAPI) {
   let config: { providers: RawProvider[]; raw: string } | null = null;
@@ -152,19 +152,6 @@ function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider) {
       },
     ],
   });
-}
-
-function getApiKey(providerId: string): string | undefined {
-  try {
-    const raw = readFileSync(AUTH_PATH, "utf8");
-    const auth = JSON.parse(raw) as Record<string, { type?: string; key?: string }>;
-    const entry = auth[providerId];
-    if (entry?.type === "api_key" && entry.key) return entry.key;
-    if (entry?.key) return entry.key;
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 async function lockApiFormat(provider: RawProvider, format: ResolvedApiFormat["format"], rawToml: string): Promise<void> {
