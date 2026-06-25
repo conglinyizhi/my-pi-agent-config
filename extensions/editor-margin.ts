@@ -92,7 +92,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       // 从设置中读取 marginSize，默认 2
-      const marginSize = (ctx.settings as any)?.editorMargin ?? 2;
+      const marginSize = (ctx.settings as any)?.editorMargin ?? 0;
       return new BorderedEditor(tui, theme, keybindings, ctx.ui.theme, marginSize);
     });
   });
