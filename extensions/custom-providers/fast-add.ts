@@ -343,7 +343,7 @@ async function applyAndRegister(
       configData.providers.push({
         id: providerId,
         base_url: info.url,
-        api: "auto",
+        api: "openai-new",
         models: info.models.join(", "),
       });
     }
@@ -368,33 +368,31 @@ async function applyAndRegister(
       writeFileSync(AUTH_PATH, JSON.stringify(authData, null, 2), "utf8");
     }
 
-    // ── 注册到 Pi（占位模式，懒激活）──
-    const guessedApi: ProviderModelConfig["api"] = "openai-responses";
+    // ── 注册到 Pi（直接用用户提供的模型名）──
+    const resolvedApi: ProviderModelConfig["api"] = "openai-responses";
     pi.registerProvider(providerId, {
       name: providerId,
       baseUrl: info.url,
-      api: guessedApi,
+      api: resolvedApi,
       ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
-      models: [
-        {
-          id: PLACEHOLDER_MODEL,
-          name: "Auto-detect...",
-          api: guessedApi,
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 1,
-          maxTokens: 1,
-        },
-      ],
+      models: info.models.map(modelId => ({
+        id: modelId,
+        name: modelId,
+        api: resolvedApi,
+        reasoning: false,
+        input: ["text"] as const,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128000,
+        maxTokens: 4096,
+      })),
     });
 
     return {
       success: true,
       message: isMerge
         ? `供应商 "${providerId}" 已更新，新增模型: ${info.models.join("、")}`
-        : `供应商 "${providerId}" 已添加（${info.models.length} 个模型），首次使用时自动检测 API 格式`,
+        : `供应商 "${providerId}" 已添加（${info.models.length} 个模型），默认使用 OpenAI 兼容格式，可在 providers.toml 中修改`,
     };
   } catch (err) {
     return {
