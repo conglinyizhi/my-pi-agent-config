@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.80.2",
-  "defaultProvider": "opencode",
-  "defaultModel": "deepseek-v4-flash-free",
+  "defaultProvider": "tokenflux",
+  "defaultModel": "deepseek-v4-flash",
   "defaultThinkingLevel": "medium",
   "npmCommand": [
     "pnpm",
