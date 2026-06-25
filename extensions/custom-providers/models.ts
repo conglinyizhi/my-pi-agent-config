@@ -97,6 +97,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
     },
     contextWindow,
     maxTokens,
+    compat: { supportsDeveloperRole: false },
   };
 }
 
