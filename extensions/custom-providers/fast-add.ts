@@ -374,6 +374,7 @@ async function applyAndRegister(
       name: providerId,
       baseUrl: info.url,
       api: guessedApi,
+      ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
       models: [
         {
