@@ -19,6 +19,7 @@ import {
   type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
+import type { ModelOverride, InputCapability } from "./types.ts";
 
 // ─── 类型 ───────────────────────────────────────────
 
@@ -28,6 +29,15 @@ export interface FastAddInfo {
   providerName: string;
   models: string[];
   apiKey?: string;
+  modelOverrides?: ModelOverride[];
+  defaults?: {
+    contextWindow?: number;
+    maxTokens?: number;
+    costInput?: number;
+    costOutput?: number;
+    reasoning?: boolean;
+    input?: InputCapability[];
+  };
 }
 
 export type FastAddAction =
@@ -49,7 +59,6 @@ interface ExistingProvider {
 const AGENT_DIR = getAgentDir();
 const CONFIG_PATH = `${AGENT_DIR}/providers.toml`;
 const AUTH_PATH = `${AGENT_DIR}/auth.json`;
-const PLACEHOLDER_MODEL = "auto-detect";
 
 // ─── 解析引擎 ───────────────────────────────────────
 
@@ -295,6 +304,47 @@ function formatModels(models: unknown): string {
   return String(models ?? "（无）");
 }
 
+
+// ─── 模型参数编辑器 ──────────────────────────────────
+
+/** 询问用户是否要编辑模型参数，返回 overrides 和 defaults */
+async function showModelEditor(
+  ctx: ExtensionCommandContext,
+  info: FastAddInfo,
+): Promise<{ modelOverrides: ModelOverride[]; defaults: FastAddInfo["defaults"] }> {
+  const choice = await ctx.ui.select(
+    `配置模型参数？共有 ${info.models.length} 个模型`,
+    ["快速配置通用参数", "跳过，使用默认值"],
+  );
+  if (!choice || choice.startsWith("跳过")) {
+    return { modelOverrides: [], defaults: undefined };
+  }
+
+  // 通用参数配置（应用到所有模型）
+  const ctxStr = await ctx.ui.input("上下文窗口（如 128000，1M = 1000000）", "128000");
+  const maxTokStr = await ctx.ui.input("最大输出 Token", "4096");
+  const costInStr = await ctx.ui.input("输入价格（元/百万token，0 表示免费）", "0");
+  const costOutStr = await ctx.ui.input("输出价格（元/百万token，0 表示免费）", "0");
+  const reasoningChoice = await ctx.ui.select("推理能力？", ["不支持", "支持"]);
+  const visionChoice = await ctx.ui.select("视觉能力？", ["不支持", "支持"]);
+
+  const defaults: FastAddInfo["defaults"] = {};
+  if (ctxStr) defaults.contextWindow = parseInt(ctxStr, 10) || undefined;
+  if (maxTokStr) defaults.maxTokens = parseInt(maxTokStr, 10) || undefined;
+  if (costInStr) defaults.costInput = parseFloat(costInStr) || undefined;
+  if (costOutStr) defaults.costOutput = parseFloat(costOutStr) || undefined;
+  if (reasoningChoice === "支持") defaults.reasoning = true;
+  if (visionChoice === "支持") defaults.input = ["text", "image"];
+
+  // 构建模型 overrides（通用参数应用到每个模型）
+  const modelOverrides: ModelOverride[] = info.models.map(id => ({
+    id,
+    ...defaults,
+  }));
+
+  return { modelOverrides, defaults };
+}
+
 // ─── 写入执行 ───────────────────────────────────────
 
 async function applyAndRegister(
@@ -344,12 +394,16 @@ async function applyAndRegister(
         }
       }
     } else {
-      configData.providers.push({
+      const newEntry: Record<string, unknown> = {
         id: providerId,
         base_url: info.url,
         api: "openai-new",
-        models: info.models.join(", "),
-      });
+        models: info.modelOverrides ?? info.models.map(id => ({ id })),
+      };
+      if (info.defaults && Object.keys(info.defaults).length > 0) {
+        newEntry.defaults = info.defaults;
+      }
+      configData.providers.push(newEntry);
     }
 
     writeFileSync(CONFIG_PATH, stringify(configData), "utf8");
@@ -374,21 +428,29 @@ async function applyAndRegister(
 
     // ── 注册到 Pi（直接用用户提供的模型名）──
     const resolvedApi: ProviderModelConfig["api"] = "openai-responses";
+    const modelsToRegister = info.modelOverrides && info.modelOverrides.length > 0
+      ? info.modelOverrides
+      : info.models.map(id => ({ id }));
     pi.registerProvider(providerId, {
       name: providerId,
       baseUrl: info.url,
       api: resolvedApi,
       ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
-      models: info.models.map(modelId => ({
-        id: modelId,
-        name: modelId,
+      models: modelsToRegister.map(m => ({
+        id: m.id,
+        name: m.name ?? m.id,
         api: resolvedApi,
-        reasoning: false,
-        input: ["text"] as const,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128000,
-        maxTokens: 4096,
+        reasoning: m.reasoning ?? false,
+        input: m.input ?? ["text"] as const,
+        cost: {
+          input: m.costInput ?? 0,
+          output: m.costOutput ?? 0,
+          cacheRead: m.costCacheRead ?? 0,
+          cacheWrite: m.costCacheWrite ?? 0,
+        },
+        contextWindow: m.contextWindow ?? 128000,
+        maxTokens: m.maxTokens ?? 4096,
       })),
     });
 
@@ -428,14 +490,21 @@ export async function fastAddHandler(
     ? findOverlap(info.providerId, existing.providers)
     : undefined;
 
-  // 3. TUI 确认
+  // 3. 模型参数编辑（可选）
+  const { modelOverrides, defaults } = await showModelEditor(ctx, info);
+  if (modelOverrides.length > 0) {
+    info.modelOverrides = modelOverrides;
+    info.defaults = defaults;
+  }
+
+  // 4. TUI 确认
   const action = await showConfirmationOrMerge(ctx, info, overlap);
   if (action.kind === "cancel") {
     ctx.ui.notify("已取消", "info");
     return;
   }
 
-  // 4. 应用
+  // 5. 应用
   const applyResult = await applyAndRegister(pi, info, action);
   if (applyResult.success) {
     ctx.ui.notify(`✅ ${applyResult.message}`, "info");
