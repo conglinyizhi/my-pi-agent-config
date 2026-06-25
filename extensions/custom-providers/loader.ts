@@ -4,7 +4,7 @@ import type { InputCapability, ModelOverride, ProviderDefaults, ProvidersConfig,
 
 export function parseProvidersToml(raw: string): ProvidersConfig {
   const parsed = parse(raw) as { providers?: Array<Record<string, unknown>> };
-  const providers = (parsed.providers ?? []).map(normalizeProvider);
+  const providers = (parsed.providers || []).map(normalizeProvider);
   validateProviders(providers);
   return { providers };
 }
@@ -13,7 +13,7 @@ export function loadProvidersConfig(configPath: string): { providers: RawProvide
   try {
     const raw = readFileSync(configPath, "utf8");
     const { providers } = parseProvidersToml(raw);
-    return { providers: providers ?? [], raw };
+    return { providers: providers || [], raw };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return null;

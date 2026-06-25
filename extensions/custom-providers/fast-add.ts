@@ -190,7 +190,7 @@ function loadExistingToml(): { providers: ExistingProvider[]; raw: string } | nu
       providers: parsed.providers.map(p => ({
         id: p.id as string,
         name: p.name as string | undefined,
-        baseUrl: (p.base_url as string) ?? "",
+        baseUrl: (p.base_url as string) || "",
         api: p.api as string | undefined,
         models: p.models,
       })),
@@ -249,7 +249,7 @@ async function showConfirmationOrMerge(
       const existingKey = existingAuth[overlap.id] as { key?: string } | undefined;
       let keyAction: "replace" | "keep" = "keep";
 
-      if (info.apiKey && existingKey?.key) {
+      if (info.apiKey && existingKey && existingKey.key) {
         const keyChoice = await ctx.ui.select(
           `API Key 冲突：\n现有 Key: ${maskKey(existingKey.key)}\n新   Key: ${maskKey(info.apiKey)}\n`,
           ["替换为新的 Key", "保留现有的 Key"],
@@ -300,8 +300,8 @@ async function showConfirmationOrMerge(
 
 function formatModels(models: unknown): string {
   if (typeof models === "string") return models;
-  if (Array.isArray(models)) return models.map(m => (typeof m === "object" && m ? (m as any).id ?? JSON.stringify(m) : String(m))).join(", ");
-  return String(models ?? "（无）");
+  if (Array.isArray(models)) return models.map(m => (typeof m === "object" && m ? (m as any).id || JSON.stringify(m) : String(m))).join(", ");
+  return String(models || "（无）");
 }
 
 
@@ -371,9 +371,9 @@ async function showModelEditor(
     "openai-new (OpenAI Responses)",
     "anthropic (Anthropic Messages)",
   ]);
-  const chosenApi: string | undefined = apiChoice?.startsWith("openai-old") ? "openai-old"
-    : apiChoice?.startsWith("openai-new") ? "openai-new"
-    : apiChoice?.startsWith("anthropic") ? "anthropic"
+  const chosenApi: string | undefined = apiChoice && apiChoice.startsWith("openai-old") ? "openai-old"
+    : apiChoice && apiChoice.startsWith("openai-new") ? "openai-new"
+    : apiChoice && apiChoice.startsWith("anthropic") ? "anthropic"
     : undefined;
 
   const ctxStr = await ctx.ui.input("上下文窗口（如 128000、1M、256K）", "128000");
@@ -384,7 +384,7 @@ async function showModelEditor(
   const visionChoice = await ctx.ui.select("视觉能力？", ["不支持", "支持"]);
 
   const defaults: FastAddInfo["defaults"] = {};
-  if (ctxStr) defaults.contextWindow = parseSize(ctxStr) ?? parseInt(ctxStr, 10) || undefined;
+  if (ctxStr) defaults.contextWindow = parseSize(ctxStr) || parseInt(ctxStr, 10) || undefined;
   if (maxTokStr) defaults.maxTokens = parseInt(maxTokStr, 10) || undefined;
   if (costInStr) defaults.costInput = parseFloat(costInStr) || undefined;
   if (costOutStr) defaults.costOutput = parseFloat(costOutStr) || undefined;
@@ -455,7 +455,7 @@ async function applyAndRegister(
       const newEntry: Record<string, unknown> = {
         id: providerId,
         base_url: info.url,
-        api: (info as any)._chosenApi ?? "openai-old",
+        api: (info as any)._chosenApi || "openai-old",
         models: info.modelOverrides && info.modelOverrides.length > 0
           ? info.modelOverrides.map(m => tomlModel(m))
           : info.models.map(id => ({ id })),
@@ -499,18 +499,18 @@ async function applyAndRegister(
       authHeader: true,
       models: modelsToRegister.map(m => ({
         id: m.id,
-        name: m.name ?? m.id,
+        name: m.name || m.id,
         api: resolvedApi,
-        reasoning: m.reasoning ?? false,
-        input: m.input ?? ["text"] as const,
+        reasoning: m.reasoning || false,
+        input: m.input || ["text"] as const,
         cost: {
-          input: m.costInput ?? 0,
-          output: m.costOutput ?? 0,
-          cacheRead: m.costCacheRead ?? 0,
-          cacheWrite: m.costCacheWrite ?? 0,
+          input: m.costInput || 0,
+          output: m.costOutput || 0,
+          cacheRead: m.costCacheRead || 0,
+          cacheWrite: m.costCacheWrite || 0,
         },
-        contextWindow: m.contextWindow ?? 128000,
-        maxTokens: m.maxTokens ?? 4096,
+        contextWindow: m.contextWindow || 128000,
+        maxTokens: m.maxTokens || 4096,
       })),
     });
 
@@ -546,7 +546,7 @@ export async function fastAddHandler(
 
   // 2. 检测重叠
   const existing = loadExistingToml();
-  const overlap = existing?.providers
+  const overlap = existing && existing.providers
     ? findOverlap(info.providerId, existing.providers)
     : undefined;
 

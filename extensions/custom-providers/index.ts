@@ -143,7 +143,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
 
 function buildProviderConfig(provider: RawProvider, baseUrl: string, api: ProviderModelConfig["api"], models: ProviderModelConfig[]): ProviderConfig {
   return {
-    name: provider.name ?? provider.id,
+    name: provider.name || provider.id,
     baseUrl,
     api,
     models,
@@ -154,7 +154,7 @@ function buildProviderConfig(provider: RawProvider, baseUrl: string, api: Provid
 function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider) {
   const guessedApi: ProviderModelConfig["api"] = provider.api === "anthropic" ? "anthropic-messages" : "openai-responses";
   pi.registerProvider(provider.id, {
-    name: provider.name ?? provider.id,
+    name: provider.name || provider.id,
     baseUrl: provider.baseUrl,
     api: guessedApi,
     authHeader: true,

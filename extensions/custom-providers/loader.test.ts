@@ -15,15 +15,15 @@ models = "deepseek-chat"
 defaults.context_window = 64000
 `;
     const result = parseProvidersToml(toml);
-    assert.strictEqual(result.providers?.length, 1);
-    const p = result.providers?.[0];
+    assert.strictEqual(result.providers && result.providers.length, 1);
+    const p = result.providers && result.providers[0];
     assert.ok(p);
     assert.strictEqual(p.id, "deepseek");
     assert.strictEqual(p.name, "DeepSeek");
     assert.strictEqual(p.baseUrl, "https://api.deepseek.com");
     assert.strictEqual(p.api, "openai-old");
     assert.strictEqual(p.models, "deepseek-chat");
-    assert.strictEqual(p.defaults?.contextWindow, 64000);
+    assert.strictEqual(p.defaults && p.defaults.contextWindow, 64000);
   });
 
   it("rejects provider without id", () => {

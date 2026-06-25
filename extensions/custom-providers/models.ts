@@ -72,28 +72,28 @@ async function fetchModelIds(format: ResolvedApiFormat["format"], baseUrl: strin
     throw new Error(`Failed to fetch models from ${url}: ${res.status} ${res.statusText}`);
   }
   const data = (await res.json()) as { data?: Array<{ id: string }> };
-  return (data.data ?? []).map((m) => m.id).sort();
+  return (data.data || []).map((m) => m.id).sort();
 }
 
 export function buildModelConfig(id: string, provider: RawProvider, override?: ModelOverride): Omit<ProviderModelConfig, "api"> {
-  const defaults = provider.defaults ?? {};
+  const defaults = provider.defaults || {};
   const anthropic = ANTHROPIC_MODELS.find((m) => m.id === id);
 
-  const contextWindow = override?.contextWindow ?? anthropic?.contextWindow ?? defaults.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const maxTokens = override?.maxTokens ?? anthropic?.maxTokens ?? defaults.maxTokens ?? DEFAULT_MAX_TOKENS;
-  const input = override?.input ?? anthropic?.input ?? defaults.input ?? ["text"];
-  const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
+  const contextWindow = override && override.contextWindow || anthropic && anthropic.contextWindow || defaults.contextWindow || DEFAULT_CONTEXT_WINDOW;
+  const maxTokens = override && override.maxTokens || anthropic && anthropic.maxTokens || defaults.maxTokens || DEFAULT_MAX_TOKENS;
+  const input = override && override.input || anthropic && anthropic.input || defaults.input || ["text"];
+  const reasoning = override && override.reasoning || anthropic && anthropic.reasoning || defaults.reasoning || false;
 
   return {
     id,
-    name: override?.name ?? anthropic?.name ?? id,
+    name: override && override.name || anthropic && anthropic.name || id,
     reasoning,
     input,
     cost: {
-      input: override?.costInput ?? defaults.costInput ?? 0,
-      output: override?.costOutput ?? defaults.costOutput ?? 0,
-      cacheRead: override?.costCacheRead ?? defaults.costCacheRead ?? 0,
-      cacheWrite: override?.costCacheWrite ?? defaults.costCacheWrite ?? 0,
+      input: override && override.costInput || defaults.costInput || 0,
+      output: override && override.costOutput || defaults.costOutput || 0,
+      cacheRead: override && override.costCacheRead || defaults.costCacheRead || 0,
+      cacheWrite: override && override.costCacheWrite || defaults.costCacheWrite || 0,
     },
     contextWindow,
     maxTokens,
