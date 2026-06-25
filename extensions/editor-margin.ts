@@ -34,8 +34,6 @@ class BorderedEditor extends CustomEditor {
     // 获取父类渲染的全部行（含它自己的边框横线）
     const parentLines = super.render(innerWidth);
 
-    // 用主题色给 margin 区域上背景色
-    const marginBg = (s: string) => this.fullTheme.bg("selectedBg", s);
     // 边框颜色
     const borderFg = (s: string) => this.fullTheme.fg("border", s);
 
@@ -60,28 +58,28 @@ class BorderedEditor extends CustomEditor {
       if (i === 0) {
         // 替换父类顶部横线为自己的 ╭─╮
         result.push(
-          marginBg(" ".repeat(m)) +
+          " ".repeat(m) +
           borderFg("╭" + "─".repeat(innerWidth) + "╮") +
-          marginBg(" ".repeat(m))
+          " ".repeat(m)
         );
       } else if (i === bottomBorderIdx) {
         // 替换父类底部横线为自己的 ╰─╯
         result.push(
-          marginBg(" ".repeat(m)) +
+          " ".repeat(m) +
           borderFg("╰" + "─".repeat(innerWidth) + "╯") +
-          marginBg(" ".repeat(m))
+          " ".repeat(m)
         );
       } else {
         // 内容和自动补全行：加侧边 │ 和 margin
         const content = truncateToWidth(line, innerWidth);
         const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
         result.push(
-          marginBg(" ".repeat(m)) +
+          " ".repeat(m) +
           borderFg("│") +
           content +
           padding +
           borderFg("│") +
-          marginBg(" ".repeat(m))
+          " ".repeat(m)
         );
       }
     }
