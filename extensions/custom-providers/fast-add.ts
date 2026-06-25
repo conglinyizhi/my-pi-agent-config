@@ -308,6 +308,51 @@ function formatModels(models: unknown): string {
 // ─── 模型参数编辑器 ──────────────────────────────────
 
 /** 询问用户是否要编辑模型参数，返回 overrides 和 defaults */
+
+/** 解析容量简写为数字，如 "1M" → 1000000, "256K" → 256000, "512k" → 512000 */
+
+/** 将驼峰 ModelOverride 转为 TOML 蛇形对象 */
+function tomlModel(m: ModelOverride): Record<string, unknown> {
+  const result: Record<string, unknown> = { id: m.id };
+  if (m.name !== undefined) result.name = m.name;
+  if (m.contextWindow !== undefined) result.context_window = m.contextWindow;
+  if (m.maxTokens !== undefined) result.max_tokens = m.maxTokens;
+  if (m.costInput !== undefined) result.cost_input = m.costInput;
+  if (m.costOutput !== undefined) result.cost_output = m.costOutput;
+  if (m.costCacheRead !== undefined) result.cost_cache_read = m.costCacheRead;
+  if (m.costCacheWrite !== undefined) result.cost_cache_write = m.costCacheWrite;
+  if (m.reasoning !== undefined) result.reasoning = m.reasoning;
+  if (m.input !== undefined) result.input = m.input;
+  return result;
+}
+
+/** 将驼峰 defaults 转为 TOML 蛇形对象 */
+function tomlDefaults(d: NonNullable<FastAddInfo["defaults"]>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (d.contextWindow !== undefined) result.context_window = d.contextWindow;
+  if (d.maxTokens !== undefined) result.max_tokens = d.maxTokens;
+  if (d.costInput !== undefined) result.cost_input = d.costInput;
+  if (d.costOutput !== undefined) result.cost_output = d.costOutput;
+  if (d.costCacheRead !== undefined) result.cost_cache_read = d.costCacheRead;
+  if (d.costCacheWrite !== undefined) result.cost_cache_write = d.costCacheWrite;
+  if (d.reasoning !== undefined) result.reasoning = d.reasoning;
+  if (d.input !== undefined) result.input = d.input;
+  return result;
+}
+
+function parseSize(s: string): number | undefined {
+  const match = s.trim().match(/^(\d+(?:\.\d+)?)\s*([kKmMgG]?)$/);
+  if (!match) return undefined;
+  const num = parseFloat(match[1]);
+  const unit = match[2].toLowerCase();
+  switch (unit) {
+    case "k": return Math.round(num * 1000);
+    case "m": return Math.round(num * 1000_000);
+    case "g": return Math.round(num * 1000_000_000);
+    default: return Math.round(num);
+  }
+}
+
 async function showModelEditor(
   ctx: ExtensionCommandContext,
   info: FastAddInfo,
@@ -321,7 +366,17 @@ async function showModelEditor(
   }
 
   // 通用参数配置（应用到所有模型）
-  const ctxStr = await ctx.ui.input("上下文窗口（如 128000，1M = 1000000）", "128000");
+  const apiChoice = await ctx.ui.select("API 格式？", [
+    "openai-old (Chat Completions，最通用)",
+    "openai-new (OpenAI Responses)",
+    "anthropic (Anthropic Messages)",
+  ]);
+  const chosenApi: string | undefined = apiChoice?.startsWith("openai-old") ? "openai-old"
+    : apiChoice?.startsWith("openai-new") ? "openai-new"
+    : apiChoice?.startsWith("anthropic") ? "anthropic"
+    : undefined;
+
+  const ctxStr = await ctx.ui.input("上下文窗口（如 128000、1M、256K）", "128000");
   const maxTokStr = await ctx.ui.input("最大输出 Token", "4096");
   const costInStr = await ctx.ui.input("输入价格（元/百万token，0 表示免费）", "0");
   const costOutStr = await ctx.ui.input("输出价格（元/百万token，0 表示免费）", "0");
@@ -329,7 +384,7 @@ async function showModelEditor(
   const visionChoice = await ctx.ui.select("视觉能力？", ["不支持", "支持"]);
 
   const defaults: FastAddInfo["defaults"] = {};
-  if (ctxStr) defaults.contextWindow = parseInt(ctxStr, 10) || undefined;
+  if (ctxStr) defaults.contextWindow = parseSize(ctxStr) ?? parseInt(ctxStr, 10) || undefined;
   if (maxTokStr) defaults.maxTokens = parseInt(maxTokStr, 10) || undefined;
   if (costInStr) defaults.costInput = parseFloat(costInStr) || undefined;
   if (costOutStr) defaults.costOutput = parseFloat(costOutStr) || undefined;
@@ -341,6 +396,9 @@ async function showModelEditor(
     id,
     ...defaults,
   }));
+
+  // 把用户选择的 API 格式带回
+  (info as any)._chosenApi = chosenApi;
 
   return { modelOverrides, defaults };
 }
@@ -397,11 +455,13 @@ async function applyAndRegister(
       const newEntry: Record<string, unknown> = {
         id: providerId,
         base_url: info.url,
-        api: "openai-new",
-        models: info.modelOverrides ?? info.models.map(id => ({ id })),
+        api: (info as any)._chosenApi ?? "openai-old",
+        models: info.modelOverrides && info.modelOverrides.length > 0
+          ? info.modelOverrides.map(m => tomlModel(m))
+          : info.models.map(id => ({ id })),
       };
       if (info.defaults && Object.keys(info.defaults).length > 0) {
-        newEntry.defaults = info.defaults;
+        newEntry.defaults = tomlDefaults(info.defaults);
       }
       configData.providers.push(newEntry);
     }
