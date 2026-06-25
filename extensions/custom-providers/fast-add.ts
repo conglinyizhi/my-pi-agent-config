@@ -338,6 +338,10 @@ async function applyAndRegister(
             existing.models = newModels.join(", ");
           }
         }
+        // 修复旧版本写入的 api = "auto"
+        if (!existing.api || existing.api === "auto") {
+          existing.api = "openai-new";
+        }
       }
     } else {
       configData.providers.push({
