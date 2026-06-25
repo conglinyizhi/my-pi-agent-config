@@ -60,13 +60,13 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       const format = provider.api as ResolvedApiFormat["format"];
       try {
         const models = await resolveModels(provider, format, provider.baseUrl, apiKey);
-        pi.registerProvider(provider.id, buildProviderConfig(provider, provider.baseUrl, toPiApi(format), models));
+        pi.registerProvider(provider.id, buildProviderConfig(provider, provider.baseUrl, toPiApi(format), models, apiKey));
       } catch (err) {
         console.error(`[custom-providers] Failed to register ${provider.id}:`, err);
       }
     } else {
       pending.set(provider.id, provider);
-      registerPlaceholder(pi, provider);
+      registerPlaceholder(pi, provider, apiKey);
     }
   }
 
@@ -128,7 +128,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`Fetching models for "${providerId}"...`, "info");
       const models = await resolveModels(provider, resolved.format, resolved.baseUrl, apiKey);
       pi.unregisterProvider(providerId);
-      pi.registerProvider(providerId, buildProviderConfig(provider, resolved.baseUrl, toPiApi(resolved.format), models));
+      pi.registerProvider(providerId, buildProviderConfig(provider, resolved.baseUrl, toPiApi(resolved.format), models, apiKey));
 
       if (provider.api === "auto") {
         await lockApiFormat(provider, resolved.format, raw);
@@ -141,22 +141,24 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
   });
 }
 
-function buildProviderConfig(provider: RawProvider, baseUrl: string, api: ProviderModelConfig["api"], models: ProviderModelConfig[]): ProviderConfig {
+function buildProviderConfig(provider: RawProvider, baseUrl: string, api: ProviderModelConfig["api"], models: ProviderModelConfig[], apiKey: string): ProviderConfig {
   return {
     name: provider.name || provider.id,
     baseUrl,
     api,
+    apiKey,
     models,
     authHeader: true,
   };
 }
 
-function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider) {
+function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider, apiKey: string) {
   const guessedApi: ProviderModelConfig["api"] = provider.api === "anthropic" ? "anthropic-messages" : "openai-responses";
   pi.registerProvider(provider.id, {
     name: provider.name || provider.id,
     baseUrl: provider.baseUrl,
     api: guessedApi,
+    apiKey,
     authHeader: true,
     models: [
       {
@@ -172,7 +174,6 @@ function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider) {
     ],
   });
 }
-
 async function lockApiFormat(provider: RawProvider, format: ResolvedApiFormat["format"], rawToml: string): Promise<void> {
   const apiValue = format;
   const lines = rawToml.split("\n");
