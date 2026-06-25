@@ -11,6 +11,24 @@ const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
 export default async function customProvidersExtension(pi: ExtensionAPI) {
+  // /provider 命令必须始终注册，不能因 providers.toml 不存在而被跳过
+  pi.registerCommand("provider", {
+    description: "管理自定义供应商。子命令: fast-add <URL>;<模型>[;<Key>]",
+    handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      if (trimmed.startsWith("fast-add")) {
+        const input = trimmed.slice("fast-add".length).trim();
+        if (!input) {
+          ctx.ui.notify("用法: /provider fast-add <URL>;<模型名>[;<API Key>]", "info");
+          return;
+        }
+        await fastAddHandler(input, ctx, pi);
+      } else {
+        ctx.ui.notify("未知子命令。支持: fast-add", "info");
+      }
+    },
+  });
+
   let config: { providers: RawProvider[]; raw: string } | null = null;
   try {
     config = loadProvidersConfig(CONFIG_PATH);
@@ -51,24 +69,6 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       registerPlaceholder(pi, provider);
     }
   }
-
-  // 注册 /provider 命令（fast-add 子命令）
-  pi.registerCommand("provider", {
-    description: "管理自定义供应商。子命令: fast-add <URL>;<模型>[;<Key>]",
-    handler: async (args, ctx) => {
-      const trimmed = args.trim();
-      if (trimmed.startsWith("fast-add")) {
-        const input = trimmed.slice("fast-add".length).trim();
-        if (!input) {
-          ctx.ui.notify("用法: /provider fast-add <URL>;<模型名>[;<API Key>]", "info");
-          return;
-        }
-        await fastAddHandler(input, ctx, pi);
-      } else {
-        ctx.ui.notify("未知子命令。支持: fast-add", "info");
-      }
-    },
-  });
 
   pi.on("model_select", async (event, ctx) => {
     const modelId = event.model.id;
