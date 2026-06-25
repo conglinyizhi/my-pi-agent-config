@@ -9,8 +9,7 @@
 // @require      https://cdn.jsdelivr.net/npm/jquery@4.0/dist/jquery.slim.min.js
 // ==/UserScript==
 
-(function () {
-  "use strict";
+(() => {
 
   // ========== CSS 样式常量 ==========
   const CSS_STYLES = {
@@ -102,10 +101,7 @@
   // ========== 工具函数 ==========
 
   function isDarkMode() {
-    return (
-      window.matchMedia &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
-    );
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
   }
 
   function showElementBorder(element, duration = 1000) {
@@ -197,7 +193,7 @@
   function isToolElement(element) {
     let current = element;
     while (current && current !== document.body) {
-      if (current.getAttribute && current.getAttribute("data-el-locator")) return true;
+      if (current.getAttribute?.("data-el-locator")) return true;
       current = current.parentElement;
     }
     return false;
@@ -218,10 +214,10 @@
     }
     const rect = target.getBoundingClientRect();
     $ind.css({
-      left: rect.left + "px",
-      top: rect.top + "px",
-      width: rect.width + "px",
-      height: rect.height + "px",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
       display: "block",
     });
   }
@@ -318,7 +314,7 @@
     let commonParts = parts[0];
 
     for (let i = 1; i < parts.length; i++) {
-      let newCommonParts = [];
+      const newCommonParts = [];
       for (let j = 0; j < Math.min(commonParts.length, parts[i].length); j++) {
         if (commonParts[j] === parts[i][j]) {
           newCommonParts.push(commonParts[j]);
@@ -930,22 +926,21 @@
   }
 
   // ========== 右键菜单注册 ==========
-  GM_registerMenuCommand("🔍 启动元素定位工具", function () {
+  GM_registerMenuCommand("🔍 启动元素定位工具", () => {
     startDataNameDetector();
   });
 
-  GM_registerMenuCommand("📝 批量记录模式", function () {
+  GM_registerMenuCommand("📝 批量记录模式", () => {
     startBatchMode(true);
   });
 
-  GM_registerMenuCommand("📝 批量记录模式 (传统)", function () {
+  GM_registerMenuCommand("📝 批量记录模式 (传统)", () => {
     startBatchMode(false);
   });
 
-  GM_registerMenuCommand("⚡ 自动挡", function () {
+  GM_registerMenuCommand("⚡ 自动挡", () => {
     startAutoMode();
   });
-
   console.log(
     'Debug 元素定位工具已加载，请在暴力猴菜单中点击"启动元素定位工具"或"自动挡"或"批量记录模式"',
   );
