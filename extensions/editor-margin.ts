@@ -14,12 +14,12 @@ import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 
 class BorderedEditor extends CustomEditor {
   private marginSize: number;
-  private theme: any;
+  private fullTheme: any;
 
-  constructor(tui: any, theme: any, keybindings: any, marginSize = 2) {
+  constructor(tui: any, theme: any, keybindings: any, fullTheme: any, marginSize = 2) {
     super(tui, theme, keybindings);
     this.marginSize = marginSize;
-    this.theme = theme;
+    this.fullTheme = fullTheme;
   }
 
   render(width: number): string[] {
@@ -35,9 +35,9 @@ class BorderedEditor extends CustomEditor {
     const lines = super.render(innerWidth);
 
     // 用主题色给 margin 区域上背景色
-    const marginBg = (s: string) => this.theme.bg("selectedBg", s);
+    const marginBg = (s: string) => this.fullTheme.bg("selectedBg", s);
     // 边框颜色
-    const borderFg = (s: string) => this.theme.fg("border", s);
+    const borderFg = (s: string) => this.fullTheme.fg("border", s);
 
     // 生成每一行：左边距 + 左边框 + 内容 + 右边框 + 右边距
     const contentLines = lines.map((line: string) => {
@@ -74,7 +74,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       // 从设置中读取 marginSize，默认 2
       const marginSize = (ctx.settings as any)?.editorMargin ?? 2;
-      return new BorderedEditor(tui, theme, keybindings, marginSize);
+      return new BorderedEditor(tui, theme, keybindings, ctx.ui.theme, marginSize);
     });
   });
 }
