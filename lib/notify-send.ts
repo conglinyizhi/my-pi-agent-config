@@ -267,14 +267,20 @@ async function sendWindowsNotification(options: NotifyOptions): Promise<void> {
  * 使用 PowerShell 的 SoundPlayer 播放自定义音频文件
  */
 async function playWindowsSound(soundFile: string): Promise<void> {
-  const playScript = `
-    $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '"')}"
-    $player.PlaySync()
-  `;
-
-  await execNotifyAsync(`powershell -Command "${playScript.replace(/"/g, '\\"')}"`, {
-    windowsHide: true,
-  });
+  // SoundPlayer 仅支持 WAV，对其他格式（如 OGG）会失败
+  try {
+    const playScript = `
+      $player = New-Object System.Media.SoundPlayer "${soundFile.replace(/"/g, '"')}"
+      $player.PlaySync()
+    `;
+    await execNotifyAsync(`powershell -Command "${playScript.replace(/"/g, '\\"')}"`, {
+      windowsHide: true,
+    });
+    return;
+  } catch {
+    // SoundPlayer 失败，尝试 ffplay
+  }
+  await execNotifyAsync(`ffplay -nodisp -autoexit "${soundFile}"`);
 }
 
 /**
@@ -304,7 +310,14 @@ async function sendMacNotification(options: NotifyOptions): Promise<void> {
  * 使用 afplay 播放自定义音频文件
  */
 async function playMacSound(soundFile: string): Promise<void> {
-  await execNotifyAsync(`afplay "${soundFile}"`);
+  try {
+    await execNotifyAsync(`afplay "${soundFile}"`);
+    return;
+  } catch {
+    // afplay 失败（如不支持的格式），尝试 ffplay
+  }
+
+  await execNotifyAsync(`ffplay -nodisp -autoexit "${soundFile}"`);
 }
 
 /**
@@ -360,7 +373,7 @@ export async function notifyTaskStart(taskDescription: string): Promise<boolean>
 /**
  * 默认任务完成音效路径
  */
-const DEFAULT_TASK_COMPLETE_SOUND = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "sounds", "task-complete.wav");
+const DEFAULT_TASK_COMPLETE_SOUND = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "sounds", "task-complete-change.ogg");
 
 /**
  * 发送任务完成通知
