@@ -9,11 +9,11 @@
  * 通过调整 marginSize 控制边框到终端边缘的距离
  */
 
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface ThemeLike {
-  fg: (name: string, text: string) => string;
+  fg: (color: ThemeColor, text: string) => string;
 }
 
 class BorderedEditor extends CustomEditor {
