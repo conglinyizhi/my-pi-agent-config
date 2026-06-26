@@ -1,3 +1,4 @@
+/* eslint-disable */
 /**
  * Socket.IO 握手版本检测 + 部署后自动刷新 + 防死循环
  *
@@ -12,25 +13,24 @@
 
 // ======================== 后端 socketio.ts ========================
 
-import { Server as HttpServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
+import type { Server as HttpServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
 
 declare const BUILD_ID: string;
-const SERVER_BUILD_ID =
-  typeof BUILD_ID !== 'undefined' && BUILD_ID ? BUILD_ID : 'dev';
+const SERVER_BUILD_ID = typeof BUILD_ID !== "undefined" && BUILD_ID ? BUILD_ID : "dev";
 
 export function createSocketIOServer(server: HttpServer) {
   const io = new SocketIOServer(server, {
-    path: '/ws',
-    transports: ['websocket', 'polling'],
+    path: "/ws",
+    transports: ["websocket", "polling"],
     cors: { origin: false },
   });
 
-  io.on('connection', (socket) => {
+  io.on("connection", (socket) => {
     const clientVersion = socket.handshake.query.clientVersion as string | undefined;
     const needReload = !!(clientVersion && clientVersion !== SERVER_BUILD_ID);
-    socket.emit('connected', {
-      status: 'ok',
+    socket.emit("connected", {
+      status: "ok",
       version: SERVER_BUILD_ID,
       reload: needReload,
     });
@@ -42,33 +42,28 @@ export function createSocketIOServer(server: HttpServer) {
 // ======================== 前端 useSocket.ts ========================
 
 declare const __BUILD_ID__: string;
-const CLIENT_BUILD_ID =
-  typeof __BUILD_ID__ !== 'undefined' && __BUILD_ID__ ? __BUILD_ID__ : 'dev';
+const CLIENT_BUILD_ID = typeof __BUILD_ID__ !== "undefined" && __BUILD_ID__ ? __BUILD_ID__ : "dev";
 
 const socket = io({
-  path: '/api/ws',
-  transports: ['websocket', 'polling'],
+  path: "/api/ws",
+  transports: ["websocket", "polling"],
   reconnection: true,
   query: { clientVersion: CLIENT_BUILD_ID },
 });
 
-socket.on('connected', (data: { version: string; reload: boolean }) => {
-  const RELOAD_KEY = '__pi_eco_debugger_reloaded__';
+socket.on("connected", (data: { version: string; reload: boolean }) => {
+  const RELOAD_KEY = "__pi_eco_debugger_reloaded__";
 
   if (data.reload) {
     if (sessionStorage.getItem(RELOAD_KEY)) {
-      console.warn(
-        '已刷新过但仍版本不一致，停止刷新以防死循环',
-        '\n  客户端版本:', CLIENT_BUILD_ID,
-        '\n  服务端版本:', data.version,
-      );
+      console.warn("已刷新过但仍版本不一致，停止刷新以防死循环", "\n  客户端版本:", CLIENT_BUILD_ID, "\n  服务端版本:", data.version);
       return;
     }
-    sessionStorage.setItem(RELOAD_KEY, '1');
+    sessionStorage.setItem(RELOAD_KEY, "1");
 
     // 加 cache-busting 参数跳过浏览器缓存
     const url = new URL(location.href);
-    url.searchParams.set('_v', data.version);
+    url.searchParams.set("_v", data.version);
     location.replace(url.toString());
   } else {
     // 版本匹配，清除标记以便下次部署正常触发

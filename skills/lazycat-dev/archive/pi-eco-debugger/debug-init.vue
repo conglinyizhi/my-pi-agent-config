@@ -1,3 +1,4 @@
+<!-- eslint-disable -->
 <!--
   调试面板：后端推送完整状态 (debug_init)
 
@@ -58,6 +59,7 @@ emitSse('debug_init', {
 </template>
 
 <script setup lang="ts">
+/* eslint-disable */
 // 核心：收到 debug_init 后完全替换 debugEntries
 function handleSseEvent(parsed: any) {
   if (parsed.type === 'debug_init') {

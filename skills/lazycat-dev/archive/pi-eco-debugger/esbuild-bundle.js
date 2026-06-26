@@ -1,3 +1,4 @@
+/* eslint-disable */
 /**
  * LPK 应用后端 esbuild 单文件打包模式
  *

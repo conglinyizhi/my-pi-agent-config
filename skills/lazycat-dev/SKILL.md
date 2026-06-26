@@ -38,3 +38,7 @@ curl -s https://developer.lazycat.cloud/lzc-cli.md
 - /resource-skill-mcp.md 在懒猫微服生态中调用其他 skill/mcp 或者提供 skill/mcp 非常有用
 - /advanced-oidc.md 对接懒猫微服单点登录/OIDC登录的时有用
 - /advanced-inject-passwordless-login.md 免密登录的实现可用思路总览，这是懒猫微服生态应用上架的核心标准
+
+## 一些历史项目的经验
+
+考虑到这部分内容比较多，而且并非每次调用都会用的到，就将这部分内容拆分出来了，如需阅读请参阅技能包下 archive/index.md
