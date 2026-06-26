@@ -15,11 +15,12 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionCommandContext,
-  type ProviderConfig,
-  type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
 import type { ModelOverride, InputCapability } from "./types.ts";
+import { maskKey } from "../../lib/auth";
+import { parseSize } from "../../lib/format-utils";
+import { extractDomainId } from "../../lib/url-utils";
 
 // ─── 类型 ───────────────────────────────────────────
 
@@ -35,9 +36,13 @@ export interface FastAddInfo {
     maxTokens?: number;
     costInput?: number;
     costOutput?: number;
+    costCacheRead?: number;
+    costCacheWrite?: number;
     reasoning?: boolean;
     input?: InputCapability[];
   };
+  /** 内部：用户选择的 API 格式 */
+  _chosenApi?: string;
 }
 
 export type FastAddAction =
@@ -88,20 +93,8 @@ function looksLikeApiKey(s: string): boolean {
   return false;
 }
 
-/** 从 URL 提取默认供应商标识符 */
-export function extractDomainId(url: string): string {
-  try {
-    const hostname = new URL(url).hostname;
-    let domain = hostname.replace(/^(api|www|v1|v2)\./i, "");
-    const parts = domain.split(".");
-    if (parts.length >= 2) return parts[0];
-    return domain;
-  } catch {
-    const match = url.match(/https?:\/\/([^/]+)/);
-    if (match) return match[1].split(".")[0];
-    return "custom-provider";
-  }
-}
+/** 从 URL 提取默认供应商标识符（从 lib/url-utils 重新导出） */
+export { extractDomainId } from "../../lib/url-utils";
 
 /** 解析用户原始输入 */
 export function parseFastAddInput(raw: string): { ok: true; data: FastAddInfo } | { ok: false; error: string } {
@@ -109,7 +102,7 @@ export function parseFastAddInput(raw: string): { ok: true; data: FastAddInfo } 
   if (!input) return { ok: false, error: "输入不能为空" };
 
   // 1. 提取 URL（支持无协议头自动补全）
-  let urlMatch = input.match(/(https?:\/\/[^\s;,，；、]+)/i);
+  const urlMatch = input.match(/(https?:\/\/[^\s;,，；、]+)/i);
   if (!urlMatch) {
     // 尝试补 https://
     const domainMatch = input.match(
@@ -125,7 +118,7 @@ export function parseFastAddInput(raw: string): { ok: true; data: FastAddInfo } 
   const url = urlMatch[1].replace(/\/+$/, "");
 
   // 2. 移除 URL，解析剩余部分
-  const remaining = input.slice(urlMatch.index! + urlMatch[0].length).trim();
+  const remaining = input.slice(urlMatch.index ?? 0 + urlMatch[0].length).trim();
   const parts = splitByDelimiters(remaining);
 
   if (parts.length === 0) {
@@ -220,11 +213,6 @@ export function findOverlap(
 
 // ─── TUI 交互 ───────────────────────────────────────
 
-function maskKey(key: string): string {
-  if (key.length <= 8) return key;
-  return key.slice(0, 6) + "…" + key.slice(-4);
-}
-
 /** 显示确认或合并对话框，返回用户操作意图 */
 async function showConfirmationOrMerge(
   ctx: ExtensionCommandContext,
@@ -249,7 +237,7 @@ async function showConfirmationOrMerge(
       const existingKey = existingAuth[overlap.id] as { key?: string } | undefined;
       let keyAction: "replace" | "keep" = "keep";
 
-      if (info.apiKey && existingKey && existingKey.key) {
+      if (info.apiKey && existingKey?.key) {
         const keyChoice = await ctx.ui.select(
           `API Key 冲突：\n现有 Key: ${maskKey(existingKey.key)}\n新   Key: ${maskKey(info.apiKey)}\n`,
           ["替换为新的 Key", "保留现有的 Key"],
@@ -300,7 +288,10 @@ async function showConfirmationOrMerge(
 
 function formatModels(models: unknown): string {
   if (typeof models === "string") return models;
-  if (Array.isArray(models)) return models.map(m => (typeof m === "object" && m ? (m as any).id || JSON.stringify(m) : String(m))).join(", ");
+  if (Array.isArray(models)) return models.map(m => {
+    if (typeof m === "object" && m && "id" in m) return String((m as Record<string, unknown>).id);
+    return String(m);
+  }).join(", ");
   return String(models || "（无）");
 }
 
@@ -340,19 +331,6 @@ function tomlDefaults(d: NonNullable<FastAddInfo["defaults"]>): Record<string, u
   return result;
 }
 
-function parseSize(s: string): number | undefined {
-  const match = s.trim().match(/^(\d+(?:\.\d+)?)\s*([kKmMgG]?)$/);
-  if (!match) return undefined;
-  const num = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
-  switch (unit) {
-    case "k": return Math.round(num * 1000);
-    case "m": return Math.round(num * 1000_000);
-    case "g": return Math.round(num * 1000_000_000);
-    default: return Math.round(num);
-  }
-}
-
 async function showModelEditor(
   ctx: ExtensionCommandContext,
   info: FastAddInfo,
@@ -371,9 +349,10 @@ async function showModelEditor(
     "openai-new (OpenAI Responses)",
     "anthropic (Anthropic Messages)",
   ]);
-  const chosenApi: string | undefined = apiChoice && apiChoice.startsWith("openai-old") ? "openai-old"
-    : apiChoice && apiChoice.startsWith("openai-new") ? "openai-new"
-    : apiChoice && apiChoice.startsWith("anthropic") ? "anthropic"
+  const chosenApi: string | undefined =
+    apiChoice?.startsWith("openai-old") ? "openai-old"
+    : apiChoice?.startsWith("openai-new") ? "openai-new"
+    : apiChoice?.startsWith("anthropic") ? "anthropic"
     : undefined;
 
   const ctxStr = await ctx.ui.input("上下文窗口（如 128000、1M、256K）", "128000");
@@ -398,7 +377,7 @@ async function showModelEditor(
   }));
 
   // 把用户选择的 API 格式带回
-  (info as any)._chosenApi = chosenApi;
+  (info)._chosenApi = chosenApi;
 
   return { modelOverrides, defaults };
 }
@@ -455,7 +434,7 @@ async function applyAndRegister(
       const newEntry: Record<string, unknown> = {
         id: providerId,
         base_url: info.url,
-        api: (info as any)._chosenApi || "openai-old",
+        api: info._chosenApi || "openai-old",
         models: info.modelOverrides && info.modelOverrides.length > 0
           ? info.modelOverrides.map(m => tomlModel(m))
           : info.models.map(id => ({ id })),
@@ -487,10 +466,10 @@ async function applyAndRegister(
     }
 
     // ── 注册到 Pi（直接用用户提供的模型名）──
-    const resolvedApi: ProviderModelConfig["api"] = "openai-responses";
-    const modelsToRegister = info.modelOverrides && info.modelOverrides.length > 0
-      ? info.modelOverrides
-      : info.models.map(id => ({ id }));
+  const resolvedApi = "openai-responses" as const;
+  const modelsToRegister: ModelOverride[] = info.modelOverrides && info.modelOverrides.length > 0
+    ? info.modelOverrides
+    : info.models.map(id => ({ id }));
     pi.registerProvider(providerId, {
       name: providerId,
       baseUrl: info.url,
@@ -546,7 +525,7 @@ export async function fastAddHandler(
 
   // 2. 检测重叠
   const existing = loadExistingToml();
-  const overlap = existing && existing.providers
+  const overlap = existing?.providers
     ? findOverlap(info.providerId, existing.providers)
     : undefined;
 

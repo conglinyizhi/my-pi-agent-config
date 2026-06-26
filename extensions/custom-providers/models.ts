@@ -1,5 +1,9 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { parseCommaList } from "../../lib/string-utils";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
+
+/** @deprecated 请使用 lib/string-utils 中的 parseCommaList */
+export const parseModelIds = parseCommaList;
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
@@ -23,13 +27,6 @@ const ANTHROPIC_MODELS: AnthropicMeta[] = [
   { id: "claude-3-haiku-20240307", name: "Claude 3 Haiku", contextWindow: 200000, maxTokens: 4096, input: ["text", "image"] },
 ];
 
-export function parseModelIds(models: string): string[] {
-  return models
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 export async function resolveModels(
   provider: RawProvider,
   format: ResolvedApiFormat["format"],
@@ -46,7 +43,7 @@ export async function resolveModels(
   if (provider.models === "auto") {
     ids = await fetchModelIds(format, baseUrl, apiKey);
   } else if (typeof provider.models === "string") {
-    ids = parseModelIds(provider.models);
+    ids = parseCommaList(provider.models);
   } else {
     ids = modelArray.map((m) => m.id);
   }
@@ -79,21 +76,21 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   const defaults = provider.defaults || {};
   const anthropic = ANTHROPIC_MODELS.find((m) => m.id === id);
 
-  const contextWindow = override && override.contextWindow || anthropic && anthropic.contextWindow || defaults.contextWindow || DEFAULT_CONTEXT_WINDOW;
-  const maxTokens = override && override.maxTokens || anthropic && anthropic.maxTokens || defaults.maxTokens || DEFAULT_MAX_TOKENS;
-  const input = override && override.input || anthropic && anthropic.input || defaults.input || ["text"];
-  const reasoning = override && override.reasoning || anthropic && anthropic.reasoning || defaults.reasoning || false;
+  const contextWindow = override?.contextWindow ?? anthropic?.contextWindow ?? defaults.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const maxTokens = override?.maxTokens ?? anthropic?.maxTokens ?? defaults.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const input = override?.input ?? anthropic?.input ?? defaults.input ?? ["text"];
+  const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
 
   return {
     id,
-    name: override && override.name || anthropic && anthropic.name || id,
+    name: override?.name ?? anthropic?.name ?? id,
     reasoning,
     input,
     cost: {
-      input: override && override.costInput || defaults.costInput || 0,
-      output: override && override.costOutput || defaults.costOutput || 0,
-      cacheRead: override && override.costCacheRead || defaults.costCacheRead || 0,
-      cacheWrite: override && override.costCacheWrite || defaults.costCacheWrite || 0,
+      input: override?.costInput ?? defaults.costInput ?? 0,
+      output: override?.costOutput ?? defaults.costOutput ?? 0,
+      cacheRead: override?.costCacheRead ?? defaults.costCacheRead ?? 0,
+      cacheWrite: override?.costCacheWrite ?? defaults.costCacheWrite ?? 0,
     },
     contextWindow,
     maxTokens,

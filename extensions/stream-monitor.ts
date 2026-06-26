@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { estimateTokens } from "../lib/token-utils";
 
 export default function (pi: ExtensionAPI) {
   // 状态
@@ -27,11 +28,6 @@ export default function (pi: ExtensionAPI) {
   const STREAM_KEY = "stream-monitor";
   const TOOL_KEY = "stream-monitor-tool";
 
-  function estimateTokens(chars: number): number {
-    return Math.round(chars / 4);
-  }
-
-  /** 更新状态栏（ctx 从事件处理器传入，保证新鲜） */
   function updateStatus(ctx: ExtensionContext) {
     const now = Date.now();
 

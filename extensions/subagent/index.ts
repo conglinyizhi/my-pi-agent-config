@@ -23,24 +23,14 @@ import { type ExtensionAPI, getMarkdownTheme, type ThemeColor, withFileMutationQ
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { mapWithConcurrencyLimit } from "../../lib/concurrency";
+import { formatTokens } from "../../lib/format-utils";
+import { getFinalOutput } from "../../lib/message-utils";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
-
-/**
- * 将 token 数量格式化为易读的字符串（如 1.5k、2M）。
- *
- * @param count - token 数量
- * @returns 格式化后的字符串
- */
-function formatTokens(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  return `${(count / 1000000).toFixed(1)}M`;
-}
 
 /**
  * 将用量统计格式化为可读的汇总字符串。
@@ -172,24 +162,6 @@ interface SubagentDetails {
 }
 
 /**
- * 从消息列表中提取最后一条 assistant 文本消息。
- *
- * @param messages - 消息数组
- * @returns 最后一条 assistant 文本内容；不存在则返回空字符串
- */
-function getFinalOutput(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "text") return part.text;
-      }
-    }
-  }
-  return "";
-}
-
-/**
  * 判断单个 agent 执行结果是否失败。
  *
  * @param result - 单个 agent 执行结果
@@ -253,48 +225,6 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
     }
   }
   return items;
-}
-
-/**
- * 创建并发工作线程，循环领取并处理任务。
- *
- * @param nextIndex - 共享的下一个任务索引
- * @param items - 待处理数组
- * @param results - 结果数组
- * @param fn - 处理函数
- * @returns 工作线程函数
- */
-function createConcurrencyWorker<TIn, TOut>(
-  nextIndex: { value: number },
-  items: TIn[],
-  results: TOut[],
-  fn: (item: TIn, index: number) => Promise<TOut>,
-): () => Promise<void> {
-  return async () => {
-    while (true) {
-      const current = nextIndex.value++;
-      if (current >= items.length) return;
-      results[current] = await fn(items[current], current);
-    }
-  };
-}
-
-/**
- * 对数组元素并发执行异步操作，并限制最大并发数。
- *
- * @param items - 待处理的数组
- * @param concurrency - 最大并发数
- * @param fn - 对每个元素执行的异步函数
- * @returns 处理结果数组
- */
-async function mapWithConcurrencyLimit<TIn, TOut>(items: TIn[], concurrency: number, fn: (item: TIn, index: number) => Promise<TOut>): Promise<TOut[]> {
-  if (items.length === 0) return [];
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results: TOut[] = new Array(items.length);
-  const nextIndex = { value: 0 };
-  const workers = new Array(limit).fill(null).map(() => createConcurrencyWorker(nextIndex, items, results, fn));
-  await Promise.all(workers);
-  return results;
 }
 
 /**

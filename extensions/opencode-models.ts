@@ -9,15 +9,13 @@
  */
 
 import { exec, execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   type ExtensionAPI,
   type ExtensionContext,
-  getAgentDir,
   type ProviderConfig,
   type ProviderModelConfig,
-  SettingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -35,6 +33,7 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { loadAuthJsonPath } from "../lib/auth.ts";
+import { saveDefaultModelPreservingFormat } from "../lib/settings-utils";
 
 const HOME = homedir();
 const OPENCODE_BIN_CANDIDATES = [process.env.OPENCODE_BIN, `${HOME}/.opencode/bin/opencode`, "/usr/local/bin/opencode", "/usr/bin/opencode"];
@@ -293,26 +292,6 @@ async function confirmSaveDefault(ctx: ExtensionContext, modelId: string, modelN
   if (selected === options[0]) return "yes";
   if (selected === options[1]) return "no";
   return "cancel";
-}
-
-const SETTINGS_PATH = `${getAgentDir()}/settings.json`;
-
-async function saveDefaultModelPreservingFormat(provider: string, modelId: string): Promise<void> {
-  const raw = readFileSync(SETTINGS_PATH, "utf8");
-  // 仅替换 defaultProvider 和 defaultModel 的值，保留文件其余格式、缩进与注释。
-  let updated = raw;
-  updated = updated.replace(/("defaultProvider"\s*:\s*)"[^"]*"/, `$1"${provider}"`);
-  updated = updated.replace(/("defaultModel"\s*:\s*)"[^"]*"/, `$1"${modelId}"`);
-
-  // 如果正则未命中（键不存在或格式异常），回退到 SettingsManager。
-  if (updated === raw) {
-    const settings = SettingsManager.create(".", getAgentDir());
-    settings.setDefaultModelAndProvider(provider, modelId);
-    await settings.flush();
-    return;
-  }
-
-  writeFileSync(SETTINGS_PATH, updated, "utf8");
 }
 
 async function showModelSelector(ctx: ExtensionContext, models: OpencodeModel[]): Promise<ModelSelection | null> {

@@ -33,3 +33,22 @@ export function getApiKey(providerId: string): string | undefined {
   if (entry?.key) return entry.key;
   return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// 密钥遮盖
+// ---------------------------------------------------------------------------
+
+/**
+ * 遮盖敏感密钥，仅展示首尾部分。
+ *
+ * 规则：
+ * - 长度 ≤ 8  → 原样展示
+ * - 长度 > 8  → 前 6 位 + "…" + 后 4 位
+ *
+ * @param key - 原始密钥字符串
+ * @returns 遮盖后的展示字符串
+ */
+export function maskKey(key: string): string {
+  if (key.length <= 8) return key;
+  return `${key.slice(0, 6)}…${key.slice(-4)}`;
+}

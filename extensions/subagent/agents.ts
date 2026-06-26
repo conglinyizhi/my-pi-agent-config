@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseCommaList } from "../../lib/string-utils";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -21,20 +22,6 @@ export interface AgentConfig {
 export interface AgentDiscoveryResult {
   agents: AgentConfig[];
   projectAgentsDir: string | null;
-}
-
-/**
- * 将逗号分隔的工具列表字符串解析为工具数组。
- *
- * @param toolsString - 逗号分隔的工具字符串
- * @returns 解析后的工具数组；为空时返回 undefined
- */
-function parseTools(toolsString: string | undefined): string[] | undefined {
-  const tools = toolsString
-    ?.split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
-  return tools && tools.length > 0 ? tools : undefined;
 }
 
 /**
@@ -61,7 +48,7 @@ function parseAgentFile(filePath: string, source: "user" | "project"): AgentConf
   return {
     name: frontmatter.name,
     description: frontmatter.description,
-    tools: parseTools(frontmatter.tools),
+    tools: parseCommaList(frontmatter.tools),
     model: frontmatter.model,
     systemPrompt: body,
     source,
