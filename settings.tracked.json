@@ -1,6 +1,4 @@
 {
-  "defaultProvider": "tokenflux",
-  "defaultModel": "deepseek-v4-pro",
   "defaultThinkingLevel": "medium",
   "npmCommand": [
     "pnpm",

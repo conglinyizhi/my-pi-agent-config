@@ -19,29 +19,26 @@ const SOURCE_PATH = `${AGENT_DIR}/settings.json`;
 const TRACKED_PATH = `${AGENT_DIR}/settings.tracked.json`;
 
 // ---------------------------------------------------------------------------
-// 需要保留的字段白名单
+// 排除字段黑名单——这些字段由系统自动修改，不纳入 tracked 文件
 // ---------------------------------------------------------------------------
 
-/** 有意义的用户配置字段——其余字段（如 lastChangelogVersion）不写入 tracked 文件 */
-const TRACKED_KEYS = new Set([
+/** 系统自动修改的字段，不应进入 git */
+const EXCLUDED_KEYS = new Set([
+  "lastChangelogVersion",
   "defaultProvider",
   "defaultModel",
-  "defaultThinkingLevel",
-  "npmCommand",
-  "packages",
-  "theme",
 ]);
 
 // ---------------------------------------------------------------------------
 // 核心逻辑
 // ---------------------------------------------------------------------------
 
-/** 从原始 settings 中提取白名单字段 */
+/** 从原始 settings 中排除黑名单字段 */
 function extractTracked(raw: Record<string, unknown>): Record<string, unknown> {
   const tracked: Record<string, unknown> = {};
-  for (const key of TRACKED_KEYS) {
-    if (key in raw) {
-      tracked[key] = raw[key];
+  for (const [key, value] of Object.entries(raw)) {
+    if (!EXCLUDED_KEYS.has(key)) {
+      tracked[key] = value;
     }
   }
   return tracked;
