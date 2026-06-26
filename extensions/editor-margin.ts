@@ -9,14 +9,19 @@
  * 通过调整 marginSize 控制边框到终端边缘的距离
  */
 
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+interface ThemeLike {
+  fg: (name: string, text: string) => string;
+}
 
 class BorderedEditor extends CustomEditor {
   private marginSize: number;
-  private fullTheme: any;
+  private fullTheme: ThemeLike;
 
-  constructor(tui: any, theme: any, keybindings: any, fullTheme: any, marginSize = 2) {
+  // biome-ignore lint/suspicious/noExplicitAny: 框架依赖注入，参数类型由 CustomEditor 基类约束
+  constructor(tui: any, theme: any, keybindings: any, fullTheme: ThemeLike, marginSize = 2) {
     super(tui, theme, keybindings);
     this.marginSize = marginSize;
     this.fullTheme = fullTheme;
@@ -38,6 +43,7 @@ class BorderedEditor extends CustomEditor {
     const borderFg = (s: string) => this.fullTheme.fg("border", s);
 
     // 去除 ANSI 转义序列，获取纯文本
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escape sequences
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 
     // 查找父类底部边框行的位置（末行往前找，纯文本只含 ─ ↑ ↓ 数字和空格的行）
@@ -58,28 +64,19 @@ class BorderedEditor extends CustomEditor {
       if (i === 0) {
         // 替换父类顶部横线为自己的 ╭─╮
         result.push(
-          " ".repeat(m) +
-          borderFg("╭" + "─".repeat(innerWidth) + "╮") +
-          " ".repeat(m)
+          `${' '.repeat(m)}${borderFg(`╭${"─".repeat(innerWidth)}╮`)}${' '.repeat(m)}`
         );
       } else if (i === bottomBorderIdx) {
         // 替换父类底部横线为自己的 ╰─╯
         result.push(
-          " ".repeat(m) +
-          borderFg("╰" + "─".repeat(innerWidth) + "╯") +
-          " ".repeat(m)
+          `${' '.repeat(m)}${borderFg(`╰${"─".repeat(innerWidth)}╯`)}${' '.repeat(m)}`
         );
       } else {
         // 内容和自动补全行：加侧边 │ 和 margin
         const content = truncateToWidth(line, innerWidth);
         const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
         result.push(
-          " ".repeat(m) +
-          borderFg("│") +
-          content +
-          padding +
-          borderFg("│") +
-          " ".repeat(m)
+          `${' '.repeat(m)}${borderFg("│")}${content}${padding}${borderFg("│")}${' '.repeat(m)}`
         );
       }
     }
@@ -92,7 +89,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       // 从设置中读取 marginSize，默认 2
-      const marginSize = (ctx.settings as any)?.editorMargin ?? 0;
+      const ctxExt = ctx as ExtensionContext & { settings?: Record<string, unknown> };
+      const marginSize = (ctxExt.settings?.editorMargin as number) ?? 0;
       return new BorderedEditor(tui, theme, keybindings, ctx.ui.theme, marginSize);
     });
   });

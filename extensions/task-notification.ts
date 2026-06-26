@@ -11,7 +11,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkNotificationSupport, notifyTaskComplete } from "../lib/notify-send";
 
 // 匹配可重试的网络/连接错误
@@ -59,7 +59,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
   /** 判断是否为可重试的网络错误（agent 可能自动恢复） */
   function isRetryableError(msg: AgentMessage): boolean {
     if (msg.role !== "assistant") return false;
-    const assistant = msg as any;
+    const assistant = msg as AgentMessage & { stopReason?: string; errorMessage?: string };
     return assistant.stopReason === "error" &&
       typeof assistant.errorMessage === "string" &&
       RETRYABLE_ERROR_RE.test(assistant.errorMessage);
@@ -85,7 +85,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
       return;
     }
 
-    const assistant = lastAssistant as any;
+    const assistant = lastAssistant as AgentMessage & { stopReason?: string };
     const reason = assistant.stopReason;
 
     // 用户手动取消 → 不通知
@@ -130,18 +130,24 @@ function findLastAssistant(messages: AgentMessage[]): AgentMessage | undefined {
  * 从消息列表中提取最后一条 assistant 文本消息作为任务摘要
  */
 function summarizeLastAssistantMessage(messages: AgentMessage[]): string {
-  const lastAssistant = findLastAssistant(messages);
+  type ContentPart = { type: string; text?: string };
 
+  const lastAssistant = findLastAssistant(messages);
   if (!lastAssistant) {
     return "任务处理完成";
   }
 
-  const textParts = lastAssistant.content.filter((content) => content.type === "text");
+  const assistant = lastAssistant as AgentMessage & { content?: ContentPart[] };
+  if (!assistant.content) {
+    return "任务处理完成";
+  }
+
+  const textParts = assistant.content.filter((part: ContentPart) => part.type === "text");
   if (textParts.length === 0) {
     return "任务处理完成";
   }
 
-  const fullText = textParts.map((content) => content.text).join(" ");
+  const fullText = textParts.map((part: ContentPart) => part.text ?? "").join(" ");
   // 截取前 100 个字符作为摘要
   return fullText.length > 100 ? `${fullText.slice(0, 100)}...` : fullText;
 }

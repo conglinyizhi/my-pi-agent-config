@@ -7,7 +7,7 @@
  * - 不缓存 ctx，避免 session 替换后使用过期引用
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   // 状态
@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   /** 更新状态栏（ctx 从事件处理器传入，保证新鲜） */
-  function updateStatus(ctx: any) {
+  function updateStatus(ctx: ExtensionContext) {
     const now = Date.now();
 
     if (streaming) {
@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   /** 带节流更新（text_delta 可能很频繁） */
-  function throttledUpdate(ctx: any) {
+  function throttledUpdate(ctx: ExtensionContext) {
     const now = Date.now();
     if (now - lastUpdate < 500) return;
     lastUpdate = now;
