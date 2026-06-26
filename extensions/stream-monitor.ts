@@ -40,9 +40,7 @@ export default function (pi: ExtensionAPI) {
       speedHistory = speedHistory.filter((h) => h.time > cutoff);
 
       const windowChars = speedHistory.reduce((sum, h) => sum + h.chars, 0);
-      const windowDuration = speedHistory.length > 1
-        ? (speedHistory[speedHistory.length - 1].time - speedHistory[0].time) / 1000
-        : 0;
+      const windowDuration = speedHistory.length > 1 ? (speedHistory[speedHistory.length - 1].time - speedHistory[0].time) / 1000 : 0;
 
       let speedStr: string;
       if (windowDuration > 0.5) {
@@ -92,12 +90,7 @@ export default function (pi: ExtensionAPI) {
 
     // 自定义工作指示器
     ctx.ui.setWorkingIndicator({
-      frames: [
-        ctx.ui.theme.fg("dim", "○  "),
-        ctx.ui.theme.fg("muted", "◔  "),
-        ctx.ui.theme.fg("accent", "● "),
-        ctx.ui.theme.fg("muted", "◕  "),
-      ],
+      frames: [ctx.ui.theme.fg("dim", "W-"), ctx.ui.theme.fg("muted", "O-"), ctx.ui.theme.fg("accent", "R-"), ctx.ui.theme.fg("muted", "K-")],
       intervalMs: 150,
     });
   });
