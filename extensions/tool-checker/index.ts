@@ -42,9 +42,9 @@
  * ```
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Detector, DetectorResult } from "./types.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ghCliDetector } from "./detectors/gh-cli.js";
+import type { Detector, DetectorResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // 注册所有检测器（新增检测器时只需在这里追加一行）
@@ -83,7 +83,7 @@ let checkPromise: Promise<Map<string, CacheEntry>> | null = null;
  * 检测并行执行，完成后自动写入缓存并通过 .then() 异步更新 TUI 状态栏。
  * 单个检测器失败不会影响其他检测器。
  */
-function startChecks(ui: ExtensionAPI["ui"]): void {
+function startChecks(ui: ExtensionContext["ui"]): void {
   checkPromise = (async (): Promise<Map<string, CacheEntry>> => {
     const results = new Map<string, CacheEntry>();
 
@@ -164,7 +164,7 @@ function buildPromptAppend(): string {
  */
 function renderToolStatus(
   entry: CacheEntry,
-  theme: ExtensionAPI["ui"]["theme"],
+  theme: ExtensionContext["ui"]["theme"],
 ): string {
   const label = entry.detector.displayName ?? entry.detector.name;
   const { installed, authenticated } = entry.result;
