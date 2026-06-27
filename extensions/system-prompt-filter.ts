@@ -23,7 +23,8 @@ export default function (pi: ExtensionAPI): void {
     // 去掉自动追加的日期
     systemPrompt = systemPrompt.replace(/\nCurrent date: \d{4}-\d{2}-\d{2}/, "");
     // 去掉自动追加的当前工作目录
-    systemPrompt = systemPrompt.replace(/\nCurrent working directory: .+/, "");
+    // 反例：第一次工具调用的时候会因为大模型没有这个信息导致胡乱工作，甚至出现幻觉，因此这个功能取消
+    // systemPrompt = systemPrompt.replace(/\nCurrent working directory: .+/, "");
 
     return { systemPrompt };
   });
