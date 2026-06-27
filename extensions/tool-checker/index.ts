@@ -74,30 +74,59 @@ interface CacheEntry {
  */
 let cachedResults = new Map<string, CacheEntry>();
 
+/** 当前正在执行的检测 Promise，用于 before_agent_start 等场景按需等待 */
+let checkPromise: Promise<Map<string, CacheEntry>> | null = null;
+
 /**
- * 遍历所有检测器，逐个执行 check() 并写入缓存。
+ * 启动所有检测器（不阻塞调用方，返回 void）。
+ *
+ * 检测并行执行，完成后自动写入缓存并通过 .then() 异步更新 TUI 状态栏。
  * 单个检测器失败不会影响其他检测器。
  */
-async function runAllChecks(): Promise<Map<string, CacheEntry>> {
-  const results = new Map<string, CacheEntry>();
+function startChecks(ui: ExtensionAPI["ui"]): void {
+  checkPromise = (async (): Promise<Map<string, CacheEntry>> => {
+    const results = new Map<string, CacheEntry>();
 
-  /** 每个检测器独立包装 try/catch，失败不影响其他 */
-  const tasks = DETECTORS.map(async (detector) => {
-    try {
-      const result = await detector.check();
-      results.set(detector.name, { detector, result });
-    } catch (_err) {
-      results.set(detector.name, {
-        detector,
-        result: { installed: false },
-      });
+    const tasks = DETECTORS.map(async (detector) => {
+      try {
+        const result = await detector.check();
+        results.set(detector.name, { detector, result });
+      } catch (_err) {
+        results.set(detector.name, {
+          detector,
+          result: { installed: false },
+        });
+      }
+    });
+
+    await Promise.all(tasks);
+    cachedResults = results;
+    return results;
+  })();
+
+  // 检测完成后异步更新 TUI 状态栏，不阻塞会话初始化
+  checkPromise.then((results) => {
+    const { theme } = ui;
+    for (const entry of results.values()) {
+      ui.setStatus(
+        `tool-${entry.detector.name}`,
+        renderToolStatus(entry, theme),
+      );
     }
   });
+}
 
-  await Promise.all(tasks);
-
-  cachedResults = results;
-  return results;
+/**
+ * 等待正在进行的检测完成（如有）。
+ *
+ * 用于 before_agent_start 和 /show-status 等需要确保结果就绪的场景。
+ * 消费后置 null，避免后续重复等待。
+ */
+async function ensureChecksDone(): Promise<void> {
+  if (checkPromise) {
+    await checkPromise;
+    checkPromise = null;
+  }
 }
 
 /**
@@ -156,19 +185,10 @@ function renderToolStatus(
 export default function toolChecker(pi: ExtensionAPI): void {
   /**
    * 会话启动 / reload 时：
-   * 1. 运行所有检测器
-   * 2. 在 TUI 状态栏中渲染每个工具的状态
+   * 启动检测但不等待，TUI 状态栏在检测完成后通过 .then() 异步更新。
    */
-  pi.on("session_start", async (_event, ctx) => {
-    const results = await runAllChecks();
-    const { theme } = ctx.ui;
-
-    for (const entry of results.values()) {
-      ctx.ui.setStatus(
-        `tool-${entry.detector.name}`,
-        renderToolStatus(entry, theme),
-      );
-    }
+  pi.on("session_start", (_event, ctx) => {
+    startChecks(ctx.ui);
   });
 
   /**
@@ -189,6 +209,9 @@ export default function toolChecker(pi: ExtensionAPI): void {
   pi.registerCommand("show-status", {
     description: "查看所有外部 CLI 工具的检测结果（不流入大模型上下文）",
     handler: async (_args, ctx) => {
+      // 确保检测已完成再展示
+      await ensureChecksDone();
+
       const entries = [...cachedResults.values()];
 
       if (entries.length === 0) {
@@ -218,9 +241,13 @@ export default function toolChecker(pi: ExtensionAPI): void {
   });
 
   /**
-   * 每次 agent 启动前，将可用工具的提示注入系统提示词。
+   * 每次 agent 启动前，确保检测已完成后再注入系统提示词。
+   * 此时检测通常在 session_start 就已启动，用户打字的时间足以跑完，
+   * ensureChecksDone 多数情况下立即返回。
    */
   pi.on("before_agent_start", async (event, _ctx) => {
+    await ensureChecksDone();
+
     const append = buildPromptAppend();
     if (!append) return; // 无可用的外部工具，不修改提示词
 
