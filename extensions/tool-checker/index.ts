@@ -179,6 +179,43 @@ export default function toolChecker(pi: ExtensionAPI): void {
   });
 
   /**
+   * 注册 /show-status 命令。
+   *
+   * 以 TUI notify 形式向用户展示所有检测器的详细结果。
+   * 命令消息会被 Pi 拦截，不会流入 LLM 上下文。
+   */
+  pi.registerCommand("show-status", {
+    description: "查看所有外部 CLI 工具的检测结果（不流入大模型上下文）",
+    handler: async (_args, ctx) => {
+      const entries = [...cachedResults.values()];
+
+      if (entries.length === 0) {
+        ctx.ui.notify("暂无已注册的工具检测器", "info");
+        return;
+      }
+
+      const { theme } = ctx.ui;
+
+      for (const entry of entries) {
+        const label = entry.detector.displayName ?? entry.detector.name;
+        const { installed, authenticated, version } = entry.result;
+
+        let detail: string;
+        if (installed && authenticated !== false) {
+          const ver = version ? ` (${version})` : "";
+          detail = theme.fg("success", `${label} ✓ 已安装并完成鉴权${ver}`);
+        } else if (installed) {
+          detail = theme.fg("accent", `${label} ⚠ 已安装但未完成鉴权`);
+        } else {
+          detail = theme.fg("dim", `${label} ✗ 未安装`);
+        }
+
+        ctx.ui.notify(detail, "info");
+      }
+    },
+  });
+
+  /**
    * 每次 agent 启动前，将可用工具的提示注入系统提示词。
    */
   pi.on("before_agent_start", async (event, _ctx) => {
