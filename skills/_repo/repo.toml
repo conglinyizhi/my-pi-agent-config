@@ -74,3 +74,9 @@ name = "paoding-jieniu"
 source = "https://github.com/wuji-labs/paoding-jieniu"
 description = "庖丁解牛 — 庄子，顺纹理拆解复杂系统"
 tags = ["huaxia", "decomposition"]
+
+[[skills]]
+name = "fount-char"
+source = "https://github.com/conglinyizhi/fount-char-skill"
+description = "fount 角色卡创建助手 — 模板、工具范例与交互式创建向导"
+tags = ["fount", "character"]
