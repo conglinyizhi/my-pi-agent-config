@@ -12,3 +12,4 @@ docs/superpowers
 *.d.ts
 skills/_repo/*
 !skills/_repo/repo.toml
+skill-states.json

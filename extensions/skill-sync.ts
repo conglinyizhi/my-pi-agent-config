@@ -171,7 +171,36 @@ function syncSkills(): SyncResult[] {
     }
   }
 
+  // --- 后处理：禁用列表中的技能删除软链接 ---
+  const disabled = loadDisabledList();
+  for (const name of disabled) {
+    const linkPath = join(REPO_DIR, name);
+    try {
+      const stat = lstatSync(linkPath);
+      if (stat.isSymbolicLink()) {
+        unlinkSync(linkPath);
+        results.push({ name, action: "linked" }); // 复用 linked 表示「已移除」
+      }
+    } catch {
+      // 不存在，忽略
+    }
+  }
+
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// 读取禁用列表
+// ---------------------------------------------------------------------------
+
+function loadDisabledList(): string[] {
+  try {
+    const raw = readFileSync(join(AGENT_DIR, "skill-states.json"), "utf8");
+    const state = JSON.parse(raw) as { disabled?: string[] };
+    return state.disabled ?? [];
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
