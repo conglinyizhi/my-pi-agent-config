@@ -1,161 +1,57 @@
-# Pi 快速部署指南
+# 我的 pi 配置
 
-> 这个文档是 kimi code + kimi-k2.7-code 编写
-
-Pi 是一个极简的终端编程助手，可通过 pnpm 或一键脚本快速安装到本地。
-
-## 1. 安装
-
-### 方式一：pnpm（推荐）
+换电脑？一条命令的事。
 
 ```bash
-pnpm add -g --ignore-scripts @earendil-works/pi-coding-agent
-```
-
-`--ignore-scripts` 用于禁用依赖生命周期脚本，Pi 正常安装不需要执行这些脚本。
-
-### 方式二：一键脚本
-
-```bash
-curl -fsSL https://pi.dev/install.sh | sh
-```
-
-### 方式三：其他包管理器
-
-```bash
-# npm
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-
-# Yarn
-yarn global add @earendil-works/pi-coding-agent
-
-# Bun
-bun add -g @earendil-works/pi-coding-agent
-```
-
-## 2. 认证
-
-Pi 支持两种认证方式：订阅登录 或 API Key。
-
-### 方式一：订阅登录
-
-启动 Pi 后输入：
-
-```text
-/login
-```
-
-按提示选择服务商，支持 Claude Pro/Max、ChatGPT Plus/Pro（Codex）、GitHub Copilot 等。
-
-### 方式二：API Key
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+git clone git@github.com:conglinyizhi/my-pi-agent-config.git ~/.pi/agent
+cd ~/.pi/agent && pnpm install
 pi
 ```
 
-也支持通过 `/login` 选择 API Key 服务商并保存到 `~/.pi/agent/auth.json`。
+第一次启动，`skill-sync` 会自动把第三方 skill 全拉下来，不用你操心。
 
-> 完整支持列表参见 [Pi Providers 文档](https://pi.dev/docs/providers)。
+## 里面有什么
 
-## 3. 启动并使用
+### 扩展
 
-进入你想要处理的项目目录，直接运行：
+写了十几个扩展，都是日常用着用着觉得"这活该自动化"就加上的：
 
-```bash
-cd /path/to/project
-pi
-```
+**skill-sync** — 启动时扫一眼 skill 目录，缺了谁就帮你 git clone 回来。换机器的底气全靠它。
 
-启动后输入你的需求，例如：
+**settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 
-```text
-Summarize this repository and tell me how to run its checks.
-```
+**task-notification** — 任务跑完了弹个桌面通知，省得你时不时切回来看。
 
-## 4. 常用命令
+**session-search** — 翻历史对话。AI 觉得你可能问过类似问题时自己会搜，注册了一个 search_sessions 工具。
 
-| 命令                      | 说明                       |
-| ------------------------- | -------------------------- |
-| `pi -c`                   | 继续最近一次的会话         |
-| `pi -r`                   | 浏览并选择历史会话         |
-| `pi -p "你的问题"`        | 非交互模式，输出结果后退出 |
-| `pi --name "任务名"`      | 给当前会话命名             |
-| `pi @文件路径 "你的问题"` | 将指定文件作为上下文传入   |
+**permission-gate** 和 **confirm-destructive** — 一个拦危险命令（rm -rf 之类），一个在切换/分叉 session 前提醒，防手滑。
 
-## 5. 给项目添加说明
+**protected-paths** — .env、node_modules 之类碰不得的路径直接挡住，免得不小心写坏。
 
-Pi 启动时会自动加载 `AGENTS.md`（或 `CLAUDE.md`）作为项目上下文。在项目根目录创建 `AGENTS.md`：
+**plan-mode** — 注册了 `/plan` 和 `/todos` 两个命令。切到计划模式后只读探索不乱改，先想清楚再动手。
 
-```markdown
-# Project Instructions
+**custom-providers** — `/provider fast-add` 快速加模型供应商。
 
-- 代码改动后运行 `pnpm check`。
-- 不要在本地执行生产环境迁移。
-- 保持回复简洁。
-```
+**opencode-models** — `/model-more` 切换到从 opencode 导入的模型列表。
 
-修改后重启 Pi 或执行 `/reload` 生效。
+**stream-monitor** — 偷偷盯着流式响应，变慢了你能察觉。
 
-## 6. 卸载
+**questionnaire** — 注册了一个工具让 AI 能弹选项框问你，不用打字的确认体验好很多。
 
-```bash
-# pnpm
-pnpm remove -g @earendil-works/pi-coding-agent
+**system-prompt-filter** 和 **editor-margin** — 前者过滤系统提示里的敏感路径，后者调编辑器边距，都属于"虽然小但舒服"的类型。
 
-# npm / curl 安装
-npm uninstall -g @earendil-works/pi-coding-agent
+### Skill
 
-# Yarn
-yarn global remove @earendil-works/pi-coding-agent
+自己写的三个：
 
-# Bun
-bun uninstall -g @earendil-works/pi-coding-agent
-```
+**data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。
 
-> 卸载后，`~/.pi/agent/` 中的设置、凭据、会话和已安装的 Pi 包不会自动删除。
+**lazycat-dev** — 懒猫微服那套开发流程，打包、部署、认证全涵盖。
 
-## 7. 通知与音效
+**pi-docs** — pi 自身的文档导航。问 pi 本身的问题时会自动翻。
 
-Pi Agent 完成任务后会在桌面弹出一条通知，并播放提示音。
+另外收录了华夏十大（wuji-labs/huaxia-skills）全部 10 个 skill，从道德经到庄子，从孙子兵法到黄帝内经，按场景自动触发。来源和版本记录在 `skills/_repo/repo.toml` 里，skill-sync 扩展负责维护。
 
-### 7.1 桌面通知
+## 通知音效
 
-通知由 `extensions/task-notification.ts` 扩展控制：
-
-- 在 agent 任务循环结束时（`agent_end`）触发，每个任务只通知一次，避免多轮对话时刷屏
-- 自动检测操作系统并调用对应原生通知 API：
-  - Linux：`notify-send`（libnotify）
-  - Windows：PowerShell Toast 通知
-  - macOS：`osascript display notification`
-
-如果当前系统缺少通知工具，扩展会在终端和 TUI 中提示安装方式。
-
-### 7.2 提示音
-
-任务完成通知默认会播放 `assets/sounds/task-complete.wav`。
-
-跨平台播放策略如下：
-
-| 平台 | 自定义音频 | 系统默认音效 |
-| ---- | ---------- | ------------ |
-| Linux | `paplay` / `ffplay -nodisp -autoexit` | `canberra-gtk-play` |
-| Windows | `System.Media.SoundPlayer` | Toast `<audio>` 元素 |
-| macOS | `afplay` | `osascript sound name` |
-
-自定义音频文件通过 `NotifyOptions.soundFile` 指定。声音播放失败不会影响通知本身。
-
-### 7.3 音效素材授权
-
-默认任务完成音效 `assets/sounds/task-complete.wav` 源自 Freesound：
-
-- **Original title:** Fantasy UI Stinger - Magical Level Up 01
-- **Author:** Coghezzi
-- **Source:** https://freesound.org/s/853772/
-- **License:** Attribution 4.0 International (CC BY 4.0)
-- 详见 [`assets/sounds/ATTRIBUTION.md`](assets/sounds/ATTRIBUTION.md)
-
-## 参考
-
-- [Pi 官方文档](https://pi.dev/docs)
-- [Pi GitHub](https://github.com/openclaw/pi)
+完成任务那一声的音效素材来自 Freesound 上的 Coghezzi，CC BY 4.0 授权。详情可见 [assets/sounds/ATTRIBUTION.md](assets/sounds/ATTRIBUTION.md)
