@@ -1,0 +1,62 @@
+# skill 记录中心 — 换机器只需跑 install.sh 即可重建所有 clone
+# 本文件被 git 追踪，_repo/ 下的 clone 内容不被追踪
+
+[[skills]]
+name = "nopua"
+source = "https://github.com/wuji-labs/nopua"
+description = "以道驭术 — 信任代替恐惧，内在动力代替 PUA"
+tags = ["huaxia", "mindset"]
+
+[[skills]]
+name = "tiangong"
+source = "https://github.com/wuji-labs/tiangong"
+description = "天工开物 — 东方审美与工艺"
+tags = ["huaxia", "design"]
+
+[[skills]]
+name = "bibuzaohua"
+source = "https://github.com/wuji-labs/bibuzaohua"
+description = "比补造化 — 诗经楚辞，文学灵魂"
+tags = ["huaxia", "writing"]
+
+[[skills]]
+name = "miaoshou-tiancheng"
+source = "https://github.com/wuji-labs/miaoshou-tiancheng"
+description = "妙手天成 — 黄帝内经，整体健康框架（仅供参考）"
+tags = ["huaxia", "health"]
+
+[[skills]]
+name = "shangbing-famou"
+source = "https://github.com/wuji-labs/shangbing-famou"
+description = "上兵伐谋 — 孙子兵法，不战而胜的谋略思维"
+tags = ["huaxia", "strategy"]
+
+[[skills]]
+name = "xinhuo-xiangchuan"
+source = "https://github.com/wuji-labs/xinhuo-xiangchuan"
+description = "薪火相传 — 论语大学，教化引导而非简单给答案"
+tags = ["huaxia", "teaching"]
+
+[[skills]]
+name = "zhichi-shanlin"
+source = "https://github.com/wuji-labs/zhichi-shanlin"
+description = "咫尺山林 — 林泉高致，空间深度与意境营造"
+tags = ["huaxia", "spatial"]
+
+[[skills]]
+name = "jingshi-jimin"
+source = "https://github.com/wuji-labs/jingshi-jimin"
+description = "经世济民 — 管子，经世济民与商业判断（仅供参考）"
+tags = ["huaxia", "business"]
+
+[[skills]]
+name = "hetu-luoshu"
+source = "https://github.com/wuji-labs/hetu-luoshu"
+description = "河图洛书 — 易经，辩证推理（仅供参考）"
+tags = ["huaxia", "reasoning"]
+
+[[skills]]
+name = "paoding-jieniu"
+source = "https://github.com/wuji-labs/paoding-jieniu"
+description = "庖丁解牛 — 庄子，顺纹理拆解复杂系统"
+tags = ["huaxia", "decomposition"]
