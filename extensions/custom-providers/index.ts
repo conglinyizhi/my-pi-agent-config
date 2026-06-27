@@ -11,11 +11,32 @@ const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
 export default async function customProvidersExtension(pi: ExtensionAPI) {
+  const pending = new Map<string, RawProvider>();
+  const registeredIds = new Set<string>();
+  let rawToml = "";
+
   // /provider 命令必须始终注册，不能因 providers.toml 不存在而被跳过
   pi.registerCommand("provider", {
-    description: "管理自定义供应商。子命令: fast-add <URL>;<模型>[;<Key>]",
+    description: "管理自定义供应商。子命令: fast-add <URL>;<模型>[;<Key>] | reload",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
+      if (trimmed === "reload" || trimmed.startsWith("reload")) {
+        let config: { providers: RawProvider[]; raw: string } | null = null;
+        try {
+          config = loadProvidersConfig(CONFIG_PATH);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          ctx.ui.notify(`Failed to reload providers.toml: ${message}`, "error");
+          return;
+        }
+        if (!config) {
+          ctx.ui.notify("可创建 ~/.pi/agent/providers.toml 添加自定义供应商", "info");
+          return;
+        }
+        await registerProviders(config.providers, config.raw);
+        ctx.ui.notify(`已重新加载 providers.toml（${registeredIds.size} 个供应商）`, "info");
+        return;
+      }
       if (trimmed.startsWith("fast-add")) {
         const input = trimmed.slice("fast-add".length).trim();
         if (!input) {
@@ -24,52 +45,12 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
         }
         await fastAddHandler(input, ctx, pi);
       } else {
-        ctx.ui.notify("未知子命令。支持: fast-add", "info");
+        ctx.ui.notify("未知子命令。支持: fast-add | reload", "info");
       }
     },
   });
 
-  let config: { providers: RawProvider[]; raw: string } | null = null;
-  try {
-    config = loadProvidersConfig(CONFIG_PATH);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    pi.on("session_start", async (_event, ctx) => {
-      ctx.ui.notify(`Failed to load providers.toml: ${message}`, "error");
-    });
-    return;
-  }
-  if (!config) return;
-
-  const { providers, raw } = config;
-  const pending = new Map<string, RawProvider>();
-
-  for (const provider of providers) {
-    const apiKey = getApiKey(provider.id);
-    if (!apiKey) {
-      pi.on("session_start", async (_event, ctx) => {
-        ctx.ui.notify(`Custom provider "${provider.id}" has no API key in auth.json`, "warning");
-      });
-      continue;
-    }
-
-    const explicitApi = provider.api && provider.api !== "auto";
-    const explicitModels = provider.models && provider.models !== "auto";
-
-    if (explicitApi && explicitModels) {
-      const format = provider.api as ResolvedApiFormat["format"];
-      try {
-        const models = await resolveModels(provider, format, provider.baseUrl, apiKey);
-        pi.registerProvider(provider.id, buildProviderConfig(provider, provider.baseUrl, toPiApi(format), models, apiKey));
-      } catch (err) {
-        console.error(`[custom-providers] Failed to register ${provider.id}:`, err);
-      }
-    } else {
-      pending.set(provider.id, provider);
-      registerPlaceholder(pi, provider, apiKey);
-    }
-  }
-
+  // 模型选择事件 —— 仅在初始化后注册一次，reload 时不重复注册
   pi.on("model_select", async (event, ctx) => {
     const modelId = event.model.id;
     const sepIndex = modelId.lastIndexOf(":");
@@ -131,7 +112,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       pi.registerProvider(providerId, buildProviderConfig(provider, resolved.baseUrl, toPiApi(resolved.format), models, apiKey));
 
       if (provider.api === "auto") {
-        await lockApiFormat(provider, resolved.format, raw);
+        await lockApiFormat(provider, resolved.format, rawToml);
       }
 
       ctx.ui.notify(`Provider "${providerId}" activated with ${models.length} model(s).`, "info");
@@ -139,6 +120,67 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`Failed to activate "${providerId}": ${err instanceof Error ? err.message : String(err)}`, "error");
     }
   });
+
+  // ---- 加载与注册逻辑 ----
+
+  async function registerProviders(providers: RawProvider[], raw: string): Promise<void> {
+    // 清理旧注册
+    for (const id of registeredIds) {
+      pi.unregisterProvider(id);
+    }
+    registeredIds.clear();
+    pending.clear();
+    rawToml = raw;
+
+    for (const provider of providers) {
+      const apiKey = getApiKey(provider.id);
+      if (!apiKey) {
+        console.warn(`[custom-providers] Provider "${provider.id}" has no API key in auth.json, skipping`);
+        continue;
+      }
+
+      const explicitApi = provider.api && provider.api !== "auto";
+      const explicitModels = provider.models && provider.models !== "auto";
+
+      if (explicitApi && explicitModels) {
+        const format = provider.api as ResolvedApiFormat["format"];
+        try {
+          const models = await resolveModels(provider, format, provider.baseUrl, apiKey);
+          pi.registerProvider(provider.id, buildProviderConfig(provider, provider.baseUrl, toPiApi(format), models, apiKey));
+          registeredIds.add(provider.id);
+        } catch (err) {
+          console.error(`[custom-providers] Failed to register ${provider.id}:`, err);
+        }
+      } else {
+        pending.set(provider.id, provider);
+        registerPlaceholder(pi, provider, apiKey);
+        registeredIds.add(provider.id);
+      }
+    }
+  }
+
+  // ---- 初始化 ----
+
+  let config: { providers: RawProvider[]; raw: string } | null = null;
+  try {
+    config = loadProvidersConfig(CONFIG_PATH);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    pi.on("session_start", async (_event, ctx) => {
+      ctx.ui.notify(`Failed to load providers.toml: ${message}`, "error");
+    });
+    return;
+  }
+
+  if (!config) {
+    // providers.toml 不存在，提示用户可创建
+    pi.on("session_start", async (_event, ctx) => {
+      ctx.ui.notify("可创建 ~/.pi/agent/providers.toml 添加自定义供应商，修改后使用 /provider reload 加载", "info");
+    });
+    return;
+  }
+
+  await registerProviders(config.providers, config.raw);
 }
 
 function buildProviderConfig(provider: RawProvider, baseUrl: string, api: ProviderModelConfig["api"], models: ProviderModelConfig[], apiKey: string): ProviderConfig {
@@ -174,6 +216,7 @@ function registerPlaceholder(pi: ExtensionAPI, provider: RawProvider, apiKey: st
     ],
   });
 }
+
 async function lockApiFormat(provider: RawProvider, format: ResolvedApiFormat["format"], rawToml: string): Promise<void> {
   const apiValue = format;
   const lines = rawToml.split("\n");
