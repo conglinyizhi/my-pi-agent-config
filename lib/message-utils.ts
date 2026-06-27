@@ -11,7 +11,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 // ---------------------------------------------------------------------------
 
 /** 消息内容片段 */
-interface ContentPart {
+export interface ContentPart {
   type: string;
   text?: string;
 }

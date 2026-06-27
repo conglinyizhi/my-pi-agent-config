@@ -9,3 +9,4 @@ node_modules/
 mcp-cache.json
 docs/superpowers
 .worktrees/
+*.d.ts

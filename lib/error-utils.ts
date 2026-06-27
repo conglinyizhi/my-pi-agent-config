@@ -21,7 +21,7 @@ export const RETRYABLE_ERROR_RE =
 // ---------------------------------------------------------------------------
 
 /** 用于判断可重试错误所需的最小消息字段 */
-interface ErrorLikeMessage {
+export interface ErrorLikeMessage {
   role: string;
   stopReason?: string;
   errorMessage?: string;
