@@ -10,3 +10,5 @@ mcp-cache.json
 docs/superpowers
 .worktrees/
 *.d.ts
+skills/_repo/*
+!skills/_repo/repo.toml
