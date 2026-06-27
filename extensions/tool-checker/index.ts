@@ -84,6 +84,22 @@ let checkPromise: Promise<Map<string, CacheEntry>> | null = null;
  * 单个检测器失败不会影响其他检测器。
  */
 function startChecks(ui: ExtensionContext["ui"]): void {
+  const total = DETECTORS.length;
+  let done = 0;
+
+  // 首次启动即显示 0/N
+  ui.setStatus("tool-check-progress", `0/${total}`);
+
+  /** 每个检测器完成时调用，更新进度条；全部完成时自动隐藏 */
+  const tick = () => {
+    done++;
+    if (done < total) {
+      ui.setStatus("tool-check-progress", `${done}/${total}`);
+    } else {
+      ui.setStatus("tool-check-progress", undefined);
+    }
+  };
+
   checkPromise = (async (): Promise<Map<string, CacheEntry>> => {
     const results = new Map<string, CacheEntry>();
 
@@ -96,6 +112,8 @@ function startChecks(ui: ExtensionContext["ui"]): void {
           detector,
           result: { installed: false },
         });
+      } finally {
+        tick();
       }
     });
 
@@ -108,10 +126,7 @@ function startChecks(ui: ExtensionContext["ui"]): void {
   checkPromise.then((results) => {
     const { theme } = ui;
     for (const entry of results.values()) {
-      ui.setStatus(
-        `tool-${entry.detector.name}`,
-        renderToolStatus(entry, theme),
-      );
+      ui.setStatus(`tool-${entry.detector.name}`, renderToolStatus(entry, theme));
     }
   });
 }
@@ -144,13 +159,7 @@ function buildPromptAppend(): string {
 
   if (hints.length === 0) return "";
 
-  return [
-    "",
-    "## 外部工具可用性 (自动检测)",
-    "",
-    ...hints.map((h) => `- ${h}`),
-    "",
-  ].join("\n");
+  return ["", "## 外部工具可用性 (自动检测)", "", ...hints.map((h) => `- ${h}`), ""].join("\n");
 }
 
 /**
@@ -162,10 +171,7 @@ function buildPromptAppend(): string {
  * | 已安装 + 未鉴权   | accent   | ⚠    |
  * | 未安装            | dim      | ✗    |
  */
-function renderToolStatus(
-  entry: CacheEntry,
-  theme: ExtensionContext["ui"]["theme"],
-): string {
+function renderToolStatus(entry: CacheEntry, theme: ExtensionContext["ui"]["theme"]): string {
   const label = entry.detector.displayName ?? entry.detector.name;
   const { installed, authenticated } = entry.result;
 
