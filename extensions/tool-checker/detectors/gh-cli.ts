@@ -11,27 +11,31 @@
  */
 
 import type { Detector, DetectorResult } from "../types.js";
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 // ---------------------------------------------------------------------------
 // 内部工具函数
 // ---------------------------------------------------------------------------
 
-/** 同步执行命令，忽略 stderr，返回 stdout 并去除首尾空白 */
-function execTrim(cmd: string): string {
+/** 异步执行命令，忽略 stderr，返回 stdout 并去除首尾空白 */
+async function execTrim(cmd: string): Promise<string> {
   try {
-    return execSync(cmd, {
+    const { stdout } = await execAsync(cmd, {
       encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    return stdout.trim();
   } catch {
     return "";
   }
 }
 
 /** 检测命令是否存在于 PATH 中 */
-function commandExists(cmd: string): boolean {
-  return execTrim(`command -v ${cmd}`).length > 0;
+async function commandExists(cmd: string): Promise<boolean> {
+  const result = await execTrim(`command -v ${cmd}`);
+  return result.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +51,7 @@ export const ghCliDetector: Detector = {
 
   async check(): Promise<DetectorResult> {
     // 第一步：是否安装
-    if (!commandExists("gh")) {
+    if (!(await commandExists("gh"))) {
       return { installed: false };
     }
 
@@ -55,9 +59,8 @@ export const ghCliDetector: Detector = {
     // gh auth status 在未登录时 exit code != 0
     let authenticated = false;
     try {
-      execSync("gh auth status", {
+      await execAsync("gh auth status", {
         encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
       });
       authenticated = true;
     } catch {
@@ -72,7 +75,7 @@ export const ghCliDetector: Detector = {
     }
 
     // 第三步：获取版本
-    const version = execTrim("gh --version 2>/dev/null | head -1") || undefined;
+    const version = (await execTrim("gh --version 2>/dev/null | head -1")) || undefined;
 
     return {
       installed: true,

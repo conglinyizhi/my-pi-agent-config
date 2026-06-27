@@ -81,18 +81,20 @@ let cachedResults = new Map<string, CacheEntry>();
 async function runAllChecks(): Promise<Map<string, CacheEntry>> {
   const results = new Map<string, CacheEntry>();
 
-  for (const detector of DETECTORS) {
+  /** 每个检测器独立包装 try/catch，失败不影响其他 */
+  const tasks = DETECTORS.map(async (detector) => {
     try {
       const result = await detector.check();
       results.set(detector.name, { detector, result });
     } catch (_err) {
-      // 单个检测器失败不阻塞整体流程
       results.set(detector.name, {
         detector,
         result: { installed: false },
       });
     }
-  }
+  });
+
+  await Promise.all(tasks);
 
   cachedResults = results;
   return results;
