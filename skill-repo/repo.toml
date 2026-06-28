@@ -76,6 +76,24 @@ description = "庖丁解牛 — 庄子，顺纹理拆解复杂系统"
 tags = ["huaxia", "decomposition"]
 
 [[skills]]
+name = "moonbit-skills"
+source = "git@github.com:moonbitlang/skills.git"
+description = "MoonBit 语言与工具链 AI Agent 技能集合"
+tags = ["moonbit", "语言", "官方"]
+bundle = true
+link_targets = [
+  "skills/make-moonbit-c-bindings",
+  "skills/moonbit-agent-guide",
+  "skills/moonbit-c-binding",
+  "skills/moonbit-extract-spec-test",
+  "skills/moonbit-orientation",
+  "skills/moonbit-proof",
+  "skills/moonbit-refactoring",
+  "skills/moonbit-spec-test-development",
+  "skills/ocaml2moonbit-migration",
+]
+
+[[skills]]
 name = "fount-char"
 source = "https://github.com/conglinyizhi/fount-char-skill"
 description = "fount 角色卡创建助手 — 模板、工具范例与交互式创建向导"
