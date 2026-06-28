@@ -50,7 +50,7 @@ pi
 
 **pi-docs** — pi 自身的文档导航。问 pi 本身的问题时会自动翻。
 
-另外收录了华夏十大（wuji-labs/huaxia-skills）全部 10 个 skill，从道德经到庄子，从孙子兵法到黄帝内经，按场景自动触发。来源和版本记录在 `skills/_repo/repo.toml` 里，skill-sync 扩展负责维护。
+另外收录了华夏十大（wuji-labs/huaxia-skills）全部 10 个 skill，从道德经到庄子，从孙子兵法到黄帝内经，按场景自动触发。来源和版本记录在 `skill-repo/repo.toml` 里，skill-sync 扩展负责维护。
 
 ## 通知音效
 

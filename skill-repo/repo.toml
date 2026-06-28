@@ -1,5 +1,5 @@
 # skill 记录中心 — 换机器只需跑 install.sh 即可重建所有 clone
-# 本文件被 git 追踪，_repo/ 下的 clone 内容不被追踪
+# 本文件被 git 追踪，skill-repo/ 下的 clone 内容不被追踪
 #
 # 字段说明：
 #   name          — 技能/仓库标识名（必需）
@@ -11,8 +11,8 @@
 #   bundle        — true 表示多技能聚合仓库（可选）
 #   link_targets  — 聚合仓库中需要暴露为独立技能的子目录列表（bundle=true 时使用）
 #
-# 单技能仓库：name 即技能名，clone 后 _repo/<name>/SKILL.md 即可被 Pi 发现
-# 多技能仓库：clone 到 _repo/<name>/，然后为每个 link_target 创建软链接
+# 单技能仓库：clone 后通过软链接 skills/<name> -> ../skill-repo/<name> 暴露
+# 多技能仓库：clone 到 skill-repo/<name>/，然后为每个 link_target 创建软链接至 skills/
 #   例：ln -s moonbit-skills/skills/moonbit-orientation moonbit-orientation
 
 [[skills]]
