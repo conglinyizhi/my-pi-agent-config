@@ -10,6 +10,8 @@ mcp-cache.json
 docs/superpowers
 .worktrees/
 *.d.ts
-skills/_repo/*
-!skills/_repo/repo.toml
+skill-repo/*
+!skill-repo/repo.toml
+skills/*
+!skills/clyzhi/
 skill-states.json
