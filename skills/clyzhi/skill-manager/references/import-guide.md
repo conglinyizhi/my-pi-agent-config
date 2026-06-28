@@ -11,8 +11,8 @@ find /tmp/skill-inspect -maxdepth 3 -name "SKILL.md" | sort
 
 | 模式 | 特征 | 处理方式 |
 |------|------|----------|
-| A 单技能 | 根目录有 `SKILL.md` | 直接 clone 到 `_repo/<name>` |
-| B 多技能聚合 | `skills/` 下有多个含 `SKILL.md` 的子目录 | clone + 软链接 |
+| A 单技能 | 根目录有 `SKILL.md` | clone 到 `skill-repo/<name>`，软链接到 `skills/<name>` |
+| B 多技能聚合 | `skills/` 下有多个含 `SKILL.md` 的子目录 | clone + 为子技能创建软链接 |
 | C 带来源映射 | 有 `skills.sources.json` | 优先按 B 处理，映射文件仅作参考 |
 | D 其他 | 不符合上述模式 | 列给用户，人工判断 |
 
@@ -27,22 +27,10 @@ find /tmp/skill-inspect -maxdepth 3 -name "SKILL.md" | sort
 
 ## 步骤 3：执行导入
 
-### 确保 `.gitignore` 存在
-
-```bash
-cd ~/.pi/agent/skills/_repo
-# 如果 .gitignore 不存在或为空，写入白名单规则
-cat > .gitignore << 'EOF'
-*
-!.gitignore
-!repo.toml
-EOF
-```
-
 ### 多技能聚合仓库（模式 B/C）
 
 ```bash
-cd ~/.pi/agent/skills/_repo
+cd ~/.pi/agent/skill-repo
 
 # 已存在则 git pull，否则 clone
 if [ -d "<repo-dir>" ]; then
@@ -51,20 +39,24 @@ else
   git clone --depth 1 <repo-url> <repo-dir>
 fi
 
-# 为每个选中的子技能创建软链接（相对路径）
-cd ~/.pi/agent/skills/_repo
-ln -s <repo-dir>/skills/<skill-name> <skill-name>
+# 为每个选中的子技能创建软链接到 skills/
+cd ~/.pi/agent/skills
+ln -s ../skill-repo/<repo-dir>/skills/<skill-name> <skill-name>
 ```
 
 ### 单技能仓库（模式 A）
 
 ```bash
-cd ~/.pi/agent/skills/_repo
+cd ~/.pi/agent/skill-repo
 if [ -d "<skill-name>" ]; then
   cd <skill-name> && git pull
 else
   git clone --depth 1 <repo-url> <skill-name>
 fi
+
+# 创建软链接到 skills/
+cd ~/.pi/agent/skills
+ln -s ../skill-repo/<skill-name> <skill-name>
 ```
 
 ### 清理
@@ -75,7 +67,7 @@ rm -rf /tmp/skill-inspect
 
 ## 步骤 4：更新 repo.toml
 
-编辑 `~/.pi/agent/skills/_repo/repo.toml`，追加条目。
+编辑 `~/.pi/agent/skill-repo/repo.toml`，追加条目。
 
 ### repo.toml 字段说明
 
@@ -86,7 +78,7 @@ rm -rf /tmp/skill-inspect
 | `description` | 是 | 从 SKILL.md 的 YAML 表头提取 |
 | `tags` | 否 | 分类标签 |
 | `aliases` | 否 | 别名，如 `["moonbit", "moon"]` |
-| `source_dir` | 否 | 当仓库目录名 ≠ name 时，覆盖路径。如 `source_dir = "clyzhi-repo"` |
+| `source_dir` | 否 | 当仓库目录名 ≠ name 时，覆盖路径 |
 | `bundle` | 否 | `true` 表示多技能聚合仓库 |
 | `link_targets` | 否 | 软链接目标列表（相对于仓库根目录的子路径） |
 
@@ -115,14 +107,10 @@ link_targets = [
 ]
 ```
 
-`bundle` 和 `link_targets` 为人工可读标注，Pi 运行时不受其影响（Pi 只扫描 `_repo/` 下的文件层级）。
-
 ## 步骤 5：更新已有技能
 
-如果 `_repo/` 下已存在该仓库：
-
 ```bash
-cd ~/.pi/agent/skills/_repo/<repo-dir>
+cd ~/.pi/agent/skill-repo/<repo-dir>
 git pull
 ```
 

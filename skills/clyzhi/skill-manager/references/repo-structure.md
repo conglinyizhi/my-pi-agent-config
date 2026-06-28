@@ -3,61 +3,67 @@
 ## 目录结构
 
 ```
-~/.pi/agent/skills/
-├── _repo/                        ← git clone 存放
-│   ├── .gitignore                ← 忽略所有，仅白名单 repo.toml
-│   ├── repo.toml                 ← 技能注册表（被 git 追踪）
-│   ├── nopua/                    ← 单技能仓库 clone（被 .gitignore 忽略）
-│   ├── moonbit-skills/           ← 多技能聚合仓库 clone（被 .gitignore 忽略）
+~/.pi/agent/
+├── skill-repo/                   ← git clone 存放 + repo.toml
+│   ├── repo.toml                 ← 技能注册表（git 追踪）
+│   ├── nopua/                    ← 单技能仓库 clone
+│   ├── moonbit-skills/           ← 多技能聚合仓库 clone
 │   │   └── skills/
 │   │       ├── moonbit-orientation/SKILL.md
 │   │       └── ...
-│   └── base/                     ← 用户自定义技能（非 clone，手动维护）
-│       └── my-skill/SKILL.md
-├── skill-manager/SKILL.md        ← 本技能（直放，非 git 管理）
-├── lazycat-dev/SKILL.md          ← 直放技能
-├── pi-docs/SKILL.md
-└── data-name/SKILL.md
+│   └── ...
+│
+├── skills/                       ← Pi 扫描此目录（递归）
+│   ├── clyzhi/                   ← 用户自有技能（git 追踪）
+│   │   ├── skill-manager/SKILL.md
+│   │   ├── pi-docs/SKILL.md
+│   │   ├── data-name/SKILL.md
+│   │   └── lazycat-dev/SKILL.md
+│   ├── nopua -> ../skill-repo/nopua          ← 软链接（git 忽略）
+│   ├── moonbit-orientation -> ../skill-repo/moonbit-skills/skills/moonbit-orientation
+│   └── ...
+│
+└── .gitignore                    ← 忽略 skill-repo/* 和 skills/*（白名单 skills/clyzhi/）
 ```
 
 ## 核心规则
 
-1. Pi 扫描 `_repo/` 下一级目录，找到 `SKILL.md` 即识别为一个技能
-2. 单技能仓库：根目录即技能目录，clone 即可
-3. 多技能仓库：clone 后用**相对路径软链接**把子技能目录暴露到 `_repo/` 一级
-4. `_repo/repo.toml` 记录来源信息
+1. Pi 扫描 `skills/` 目录（递归），找到 `SKILL.md` 即识别为一个技能
+2. `skill-repo/` 纯放 clone + repo.toml，不和软链接混放
+3. 单技能仓库：clone 后通过软链接 `skills/<name> -> ../skill-repo/<name>` 暴露
+4. 多技能仓库（bundle）：clone 后为每个 `link_target` 创建软链接
+5. `skill-repo/repo.toml` 记录来源信息
 
 ## 软链接约定
 
-- 必须使用**相对路径**（不用绝对路径，确保目录可整体迁移）：
+- 必须使用**相对路径**，确保目录可整体迁移：
   ```
-  _repo/moonbit-orientation -> moonbit-skills/skills/moonbit-orientation
+  skills/nopua -> ../skill-repo/nopua
+  skills/moonbit-orientation -> ../skill-repo/moonbit-skills/skills/moonbit-orientation
   ```
-- 别名目录名可以和技能名不同：`ln -s moonbit-skills/skills/moonbit-orientation moonbit`
 - 已有同名软链接且目标正确 → 跳过；目标错误 → 先删再建
 - 已有同名实体目录（非软链接） → 跳过并警告
 
 ## `.gitignore` 设计
 
-`_repo/.gitignore` 应设为 `*` 忽略一切，仅白名单 `repo.toml` 和 `.gitignore` 自身：
+项目根 `.gitignore`：
 
 ```
-*
-!.gitignore
-!repo.toml
+skill-repo/*           ← 忽略 clone，只追踪 repo.toml
+!skill-repo/repo.toml
+skills/*               ← 忽略所有软链接
+!skills/clyzhi/        ← 白名单：用户自有技能
 ```
 
-这样 clone 的仓库不会被误加到 Pi 的 git 追踪中，同时 `repo.toml` 可以被版本管理。
+## `skills/clyzhi/` 目录（用户自有技能）
 
-## `base/` 目录（用户自定义技能）
-
-`base/` 存放用户自己编写的技能，与 `repo.toml` 管理的第三方技能不同：
 - **手动管理**：文件直接放入，不通过 `git clone` 拉取
-- **始终激活**：所有条目始终对 Pi 可见，不需要筛选
-- 对应软链接：`_repo/<skill-name> -> base/<skill-name>`
+- **始终激活**：Pi 递归扫描 `skills/`，子目录自动发现
+- **git 追踪**：通过 `.gitignore` 白名单保护
+- 无需软链接，Pi 直接扫描子目录
 
-## 设计原则（来自 opencode-bl 时代的经验）
+## 设计原则
 
-- **不污染父仓库**：每个 clone 拥有独立 `.git`，`_repo/.gitignore` 负责隔离
-- **相对路径软链接**：不用绝对路径，目录可整体迁移到其他机器
+- **clone 与软链接分离**：`skill-repo/` 只放实体，`skills/` 只放软链接
+- **相对路径软链接**：不用绝对路径，目录可整体迁移
 - **repo.toml 是唯一真相源**：跨机器只需 clone + 跑 install.sh 即可重建
