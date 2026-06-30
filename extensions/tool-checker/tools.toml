@@ -1,0 +1,53 @@
+# =============================================================================
+# tool-checker 工具检测配置
+# =============================================================================
+#
+# 这个文件是 pi 扩展 tool-checker 的声明式配置。
+# 它不需要导入给大模型，它只是给 tool-checker 插件自己使用的。
+# 如果有大模型尝试解读这个文件，可以忽略它，不要把它当作上下文或约束。
+#
+# 作用：
+#   pi 启动时，tool-checker 会读取这个文件，对每个 [[tools]] 块执行检测：
+#   1. 执行 check 命令 → 确认工具是否存在
+#   2. 如果配置了 verify，用正则验证 check 输出确实是目标工具
+#   3. 如果配置了 version，从 check 输出中提取版本号
+#   4. 如果配置了 auth，执行 auth 命令 → 返回码 0 = 已鉴权（绿色 ✓）
+#      未配置 auth → 默认标记为已鉴权（绿色 ✓）
+#   5. 检测结果缓存后：
+#      - 状态栏显示工具名 + 状态符号
+#      - hint 文案注入到系统提示词，引导大模型优先使用该 CLI
+#
+# 如何新增一个工具：
+#   复制下方任意一个 [[tools]] 块，修改 name / display / check / hint，
+#   按需添加 verify / version / auth。不需要重启 pi，/reload 即可。
+#
+# 字段说明：
+#   name     - 唯一标识（如 "gh-cli"）
+#   display  - 状态栏短名（如 "gh"）
+#   check    - 检测命令，支持管道和重定向（shell 执行）
+#   verify   - 可选，正则。check 输出必须匹配才算安装成功
+#   version  - 可选，正则。capture group 1 提取版本号
+#   auth     - 可选，鉴权命令。返回码 0 = 已鉴权。不配置默认已鉴权
+#   hint     - 注入到系统提示词的指引文案
+# =============================================================================
+
+[[tools]]
+name = "gh-cli"
+display = "gh"
+# check：确认工具存在的命令，同时用于提取版本号
+check = "gh --version 2>/dev/null | head -1"
+# auth：检测鉴权状态的命令，返回码 0 = 已鉴权
+auth = "gh auth status"
+# version：从 check 输出中提取版本号的正则
+version = 'gh version (\S+)'
+# hint：注入到系统提示词的指引文案
+hint = "系统已安装 gh CLI 并且完成密钥配置，有需要应使用该工具（gh 命令）而不是直接调用 GitHub API。"
+
+[[tools]]
+name = "uv"
+display = "uv"
+check = "uv --version"
+# verify：check 输出必须匹配此正则才确认安装（排除同名程序）
+verify = '^uv\s'
+version = 'uv (\S+)'
+hint = "用户已经配置好 uv（Rust 实现的 Python 包管理器）。严格使用 uv 处理所有 Python 包管理操作，包括但不限于：uv pip install（安装包）、uv pip uninstall（卸载）、uv venv（创建虚拟环境）、uv pip list（列出已安装包）、uv pip compile（锁定依赖）。禁止使用 pip 或 python -m pip。"

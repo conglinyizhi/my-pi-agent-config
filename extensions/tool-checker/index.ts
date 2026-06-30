@@ -11,51 +11,124 @@
  *   - 灰色 ✗  → 未安装
  *
  * ## 架构
+ * - `tools.toml`   —— 声明式配置，新增工具只需编辑此文件
  * - `types.ts`     —— 公共类型定义（Detector / DetectorResult）
- * - `detectors/`   —— 各工具的检测器实现，每个文件导出一个 Detector 对象
- * - `index.ts`     —— 本文件，汇总所有检测器、订阅生命周期事件
- *
- * ## 如何新增一个检测器
- * 1. 在 `detectors/` 目录下新建一个 `.ts` 文件
- * 2. 实现 `Detector` 接口（参考 `detectors/gh-cli.ts`）
- * 3. 在下方 `DETECTORS` 数组中追加一行
- *
- * ```ts
- * // detectors/my-tool.ts
- * import type { Detector, DetectorResult } from "../types.js";
- *
- * export const myToolDetector: Detector = {
- *   name: "my-tool",
- *   displayName: "mt",   // TUI 状态栏短名（可选）
- *   description: "检测 xxx 工具是否可用",
- *   async check() { ... },
- * };
- * ```
- *
- * ```ts
- * // index.ts —— 在 DETECTORS 数组中追加
- * import { myToolDetector } from "./detectors/my-tool.js";
- * const DETECTORS: Detector[] = [
- *   ghCliDetector,
- *   myToolDetector,  // ← 新增这一行即可
- * ];
- * ```
+ * - `index.ts`     —— 主入口，读取 TOML 动态生成检测器
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ghCliDetector } from "./detectors/gh-cli.js";
-import { uvDetector } from "./detectors/uv.js";
 import type { Detector, DetectorResult } from "./types.js";
+import { exec } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { parse as parseToml } from "smol-toml";
+
+const execAsync = promisify(exec);
 
 // ---------------------------------------------------------------------------
-// 注册所有检测器（新增检测器时只需在这里追加一行）
+// 定位 TOML 配置文件
 // ---------------------------------------------------------------------------
 
-const DETECTORS: Detector[] = [
-  ghCliDetector,
-  uvDetector,
-  // TODO: 在此处追加你自定义的检测器，例如 glab、doctl、aws-cli 等
-];
+const __dirname = (() => {
+  try { return dirname(fileURLToPath(import.meta.url)); } catch { return resolve("."); }
+})();
+
+const TOML_PATH = resolve(__dirname, "tools.toml");
+
+// ---------------------------------------------------------------------------
+// TOML 配置类型
+// ---------------------------------------------------------------------------
+
+interface ToolConfig {
+  name: string;
+  display: string;
+  check: string;
+  auth?: string;
+  verify?: string;
+  version?: string;
+  hint: string;
+}
+
+// ---------------------------------------------------------------------------
+// 从 TOML 配置生成 Detector 对象
+// ---------------------------------------------------------------------------
+
+function createDetector(cfg: ToolConfig): Detector {
+  return {
+    name: cfg.name,
+    displayName: cfg.display,
+    description: `检测 ${cfg.display} 是否安装`,
+
+    async check(): Promise<DetectorResult> {
+      // 1. 执行 check 命令
+      let output = "";
+      try {
+        const { stdout } = await execAsync(cfg.check, {
+          encoding: "utf-8",
+          timeout: 10000,
+        });
+        output = stdout.trim();
+      } catch {
+        return { installed: false };
+      }
+
+      if (!output) return { installed: false };
+
+      // 2. 可选：verify 正则确认输出确实来自目标工具
+      if (cfg.verify) {
+        if (!new RegExp(cfg.verify, "m").test(output)) {
+          return { installed: false };
+        }
+      }
+
+      // 3. 可选：提取版本号
+      let version: string | undefined;
+      if (cfg.version) {
+        const m = output.match(new RegExp(cfg.version, "m"));
+        version = m ? m[1] : undefined;
+      }
+
+      // 4. 可选：鉴权检测
+      let authenticated: boolean | undefined;
+      if (cfg.auth) {
+        try {
+          await execAsync(cfg.auth, { encoding: "utf-8", timeout: 10000 });
+          authenticated = true;
+        } catch {
+          authenticated = false;
+        }
+      } else {
+        // 无 auth 配置 → 不需要鉴权，直接绿色 ✓
+        authenticated = true;
+      }
+
+      return {
+        installed: true,
+        authenticated,
+        version,
+        promptHint: cfg.hint,
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 加载 TOML 并构建检测器列表
+// ---------------------------------------------------------------------------
+
+function loadDetectors(): Detector[] {
+  try {
+    const raw = readFileSync(TOML_PATH, "utf-8");
+    const data = parseToml(raw) as { tools?: ToolConfig[] };
+    return (data.tools || []).map(createDetector);
+  } catch {
+    return [];
+  }
+}
+
+const DETECTORS: Detector[] = loadDetectors();
 
 // ===========================================================================
 // 以下为插件主体逻辑，一般无需修改
