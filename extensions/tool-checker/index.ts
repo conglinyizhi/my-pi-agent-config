@@ -234,10 +234,12 @@ export default function toolChecker(pi: ExtensionAPI): void {
         const label = entry.detector.displayName ?? entry.detector.name;
         const { installed, authenticated, version } = entry.result;
 
+        /** 安装并且完成认证 */
+        const isInstallAndAuthenticated = installed && authenticated !== false
+
         let line: string;
-        if (installed && authenticated !== false) {
-          const ver = version ? ` (${version})` : "";
-          line = theme.fg("success", `${label} ✓ 已安装并完成鉴权${ver}`);
+        if (isInstallAndAuthenticated) {
+          line = theme.fg("success", `${label} ✓ 已安装并完成鉴权(${version||'不知道啥版本'})`);
         } else if (installed) {
           line = theme.fg("accent", `${label} ⚠ 已安装但未完成鉴权`);
         } else {
