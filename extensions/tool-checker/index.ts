@@ -44,6 +44,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ghCliDetector } from "./detectors/gh-cli.js";
+import { uvDetector } from "./detectors/uv.js";
 import type { Detector, DetectorResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ import type { Detector, DetectorResult } from "./types.js";
 
 const DETECTORS: Detector[] = [
   ghCliDetector,
+  uvDetector,
   // TODO: 在此处追加你自定义的检测器，例如 glab、doctl、aws-cli 等
 ];
 
@@ -227,22 +229,24 @@ export default function toolChecker(pi: ExtensionAPI): void {
 
       const { theme } = ctx.ui;
 
+      const lines: string[] = [];
       for (const entry of entries) {
         const label = entry.detector.displayName ?? entry.detector.name;
         const { installed, authenticated, version } = entry.result;
 
-        let detail: string;
+        let line: string;
         if (installed && authenticated !== false) {
           const ver = version ? ` (${version})` : "";
-          detail = theme.fg("success", `${label} ✓ 已安装并完成鉴权${ver}`);
+          line = theme.fg("success", `${label} ✓ 已安装并完成鉴权${ver}`);
         } else if (installed) {
-          detail = theme.fg("accent", `${label} ⚠ 已安装但未完成鉴权`);
+          line = theme.fg("accent", `${label} ⚠ 已安装但未完成鉴权`);
         } else {
-          detail = theme.fg("dim", `${label} ✗ 未安装`);
+          line = theme.fg("dim", `${label} ✗ 未安装`);
         }
-
-        ctx.ui.notify(detail, "info");
+        lines.push(line);
       }
+
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
