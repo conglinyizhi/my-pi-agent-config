@@ -46,7 +46,6 @@ interface ToolConfig {
   display: string;
   check: string;
   auth?: string;
-  verify?: string;
   version?: string;
   hint: string;
 }
@@ -76,14 +75,7 @@ function createDetector(cfg: ToolConfig): Detector {
 
       if (!output) return { installed: false };
 
-      // 2. 可选：verify 正则确认输出确实来自目标工具
-      if (cfg.verify) {
-        if (!new RegExp(cfg.verify, "m").test(output)) {
-          return { installed: false };
-        }
-      }
-
-      // 3. 可选：提取版本号
+      // 2. 可选：提取版本号
       let version: string | undefined;
       if (cfg.version) {
         const m = output.match(new RegExp(cfg.version, "m"));
