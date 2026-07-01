@@ -17,6 +17,7 @@ import {
   symlinkSync,
   unlinkSync,
   mkdirSync,
+  readlinkSync,
 } from "node:fs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -134,7 +135,6 @@ function linkSkill(linkName: string, srcAbs: string): "linked" | "skipped" {
   try {
     const stat = lstatSync(linkPath);
     if (stat.isSymbolicLink()) {
-      const { readlinkSync } = require("node:fs");
       if (readlinkSync(linkPath) === relativeTarget) return "skipped";
       unlinkSync(linkPath);
     } else {

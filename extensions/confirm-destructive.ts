@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_fork", async (event, ctx) => {
     if (!ctx.hasUI) return;
 
-    const choice = await ctx.ui.select(`Fork from entry ${event.entryId.slice(0, 8)}?`, ["是，创建分叉", "否，留在当前会话"]);
+    const choice = await ctx.ui.select(`从条目 ${event.entryId.slice(0, 8)} 分叉？`, ["是，创建分叉", "否，留在当前会话"]);
 
     if (choice !== "是，创建分叉") {
       ctx.ui.notify("已取消分叉", "info");

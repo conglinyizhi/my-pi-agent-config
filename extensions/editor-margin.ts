@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {
       // 从设置中读取 marginSize，默认 2
       const ctxExt = ctx as ExtensionContext & { settings?: Record<string, unknown> };
-      const marginSize = (ctxExt.settings?.editorMargin as number) ?? 0;
+      const marginSize = (ctxExt.settings?.editorMargin as number) ?? 2;
       return new BorderedEditor(tui, theme, keybindings, ctx.ui.theme, marginSize);
     });
   });

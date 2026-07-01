@@ -8,7 +8,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  const protectedPaths = [".env", ".git/", "node_modules/"];
+  const protectedPaths = [
+    { pattern: /^\.env$/i, label: ".env" },
+    { pattern: /(?:^|\/)\.env(?:\.|$)/i, label: ".env" },
+    { pattern: /(?:^|\/)\.git\//i, label: ".git/" },
+    { pattern: /(?:^|\/)node_modules\//i, label: "node_modules/" },
+  ];
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") {
@@ -16,9 +21,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     const path = event.input.path as string;
-    const isProtected = protectedPaths.some((p) => path.includes(p));
+    const matched = protectedPaths.find(p => p.pattern.test(path));
 
-    if (isProtected) {
+    if (matched) {
       if (ctx.hasUI) {
         ctx.ui.notify(`已阻止写入受保护路径：${path}`, "warning");
       }
