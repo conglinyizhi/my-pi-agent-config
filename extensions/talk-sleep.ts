@@ -95,7 +95,7 @@ export default function (pi: ExtensionAPI) {
       await appendFile(STORE_PATH, JSON.stringify(entry) + "\n", "utf-8");
 
       const label = entry.note ? `"${entry.note}"` : "无备注";
-      ctx.ui.notify(`已暂存: ${label}  (${cwd})`, "success");
+      ctx.ui.notify(`已暂存: ${label}  (${cwd})`, "info");
     },
   });
 
@@ -153,7 +153,7 @@ export default function (pi: ExtensionAPI) {
         });
         ctx.ui.setStatus("talk-sleep", undefined);
         if (result.ok) {
-          ctx.ui.notify("已复制到剪贴板: " + fullCmd, "success");
+          ctx.ui.notify("已复制到剪贴板: " + fullCmd, "info");
         } else {
           const detail = result.errors.length > 0
             ? `\n尝试了 ${result.errors.length} 个工具均失败：\n${result.errors.map((e) => `  · ${e}`).join("\n")}`

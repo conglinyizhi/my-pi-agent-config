@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
 
       if (choice) {
         const level = choice.replace(" ←", "");
-        pi.setThinkingLevel(level);
+        pi.setThinkingLevel(level as Parameters<typeof pi.setThinkingLevel>[0]);
         const applied = pi.getThinkingLevel();
         ctx.ui.notify(
           applied !== level

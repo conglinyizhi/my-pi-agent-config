@@ -83,7 +83,7 @@ async function searchSessions(params: {
         if (entry.type !== "message") continue;
 
         const msg = entry.message;
-        const text = extractText(msg.content);
+        const text = extractText((msg as { content?: unknown }).content);
         if (!text) continue;
 
         const lowerText = text.toLowerCase();
