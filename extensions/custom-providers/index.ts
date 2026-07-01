@@ -17,7 +17,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
 
   // /provider 命令必须始终注册，不能因 providers.toml 不存在而被跳过
   pi.registerCommand("provider", {
-    description: "管理自定义供应商。子命令: fast-add <URL>;<模型>[;<Key>] | reload",
+    description: "管理自定义供应商。子命令: fast-add <URL> <Key> [模型...]（顺序任意） | reload",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (trimmed === "reload" || trimmed.startsWith("reload")) {
@@ -40,7 +40,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       if (trimmed.startsWith("fast-add")) {
         const input = trimmed.slice("fast-add".length).trim();
         if (!input) {
-          ctx.ui.notify("用法: /provider fast-add <URL>;<模型名>[;<API Key>]", "info");
+          ctx.ui.notify("用法: /provider fast-add <URL> <API Key> [模型名...]\nURL 和 Key 必选，模型名可选（提供 Key 时自动拉取）\n顺序任意，用 ;, ，空格均可分隔", "info");
           return;
         }
         await fastAddHandler(input, ctx, pi);

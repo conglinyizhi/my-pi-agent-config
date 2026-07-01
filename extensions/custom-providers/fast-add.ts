@@ -1,13 +1,17 @@
 /**
  * /provider fast-add — 一行命令快速添加自定义供应商
  *
- * 格式：/provider fast-add <URL>[分隔符]<模型名>[分隔符]<API Key>
- * 分隔符：;  ；  ,  ，  、  （空格兜底）
+ * 新流程：
+ * 1. 解析 URL 和 API Key
+ * 2. 用 Key 调用 /v1/models 获取实际可用模型
+ * 3. 从 models.dev 交叉匹配元数据（上下文长度、价格等）
+ * 4. 让用户选择要添加的模型
+ * 5. 支持多 key 分组（同域名不同 key 注册为独立 provider）
  *
+ * 格式：/provider fast-add <URL>[;<API Key>]
  * 示例：
- *   /provider fast-add https://tokenflux.dev/v1;deepseek-v4-flash;tp-xxxx
- *   /provider fast-add https://api.groq.com/openai/v1;llama-3-70b;sk-xxx
- *   /provider fast-add https://api.xyz.com;model-a,model-b  （无 Key）
+ *   /provider fast-add https://tokenflux.dev/v1;tp-xxxx
+ *   /provider fast-add https://api.groq.com/openai/v1;sk-xxx
  */
 
 import { writeFileSync, readFileSync } from "node:fs";
@@ -19,8 +23,14 @@ import {
 import { parse, stringify } from "smol-toml";
 import type { ModelOverride, InputCapability } from "./types.ts";
 import { maskKey } from "../../lib/auth";
-import { parseSize } from "../../lib/format-utils";
 import { extractDomainId } from "../../lib/url-utils";
+import {
+  discoverModelsWithCandidates,
+  buildMatchedModel,
+  type ModelWithCandidates,
+  type ModelCandidate,
+  type MatchedModel,
+} from "./models-dev.ts";
 
 // ─── 类型 ───────────────────────────────────────────
 
@@ -30,6 +40,7 @@ export interface FastAddInfo {
   providerName: string;
   models: string[];
   apiKey?: string;
+  discoveredModels?: never; // 已废弃，用 modelOverrides 代替
   modelOverrides?: ModelOverride[];
   defaults?: {
     contextWindow?: number;
@@ -67,28 +78,9 @@ const AUTH_PATH = `${AGENT_DIR}/auth.json`;
 
 // ─── 解析引擎 ───────────────────────────────────────
 
-/** 按优先级尝试拆解剩余字符串 */
-function splitByDelimiters(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-
-  if (/[;；]/.test(trimmed)) {
-    return trimmed.split(/[;；]+/).map(s => s.trim()).filter(Boolean);
-  }
-  if (/[,，、]/.test(trimmed)) {
-    return trimmed.split(/[,，、]+/).map(s => s.trim()).filter(Boolean);
-  }
-  const spaced = trimmed.split(/\s+/).map(s => s.trim()).filter(Boolean);
-  if (spaced.length > 0) return spaced;
-
-  return [trimmed];
-}
-
 /** 判断字符串是否像 API Key */
 function looksLikeApiKey(s: string): boolean {
-  // 常见前缀
   if (/^(sk-|sk-ant-|sk-or-|tp-|api-|pk-|eyJ)/i.test(s)) return true;
-  // 长乱序字符串（20 位以上，只含合法字符）
   if (s.length >= 20 && /^[a-zA-Z0-9_\-./=]+$/.test(s)) return true;
   return false;
 }
@@ -96,59 +88,94 @@ function looksLikeApiKey(s: string): boolean {
 /** 从 URL 提取默认供应商标识符（从 lib/url-utils 重新导出） */
 export { extractDomainId } from "../../lib/url-utils";
 
-/** 解析用户原始输入 */
+/**
+ * 判断字符串是否像 URL
+ */
+function looksLikeUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s) ||
+    /^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(s);
+}
+
+/** 解析用户原始输入 — 智能识别，不要求固定顺序 */
 export function parseFastAddInput(raw: string): { ok: true; data: FastAddInfo } | { ok: false; error: string } {
   const input = raw.trim();
   if (!input) return { ok: false, error: "输入不能为空" };
 
-  // 1. 提取 URL（支持无协议头自动补全）
-  const urlMatch = input.match(/(https?:\/\/[^\s;,，；、]+)/i);
-  if (!urlMatch) {
-    // 尝试补 https://
-    const domainMatch = input.match(
-      /^([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(:\d+)?(\/[-a-zA-Z0-9%@!~#=_+/.:,]*)?)/,
-    );
-    if (domainMatch && domainMatch.index === 0) {
-      const withProtocol = `https://${domainMatch[1]}`;
-      return parseFastAddInput(input.replace(domainMatch[1], withProtocol));
-    }
-    return { ok: false, error: "未检测到有效的 API 地址，需包含 http:// 或 https://" };
+  // 统一拆分：按 ;；,，、 和空格拆分
+  const allParts = input
+    .split(/[;；,，、\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (allParts.length === 0) {
+    return { ok: false, error: "未检测到有效输入" };
   }
 
-  const url = urlMatch[1].replace(/\/+$/, "");
-
-  // 2. 移除 URL，解析剩余部分
-  const remaining = input.slice(urlMatch.index ?? 0 + urlMatch[0].length).trim();
-  const parts = splitByDelimiters(remaining);
-
-  if (parts.length === 0) {
-    return { ok: false, error: "未检测到模型名称。格式：<URL>;<模型名>[;<API Key>]" };
-  }
-
-  // 3. 区分模型名和 API Key
-  let models: string[] = [];
+  // 智能分类每个 part
+  let url: string | undefined;
   let apiKey: string | undefined;
+  const models: string[] = [];
 
-  const keyCandidates = parts
-    .map((p, i) => (looksLikeApiKey(p) ? i : -1))
-    .filter(i => i >= 0);
+  for (let i = 0; i < allParts.length; i++) {
+    const part = allParts[i];
 
-  if (keyCandidates.length > 0) {
-    // 取最后一个像 Key 的（避免模型名误判）
-    const keyIdx = keyCandidates[keyCandidates.length - 1];
-    apiKey = parts[keyIdx];
-    const modelParts = parts.filter((_, i) => i !== keyIdx);
-    models = modelParts.flatMap(p => p.split(/[,，、]+/).map(m => m.trim())).filter(Boolean);
-  } else {
-    models = parts.flatMap(p => p.split(/[,，、]+/).map(m => m.trim())).filter(Boolean);
+    // 1. URL：第一个匹配的 URL 片段
+    if (!url && looksLikeUrl(part)) {
+      // 补全协议
+      if (!/^https?:\/\//i.test(part)) {
+        url = `https://${part}`;
+      } else {
+        url = part;
+      }
+      // URL 可能包含后续路径，需要拼接
+      // 检查原始输入中 URL 是否被拆分了
+      continue;
+    }
+
+    // URL 被空格拆分的情况：尝试拼接
+    // 例如 "https://api.example.com /v1" 被拆成 ["https://api.example.com", "/v1"]
+    if (url && part.startsWith("/") && !looksLikeApiKey(part)) {
+      url = `${url}${part}`;
+      continue;
+    }
+
+    // 2. API Key
+    if (!apiKey && looksLikeApiKey(part)) {
+      apiKey = part;
+      continue;
+    }
+
+    // 3. 剩余的当作模型名
+    if (!/^https?:\/\//i.test(part)) {
+      models.push(part);
+    }
   }
 
-  // 去重
-  models = [...new Set(models)];
-
-  if (models.length === 0) {
-    return { ok: false, error: "未检测到有效的模型名称" };
+  // URL 被空格拆分的修复：从原始输入中重新提取完整 URL
+  if (!url) {
+    const urlMatch = input.match(/(https?:\/\/[^\s;,，；、]+)/i);
+    if (!urlMatch) {
+      // 尝试无协议的域名
+      const domainMatch = input.match(/([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(:\d+)?(\/[-a-zA-Z0-9%@!~#=_+/.:,]*)?)/);
+      if (domainMatch) {
+        url = `https://${domainMatch[1]}`;
+      } else {
+        return { ok: false, error: "未检测到有效的 API 地址，需包含 http:// 或 https://" };
+      }
+    } else {
+      url = urlMatch[1];
+    }
   }
+
+  url = url.replace(/\/+$/, "");
+
+  // API Key 必选
+  if (!apiKey) {
+    return { ok: false, error: "API Key 为必选参数。格式：<URL> <API Key> [模型名...]（顺序任意）" };
+  }
+
+  // 去重模型名
+  const uniqueModels = [...new Set(models)];
 
   const providerId = extractDomainId(url);
 
@@ -158,7 +185,7 @@ export function parseFastAddInput(raw: string): { ok: true; data: FastAddInfo } 
       url,
       providerId,
       providerName: providerId,
-      models,
+      models: uniqueModels,
       apiKey,
     },
   };
@@ -198,8 +225,8 @@ function loadExistingToml(): { providers: ExistingProvider[]; raw: string } | nu
 export function findOverlap(
   domain: string,
   existing: ExistingProvider[],
-): ExistingProvider | undefined {
-  return existing.find(p => {
+): ExistingProvider[] {
+  return existing.filter(p => {
     try {
       const existingDomain = new URL(p.baseUrl).hostname
         .replace(/^(api|www|v1|v2)\./i, "")
@@ -211,58 +238,236 @@ export function findOverlap(
   });
 }
 
-// ─── TUI 交互 ───────────────────────────────────────
+// ─── 模型发现与选择 ─────────────────────────────────
 
-/** 显示确认或合并对话框，返回用户操作意图 */
-async function showConfirmationOrMerge(
+/**
+ * 从 API 发现模型并准备候选列表
+ */
+async function discoverModels(
   ctx: ExtensionCommandContext,
   info: FastAddInfo,
-  overlap: ExistingProvider | undefined,
-): Promise<FastAddAction> {
-  if (overlap) {
-    // ── 重叠：弹出合并对话框 ──
-    const mergeChoice = await ctx.ui.select(
-      `供应商 "${overlap.id}" 已存在（${overlap.baseUrl}）\n现有模型: ${formatModels(overlap.models)}\n新增模型: ${info.models.join("、")}\n如何处理？`,
-      [
-        `🔀 合并 — 将新模型追加到 "${overlap.id}"`,
-        `📦 新建 — 以其他名称创建`,
-        `⏭  跳过 — 什么也不做`,
-      ],
-    );
-    if (!mergeChoice || mergeChoice.startsWith("⏭")) return { kind: "cancel" };
-
-    if (mergeChoice.startsWith("🔀")) {
-      // Key 冲突处理
-      const existingAuth = loadAuthData();
-      const existingKey = existingAuth[overlap.id] as { key?: string } | undefined;
-      let keyAction: "replace" | "keep" = "keep";
-
-      if (info.apiKey && existingKey?.key) {
-        const keyChoice = await ctx.ui.select(
-          `API Key 冲突：\n现有 Key: ${maskKey(existingKey.key)}\n新   Key: ${maskKey(info.apiKey)}\n`,
-          ["替换为新的 Key", "保留现有的 Key"],
-        );
-        if (!keyChoice) return { kind: "cancel" };
-        keyAction = keyChoice.startsWith("替换") ? "replace" : "keep";
-      }
-
-      return { kind: "merge", targetId: overlap.id, keyAction };
-    }
-
-    if (mergeChoice.startsWith("📦")) {
-      const newName = await ctx.ui.input("输入新的供应商标识符", `${info.providerId}-2`);
-      if (!newName) return { kind: "cancel" };
-      return { kind: "rename", newId: newName };
-    }
-
-    return { kind: "cancel" };
+): Promise<ModelWithCandidates[] | null> {
+  if (!info.apiKey) {
+    return null;
   }
 
-  // ── 无重叠：确认对话框 ──
+  ctx.ui.notify("正在从 API 拉取模型列表...", "info");
+
+  try {
+    const models = await discoverModelsWithCandidates(info.url, info.apiKey);
+    return models;
+  } catch (err) {
+    ctx.ui.notify(
+      `拉取模型列表失败: ${err instanceof Error ? err.message : String(err)}\n将使用手动输入模式`,
+      "warning",
+    );
+    return null;
+  }
+}
+
+/** 格式化候选信息用于展示 */
+function formatCandidate(c: ModelCandidate): string {
+  const ctx = c.contextLength ?? 0;
+  const ctxStr = ctx >= 1000000
+    ? `${(ctx / 1000000).toFixed(1)}M`
+    : ctx >= 1000 ? `${(ctx / 1000).toFixed(0)}K` : ctx > 0 ? String(ctx) : "?";
+  const mods = c.inputModalities?.join("+") || "text";
+  const cost = c.cost;
+  const priceStr = cost
+    ? `¥${cost.input.toFixed(2)}/${cost.output.toFixed(2)}`
+    : "价格未知";
+  return `${c.providerName} | ${ctxStr} ctx | ${mods} | ${priceStr}`;
+}
+
+/**
+ * 让用户为每个模型选择对应的 models.dev 配置
+ */
+async function showModelSelector(
+  ctx: ExtensionCommandContext,
+  candidates: ModelWithCandidates[],
+): Promise<MatchedModel[]> {
+  if (candidates.length === 0) {
+    ctx.ui.notify("API 返回的模型列表为空", "warning");
+    return [];
+  }
+
+  // 总览
+  const hasCand = candidates.filter(c => c.candidates.length > 0).length;
+  const noCand = candidates.length - hasCand;
+
+  const overviewLines = candidates.map(c => {
+    if (c.candidates.length > 0) {
+      const best = c.candidates[0];
+      return `  ✓ ${c.modelId} → ${best.providerName}${best.cost ? ` (¥${best.cost.input.toFixed(2)}/${best.cost.output.toFixed(2)})` : ""}`;
+    }
+    if (c.baseModelCandidates.length > 0) {
+      return `  ~ ${c.modelId} → 基础定义: ${c.baseModelCandidates[0].slug}`;
+    }
+    return `  ✗ ${c.modelId}（无候选）`;
+  });
+
+  const choice = await ctx.ui.select(
+    `发现 ${candidates.length} 个模型（${hasCand} 个有供应商配置，${noCand} 个无候选）\n${overviewLines.join("\n")}\n\n如何处理？`,
+    [
+      "✅ 全部接受最佳候选（有候选的自动填充，无候选的用默认值）",
+      "✏️  逐个配置（为每个模型选择对应的供应商/配置）",
+      "🔧 只选部分模型（先筛选要哪些）",
+      "❌ 取消",
+    ],
+  );
+
+  if (!choice || choice.startsWith("❌")) return [];
+
+  if (choice.startsWith("✅")) {
+    // 全部接受最佳候选
+    const results: MatchedModel[] = [];
+    for (const c of candidates) {
+      const best = c.candidates[0] || null;
+      results.push(await buildMatchedModel(c.modelId, best));
+    }
+    return results;
+  }
+
+  if (choice.startsWith("🔧")) {
+    const input = await ctx.ui.input(
+      "输入要添加的模型名（逗号分隔，留空表示全部）",
+      candidates.map(c => c.modelId).slice(0, 10).join(", "),
+    );
+    let selectedIds: string[];
+    if (!input) {
+      selectedIds = candidates.map(c => c.modelId);
+    } else {
+      selectedIds = input.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+    }
+    candidates = candidates.filter(c => selectedIds.includes(c.modelId));
+  }
+
+  // 逐个配置
+  const results: MatchedModel[] = [];
+  for (const c of candidates) {
+    if (c.candidates.length === 0 && c.baseModelCandidates.length === 0) {
+      results.push(await buildMatchedModel(c.modelId, null));
+      continue;
+    }
+
+    // 构建选项：供应商候选 + 基础定义候选 + 无匹配
+    const options: string[] = c.candidates.map(m =>
+      `📦 ${formatCandidate(m)}`
+    );
+    for (const bc of c.baseModelCandidates) {
+      options.push(`📋 基础定义: ${bc.slug}`);
+    }
+    options.push("✗ 无匹配 / 手动配置（使用默认值）");
+
+    const selected = await ctx.ui.select(
+      `模型 "${c.modelId}" 选择对应的配置：`,
+      options,
+    );
+
+    if (!selected || selected.startsWith("✗")) {
+      results.push(await buildMatchedModel(c.modelId, null));
+    } else if (selected.startsWith("📦")) {
+      const idx = options.indexOf(selected);
+      if (idx >= 0 && idx < c.candidates.length) {
+        results.push(await buildMatchedModel(c.modelId, c.candidates[idx]));
+      } else {
+        results.push(await buildMatchedModel(c.modelId, null));
+      }
+    } else if (selected.startsWith("📋")) {
+ // 基础定义候选，构造一个临时 candidate
+      const idx = options.indexOf(selected) - c.candidates.length;
+      if (idx >= 0 && idx < c.baseModelCandidates.length) {
+        const bc = c.baseModelCandidates[idx];
+        results.push(await buildMatchedModel(c.modelId, {
+          providerId: "base",
+          providerName: "base",
+          path: bc.path,
+          baseModel: bc.slug,
+        }));
+      } else {
+        results.push(await buildMatchedModel(c.modelId, null));
+      }
+    } else {
+      results.push(await buildMatchedModel(c.modelId, null));
+    }
+  }
+
+  return results;
+}
+
+// ─── TUI 交互 ───────────────────────────────────────
+
+/**
+ * 处理多 key 分组：检测同域名的已有 provider，让用户选择
+ */
+async function handleMultiKeyGrouping(
+  ctx: ExtensionCommandContext,
+  info: FastAddInfo,
+  overlappingProviders: ExistingProvider[],
+): Promise<FastAddAction> {
+  if (overlappingProviders.length === 0) {
+    // 无重叠，直接确认
+    return showNewProviderConfirmation(ctx, info);
+  }
+
+  // 有重叠，让用户选择
+  const options = overlappingProviders.map(p => {
+    const authEntry = loadAuthData()[p.id] as { key?: string } | undefined;
+    return `🔀 追加到 "${p.id}"（${authEntry?.key ? maskKey(authEntry.key) : "无 Key"}）`;
+  });
+  options.push(`📦 新建分组（不同的 Key 或别名）`);
+  options.push(`⏭  跳过`);
+
+  const choice = await ctx.ui.select(
+    `检测到同域名的 ${overlappingProviders.length} 个已有供应商：\n${overlappingProviders.map(p => `  • ${p.id} (${p.baseUrl})`).join("\n")}\n\n如何处理？`,
+    options,
+  );
+
+  if (!choice || choice.startsWith("⏭")) return { kind: "cancel" };
+
+  if (choice.startsWith("📦")) {
+    // 新建分组
+    const defaultName = `${info.providerId}-${overlappingProviders.length + 1}`;
+    const newName = await ctx.ui.input("输入新分组的标识符", defaultName);
+    if (!newName) return { kind: "cancel" };
+    return { kind: "rename", newId: newName };
+  }
+
+  // 追加到已有分组
+  const match = choice.match(/追加到 "([^"]+)"/);
+  if (match) {
+    const targetId = match[1];
+    const existingAuth = loadAuthData();
+    const existingKey = existingAuth[targetId] as { key?: string } | undefined;
+    let keyAction: "replace" | "keep" = "keep";
+
+    if (info.apiKey && existingKey?.key && info.apiKey !== existingKey.key) {
+      const keyChoice = await ctx.ui.select(
+        `API Key 冲突：\n现有 Key: ${maskKey(existingKey.key)}\n新   Key: ${maskKey(info.apiKey)}\n`,
+        ["替换为新的 Key", "保留现有的 Key"],
+      );
+      if (!keyChoice) return { kind: "cancel" };
+      keyAction = keyChoice.startsWith("替换") ? "replace" : "keep";
+    }
+
+    return { kind: "merge", targetId, keyAction };
+  }
+
+  return { kind: "cancel" };
+}
+
+/**
+ * 新供应商确认对话框
+ */
+async function showNewProviderConfirmation(
+  ctx: ExtensionCommandContext,
+  info: FastAddInfo,
+): Promise<FastAddAction> {
+  const modelCount = info.modelOverrides?.length || info.models.length;
   const summaryLines = [
     `📡 地址:     ${info.url}`,
     `🏷️  标识符:   ${info.providerId}`,
-    `🧠 模型:     ${info.models.join(", ")}`,
+    `🧠 模型:     ${modelCount} 个`,
     info.apiKey
       ? `🔑 API Key:  ${maskKey(info.apiKey)}`
       : `🔑 API Key:  （未提供，可后续用 /login 配置）`,
@@ -295,29 +500,22 @@ function formatModels(models: unknown): string {
   return String(models || "（无）");
 }
 
+// ─── TOML 写入工具 ──────────────────────────────────
 
-// ─── 模型参数编辑器 ──────────────────────────────────
-
-/** 询问用户是否要编辑模型参数，返回 overrides 和 defaults */
-
-/** 解析容量简写为数字，如 "1M" → 1000000, "256K" → 256000, "512k" → 512000 */
-
-/** 将驼峰 ModelOverride 转为 TOML 蛇形对象 */
 function tomlModel(m: ModelOverride): Record<string, unknown> {
   const result: Record<string, unknown> = { id: m.id };
-  if (m.name !== undefined) result.name = m.name;
+  if (m.name !== undefined && m.name !== m.id) result.name = m.name;
   if (m.contextWindow !== undefined) result.context_window = m.contextWindow;
   if (m.maxTokens !== undefined) result.max_tokens = m.maxTokens;
-  if (m.costInput !== undefined) result.cost_input = m.costInput;
-  if (m.costOutput !== undefined) result.cost_output = m.costOutput;
-  if (m.costCacheRead !== undefined) result.cost_cache_read = m.costCacheRead;
-  if (m.costCacheWrite !== undefined) result.cost_cache_write = m.costCacheWrite;
+  if (m.costInput !== undefined && m.costInput > 0) result.cost_input = m.costInput;
+  if (m.costOutput !== undefined && m.costOutput > 0) result.cost_output = m.costOutput;
+  if (m.costCacheRead !== undefined && m.costCacheRead > 0) result.cost_cache_read = m.costCacheRead;
+  if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) result.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) result.reasoning = m.reasoning;
-  if (m.input !== undefined) result.input = m.input;
+  if (m.input !== undefined && m.input.length > 1) result.input = m.input;
   return result;
 }
 
-/** 将驼峰 defaults 转为 TOML 蛇形对象 */
 function tomlDefaults(d: NonNullable<FastAddInfo["defaults"]>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   if (d.contextWindow !== undefined) result.context_window = d.contextWindow;
@@ -329,57 +527,6 @@ function tomlDefaults(d: NonNullable<FastAddInfo["defaults"]>): Record<string, u
   if (d.reasoning !== undefined) result.reasoning = d.reasoning;
   if (d.input !== undefined) result.input = d.input;
   return result;
-}
-
-async function showModelEditor(
-  ctx: ExtensionCommandContext,
-  info: FastAddInfo,
-): Promise<{ modelOverrides: ModelOverride[]; defaults: FastAddInfo["defaults"] }> {
-  const choice = await ctx.ui.select(
-    `配置模型参数？共有 ${info.models.length} 个模型`,
-    ["快速配置通用参数", "跳过，使用默认值"],
-  );
-  if (!choice || choice.startsWith("跳过")) {
-    return { modelOverrides: [], defaults: undefined };
-  }
-
-  // 通用参数配置（应用到所有模型）
-  const apiChoice = await ctx.ui.select("API 格式？", [
-    "openai-old (Chat Completions，最通用)",
-    "openai-new (OpenAI Responses)",
-    "anthropic (Anthropic Messages)",
-  ]);
-  const chosenApi: string | undefined =
-    apiChoice?.startsWith("openai-old") ? "openai-old"
-    : apiChoice?.startsWith("openai-new") ? "openai-new"
-    : apiChoice?.startsWith("anthropic") ? "anthropic"
-    : undefined;
-
-  const ctxStr = await ctx.ui.input("上下文窗口（如 128000、1M、256K）", "128000");
-  const maxTokStr = await ctx.ui.input("最大输出 Token", "4096");
-  const costInStr = await ctx.ui.input("输入价格（元/百万token，0 表示免费）", "0");
-  const costOutStr = await ctx.ui.input("输出价格（元/百万token，0 表示免费）", "0");
-  const reasoningChoice = await ctx.ui.select("推理能力？", ["不支持", "支持"]);
-  const visionChoice = await ctx.ui.select("视觉能力？", ["不支持", "支持"]);
-
-  const defaults: FastAddInfo["defaults"] = {};
-  if (ctxStr) defaults.contextWindow = parseSize(ctxStr) || parseInt(ctxStr, 10) || undefined;
-  if (maxTokStr) defaults.maxTokens = parseInt(maxTokStr, 10) || undefined;
-  if (costInStr) defaults.costInput = parseFloat(costInStr) || undefined;
-  if (costOutStr) defaults.costOutput = parseFloat(costOutStr) || undefined;
-  if (reasoningChoice === "支持") defaults.reasoning = true;
-  if (visionChoice === "支持") defaults.input = ["text", "image"];
-
-  // 构建模型 overrides（通用参数应用到每个模型）
-  const modelOverrides: ModelOverride[] = info.models.map(id => ({
-    id,
-    ...defaults,
-  }));
-
-  // 把用户选择的 API 格式带回
-  (info)._chosenApi = chosenApi;
-
-  return { modelOverrides, defaults };
 }
 
 // ─── 写入执行 ───────────────────────────────────────
@@ -408,40 +555,80 @@ async function applyAndRegister(
       configData = { providers: [] };
     }
 
+    const newModels: ModelOverride[] = info.modelOverrides && info.modelOverrides.length > 0
+      ? info.modelOverrides
+      : info.models.map(id => ({ id }));
+
+    // 用于注册到 Pi 的完整模型列表（merge 时包含已有模型）
+    let allModelsForRegister: ModelOverride[] = [...newModels];
+
     if (isMerge) {
       const existing = configData.providers.find(p => p.id === providerId);
       if (existing) {
         const existingModels = existing.models;
-        const newModels = info.models.filter(m => {
-          if (typeof existingModels === "string") {
-            return !existingModels.split(/[,，、]+/).map(s => s.trim()).includes(m);
+        const existingIds = new Set<string>();
+        const existingOverrides: ModelOverride[] = [];
+
+        // 提取已有模型
+        if (Array.isArray(existingModels)) {
+          for (const m of existingModels) {
+            if (typeof m === "object" && m && "id" in m) {
+              const id = String((m as Record<string, unknown>).id);
+              existingIds.add(id);
+              existingOverrides.push({
+                id,
+                name: (m as Record<string, unknown>).name as string | undefined,
+                contextWindow: (m as Record<string, unknown>).context_window as number | undefined,
+                maxTokens: (m as Record<string, unknown>).max_tokens as number | undefined,
+                costInput: (m as Record<string, unknown>).cost_input as number | undefined,
+                costOutput: (m as Record<string, unknown>).cost_output as number | undefined,
+                costCacheRead: (m as Record<string, unknown>).cost_cache_read as number | undefined,
+                costCacheWrite: (m as Record<string, unknown>).cost_cache_write as number | undefined,
+                reasoning: (m as Record<string, unknown>).reasoning as boolean | undefined,
+                input: (m as Record<string, unknown>).input as InputCapability[] | undefined,
+              });
+            }
           }
-          return true;
-        });
-        if (newModels.length > 0) {
-          if (typeof existingModels === "string" && existingModels.trim()) {
-            existing.models = `${existingModels}, ${newModels.join(", ")}`;
+        } else if (typeof existingModels === "string") {
+          existingModels.split(/[,，、]+/).map(s => s.trim()).forEach(id => {
+            existingIds.add(id);
+            existingOverrides.push({ id });
+          });
+        }
+
+        // 过滤出新模型（不在已有列表中的）
+        const freshModels = newModels.filter(m => !existingIds.has(m.id));
+
+        // 写入 TOML：追加新模型
+        if (freshModels.length > 0) {
+          if (Array.isArray(existingModels)) {
+            existing.models = [...existingModels, ...freshModels.map(m => tomlModel(m))];
+          } else if (typeof existingModels === "string" && existingModels.trim()) {
+            const ids = existingModels.split(/[,，、]+/).map(s => s.trim());
+            const allIds = [...ids, ...freshModels.map(m => m.id)];
+            existing.models = allIds.join(", ");
           } else {
-            existing.models = newModels.join(", ");
+            existing.models = freshModels.map(m => tomlModel(m));
           }
         }
-        // 修复旧版本写入的 api = "auto"
+
         if (!existing.api || existing.api === "auto") {
-          existing.api = "openai-new";
+          existing.api = info._chosenApi || "openai-old";
         }
+
+        // 合并已有模型 + 新模型（新模型覆盖同 id 的已有模型参数）
+        const mergedMap = new Map<string, ModelOverride>();
+        for (const m of existingOverrides) mergedMap.set(m.id, m);
+        for (const m of newModels) mergedMap.set(m.id, m); // 新模型优先
+        allModelsForRegister = [...mergedMap.values()];
       }
     } else {
       const newEntry: Record<string, unknown> = {
         id: providerId,
         base_url: info.url,
         api: info._chosenApi || "openai-old",
-        models: info.modelOverrides && info.modelOverrides.length > 0
-          ? info.modelOverrides.map(m => tomlModel(m))
-          : info.models.map(id => ({ id })),
+        models: newModels.map(m => tomlModel(m)),
       };
-      if (info.defaults && Object.keys(info.defaults).length > 0) {
-        newEntry.defaults = tomlDefaults(info.defaults);
-      }
       configData.providers.push(newEntry);
     }
 
@@ -456,27 +643,26 @@ async function applyAndRegister(
         authData = {};
       }
 
-      if (isMerge && action.kind === "merge" && action.keyAction === "keep") {
-        // 跳过 Key 写入
-      } else {
+      if (!(isMerge && action.kind === "merge" && action.keyAction === "keep")) {
         authData[providerId] = { type: "api_key", key: info.apiKey };
       }
 
       writeFileSync(AUTH_PATH, JSON.stringify(authData, null, 2), "utf8");
     }
 
-    // ── 注册到 Pi（直接用用户提供的模型名）──
-  const resolvedApi = "openai-responses" as const;
-  const modelsToRegister: ModelOverride[] = info.modelOverrides && info.modelOverrides.length > 0
-    ? info.modelOverrides
-    : info.models.map(id => ({ id }));
+    // ── 注册到 Pi ──
+    const resolvedApi: "openai-responses" | "openai-completions" | "anthropic-messages" =
+      info._chosenApi === "openai-new" ? "openai-responses"
+      : info._chosenApi === "anthropic" ? "anthropic-messages"
+      : "openai-completions";
+
     pi.registerProvider(providerId, {
       name: providerId,
       baseUrl: info.url,
       api: resolvedApi,
       ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
-      models: modelsToRegister.map(m => ({
+      models: allModelsForRegister.map(m => ({
         id: m.id,
         name: m.name || m.id,
         api: resolvedApi,
@@ -493,11 +679,13 @@ async function applyAndRegister(
       })),
     });
 
+    const totalModels = allModelsForRegister.length;
+    const newCount = newModels.length;
     return {
       success: true,
       message: isMerge
-        ? `供应商 "${providerId}" 已更新，新增模型: ${info.models.join("、")}`
-        : `供应商 "${providerId}" 已添加（${info.models.length} 个模型），默认使用 OpenAI 兼容格式，可在 providers.toml 中修改`,
+        ? `供应商 "${providerId}" 已更新（共 ${totalModels} 个模型，新增 ${newCount}）`
+        : `供应商 "${providerId}" 已添加（${totalModels} 个模型）`,
     };
   } catch (err) {
     return {
@@ -514,7 +702,7 @@ export async function fastAddHandler(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  // 1. 解析
+  // 1. 解析输入
   const result = parseFastAddInput(args);
   if (!result.ok) {
     ctx.ui.notify(`❌ ${result.error}`, "error");
@@ -523,27 +711,73 @@ export async function fastAddHandler(
 
   const info = result.data;
 
-  // 2. 检测重叠
-  const existing = loadExistingToml();
-  const overlap = existing?.providers
-    ? findOverlap(info.providerId, existing.providers)
-    : undefined;
+  // 2. 如果有 API Key，尝试从 API 发现模型
+  if (info.apiKey) {
+    const discovered = await discoverModels(ctx, info);
+    if (discovered && discovered.length > 0) {
+      // 让用户为每个模型选择配置
+      const selected = await showModelSelector(ctx, discovered);
+      if (selected.length === 0) {
+        ctx.ui.notify("未选择任何模型，已取消", "info");
+        return;
+      }
 
-  // 3. 模型参数编辑（可选）
-  const { modelOverrides, defaults } = await showModelEditor(ctx, info);
-  if (modelOverrides.length > 0) {
-    info.modelOverrides = modelOverrides;
-    info.defaults = defaults;
+      // 更新 info.models 和 info.modelOverrides
+      info.models = selected.map(m => m.id);
+      info.modelOverrides = selected.map(m => ({
+        id: m.id,
+        name: m.name !== m.id ? m.name : undefined,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        costInput: m.costInput,
+        costOutput: m.costOutput,
+        costCacheRead: m.costCacheRead,
+        costCacheWrite: m.costCacheWrite,
+        reasoning: m.reasoning,
+        input: m.input,
+      }));
+    }
   }
 
-  // 4. TUI 确认
-  const action = await showConfirmationOrMerge(ctx, info, overlap);
+  // 3. 如果 API 拉取失败，回退到手动输入
+  if (!info.modelOverrides || info.modelOverrides.length === 0) {
+    if (info.models.length === 0) {
+      // 提示用户输入模型名
+      const input = await ctx.ui.input("输入要添加的模型名（逗号分隔）", "model-name");
+      if (!input) {
+        ctx.ui.notify("已取消", "info");
+        return;
+      }
+      info.models = input.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+    }
+
+    // 询问 API 格式
+    const apiChoice = await ctx.ui.select("API 格式？", [
+      "openai-old (Chat Completions，最通用)",
+      "openai-new (OpenAI Responses)",
+      "anthropic (Anthropic Messages)",
+    ]);
+    info._chosenApi =
+      apiChoice?.startsWith("openai-old") ? "openai-old"
+      : apiChoice?.startsWith("openai-new") ? "openai-new"
+      : apiChoice?.startsWith("anthropic") ? "anthropic"
+      : "openai-old";
+  }
+
+  // 4. 检测重叠（同域名的所有 provider）
+  const existing = loadExistingToml();
+  const overlapping = existing?.providers
+    ? findOverlap(extractDomainId(info.url), existing.providers)
+    : [];
+
+  // 5. 处理多 key 分组
+  const action = await handleMultiKeyGrouping(ctx, info, overlapping);
   if (action.kind === "cancel") {
     ctx.ui.notify("已取消", "info");
     return;
   }
 
-  // 5. 应用
+  // 6. 应用
   const applyResult = await applyAndRegister(pi, info, action);
   if (applyResult.success) {
     ctx.ui.notify(`✅ ${applyResult.message}`, "info");
