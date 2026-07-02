@@ -1,16 +1,4 @@
-/**
- * 计划模式扩展
- *
- * 用于安全代码分析的只读探索模式。
- * 启用后，只能使用只读工具。
- *
- * 特性：
- * - 可通过 /plan 命令或 Ctrl+Alt+P 切换
- * - Bash 仅允许白名单中的只读命令
- * - 从 "Plan:" 段落中提取带编号的计划步骤
- * - 在执行过程中用 [DONE:n] 标记完成步骤
- * - 执行期间显示进度跟踪组件
- */
+// 计划模式：只读探索 + 步骤追踪，安全代码分析（详见 README.md）
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";

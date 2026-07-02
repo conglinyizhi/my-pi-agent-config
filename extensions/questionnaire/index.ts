@@ -1,15 +1,10 @@
-/**
- * 问卷工具 - 用于询问单个或多个问题的统一工具
- *
- * 单个问题：简单的选项列表
- * 多个问题：标签页导航在问题之间切换
- */
+// 统一问卷工具，LLM 与用户的结构化交互通道（详见 questionnaire.README.md）
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import { notifyQuestion } from "../lib/notify-send";
+import { notifyQuestion } from "../../lib/notify-send";
 
 interface QuestionOption {
   value: string;

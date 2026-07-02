@@ -1,12 +1,4 @@
-/**
- * Skill 管理扩展（合并 skill-sync + skill-toggle）
- *
- * session_start: 后台异步同步仓库（clone / 软链接），状态栏实时进度
- * /skill-toggle: TUI 循环单选列表，即时开关技能
- *
- * skill-repo/  ─ 纯 clone 存放 + repo.toml
- * skills/      ─ 软链接 + 直放技能，Pi 扫描此目录
- */
+// Skill 管理（同步 + 开关），详见 README.md
 
 import { parse } from "smol-toml";
 import {

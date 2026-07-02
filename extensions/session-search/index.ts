@@ -1,9 +1,4 @@
-/**
- * Session Search Extension
- *
- * 注册一个 search_sessions 工具，让 LLM 可以跨所有项目和目录搜索历史 session 对话内容。
- * 用于查找之前讨论过的主题、代码片段、决策等。
- */
+// 跨项目搜索历史 session 对话内容（详见 session-search.README.md）
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";

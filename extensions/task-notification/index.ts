@@ -1,20 +1,10 @@
-/**
- * 任务通知扩展
- *
- * 当用户的任务完全处理完成时发送桌面通知。
- * 监听 agent_end 事件，在整个 agent 会话/任务循环结束时通知用户一次。
- *
- * - 用户手动取消（stopReason === "aborted"）→ 不通知
- * - 网络错误但 agent 会重试 → 延迟通知，如果 agent 恢复则取消
- * - 网络错误导致对话终止 → 发通知
- * - 正常完成 → 发通知
- */
+// 任务完成桌面通知（详见 README.md）
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isRetryableError } from "../lib/error-utils";
-import { findLastAssistant, summarizeLastAssistantMessage } from "../lib/message-utils";
-import { checkNotificationSupport, notifyTaskComplete } from "../lib/notify-send";
+import { isRetryableError } from "../../lib/error-utils";
+import { findLastAssistant, summarizeLastAssistantMessage } from "../../lib/message-utils";
+import { checkNotificationSupport, notifyTaskComplete } from "../../lib/notify-send";
 
 export default async function taskNotification(pi: ExtensionAPI) {
   // 初始化时检查通知指令是否可用，不满足时提示用户如何安装

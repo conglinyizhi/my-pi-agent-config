@@ -1,20 +1,4 @@
-/**
- * 工具检测器插件 —— 主入口
- *
- * ## 功能
- * 在每次会话启动 / reload 时检测宿主机上是否安装并配置了常用的外部 CLI 工具。
- * 若已可用，则在系统提示词中注入指引，让大模型优先使用 CLI 而不是直接调 API。
- *
- * TUI 状态栏实时颜色标识：
- *   - 绿色 ✓  → 已安装且鉴权完成
- *   - 橙色 ⚠  → 已安装但未鉴权
- *   - 灰色 ✗  → 未安装
- *
- * ## 架构
- * - `tools.toml`   —— 声明式配置，新增工具只需编辑此文件
- * - `types.ts`     —— 公共类型定义（Detector / DetectorResult）
- * - `index.ts`     —— 主入口，读取 TOML 动态生成检测器
- */
+// 工具检测器：声明式检测外部 CLI 工具并注入系统提示词（详见 README.md）
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Detector, DetectorResult } from "./types.js";
@@ -121,10 +105,6 @@ function loadDetectors(): Detector[] {
 }
 
 const DETECTORS: Detector[] = loadDetectors();
-
-// ===========================================================================
-// 以下为插件主体逻辑，一般无需修改
-// ===========================================================================
 
 /**
  * 检测结果缓存条目。
@@ -251,34 +231,20 @@ function renderToolStatus(entry: CacheEntry, theme: ExtensionContext["ui"]["them
   return theme.fg("dim", `${label} ✗`);
 }
 
-// ===========================================================================
-// 插件入口
-// ===========================================================================
-
 export default function toolChecker(pi: ExtensionAPI): void {
-  /**
-   * 会话启动 / reload 时：
-   * 启动检测但不等待，TUI 状态栏在检测完成后通过 .then() 异步更新。
-   */
+  // session_start: 启动异步检测，不阻塞会话初始化
   pi.on("session_start", (_event, ctx) => {
     startChecks(ctx.ui);
   });
 
-  /**
-   * 会话关闭时清理状态栏中的工具标识。
-   */
+  // session_shutdown: 清理状态栏
   pi.on("session_shutdown", (_event, ctx) => {
     for (const { detector } of cachedResults.values()) {
       ctx.ui.setStatus(`tool-${detector.name}`, undefined);
     }
   });
 
-  /**
-   * 注册 /show-status 命令。
-   *
-   * 以 TUI notify 形式向用户展示所有检测器的详细结果。
-   * 命令消息会被 Pi 拦截，不会流入 LLM 上下文。
-   */
+  // /show-status: 展示检测结果（不流入 LLM 上下文）
   pi.registerCommand("show-status", {
     description: "查看所有外部 CLI 工具的检测结果（不流入大模型上下文）",
     handler: async (_args, ctx) => {
@@ -317,11 +283,7 @@ export default function toolChecker(pi: ExtensionAPI): void {
     },
   });
 
-  /**
-   * 每次 agent 启动前，确保检测已完成后再注入系统提示词。
-   * 此时检测通常在 session_start 就已启动，用户打字的时间足以跑完，
-   * ensureChecksDone 多数情况下立即返回。
-   */
+  // before_agent_start: 等待检测完成 → 注入提示词
   pi.on("before_agent_start", async (event, _ctx) => {
     await ensureChecksDone();
 

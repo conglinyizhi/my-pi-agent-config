@@ -1,9 +1,4 @@
-/**
- * /open-editor 命令扩展
- *
- * 用设置文件中指定的编辑器打开目录或文件。
- * 无参数时打开当前工作目录，默认编辑器为 code。
- */
+// /open-editor: 用外部编辑器打开文件或目录
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";

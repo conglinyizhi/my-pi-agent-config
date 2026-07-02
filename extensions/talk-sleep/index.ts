@@ -1,9 +1,4 @@
-/**
- * talk-sleep 扩展
- *
- * /talk-sleep [备注]    — 将当前对话信息存入 ~/.pi/talk-sleep.jsonl
- * /talk-sleep-load       — 弹出 TUI 选择器，选中后显示恢复指令
- */
+// 暂存/恢复对话书签（详见 talk-sleep.README.md）
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";

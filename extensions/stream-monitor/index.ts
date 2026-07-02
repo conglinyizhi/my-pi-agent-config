@@ -1,14 +1,7 @@
-/**
- * 流式状态监视器
- *
- * - 显示当前 token 流入速度（tok/s）
- * - 工具执行时显示运行时长
- * - 自定义工作指示器，直观判断是否卡死
- * - 不缓存 ctx，避免 session 替换后使用过期引用
- */
+// 流式状态监视器：tok/s 流速 + 工具执行时长（详见 stream-monitor.README.md）
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { estimateTokens } from "../lib/token-utils";
+import { estimateTokens } from "../../lib/token-utils";
 
 export default function (pi: ExtensionAPI) {
   // 状态

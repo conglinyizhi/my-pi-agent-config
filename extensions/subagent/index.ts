@@ -1,16 +1,4 @@
-/**
- * Subagent 工具：把任务委派给专门的 agents
- *
- * 每次调用 subagent 时都会启动一个独立的 `pi` 进程，
- * 从而获得隔离的上下文窗口。
- *
- * 支持三种模式：
- *   - Single: { agent: "name", task: "..." }
- *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
- *   - Chain: { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
- *
- * 使用 JSON 模式捕获 subagent 的结构化输出。
- */
+// Subagent 工具：把任务委派给专门的 agents（详见 README.md）
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";

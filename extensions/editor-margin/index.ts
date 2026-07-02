@@ -1,13 +1,4 @@
-/**
- * 带边框和 margin 的输入编辑器
- *
- * 效果：
- *   左边距   ╭───────────────╮   右边距
- *   空白区域  │  输入内容...  │  空白区域
- *   空白区域  ╰───────────────╯  空白区域
- *
- * 通过调整 marginSize 控制边框到终端边缘的距离
- */
+// 带圆角边框和可配置边距的输入编辑器（详见 editor-margin.README.md）
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
