@@ -2,52 +2,49 @@
 // pre-commit-check.ts —— Git 提交前检查
 // 由 git-commit skill 调用，返回非零退出码表示有需要人工确认的问题
 
-import { execSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // 工具函数
 // ---------------------------------------------------------------------------
 
-function git(...args: string[]): string {
+function git(args: string[]): string {
   try {
-    return execSync(["git", ...args].join(" "), { encoding: "utf-8", stdio: "pipe" }).trim();
+    return execFileSync("git", args, { encoding: "utf-8", stdio: "pipe" }).trim();
   } catch {
     return "";
   }
 }
 
-let warnings = 0;
-let errors = 0;
+type Level = "WARN" | "ERROR";
 
-function emit(level: string, title: string, items?: string[]) {
-  const lines = items?.length ? `\n     ${items.join("\n     ")}` : "";
-  console.log(`[${level}] ${title}${lines}`);
+interface Finding { level: Level; title: string; items?: string[] }
+
+const findings: Finding[] = [];
+
+function issue(level: Level, title: string, items?: string[]) {
+  findings.push({ level, title, items });
 }
-function warn(title: string, items?: string[]) { emit("WARN", title, items); warnings++; }
-function err(title: string, items?: string[])  { emit("ERROR", title, items); errors++; }
-function ok(msg: string) { console.log(`[OK] ${msg}`); }
 
 // ---------------------------------------------------------------------------
 // 1. 确定待检查的文件列表
 // ---------------------------------------------------------------------------
 
-console.log("========== 提交前检查 ==========");
-
-let files = git("diff", "--cached", "--name-only").split("\n").filter(Boolean);
+let files = git(["diff", "--cached", "--name-only"]).split("\n").filter(Boolean);
 
 if (files.length === 0) {
-  console.log("[WARN] 暂存区为空，将检查工作区变更");
-  files = git("diff", "--name-only").split("\n").filter(Boolean);
+  issue("WARN", "暂存区为空，将检查工作区变更");
+  files = git(["diff", "--name-only"]).split("\n").filter(Boolean);
 }
 
 if (files.length === 0) {
-  files = git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
+  files = git(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean);
 }
 
 if (files.length === 0) {
-  ok("没有待提交的文件");
-  console.log("==================================");
+  console.log("没有待提交的文件。");
   process.exit(0);
 }
 
@@ -55,14 +52,16 @@ if (files.length === 0) {
 // 2. 未跟踪的新文件
 // ---------------------------------------------------------------------------
 
-const untracked = git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
+const untracked = git(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean);
 if (untracked.length > 0) {
-  warn("发现未跟踪文件:", untracked);
+  issue("WARN", "发现未跟踪文件", untracked);
 }
 
 // ---------------------------------------------------------------------------
 // 3. 调试残留
 // ---------------------------------------------------------------------------
+
+const SELF = new URL(import.meta.url).pathname;
 
 // 调试残留只检查代码文件
 const CODE_EXTS = new Set([
@@ -87,17 +86,18 @@ for (const { label, pattern } of debugPatterns) {
   const hits: string[] = [];
   for (const f of files) {
     if (!existsSync(f)) continue;
+    if (resolve(f) === SELF) continue;
     if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
-    const content = execSync(`cat "${f}"`, { encoding: "utf-8", stdio: "pipe" }).trim();
+    const content = readFileSync(f, "utf-8");
     const lines = content.split("\n");
     for (let i = 0; i < lines.length; i++) {
       if (pattern.test(lines[i])) {
-        hits.push(`${f}:${i + 1}: ${lines[i].trim().slice(0, 80)}`);
+        hits.push(`\`${f}:${i + 1}\` ${lines[i].trim().slice(0, 80)}`);
       }
     }
   }
   if (hits.length > 0) {
-    err(`疑似调试代码 (${label}):`, hits);
+    issue("ERROR", `疑似调试代码 — ${label}`, hits);
   }
 }
 
@@ -109,17 +109,18 @@ const conflictPattern = /^(<<<<<<<|=======|>>>>>>>)/;
 const conflictHits: string[] = [];
 for (const f of files) {
   if (!existsSync(f)) continue;
+  if (resolve(f) === SELF) continue;
   if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
-  const content = execSync(`cat "${f}"`, { encoding: "utf-8", stdio: "pipe" }).trim();
+  const content = readFileSync(f, "utf-8");
   const lines = content.split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (conflictPattern.test(lines[i])) {
-      conflictHits.push(`${f}:${i + 1}: ${lines[i].trim()}`);
+      conflictHits.push(`\`${f}:${i + 1}\` ${lines[i].trim()}`);
     }
   }
 }
 if (conflictHits.length > 0) {
-  err("合并冲突未解决:", conflictHits);
+  issue("ERROR", "合并冲突未解决", conflictHits);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ const sensitivePatterns = [
 
 const sensitiveFiles = files.filter((f) => sensitivePatterns.some((p) => p.test(f)));
 if (sensitiveFiles.length > 0) {
-  err("疑似敏感文件:", sensitiveFiles);
+  issue("ERROR", "疑似敏感文件", sensitiveFiles.map((f) => `\`${f}\``));
 }
 
 // ---------------------------------------------------------------------------
@@ -153,27 +154,43 @@ for (const f of files) {
   const size = statSync(f).size;
   if (size > ONE_MB) {
     const mb = (size / ONE_MB).toFixed(1);
-    bigFiles.push(`${f} (${mb} MB)`);
+    bigFiles.push(`\`${f}\` (${mb} MB)`);
   }
 }
 if (bigFiles.length > 0) {
-  warn("超大文件 (>1MB):", bigFiles);
+  issue("WARN", "超大文件 (>1MB)", bigFiles);
 }
 
 // ---------------------------------------------------------------------------
 // 汇总
 // ---------------------------------------------------------------------------
 
-console.log("==================================");
-if (errors > 0) {
-  console.log(`[ERROR] 检查不通过: ${errors} 个错误, ${warnings} 个警告`);
-  console.log("请修复错误后再提交");
+const errors = findings.filter((f) => f.level === "ERROR");
+const warns = findings.filter((f) => f.level === "WARN");
+
+if (errors.length > 0) {
+  console.log("## 提交前检查发现问题\n");
+  for (const f of findings) {
+    console.log(`- **${f.level === "ERROR" ? "✗" : "⚠"} ${f.title}**`);
+    if (f.items) {
+      for (const item of f.items) console.log(`  - ${item}`);
+    }
+  }
+  console.log(`\n> ${errors.length} errors, ${warns.length} warnings`);
   process.exit(1);
-} else if (warnings > 0) {
-  console.log(`[WARN] 检查通过: ${warnings} 个警告`);
-  console.log("建议人工确认后继续");
-  process.exit(0);
-} else {
-  ok("检查全部通过");
+}
+
+if (warns.length > 0) {
+  console.log("## 提交前检查\n");
+  for (const f of findings) {
+    console.log(`- **⚠ ${f.title}**`);
+    if (f.items) {
+      for (const item of f.items) console.log(`  - ${item}`);
+    }
+  }
+  console.log(`\n> 检查通过，以上警告请人工确认。`);
   process.exit(0);
 }
+
+console.log("检查通过。0 errors, 0 warnings");
+process.exit(0);
