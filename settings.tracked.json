@@ -1,4 +1,12 @@
 {
-  "theme": "dark",
-  "defaultThinkingLevel": "high"
+  "defaultThinkingLevel": "medium",
+  "npmCommand": [
+    "pnpm",
+    "install",
+    "--ignore-scripts"
+  ],
+  "packages": [
+    "npm:pi-mcp-adapter"
+  ],
+  "theme": "dark"
 }
