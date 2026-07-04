@@ -10,6 +10,9 @@ import {
   unlinkSync,
   mkdirSync,
   readlinkSync,
+  readdirSync,
+  rmSync,
+  renameSync,
 } from "node:fs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -225,6 +228,12 @@ async function syncSkillsAsync(tick: () => void): Promise<SyncResult[]> {
     tick();
   }
 
+  // 冲突解决：清理 skills/ 下与 _repo 或 skill-repo 重复的实体目录
+  const collisionResults = resolveCollisions(entries);
+  for (const r of collisionResults) {
+    results.push(r);
+  }
+
   // 禁用列表清理
   const disabled = loadDisabledList();
   for (const name of disabled) {
@@ -285,6 +294,88 @@ function toggleRemoveSymlink(linkName: string): void {
 // =========================================================================
 // 技能列表（toggle 用）
 // =========================================================================
+
+// =========================================================================
+// 冲突解决：清理 skills/_repo/ 旧架构残留
+// 新架构：skill-repo/ 存放仓库，skills/ 只放软链接。
+// _repo/ 是旧时代遗留，若其下有 skill-repo/ 已管理的同名技能则删除。
+// =========================================================================
+
+function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
+  const results: SyncResult[] = [];
+
+  // 收集所有已知技能名
+  const knownSkills = new Set<string>();
+  for (const entry of entries) {
+    if (entry.bundle && entry.link_targets) {
+      for (const target of entry.link_targets) {
+        knownSkills.add(basename(target));
+      }
+    } else {
+      knownSkills.add(entry.name);
+    }
+  }
+
+  const oldRepoDir = join(SKILLS_DIR, "_repo");
+  let oldEntries: string[];
+  try {
+    oldEntries = readdirSync(oldRepoDir);
+  } catch {
+    return results; // _repo 不存在，无需清理
+  }
+
+  for (const name of oldEntries) {
+    // 跳过 repo.toml 等非技能目录
+    if (!knownSkills.has(name)) continue;
+
+    const oldPath = join(oldRepoDir, name);
+    let oldStat;
+    try {
+      oldStat = lstatSync(oldPath);
+    } catch {
+      continue;
+    }
+    if (!oldStat.isDirectory()) continue;
+
+    const skillLinkPath = join(SKILLS_DIR, name);
+    const skillRepoSrc = join(SKILL_REPO_DIR, name);
+
+    // 情况 1：skills/<name> 已是软链接 → 直接删 _repo 残留
+    try {
+      const linkStat = lstatSync(skillLinkPath);
+      if (linkStat.isSymbolicLink()) {
+        rmSync(oldPath, { recursive: true, force: true });
+        results.push({ name, action: "linked" });
+        continue;
+      }
+    } catch {
+      // skills/<name> 不存在，走情况 2
+    }
+
+    // 情况 2：skills/<name> 不存在 → 把 _repo 内容迁移到 skill-repo，再建软链接
+    try {
+      if (!existsSync(skillRepoSrc)) {
+        mkdirSync(SKILL_REPO_DIR, { recursive: true });
+        renameSync(oldPath, skillRepoSrc);
+        linkSkill(name, skillRepoSrc);
+        results.push({ name, action: "linked" });
+      } else {
+        // skill-repo 已有，直接删 _repo 残留
+        rmSync(oldPath, { recursive: true, force: true });
+        linkSkill(name, skillRepoSrc);
+        results.push({ name, action: "linked" });
+      }
+    } catch (e: any) {
+      results.push({
+        name,
+        action: "failed",
+        error: `_repo 清理失败: ${String(e.message || e).slice(0, 100)}`,
+      });
+    }
+  }
+
+  return results;
+}
 
 function collectSkills(): SkillInfo[] {
   const skills: SkillInfo[] = [];
