@@ -1,6 +1,6 @@
 ---
-name: pi-docs
-description: 指导智能体如何阅读pi自身的文档、SDK、扩展、主题、技能和TUI。仅当用户询问pi本身或其内置功能时使用。包括部分 Pi 扩展插件
+name: which-pi-docs
+description: 用于查询 pi 的文档和源码的所在位置
 ---
 
 # Pi 文档参考
