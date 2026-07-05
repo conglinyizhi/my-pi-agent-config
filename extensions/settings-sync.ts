@@ -27,6 +27,7 @@ const EXCLUDED_KEYS = new Set([
   "lastChangelogVersion",
   "defaultProvider",
   "defaultModel",
+  "defaultThinkingLevel",
 ]);
 
 // ---------------------------------------------------------------------------

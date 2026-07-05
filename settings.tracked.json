@@ -1,5 +1,4 @@
 {
-  "defaultThinkingLevel": "medium",
   "npmCommand": [
     "pnpm",
     "install",
