@@ -4,7 +4,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isRetryableError } from "../../lib/error-utils";
 import { findLastAssistant, summarizeLastAssistantMessage } from "../../lib/message-utils";
-import { checkNotificationSupport, notifyTaskComplete } from "../../lib/notify-send";
+import { checkNotificationSupport, notifyBrief, notifyTaskComplete } from "../../lib/notify-send";
 
 export default async function taskNotification(pi: ExtensionAPI) {
   // 初始化时检查通知指令是否可用，不满足时提示用户如何安装
@@ -81,7 +81,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
       deferredTimer = setTimeout(async () => {
         if (deferredSummary) {
           try {
-            await notifyTaskComplete(deferredSummary);
+            await notifyBrief(deferredSummary);
           } catch (error) {
             console.warn("发送任务完成通知失败:", error);
           }

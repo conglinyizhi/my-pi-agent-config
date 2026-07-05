@@ -388,6 +388,18 @@ export async function notifyTaskComplete(taskDescription: string): Promise<boole
 }
 
 /**
+ * 简短提醒通知（无音效，5秒自动消失）
+ * 用于用户已知晓或无需强提示的场景，如重试耗尽、取消操作等
+ */
+export async function notifyBrief(message: string): Promise<boolean> {
+  return notify("Pi Agent", message, {
+    urgency: "low",
+    timeout: 5000,
+    sound: false,
+  });
+}
+
+/**
  * 发送问题询问通知
  */
 export async function notifyQuestion(question: string): Promise<boolean> {
