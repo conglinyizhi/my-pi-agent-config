@@ -1,24 +1,25 @@
 /**
- * 设置同步扩展（单向写入模式）
+ * 设置同步扩展（单向写入 + 实时回写）
  *
  * settings.tracked.json（git 跟踪，唯一真相源）
  *   │
- *   ▼ session_start
+ *   ▼ session_start（先同步，后注册 watch）
  * settings.json（pi 运行时配置，gitignore）
  *   │
- *   ▼ session_shutdown (reason: "quit")
- * 回写到 settings.tracked.json
+ *   ▼ fs.watch 实时回写（防抖）
+ * settings.tracked.json
  *
  * 规则：
  * 1. 启动时：tracked 的非黑名单字段覆盖 settings.json 对应字段，
  *    settings.json 的黑名单字段（系统自动修改的）保留不动。
- * 2. 退出时：settings.json 的非黑名单字段回写到 tracked。
- * 3. 黑名单字段永远不进入 tracked。
- *
- * 不需要额外状态文件。
+ *    同步完成后才注册 watch，避免初始化写入触发回写。
+ * 2. 运行时：settings.json 变化 → 防抖后回写非黑名单字段到 tracked。
+ * 3. 退出时：兜底回写（仅 reason: "quit"）。
+ * 4. 黑名单字段永远不进入 tracked。
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, watch, type FSWatcher } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
@@ -108,7 +109,7 @@ function syncFromTracked(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 退出时：settings.json → tracked
+// 运行时/退出时：settings.json → tracked
 // ---------------------------------------------------------------------------
 
 function syncToTracked(): void {
@@ -126,11 +127,41 @@ function syncToTracked(): void {
 // ---------------------------------------------------------------------------
 
 export default function settingsSyncExtension(pi: ExtensionAPI): void {
-  // 启动时：tracked → settings.json
-  pi.on("session_start", () => syncFromTracked());
+  let watcher: FSWatcher | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // 退出时：settings.json → tracked（仅真正退出时，切换会话不回写）
+  // 启动时：先同步，后注册 watch——两段逻辑分离，初始化写入不会触发回写
+  pi.on("session_start", () => {
+    // 1. 初始化同步：tracked → settings.json
+    syncFromTracked();
+
+    // 2. 关闭旧 watcher（reload/new/resume/fork 会重新进入这里）
+    if (watcher) {
+      watcher.close();
+      watcher = null;
+    }
+
+    // 3. 注册 watch，后续 settings.json 变化时实时回写
+    watcher = watch(SOURCE_PATH, () => {
+      // 防抖：pi 写 settings.json 可能触发多次事件，等 200ms 合并
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        syncToTracked();
+      }, 200);
+    });
+  });
+
+  // 退出时：关 watcher + 兜底回写（仅真正退出）
   pi.on("session_shutdown", (event) => {
+    if (watcher) {
+      watcher.close();
+      watcher = null;
+    }
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
     if (event.reason === "quit") {
       syncToTracked();
     }
