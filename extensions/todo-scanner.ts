@@ -7,6 +7,9 @@
  *
  * /todos         手动刷新 TODO 列表
  * ctrl+shift+t  手动刷新
+ *
+ * 标题格式: TODO(s): 完成数/总数
+ * TODO:DONE 前缀的行视为已完成
  */
 
 import type {
@@ -35,12 +38,14 @@ interface TodoItem {
   line: number;
   /** 行内容（已 trim） */
   text: string;
+  /** 是否标记为已完成（TODO:DONE） */
+  done: boolean;
 }
 
 type ScanState =
   | { status: "idle" }
   | { status: "scanning" }
-  | { status: "done"; items: TodoItem[]; total: number }
+  | { status: "done"; items: TodoItem[]; total: number; doneCount: number }
   | { status: "timeout" }
   | { status: "error"; message: string };
 
@@ -63,10 +68,12 @@ function parseSearchOutput(stdout: string): TodoItem[] {
     const match = line.match(/^(.+):(\d+):(.*)$/);
     if (!match) continue;
 
+    const text = match[3]!.trim();
     items.push({
       file: match[1]!,
       line: parseInt(match[2]!, 10),
-      text: match[3]!.trim(),
+      text,
+      done: text.includes("TODO:DONE"),
     });
   }
   return items;
@@ -113,7 +120,8 @@ async function scanTodos(
   if (!stdout) return { items: [], total: 0 };
 
   const items = parseSearchOutput(stdout);
-  return { items, total: items.length };
+  const doneCount = items.filter((i) => i.done).length;
+  return { items, total: items.length, doneCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,16 +154,23 @@ function buildWidget(state: ScanState) {
         }
 
         // done
-        const { items, total } = state;
+        const { items, total, doneCount } = state;
         if (total === 0) {
-          return [theme.fg("success", "📋 TODO: 没有未完成的 TODO ✓")];
+          return [theme.fg("success", "📋 TODO(s): 0/0 ✓")];
         }
 
-        const showing = Math.min(items.length, MAX_DISPLAY);
-        const header = `📋 TODO: ${total} 项${total > MAX_DISPLAY ? `（显示前 ${showing}）` : ""}`;
+        if (doneCount === total) {
+          return [theme.fg("success", `📋 TODO(s): ${doneCount}/${total} ✓`)];
+        }
+
+        const pending = items.filter((i) => !i.done);
+        const showing = Math.min(pending.length, MAX_DISPLAY);
+        const header = `📋 TODO(s): ${doneCount}/${total}${
+          pending.length > MAX_DISPLAY ? `（显示前 ${showing}）` : ""
+        }`;
         const lines: string[] = [theme.fg("accent", header)];
 
-        for (const item of items.slice(0, MAX_DISPLAY)) {
+        for (const item of pending.slice(0, MAX_DISPLAY)) {
           const loc = `${item.file}:${item.line}`;
           const locWidth = Math.min(40, Math.floor(width * 0.35));
           const prefix = theme.fg("muted", truncate(loc, locWidth));
@@ -192,7 +207,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    state = { status: "done", items: result.items, total: result.total };
+    state = { status: "done", items: result.items, total: result.total, doneCount: result.doneCount };
     ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
   }
 
@@ -218,7 +233,7 @@ export default function (pi: ExtensionAPI) {
       await refresh(ctx);
       if (state.status === "done") {
         ctx.ui.notify(
-          `TODO 扫描完成: ${state.total} 项`,
+          `TODO 扫描完成: ${state.doneCount}/${state.total}`,
           state.total > 0 ? "warning" : "info",
         );
       } else if (state.status === "timeout") {
