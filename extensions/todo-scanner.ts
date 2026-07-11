@@ -87,7 +87,17 @@ async function scanTodos(
 
   // 尝试 rg
   try {
-    result = await pi.exec("rg", ["-n", "--no-heading", TODO_PATTERN, "."], {
+    result = await pi.exec("rg", [
+      "-n",
+      "--no-heading",
+      "-g", "!node_modules",
+      "-g", "!.git",
+      "-g", "!dist",
+      "-g", "!build",
+      "-g", "!target",
+      TODO_PATTERN,
+      ".",
+    ], {
       timeout: SEARCH_TIMEOUT_MS,
       cwd,
     });
