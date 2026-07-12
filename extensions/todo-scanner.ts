@@ -1,16 +1,16 @@
 /**
  * TODO 扫描器扩展
  *
- * 扫描当前工作目录下包含 "TODO:" 的行，在 TUI 编辑器上方以 widget 展示。
+ * 扫描当前工作目录下包含待办标记的行，在 TUI 编辑器上方以 widget 展示。
  * 优先使用 rg（自动尊重 .gitignore），回退到 grep。
  * rg/grep 超时则清除 widget，不显示任何内容。
  *
- * /scan-todo           展开 TODO 列表
- * /scan-todo <序号>    选中一个 TODO，补充信息后发送给 AI
+ * /scan-todo                展开 TODO 列表
+ * /scan-todo <序号>[,<序号或范围>...]  选中发送，如 3 / 2-5 / 1,3,4-6
  * ctrl+shift+t         手动刷新
  *
- * 标题格式: TODO(s): 完成数/总数
- * TODO:DONE 前缀的行视为已完成
+ * 标题格式: 待办(s): 完成数/总数
+ * 以完成标记结尾的行视为已完成
  */
 
 import type {
@@ -26,6 +26,7 @@ import type {
 
 // 拆分字符串避免插件源码自身被 rg/grep 命中
 const TODO_PATTERN = "TO" + "DO:";
+const TD_PREFIX = "\ud83d\udccb " + "TO" + "DO:";
 const SEARCH_TIMEOUT_MS = 5000;
 const MAX_DISPLAY = 15;
 const WIDGET_ID = "todo-scanner";
@@ -41,7 +42,7 @@ interface TodoItem {
   line: number;
   /** 行内容（已 trim） */
   text: string;
-  /** 是否标记为已完成（TODO:DONE） */
+  /** 是否标记为已完成 */
   done: boolean;
 }
 
@@ -76,7 +77,7 @@ function parseSearchOutput(stdout: string): TodoItem[] {
       file: match[1]!,
       line: parseInt(match[2]!, 10),
       text,
-      done: text.includes("TODO:DONE"),
+      done: text.includes("TO" + "DO:DONE"),
     });
   }
   return items;
@@ -98,6 +99,7 @@ async function scanTodos(
       "-g", "!dist",
       "-g", "!build",
       "-g", "!target",
+      "-g", "!extensions/todo-scanner.ts",
       TODO_PATTERN,
       ".",
     ], {
@@ -116,6 +118,7 @@ async function scanTodos(
           "--exclude-dir=dist",
           "--exclude-dir=build",
           "--exclude-dir=target",
+          "--exclude=todo-scanner.ts",
           TODO_PATTERN,
           ".",
         ],
@@ -190,15 +193,15 @@ function buildWidget(state: ScanState) {
         if (state.status === "idle" || state.status === "scanning") {
           const label =
             state.status === "scanning" ? "扫描中…" : "就绪";
-          return [theme.fg("dim", `📋 TODO: ${label}`)];
+          return [theme.fg("dim", `${TD_PREFIX} ${label}`)];
         }
 
         if (state.status === "timeout") {
-          return [theme.fg("error", `📋 TODO: 扫描超时（>${SEARCH_TIMEOUT_MS / 1000}s）`)];
+          return [theme.fg("error", `${TD_PREFIX} 扫描超时（>${SEARCH_TIMEOUT_MS / 1000}s）`)];
         }
 
         if (state.status === "error") {
-          return [theme.fg("warning", `📋 TODO: ${state.message}`)];
+          return [theme.fg("warning", `${TD_PREFIX} ${state.message}`)];
         }
 
         // done
@@ -294,7 +297,7 @@ export default function (pi: ExtensionAPI) {
   // ── /scan-todo 命令: 展开列表 / 选中 TODO ──────────────────────
 
   pi.registerCommand("scan-todo", {
-    description: "扫描并展开 TODO 列表，或选中指定 TODO 发送给 AI",
+    description: "展开 TODO 列表，或选中指定 TODO（支持逗号分隔和范围，如 1,3,4-6）发送给 AI",
     handler: async (args, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) return;
 
@@ -319,29 +322,55 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // 带数字参数：选中 TODO
-      const index = parseInt(trimmed, 10);
-      if (isNaN(index) || index < 1) {
-        ctx.ui.notify(`用法: /scan-todo 展开列表，/scan-todo <序号> 选中 TODO`,"warning");
-        return;
+      // 带参数：解析逗号分隔的序号/范围，如 1,3,4-6
+      const pending = state.items.filter((i) => !i.done);
+      const rawSet = new Set<number>();
+
+      for (const part of trimmed.split(",")) {
+        const seg = part.trim();
+        const rangeMatch = seg.match(/^(\d+)-(\d+)$/);
+        if (rangeMatch) {
+          const start = parseInt(rangeMatch[1]!, 10);
+          const end = parseInt(rangeMatch[2]!, 10);
+          if (start < 1 || end < 1 || start > end) {
+            ctx.ui.notify(`范围无效: ${seg}`, "warning");
+            return;
+          }
+          for (let i = start; i <= end; i++) rawSet.add(i);
+        } else {
+          const n = parseInt(seg, 10);
+          if (isNaN(n) || n < 1) {
+            ctx.ui.notify(`无法解析: "${seg}"，用法: /scan-todo <序号>[,<序号或范围>...]`, "warning");
+            return;
+          }
+          rawSet.add(n);
+        }
       }
 
-      const pending = state.items.filter((i) => !i.done);
-      if (index > pending.length) {
+      const indices = [...rawSet].sort((a, b) => a - b);
+      if (indices.length === 0) {
+        ctx.ui.notify("未选中任何 TODO", "warning");
+        return;
+      }
+      const maxIdx = indices[indices.length - 1]!;
+      if (maxIdx > pending.length) {
         ctx.ui.notify(`序号超出范围（共 ${pending.length} 个待处理 TODO）`, "warning");
         return;
       }
 
-      const item = pending[index - 1]!;
+      const selected = indices.map((i) => pending[i - 1]!);
 
       // 弹出输入框让用户补充说明
-      const note = await ctx.ui.input(
-        `补充信息（可选）— ${item.file}:${item.line}`,
-      );
+      const label = selected.length === 1
+        ? `补充信息（可选）— ${selected[0]!.file}:${selected[0]!.line}`
+        : `补充信息（可选）— 已选中 ${selected.length} 个 TODO`;
+      const note = await ctx.ui.input(label);
 
       // 拼接消息发送
-      const location = `\`${item.file}:${item.line}\``;
-      let msg = `处理以下 TODO:\n\n${location}\n> ${item.text}`;
+      const itemsBlock = selected
+        .map((item) => `- \`${item.file}:${item.line}\`\n  > ${item.text}`)
+        .join("\n");
+      let msg = `处理以下 ${TODO_PATTERN.substring(0, 4)}:\n\n${itemsBlock}`;
       if (note) {
         msg += `\n\n补充: ${note}`;
       }
@@ -352,7 +381,10 @@ export default function (pi: ExtensionAPI) {
       state.expanded = false;
       ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
 
-      ctx.ui.notify(`已发送 TODO #${index}: ${item.file}:${item.line}`, "info");
+      const rangeLabel = indices.length === 1
+        ? `#${indices[0]}: ${selected[0]!.file}:${selected[0]!.line}`
+        : `#${indices[0]}-${indices[indices.length - 1]}（${indices.length} 个）`;
+      ctx.ui.notify(`已发送 TODO ${rangeLabel}`, "info");
     },
   });
 
