@@ -5,8 +5,9 @@
  * 优先使用 rg（自动尊重 .gitignore），回退到 grep。
  * rg/grep 超时则清除 widget，不显示任何内容。
  *
- * /todos         手动刷新 TODO 列表
- * ctrl+shift+t  手动刷新
+ * /scan-todo           展开 TODO 列表
+ * /scan-todo <序号>    选中一个 TODO，补充信息后发送给 AI
+ * ctrl+shift+t         手动刷新
  *
  * 标题格式: TODO(s): 完成数/总数
  * TODO:DONE 前缀的行视为已完成
@@ -14,6 +15,7 @@
 
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ExecResult,
 } from "@earendil-works/pi-coding-agent";
@@ -22,7 +24,8 @@ import type {
 // 配置常量
 // ---------------------------------------------------------------------------
 
-const TODO_PATTERN = "TODO:";
+// 拆分字符串避免插件源码自身被 rg/grep 命中
+const TODO_PATTERN = "TO" + "DO:";
 const SEARCH_TIMEOUT_MS = 5000;
 const MAX_DISPLAY = 15;
 const WIDGET_ID = "todo-scanner";
@@ -45,7 +48,7 @@ interface TodoItem {
 type ScanState =
   | { status: "idle" }
   | { status: "scanning" }
-  | { status: "done"; items: TodoItem[]; total: number; doneCount: number }
+  | { status: "done"; items: TodoItem[]; total: number; doneCount: number; expanded: boolean }
   | { status: "timeout" }
   | { status: "error"; message: string };
 
@@ -191,7 +194,6 @@ function buildWidget(state: ScanState) {
         }
 
         if (state.status === "timeout") {
-          // 超时：显示红色提示而非静默清除
           return [theme.fg("error", `📋 TODO: 扫描超时（>${SEARCH_TIMEOUT_MS / 1000}s）`)];
         }
 
@@ -200,7 +202,7 @@ function buildWidget(state: ScanState) {
         }
 
         // done
-        const { items, total, doneCount } = state;
+        const { items, total, doneCount, expanded } = state;
         if (total === 0) {
           return [theme.fg("success", "📋 TODO(s): 0/0 ✓")];
         }
@@ -210,22 +212,32 @@ function buildWidget(state: ScanState) {
         }
 
         const pending = items.filter((i) => !i.done);
+
+        // 折叠模式：只显示一行摘要
+        if (!expanded) {
+          const hint = theme.fg("dim", "  /scan-todo 展开");
+          return [theme.fg("accent", `📋 TODO(s): ${doneCount}/${total}`) + hint];
+        }
+
+        // 展开模式：显示完整列表（带序号）
         const showing = Math.min(pending.length, MAX_DISPLAY);
         const header = `📋 TODO(s): ${doneCount}/${total}${
           pending.length > MAX_DISPLAY ? `（显示前 ${showing}）` : ""
         }`;
         const lines: string[] = [theme.fg("accent", header)];
 
-        for (const item of pending.slice(0, MAX_DISPLAY)) {
+        for (const [idx, item] of pending.slice(0, MAX_DISPLAY).entries()) {
+          const num = theme.fg("warning", String(idx + 1).padStart(2));
           const rawLoc = `${item.file}:${item.line}`;
           // 文件位置最多占 35% 终端宽，最少给内容留 40 列
+          const numCols = 2;
           const maxLocCols = Math.min(60, Math.floor(width * 0.35));
           const prefix = theme.fg("muted", truncateToWidth(rawLoc, maxLocCols));
           const sep = theme.fg("dim", " │ ");
-          // 内容宽度 = 剩余宽度 - 缩进 2 - 分隔符 ~3
-          const contentMax = Math.max(20, width - visibleWidth(truncateToWidth(rawLoc, maxLocCols)) - 5);
+          // 内容宽度 = 剩余宽度 - 缩进 1 - 序号 3 - 分隔符 ~3
+          const contentMax = Math.max(20, width - numCols - visibleWidth(truncateToWidth(rawLoc, maxLocCols)) - 6);
           const content = theme.fg("dim", truncateToWidth(item.text, contentMax));
-          lines.push(`  ${prefix}${sep}${content}`);
+          lines.push(` ${num} ${prefix}${sep}${content}`);
         }
 
         return lines;
@@ -250,16 +262,23 @@ export default function (pi: ExtensionAPI) {
 
     if (result === null) {
       state = { status: "timeout" };
-      // 超时：显示红色提示而非静默清除
       ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
       return;
     }
 
-    state = { status: "done", items: result.items, total: result.total, doneCount: result.doneCount };
+    // 保持之前展开/折叠状态（首次扫描默认折叠）
+    const prevExpanded = state.status === "done" ? state.expanded : false;
+    state = {
+      status: "done",
+      items: result.items,
+      total: result.total,
+      doneCount: result.doneCount,
+      expanded: prevExpanded,
+    };
     ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
   }
 
-  // ── session_start: 自动扫描 ────────────────────────────────────
+  // ── session_start: 自动扫描（折叠模式） ────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
@@ -272,21 +291,68 @@ export default function (pi: ExtensionAPI) {
     state = { status: "idle" };
   });
 
-  // ── /todos 命令: 手动刷新 ───────────────────────────────────────
+  // ── /scan-todo 命令: 展开列表 / 选中 TODO ──────────────────────
 
-  pi.registerCommand("todos", {
-    description: "扫描并刷新当前工作目录的 TODO 列表",
-    handler: async (_args, ctx) => {
+  pi.registerCommand("scan-todo", {
+    description: "扫描并展开 TODO 列表，或选中指定 TODO 发送给 AI",
+    handler: async (args, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) return;
+
+      // 先刷新数据
       await refresh(ctx);
-      if (state.status === "done") {
+
+      if (state.status !== "done") {
+        ctx.ui.notify("TODO 扫描失败或超时", "error");
+        return;
+      }
+
+      const trimmed = args.trim();
+
+      // 不带参数：展开列表
+      if (!trimmed) {
+        state.expanded = true;
+        ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
         ctx.ui.notify(
-          `TODO 扫描完成: ${state.doneCount}/${state.total}`,
+          `TODO 扫描完成: ${state.doneCount}/${state.total}，输入 /scan-todo <序号> 选中`,
           state.total > 0 ? "warning" : "info",
         );
-      } else if (state.status === "timeout") {
-        ctx.ui.notify("TODO 扫描超时，已跳过", "warning");
+        return;
       }
+
+      // 带数字参数：选中 TODO
+      const index = parseInt(trimmed, 10);
+      if (isNaN(index) || index < 1) {
+        ctx.ui.notify(`用法: /scan-todo 展开列表，/scan-todo <序号> 选中 TODO`,"warning");
+        return;
+      }
+
+      const pending = state.items.filter((i) => !i.done);
+      if (index > pending.length) {
+        ctx.ui.notify(`序号超出范围（共 ${pending.length} 个待处理 TODO）`, "warning");
+        return;
+      }
+
+      const item = pending[index - 1]!;
+
+      // 弹出输入框让用户补充说明
+      const note = await ctx.ui.input(
+        `补充信息（可选）— ${item.file}:${item.line}`,
+      );
+
+      // 拼接消息发送
+      const location = `\`${item.file}:${item.line}\``;
+      let msg = `处理以下 TODO:\n\n${location}\n> ${item.text}`;
+      if (note) {
+        msg += `\n\n补充: ${note}`;
+      }
+
+      pi.sendUserMessage(msg);
+
+      // 折叠 widget
+      state.expanded = false;
+      ctx.ui.setWidget(WIDGET_ID, buildWidget(state));
+
+      ctx.ui.notify(`已发送 TODO #${index}: ${item.file}:${item.line}`, "info");
     },
   });
 
