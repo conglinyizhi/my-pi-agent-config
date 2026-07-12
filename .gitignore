@@ -16,3 +16,4 @@ skills/*
 !skills/clyzhi/
 skill-states.json
 .pi-sync-state.json
+*.log

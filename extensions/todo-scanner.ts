@@ -138,10 +138,46 @@ async function scanTodos(
 // Widget 渲染
 // ---------------------------------------------------------------------------
 
-/** 将字符串截断到指定可见宽度 */
-function truncate(str: string, max: number): string {
-  if (str.length <= max) return str;
-  return str.slice(0, Math.max(0, max - 1)) + "…";
+/** 计算字符串在终端中的可见宽度（CJK 字符计 2，其他计 1） */
+function visibleWidth(str: string): number {
+  let w = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0)!;
+    // CJK 统一表意文字、全角标点、CJK 扩展区
+    if (
+      (cp >= 0x1100 && cp <= 0x115f) ||   // Hangul Jamo
+      (cp >= 0x2e80 && cp <= 0xa4cf) ||   // CJK Radicals … Yi
+      (cp >= 0xac00 && cp <= 0xd7a3) ||   // Hangul Syllables
+      (cp >= 0xf900 && cp <= 0xfaff) ||   // CJK Compatibility Ideographs
+      (cp >= 0xfe30 && cp <= 0xfe6f) ||   // CJK Compatibility Forms
+      (cp >= 0xff01 && cp <= 0xff60) ||   // Fullwidth Forms
+      (cp >= 0xffe0 && cp <= 0xffe6) ||   // Fullwidth Signs
+      (cp >= 0x1b000 && cp <= 0x1b2ff) || // Kana Supplement, Extended
+      (cp >= 0x1f004 && cp <= 0x1f251) || // Mahjong, Domino, Enclosed
+      (cp >= 0x20000 && cp <= 0x2ffff)    // CJK Ext B…G
+    ) {
+      w += 2;
+    } else {
+      w += 1;
+    }
+  }
+  return w;
+}
+
+/** 将字符串按终端可见宽度截断 */
+function truncateToWidth(str: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  let w = 0;
+  const chars = [...str];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    const chW = visibleWidth(ch);
+    if (w + chW > maxWidth) {
+      return chars.slice(0, i).join("") + "…";
+    }
+    w += chW;
+  }
+  return str;
 }
 
 function buildWidget(state: ScanState) {
@@ -181,12 +217,14 @@ function buildWidget(state: ScanState) {
         const lines: string[] = [theme.fg("accent", header)];
 
         for (const item of pending.slice(0, MAX_DISPLAY)) {
-          const loc = `${item.file}:${item.line}`;
-          const locWidth = Math.min(40, Math.floor(width * 0.35));
-          const prefix = theme.fg("muted", truncate(loc, locWidth));
+          const rawLoc = `${item.file}:${item.line}`;
+          // 文件位置最多占 35% 终端宽，最少给内容留 40 列
+          const maxLocCols = Math.min(60, Math.floor(width * 0.35));
+          const prefix = theme.fg("muted", truncateToWidth(rawLoc, maxLocCols));
           const sep = theme.fg("dim", " │ ");
-          const contentMax = Math.max(10, width - locWidth - 5);
-          const content = theme.fg("dim", truncate(item.text, contentMax));
+          // 内容宽度 = 剩余宽度 - 缩进 2 - 分隔符 ~3
+          const contentMax = Math.max(20, width - visibleWidth(truncateToWidth(rawLoc, maxLocCols)) - 5);
+          const content = theme.fg("dim", truncateToWidth(item.text, contentMax));
           lines.push(`  ${prefix}${sep}${content}`);
         }
 
