@@ -222,25 +222,36 @@ function buildWidget(state: ScanState) {
           return [theme.fg("accent", `📋 TODO(s): ${doneCount}/${total}`) + hint];
         }
 
-        // 展开模式：显示完整列表（带序号）
+        // 展开模式：显示待处理列表 + 已完成列表
         const showing = Math.min(pending.length, MAX_DISPLAY);
         const header = `📋 TODO(s): ${doneCount}/${total}${
-          pending.length > MAX_DISPLAY ? `（显示前 ${showing}）` : ""
+          pending.length > MAX_DISPLAY ? `（显示前 ${showing} 项）` : ""
         }`;
         const lines: string[] = [theme.fg("accent", header)];
 
         for (const [idx, item] of pending.slice(0, MAX_DISPLAY).entries()) {
           const num = theme.fg("warning", String(idx + 1).padStart(2));
           const rawLoc = `${item.file}:${item.line}`;
-          // 文件位置最多占 35% 终端宽，最少给内容留 40 列
-          const numCols = 2;
           const maxLocCols = Math.min(60, Math.floor(width * 0.35));
           const prefix = theme.fg("muted", truncateToWidth(rawLoc, maxLocCols));
           const sep = theme.fg("dim", " │ ");
-          // 内容宽度 = 剩余宽度 - 缩进 1 - 序号 3 - 分隔符 ~3
-          const contentMax = Math.max(20, width - numCols - visibleWidth(truncateToWidth(rawLoc, maxLocCols)) - 6);
+          const contentMax = Math.max(20, width - 2 - visibleWidth(truncateToWidth(rawLoc, maxLocCols)) - 6);
           const content = theme.fg("dim", truncateToWidth(item.text, contentMax));
           lines.push(` ${num} ${prefix}${sep}${content}`);
+        }
+
+        // 已完成区域
+        const done = items.filter((i) => i.done);
+        if (done.length > 0) {
+          const maxDone = 5;
+          const showingDone = Math.min(done.length, maxDone);
+          lines.push(theme.fg("dim", `  已完成 ${done.length} 项${done.length > maxDone ? `（显示前 ${showingDone}）` : ""}`));
+          for (const item of done.slice(0, maxDone)) {
+            const rawLoc = `${item.file}:${item.line}`;
+            const loc = theme.fg("dim", truncateToWidth(rawLoc, 50));
+            const txt = theme.fg("dim", truncateToWidth(item.text, Math.max(10, width - 56)));
+            lines.push(`   ${loc}  ${txt}`);
+          }
         }
 
         return lines;
