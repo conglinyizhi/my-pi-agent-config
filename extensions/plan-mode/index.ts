@@ -296,7 +296,7 @@ ${todoList}
     } else if (choice === "细化计划") {
       const refinement = await ctx.ui.editor("细化计划：", "");
       if (refinement?.trim()) {
-        pi.sendUserMessage(refinement.trim());
+        pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
       }
     }
   });
