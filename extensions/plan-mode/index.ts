@@ -5,6 +5,7 @@ import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
+import { notify } from "../../lib/notify-send";
 
 // 工具集合
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
@@ -267,6 +268,9 @@ ${todoList}
         { triggerTurn: false },
       );
     }
+
+    // 发送桌面通知提醒用户确认计划
+    notify("Pi Agent", "计划已生成，请确认下一步操作。", { urgency: "normal", sound: true }).catch(() => {});
 
     const choice = await ctx.ui.select("计划模式：下一步做什么？", [
       todoItems.length > 0 ? "执行计划（跟踪进度）" : "执行计划",
