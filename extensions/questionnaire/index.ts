@@ -282,6 +282,24 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
       // 添加截断行的辅助函数
       const add = (s: string) => lines.push(truncateToWidth(s, width));
 
+      // 自动换行函数 — 用于长问题文本
+      const addWrapped = (s: string) => {
+        let remaining = s;
+        while (remaining.length > 0) {
+          if (remaining.length <= width) {
+            lines.push(remaining);
+            break;
+          }
+          let cut = width;
+          while (cut > Math.floor(width * 0.6) && remaining[cut] !== " ") {
+            cut--;
+          }
+          if (cut <= Math.floor(width * 0.6)) cut = width;
+          lines.push(remaining.slice(0, cut));
+          remaining = remaining.slice(cut).trimStart();
+        }
+      };
+
       add(theme.fg("accent", "─".repeat(width)));
 
       // 标签页栏（仅多问题模式）
@@ -328,7 +346,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
 
       // 内容
       if (inputMode && q) {
-        add(theme.fg("text", ` ${q.prompt}`));
+        addWrapped(theme.fg("text", ` ${q.prompt}`));
         lines.push("");
         // 显示选项作为参考
         renderOptions();
@@ -360,7 +378,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
           add(theme.fg("warning", ` Unanswered: ${missing}`));
         }
       } else if (q) {
-        add(theme.fg("text", ` ${q.prompt}`));
+        addWrapped(theme.fg("text", ` ${q.prompt}`));
         lines.push("");
         renderOptions();
       }
@@ -420,11 +438,12 @@ export default function questionnaire(pi: ExtensionAPI) {
     renderCall(args, theme, _context) {
       const qs = (args.questions as Question[]) || [];
       const count = qs.length;
-      const labels = qs.map((q) => q.label || q.id).join(", ");
+      const first = qs[0];
+      const preview = first ? truncateToWidth(first.prompt, 60) : "";
       let text = theme.fg("toolTitle", theme.bold("questionnaire "));
       text += theme.fg("muted", `${count} question${count !== 1 ? "s" : ""}`);
-      if (labels) {
-        text += theme.fg("dim", ` (${truncateToWidth(labels, 40)})`);
+      if (preview) {
+        text += theme.fg("dim", `: "${preview}"`);
       }
       return new Text(text, 0, 0);
     },
