@@ -339,12 +339,10 @@ export async function sendNotification(options: NotifyOptions): Promise<boolean>
         await sendMacNotification(options);
         break;
       default:
-        console.warn(`不支持的操作系统: ${os}，无法发送通知`);
         return false;
     }
     return true;
-  } catch (error) {
-    console.error("发送通知失败:", error);
+  } catch {
     return false;
   }
 }

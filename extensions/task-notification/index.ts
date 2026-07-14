@@ -14,7 +14,6 @@ export default async function taskNotification(pi: ExtensionAPI) {
   if (!support.supported) {
     const missingDesc = support.missing.length > 0 ? support.missing.join(", ") : "无可用通知工具";
     const unavailableHint = `桌面通知不可用（${support.os}，缺失: ${missingDesc}）。请在终端查看安装提示。`;
-    console.warn(`[task-notification] ${unavailableHint}\n${support.installHint}`);
 
     // 在 TUI 中也提示一次（终端已有详细安装指引）
     pi.on("session_start", async (_event, ctx) => {
@@ -40,8 +39,8 @@ export default async function taskNotification(pi: ExtensionAPI) {
     try {
       const summary = summarizeLastAssistantMessage(messages);
       await notifyTaskComplete(summary);
-    } catch (error) {
-      console.warn("发送任务完成通知失败:", error);
+    } catch {
+      // 通知发送失败不影响主流程
     }
   }
 
@@ -82,8 +81,8 @@ export default async function taskNotification(pi: ExtensionAPI) {
         if (deferredSummary) {
           try {
             await notifyBrief(deferredSummary);
-          } catch (error) {
-            console.warn("发送任务完成通知失败:", error);
+          } catch {
+            // 通知发送失败不影响主流程
           }
         }
         deferredTimer = undefined;
