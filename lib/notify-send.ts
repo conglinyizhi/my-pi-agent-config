@@ -437,6 +437,31 @@ export async function isNotificationAvailable(): Promise<boolean> {
 }
 
 /**
+ * 测试通知音效播放
+ * 播放默认的任务完成音效文件，用于验证系统音频输出是否正常
+ */
+export async function testNotificationSound(): Promise<{ success: boolean; method: string; error?: string }> {
+  const os = getOS();
+  try {
+    switch (os) {
+      case "linux":
+        await playLinuxSound(DEFAULT_TASK_COMPLETE_SOUND);
+        return { success: true, method: `paplay/ffplay` };
+      case "macos":
+        await playMacSound(DEFAULT_TASK_COMPLETE_SOUND);
+        return { success: true, method: `afplay` };
+      case "windows":
+        await playWindowsSound(DEFAULT_TASK_COMPLETE_SOUND);
+        return { success: true, method: `SoundPlayer` };
+      default:
+        return { success: false, method: "unknown", error: `不支持的操作系统: ${os}` };
+    }
+  } catch (e: any) {
+    return { success: false, method: os, error: e.message || "未知错误" };
+  }
+}
+
+/**
  * 获取通知系统信息
  */
 export function getNotificationInfo(): { os: string; supported: boolean; method: string } {

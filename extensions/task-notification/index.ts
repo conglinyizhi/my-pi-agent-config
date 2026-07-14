@@ -4,7 +4,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isRetryableError } from "../../lib/error-utils";
 import { findLastAssistant, summarizeLastAssistantMessage } from "../../lib/message-utils";
-import { checkNotificationSupport, notifyBrief, notifyTaskComplete } from "../../lib/notify-send";
+import { checkNotificationSupport, notifyBrief, notifyTaskComplete, testNotificationSound } from "../../lib/notify-send";
 
 export default async function taskNotification(pi: ExtensionAPI) {
   // 初始化时检查通知指令是否可用，不满足时提示用户如何安装
@@ -95,6 +95,26 @@ export default async function taskNotification(pi: ExtensionAPI) {
     // 其他情况（正常完成、不可重试错误等）→ 发通知
     cancelDeferred();
     await sendNotification(event.messages);
+  });
+
+  // ============================================================
+  // /notify-sound-test —— 测试通知音效播放
+  // ============================================================
+  pi.registerCommand("notify-sound-test", {
+    description: "测试通知音效播放是否正常",
+    handler: async (_args, ctx) => {
+      if (!notificationReady) {
+        ctx.ui.notify("通知系统不可用，无法测试音效", "warning");
+        return;
+      }
+      ctx.ui.notify("正在测试通知音效…", "info");
+      const result = await testNotificationSound();
+      if (result.success) {
+        ctx.ui.notify(`✅ 通知音效测试成功 (${result.method})`, "info");
+      } else {
+        ctx.ui.notify(`❌ 通知音效测试失败: ${result.error || "未知原因"}`, "error");
+      }
+    },
   });
 }
 
