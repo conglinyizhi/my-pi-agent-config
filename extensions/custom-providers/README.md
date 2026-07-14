@@ -6,11 +6,18 @@
 
 ## 提供的命令
 
-### `/provider`
+### `/provider:fast-add`
 
-子命令：
-- **`fast-add <URL> <Key> [模型...]`** — 快速添加供应商，参数顺序任意，分隔符支持空格/逗号/分号
-- **`reload`** — 重新加载 providers.toml
+快速添加自定义供应商。
+
+- **有参**：`/provider:fast-add <URL> <API Key> [模型名...]`
+  - 参数顺序任意，分隔符支持空格 / 逗号 / 分号
+  - URL 与 API Key 必填；模型名可选（留空则从 API 自动拉取）
+- **无参**：进入交互式引导，逐步填写 URL / Key / 模型名
+
+### `/provider:reload`
+
+重新加载 `~/.pi/agent/providers.toml`，热更新已注册的供应商。
 
 ### 事件钩子
 
@@ -27,7 +34,7 @@ custom-providers/
 ├── loader.ts                # providers.toml 解析与验证
 ├── detector.ts              # API 格式自动检测（请求 /models 端点）
 ├── models.ts                # 模型列表解析（/models 端点）与格式映射
-├── fast-add.ts              # /provider fast-add 子命令实现
+├── fast-add.ts              # /provider:fast-add 命令实现
 ├── models-dev.ts            # 开发环境模型配置
 ├── models-dev-static.json   # 静态模型数据
 ├── loader.test.ts           # loader 测试

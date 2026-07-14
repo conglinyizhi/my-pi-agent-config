@@ -1,5 +1,5 @@
 /**
- * /provider fast-add — 一行命令快速添加自定义供应商
+ * /provider:fast-add — 一行命令快速添加自定义供应商
  *
  * 新流程：
  * 1. 解析 URL 和 API Key
@@ -8,10 +8,11 @@
  * 4. 让用户选择要添加的模型
  * 5. 支持多 key 分组（同域名不同 key 注册为独立 provider）
  *
- * 格式：/provider fast-add <URL>[;<API Key>]
+ * 格式：/provider:fast-add <URL> <API Key> [模型名...]
  * 示例：
- *   /provider fast-add https://tokenflux.dev/v1;tp-xxxx
- *   /provider fast-add https://api.groq.com/openai/v1;sk-xxx
+ *   /provider:fast-add https://tokenflux.dev/v1 tp-xxxx
+ *   /provider:fast-add https://api.groq.com/openai/v1 sk-xxx
+ * 无参时会进入交互式引导填写
  */
 
 import { writeFileSync, readFileSync } from "node:fs";

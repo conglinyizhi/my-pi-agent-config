@@ -15,38 +15,64 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
   const registeredIds = new Set<string>();
   let rawToml = "";
 
-  // /provider 命令必须始终注册，不能因 providers.toml 不存在而被跳过
-  pi.registerCommand("provider", {
-    description: "管理自定义供应商。子命令: fast-add <URL> <Key> [模型...]（顺序任意） | reload",
+  // /provider:* 子命令必须始终注册，不能因 providers.toml 不存在而被跳过
+
+  // /provider:fast-add —— 快速添加自定义供应商
+  pi.registerCommand("provider:fast-add", {
+    description: "快速添加自定义供应商：/provider:fast-add <URL> <API Key> [模型名...]",
     handler: async (args, ctx) => {
-      const trimmed = args.trim();
-      if (trimmed === "reload" || trimmed.startsWith("reload")) {
-        let config: { providers: RawProvider[]; raw: string } | null = null;
-        try {
-          config = loadProvidersConfig(CONFIG_PATH);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          ctx.ui.notify(`Failed to reload providers.toml: ${message}`, "error");
+      let input = args.trim();
+
+      // 无参时引导用户交互式填写
+      if (!input) {
+        const url = await ctx.ui.input(
+          "API 地址（必填，如 https://api.example.com/v1）",
+          "https://",
+        );
+        if (!url?.trim()) {
+          ctx.ui.notify("已取消", "info");
           return;
         }
-        if (!config) {
-          ctx.ui.notify("可创建 ~/.pi/agent/providers.toml 添加自定义供应商", "info");
+
+        const apiKey = await ctx.ui.input(
+          "API Key（必填）",
+          "",
+        );
+        if (!apiKey?.trim()) {
+          ctx.ui.notify("已取消（API Key 为必填项）", "info");
           return;
         }
-        await registerProviders(config.providers, config.raw);
-        ctx.ui.notify(`已重新加载 providers.toml（${registeredIds.size} 个供应商）`, "info");
+
+        const models = await ctx.ui.input(
+          "模型名（可选，逗号分隔；留空则自动从 API 拉取）",
+          "",
+        );
+
+        input = [url.trim(), apiKey.trim(), models?.trim()].filter(Boolean).join(" ");
+      }
+
+      await fastAddHandler(input, ctx, pi);
+    },
+  });
+
+  // /provider:reload —— 重新加载 providers.toml
+  pi.registerCommand("provider:reload", {
+    description: "重新加载 ~/.pi/agent/providers.toml 中的自定义供应商配置",
+    handler: async (_args, ctx) => {
+      let config: { providers: RawProvider[]; raw: string } | null = null;
+      try {
+        config = loadProvidersConfig(CONFIG_PATH);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`重新加载 providers.toml 失败: ${message}`, "error");
         return;
       }
-      if (trimmed.startsWith("fast-add")) {
-        const input = trimmed.slice("fast-add".length).trim();
-        if (!input) {
-          ctx.ui.notify("用法: /provider fast-add <URL> <API Key> [模型名...]\nURL 和 Key 必选，模型名可选（提供 Key 时自动拉取）\n顺序任意，用 ;, ，空格均可分隔", "info");
-          return;
-        }
-        await fastAddHandler(input, ctx, pi);
-      } else {
-        ctx.ui.notify("未知子命令。支持: fast-add | reload", "info");
+      if (!config) {
+        ctx.ui.notify("providers.toml 不存在，可用 /provider:fast-add 添加供应商", "info");
+        return;
       }
+      await registerProviders(config.providers, config.raw);
+      ctx.ui.notify(`已重新加载 providers.toml（${registeredIds.size} 个供应商）`, "info");
     },
   });
 
@@ -174,7 +200,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
   if (!config) {
     // providers.toml 不存在，提示用户可创建
     pi.on("session_start", async (_event, ctx) => {
-      ctx.ui.notify("可创建 ~/.pi/agent/providers.toml 添加自定义供应商，修改后使用 /provider reload 加载", "info");
+      ctx.ui.notify("可用 /provider:fast-add 添加自定义供应商，或手动编辑 ~/.pi/agent/providers.toml 后 /provider:reload", "info");
     });
     return;
   }
