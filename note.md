@@ -16,4 +16,4 @@ TODO: 这个 skill 也很好，那个 skill 也很好，要不……用云端拉
 
 # 20260714
 
-TODO: questionnaire 超长提问已能正确折行、不再崩 TUI，但提问内容（Q / prompt）没有完整出现在对话流里——renderCall 目前只 truncateToWidth(prompt, 60) 做预览，结果侧也只回显答案。需要让完整问题文本进入 session/对话流（工具调用展示或 result 里带回 questions），方便事后回看当时问了什么。
+TODO: ask_question 超长提问已能正确折行、不再崩 TUI；结果侧已带回完整 question_text。renderCall 仍只 truncateToWidth(question_text, 60) 做预览——若要在工具调用展示里也看到全文，可再改 renderCall。

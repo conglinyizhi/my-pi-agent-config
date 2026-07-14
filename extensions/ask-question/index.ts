@@ -1,4 +1,4 @@
-// 统一问卷工具，LLM 与用户的结构化交互通道（详见 questionnaire.README.md）
+// ask_question：LLM 向用户发起结构化提问（对齐 HF 社区 ASK_QUESTION 动作命名）
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
@@ -17,7 +17,8 @@ type RenderOption = QuestionOption & { isOther?: boolean };
 interface Question {
   id: string;
   label: string;
-  prompt: string;
+  /** 完整问题文本（对齐 HF 数据集 question_text 语义） */
+  question_text: string;
   options: QuestionOption[];
   allowOther: boolean;
 }
@@ -30,7 +31,7 @@ interface Answer {
   index?: number;
 }
 
-interface QuestionnaireResult {
+interface AskQuestionResult {
   questions: Question[];
   answers: Answer[];
   cancelled: boolean;
@@ -38,9 +39,9 @@ interface QuestionnaireResult {
 
 // 数据结构定义
 const QuestionOptionSchema = Type.Object({
-  value: Type.String({ description: "The value returned when selected" }),
+  value: Type.String({ description: "Value returned when this option is selected" }),
   label: Type.String({ description: "Display label for the option" }),
-  description: Type.Optional(Type.String({ description: "Optional description shown below label" })),
+  description: Type.Optional(Type.String({ description: "Optional description shown below the label" })),
 });
 
 const QuestionSchema = Type.Object({
@@ -50,27 +51,29 @@ const QuestionSchema = Type.Object({
       description: "Short contextual label for tab bar, e.g. 'Scope', 'Priority' (defaults to Q1, Q2)",
     }),
   ),
-  prompt: Type.String({ description: "The full question text to display" }),
+  question_text: Type.String({ description: "The full question text to display" }),
   options: Type.Array(QuestionOptionSchema, {
-    description: "Available options to choose from",
+    minItems: 1,
+    description: "Selectable options (at least one). Prefer 2–6 concise choices.",
   }),
   allowOther: Type.Optional(
     Type.Boolean({
-      description: "Allow 'Type something' option (default: true)",
+      description: "Allow free-form 'Type something' option (default: true)",
     }),
   ),
 });
 
-const QuestionnaireParams = Type.Object({
+const AskQuestionParams = Type.Object({
   questions: Type.Array(QuestionSchema, {
-    description: "Questions to ask the user",
+    minItems: 1,
+    description: "One or more questions to ask the user",
   }),
 });
 
-type QuestionnaireInput = Static<typeof QuestionnaireParams>;
-type QuestionnaireToolResult = AgentToolResult<QuestionnaireResult>;
+type AskQuestionInput = Static<typeof AskQuestionParams>;
+type AskQuestionToolResult = AgentToolResult<AskQuestionResult>;
 
-function errorResult(message: string, questions: Question[] = []): QuestionnaireToolResult {
+function errorResult(message: string, questions: Question[] = []): AskQuestionToolResult {
   return {
     content: [{ type: "text", text: message }],
     details: { questions, answers: [], cancelled: true },
@@ -78,9 +81,9 @@ function errorResult(message: string, questions: Question[] = []): Questionnaire
 }
 
 /**
- * 处理问卷交互逻辑
+ * 处理提问交互逻辑
  */
-async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireInput): Promise<QuestionnaireToolResult> {
+async function handleAskQuestion(ctx: ExtensionContext, params: AskQuestionInput): Promise<AskQuestionToolResult> {
   if (ctx.mode !== "tui") {
     return errorResult("Error: UI not available (running in non-interactive mode)");
   }
@@ -89,7 +92,8 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
   }
 
   // 发送通知：有问题需要用户回答（异步，不阻塞主程序）
-  const questionSummary = params.questions.length === 1 ? params.questions[0].prompt : `${params.questions.length} 个问题需要回答`;
+  const questionSummary =
+    params.questions.length === 1 ? params.questions[0].question_text : `${params.questions.length} 个问题需要回答`;
   notifyQuestion(questionSummary).catch(() => {
     ctx.ui.notify("通知发送失败，请检查系统通知工具是否安装", "warning");
   });
@@ -98,7 +102,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
   const questions: Question[] = params.questions.map((q, i) => ({
     id: q.id,
     label: q.label || `Q${i + 1}`,
-    prompt: q.prompt,
+    question_text: q.question_text,
     options: q.options,
     allowOther: q.allowOther !== false,
   }));
@@ -106,7 +110,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
   const isMulti = questions.length > 1;
   const totalTabs = questions.length + 1; // 问题数量 + 提交按钮
 
-  const result = await ctx.ui.custom<QuestionnaireResult>((tui: TUI, theme: Theme, _kb: KeybindingsManager, done: (result: QuestionnaireResult) => void) => {
+  const result = await ctx.ui.custom<AskQuestionResult>((tui: TUI, theme: Theme, _kb: KeybindingsManager, done: (result: AskQuestionResult) => void) => {
     // 状态变量
     let currentTab = 0;
     let optionIndex = 0;
@@ -343,7 +347,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
 
       // 内容
       if (inputMode && q) {
-        addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
+        addWrappedWithPrefix(" ", theme.fg("text", q.question_text));
         lines.push("");
         // 显示选项作为参考
         renderOptions();
@@ -377,7 +381,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
           addWrappedWithPrefix(" ", theme.fg("warning", `Unanswered: ${missing}`));
         }
       } else if (q) {
-        addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
+        addWrappedWithPrefix(" ", theme.fg("text", q.question_text));
         lines.push("");
         renderOptions();
       }
@@ -404,17 +408,20 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
 
   if (result.cancelled) {
     return {
-      content: [{ type: "text", text: "User cancelled the questionnaire" }],
+      content: [{ type: "text", text: "User cancelled the question" }],
       details: result,
     };
   }
 
+  // 结果带回完整问题文本，便于事后在对话流中回看
   const answerLines = result.answers.map((a: Answer) => {
-    const qLabel = questions.find((q) => q.id === a.id)?.label || a.id;
+    const q = questions.find((qq) => qq.id === a.id);
+    const qLabel = q?.label || a.id;
+    const qText = q?.question_text ? ` — ${q.question_text}` : "";
     if (a.wasCustom) {
-      return `${qLabel}: user wrote: ${a.label}`;
+      return `${qLabel}${qText}\n  → user wrote: ${a.label}`;
     }
-    return `${qLabel}: user selected: ${a.index}. ${a.label}`;
+    return `${qLabel}${qText}\n  → user selected: ${a.index}. ${a.label}`;
   });
   return {
     content: [{ type: "text", text: answerLines.join("\n") }],
@@ -422,24 +429,24 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
   };
 }
 
-export default function questionnaire(pi: ExtensionAPI) {
+export default function askQuestion(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "questionnaire",
-    label: "Questionnaire",
+    name: "ask_question",
+    label: "Ask Question",
     description:
-      "Ask the user one or more questions. Use for clarifying requirements, getting preferences, or confirming decisions. For single questions, shows a simple option list. For multiple questions, shows a tab-based interface.",
-    parameters: QuestionnaireParams,
+      "Ask the user one or more structured questions with selectable options. Use for clarifying requirements, getting preferences, or confirming decisions. Single question: simple option list. Multiple questions: tab-based interface. Prefer concise options; set allowOther when free-form input may be needed.",
+    parameters: AskQuestionParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return handleQuestionnaire(ctx, params);
+      return handleAskQuestion(ctx, params);
     },
 
     renderCall(args, theme, _context) {
       const qs = (args.questions as Question[]) || [];
       const count = qs.length;
       const first = qs[0];
-      const preview = first ? truncateToWidth(first.prompt, 60) : "";
-      let text = theme.fg("toolTitle", theme.bold("questionnaire "));
+      const preview = first ? truncateToWidth(first.question_text, 60) : "";
+      let text = theme.fg("toolTitle", theme.bold("ask_question "));
       text += theme.fg("muted", `${count} question${count !== 1 ? "s" : ""}`);
       if (preview) {
         text += theme.fg("dim", `: "${preview}"`);
@@ -448,7 +455,7 @@ export default function questionnaire(pi: ExtensionAPI) {
     },
 
     renderResult(result, _options, theme, _context) {
-      const details = result.details as QuestionnaireResult | undefined;
+      const details = result.details as AskQuestionResult | undefined;
       if (!details) {
         const text = result.content[0];
         return new Text(text?.type === "text" ? text.text : "", 0, 0);

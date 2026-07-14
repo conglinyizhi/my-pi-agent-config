@@ -8,7 +8,7 @@ import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } fr
 import { notify } from "../../lib/notify-send";
 
 // 工具集合
-const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
+const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "ask_question"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 
 // 计划模式持久化状态
@@ -171,11 +171,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 你当前处于计划模式，这是一种用于安全代码分析的只读探索模式。
 
 限制：
-- 你只能使用：read、bash、grep、find、ls、questionnaire
+- 你只能使用：read、bash、grep、find、ls、ask_question
 - 你不能使用：edit、write（文件修改已禁用）
 - Bash 仅允许白名单中的只读命令
 
-使用 questionnaire 工具提出澄清问题。
+使用 ask_question 工具提出澄清问题。
 如需网页检索，可通过 bash 使用 brave-search skill。
 
 请在 "Plan:" 标题下创建一份详细的编号计划：

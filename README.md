@@ -36,7 +36,7 @@ pi
 
 **stream-monitor** — 偷偷盯着流式响应，变慢了你能察觉。
 
-**questionnaire** — 注册了一个工具让 AI 能弹选项框问你，不用打字的确认体验好很多。
+**ask_question** — 注册了一个工具让 AI 能弹选项框问你，不用打字的确认体验好很多。
 
 **system-prompt-filter** 和 **editor-margin** — 前者过滤系统提示里的敏感路径，后者调编辑器边距，都属于"虽然小但舒服"的类型。
 
