@@ -2,7 +2,7 @@
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { notifyQuestion } from "../../lib/notify-send";
 
@@ -276,31 +276,31 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
       if (cachedLines) return cachedLines;
 
       const lines: string[] = [];
+      // 终端宽度至少为 1，避免 0 宽导致 wrap 异常
+      const renderWidth = Math.max(1, width);
       const q = currentQuestion();
       const opts = currentOptions();
 
-      // 添加截断行的辅助函数
-      const add = (s: string) => lines.push(truncateToWidth(s, width));
+      // 按可见列宽折行，正确处理 ANSI 颜色码与宽字符（中文等）
+      function addWrapped(text: string) {
+        lines.push(...wrapTextWithAnsi(text, renderWidth));
+      }
 
-      // 自动换行函数 — 用于长问题文本
-      const addWrapped = (s: string) => {
-        let remaining = s;
-        while (remaining.length > 0) {
-          if (remaining.length <= width) {
-            lines.push(remaining);
-            break;
-          }
-          let cut = width;
-          while (cut > Math.floor(width * 0.6) && remaining[cut] !== " ") {
-            cut--;
-          }
-          if (cut <= Math.floor(width * 0.6)) cut = width;
-          lines.push(remaining.slice(0, cut));
-          remaining = remaining.slice(cut).trimStart();
+      // 带前缀折行：首行保留前缀，续行用等宽空白对齐
+      function addWrappedWithPrefix(prefix: string, text: string) {
+        const prefixWidth = visibleWidth(prefix);
+        if (prefixWidth >= renderWidth) {
+          addWrapped(prefix + text);
+          return;
         }
-      };
+        const wrapped = wrapTextWithAnsi(text, renderWidth - prefixWidth);
+        const continuationPrefix = " ".repeat(prefixWidth);
+        for (let i = 0; i < wrapped.length; i++) {
+          lines.push(`${i === 0 ? prefix : continuationPrefix}${wrapped[i]}`);
+        }
+      }
 
-      add(theme.fg("accent", "─".repeat(width)));
+      lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
       // 标签页栏（仅多问题模式）
       if (isMulti) {
@@ -320,7 +320,7 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
         const submitText = " ✓ Submit ";
         const submitStyled = isSubmitTab ? theme.bg("selectedBg", theme.fg("text", submitText)) : theme.fg(canSubmit ? "success" : "dim", submitText);
         tabs.push(`${submitStyled} →`);
-        add(` ${tabs.join("")}`);
+        addWrappedWithPrefix(" ", tabs.join(""));
         lines.push("");
       }
 
@@ -331,64 +331,63 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
           const selected = i === optionIndex;
           const isOther = opt.isOther === true;
           const prefix = selected ? theme.fg("accent", "> ") : "  ";
-          const color = selected ? "accent" : "text";
-          // 在输入模式下标记“输入自定义内容”为不同样式
-          if (isOther && inputMode) {
-            add(prefix + theme.fg("accent", `${i + 1}. ${opt.label} ✎`));
-          } else {
-            add(prefix + theme.fg(color, `${i + 1}. ${opt.label}`));
-          }
+          const label = `${i + 1}. ${opt.label}${isOther && inputMode ? " ✎" : ""}`;
+          const color = selected || (isOther && inputMode) ? "accent" : "text";
+
+          addWrappedWithPrefix(prefix, theme.fg(color, label));
           if (opt.description) {
-            add(`     ${theme.fg("muted", opt.description)}`);
+            addWrappedWithPrefix("     ", theme.fg("muted", opt.description));
           }
         }
       }
 
       // 内容
       if (inputMode && q) {
-        addWrapped(theme.fg("text", ` ${q.prompt}`));
+        addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
         lines.push("");
         // 显示选项作为参考
         renderOptions();
         lines.push("");
-        add(theme.fg("muted", " Your answer:"));
-        for (const line of editor.render(width - 2)) {
-          add(` ${line}`);
+        addWrappedWithPrefix(" ", theme.fg("muted", "Your answer:"));
+        for (const line of editor.render(Math.max(1, renderWidth - 2))) {
+          // 编辑器行本身已按宽度渲染，这里只加左缩进并做兜底截断
+          lines.push(truncateToWidth(` ${line}`, renderWidth));
         }
         lines.push("");
-        add(theme.fg("dim", " Enter to submit • Esc to cancel"));
+        addWrappedWithPrefix(" ", theme.fg("dim", "Enter to submit • Esc to cancel"));
       } else if (currentTab === questions.length) {
-        add(theme.fg("accent", theme.bold(" Ready to submit")));
+        addWrappedWithPrefix(" ", theme.fg("accent", theme.bold("Ready to submit")));
         lines.push("");
         for (const question of questions) {
           const answer = answers.get(question.id);
           if (answer) {
             const prefix = answer.wasCustom ? "(wrote) " : "";
-            add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("text", prefix + answer.label)}`);
+            const summary = `${theme.fg("muted", `${question.label}: `)}${theme.fg("text", prefix + answer.label)}`;
+            addWrappedWithPrefix(" ", summary);
           }
         }
         lines.push("");
         if (allAnswered()) {
-          add(theme.fg("success", " Press Enter to submit"));
+          addWrappedWithPrefix(" ", theme.fg("success", "Press Enter to submit"));
         } else {
           const missing = questions
             .filter((q) => !answers.has(q.id))
             .map((q) => q.label)
             .join(", ");
-          add(theme.fg("warning", ` Unanswered: ${missing}`));
+          addWrappedWithPrefix(" ", theme.fg("warning", `Unanswered: ${missing}`));
         }
       } else if (q) {
-        addWrapped(theme.fg("text", ` ${q.prompt}`));
+        addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
         lines.push("");
         renderOptions();
       }
 
       lines.push("");
       if (!inputMode) {
-        const help = isMulti ? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel" : " ↑↓ navigate • Enter select • Esc cancel";
-        add(theme.fg("dim", help));
+        const help = isMulti ? "Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel" : "↑↓ navigate • Enter select • Esc cancel";
+        addWrappedWithPrefix(" ", theme.fg("dim", help));
       }
-      add(theme.fg("accent", "─".repeat(width)));
+      lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
       cachedLines = lines;
       return lines;
