@@ -135,7 +135,6 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
     for (const provider of providers) {
       const apiKey = getApiKey(provider.id);
       if (!apiKey) {
-        console.warn(`[custom-providers] Provider "${provider.id}" has no API key in auth.json, skipping`);
         continue;
       }
 
@@ -148,8 +147,8 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           const models = await resolveModels(provider, format, provider.baseUrl, apiKey);
           pi.registerProvider(provider.id, buildProviderConfig(provider, provider.baseUrl, toPiApi(format), models, apiKey));
           registeredIds.add(provider.id);
-        } catch (err) {
-          console.error(`[custom-providers] Failed to register ${provider.id}:`, err);
+        } catch {
+          // provider 注册失败，跳过
         }
       } else {
         pending.set(provider.id, provider);

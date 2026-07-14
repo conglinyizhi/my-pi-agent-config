@@ -90,8 +90,8 @@ async function handleQuestionnaire(ctx: ExtensionContext, params: QuestionnaireI
 
   // 发送通知：有问题需要用户回答（异步，不阻塞主程序）
   const questionSummary = params.questions.length === 1 ? params.questions[0].prompt : `${params.questions.length} 个问题需要回答`;
-  notifyQuestion(questionSummary).catch((error) => {
-    console.warn("发送问题通知失败:", error);
+  notifyQuestion(questionSummary).catch(() => {
+    ctx.ui.notify("通知发送失败，请检查系统通知工具是否安装", "warning");
   });
 
   // 规范化问题并设置默认值
