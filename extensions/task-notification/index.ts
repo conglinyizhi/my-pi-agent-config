@@ -2,6 +2,7 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { shouldSuppressTaskComplete } from "../../lib/continuation-guard";
 import { isRetryableError } from "../../lib/error-utils";
 import { findLastAssistant, summarizeLastAssistantMessage } from "../../lib/message-utils";
 import { checkNotificationSupport, notifyBrief, notifyTaskComplete, testNotificationSound } from "../../lib/notify-send";
@@ -56,6 +57,12 @@ export default async function taskNotification(pi: ExtensionAPI) {
     // 仅在有 UI 的情况下发送通知
     if (!ctx.hasUI) return;
 
+    // 空正文自动续跑中：不发「任务完成」，改由 thinking-only-continue 发警告
+    if (shouldSuppressTaskComplete()) {
+      cancelDeferred();
+      return;
+    }
+
     const lastAssistant = findLastAssistant(event.messages);
 
     // 没有 assistant 消息 → 正常通知
@@ -78,6 +85,12 @@ export default async function taskNotification(pi: ExtensionAPI) {
       deferredSummary = summarizeLastAssistantMessage(event.messages);
       // 3 秒后如果 agent 没有恢复（未触发 agent_start），说明对话终止
       deferredTimer = setTimeout(async () => {
+        // 延迟窗口内若已进入空正文续跑，同样抑制
+        if (shouldSuppressTaskComplete()) {
+          deferredTimer = undefined;
+          deferredSummary = "";
+          return;
+        }
         if (deferredSummary) {
           try {
             await notifyBrief(deferredSummary);
