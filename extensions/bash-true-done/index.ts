@@ -1,14 +1,17 @@
 // grok-4.5 完成信号：连续两次「仅」bash true 且无其他指令 → 视为任务正常完成
 //
-// 背景：grok-4.5 经常在干完活后反复 toolCall bash command=true 空转，
-// 既不给正文也不停。连续两次 pure `true` 可当作「我做完了」。
+// 背景：grok-4.5 收工时常反复 toolCall bash command=true，既不给正文也不停。
+// 这是模型侧行为，应用侧开发者无法改模型，只能识别并当作正常完成。
 //
 // 规则：
 //   - bash 且 command 去空白后严格等于 "true" → 连续计数 +1
 //   - 任何其他工具 / 非 pure-true 的 bash → 计数清零
-//   - 计数达到 2：发任务完成通知、TUI 提示，block 本次 true 并 abort agent
+//   - 计数达到 2：视为正常完成（非错误）
+//       · 第二次 true 照常执行（exit 0，不 block，避免 UI 像报错）
+//       · tool_result 成功后发「任务完成」通知
+//       · 再 abort，打断后续 true 空转（无可奈何的适配，不是判定出错）
 //
-// 标注：grok-4.5 特性（逻辑不限模型，文案标明来源）
+// 标注：grok-4.5 特性
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
@@ -21,9 +24,8 @@ import { notifyTaskComplete } from "../../lib/notify-send";
 /** 连续几次 pure true 视为完成 */
 const DONE_THRESHOLD = 2;
 
-const DONE_SUMMARY = "任务处理完成（grok-4.5 完成信号：连续 bash true）";
-const BLOCK_REASON =
-  "已连续两次仅调用 bash true，判定任务完成（grok-4.5 特性），已中止后续空转";
+/** 正常完成文案：强调是模型完成信号，不是环节出错 */
+const DONE_SUMMARY = "任务处理完成（grok-4.5：连续 bash true 正常收工）";
 
 // ---------------------------------------------------------------------------
 // 判定
@@ -42,25 +44,29 @@ export function isPureTrueCommand(command: unknown): boolean {
 export default function bashTrueDone(pi: ExtensionAPI) {
   /** 连续 pure true 次数（跨 turn 累计，遇其它工具清零） */
   let consecutivePureTrue = 0;
-  /** 本会话是否已因完成信号中止过一轮（避免重复刷通知） */
-  let justSignaledDone = false;
+  /** 已达阈值、等待本次 true 的 tool_result 后收工 */
+  let pendingDoneToolCallId: string | undefined;
+  /** 本轮已发过完成通知，避免重复 */
+  let doneNotified = false;
 
   function resetStreak() {
     consecutivePureTrue = 0;
+    pendingDoneToolCallId = undefined;
   }
 
   function resetAll() {
     consecutivePureTrue = 0;
-    justSignaledDone = false;
+    pendingDoneToolCallId = undefined;
+    doneNotified = false;
   }
 
-  async function signalDone(ctx: ExtensionContext) {
-    justSignaledDone = true;
+  async function signalNormalComplete(ctx: ExtensionContext) {
+    if (doneNotified) return;
+    doneNotified = true;
 
     if (ctx.hasUI) {
       ctx.ui.notify(DONE_SUMMARY, "info");
-      ctx.ui.setStatus("bash-true-done", "✓ grok 完成信号");
-      // 状态栏短暂展示后清掉
+      ctx.ui.setStatus("bash-true-done", "✓ 正常完成（grok true×2）");
       setTimeout(() => {
         try {
           ctx.ui.setStatus("bash-true-done", undefined);
@@ -73,11 +79,12 @@ export default function bashTrueDone(pi: ExtensionAPI) {
     try {
       await notifyTaskComplete(DONE_SUMMARY);
     } catch {
-      // 桌面通知失败不影响中止
+      // 桌面通知失败不影响收工
     }
 
-    // 中止当前 agent，避免再开下一轮 true
-    // 延迟到 tool_call 处理返回后，让 block 结果先落盘
+    // 模型还会继续 true 空转：只能 abort 打断。
+    // stopReason 会变成 aborted，但语义上是我们主动正常收工，不是用户取消/出错。
+    // task-notification 对 aborted 不发「任务完成」，因此上面已自行 notifyTaskComplete。
     setTimeout(() => {
       try {
         ctx.abort();
@@ -91,7 +98,7 @@ export default function bashTrueDone(pi: ExtensionAPI) {
     resetAll();
   });
 
-  // 用户新输入：新任务，清计数（extension 注入的续跑提示也清——完成信号与续跑无关）
+  // 用户新输入：新任务
   pi.on("input", (event) => {
     if (event.source !== "extension") {
       resetAll();
@@ -99,59 +106,53 @@ export default function bashTrueDone(pi: ExtensionAPI) {
     return { action: "continue" as const };
   });
 
-  // agent 正常结束（非我们 abort）时，若没有再 true，可保留计数或清零：
-  // 清零更安全，避免跨任务误判；但 grok 的 true 往往跨多个 agent_end。
-  // 真实轨迹是：true → agent_end → 又 true… 所以不能在 agent_end 清零。
-  // 仅在用户输入 / 非 true 工具时清零。
+  // 不在 agent_end 清零：true → agent_end → 又 true 是正常轨迹
 
-  pi.on("tool_call", async (event, ctx) => {
+  pi.on("tool_call", (event, ctx) => {
     // 非 bash → 打断连续 true
     if (!isToolCallEventType("bash", event)) {
-      if (consecutivePureTrue > 0) {
-        resetStreak();
-      }
-      justSignaledDone = false;
+      if (consecutivePureTrue > 0) resetStreak();
       return;
     }
 
-    const command = event.input.command;
-
-    if (!isPureTrueCommand(command)) {
-      if (consecutivePureTrue > 0) {
-        resetStreak();
-      }
-      justSignaledDone = false;
+    if (!isPureTrueCommand(event.input.command)) {
+      if (consecutivePureTrue > 0) resetStreak();
       return;
     }
 
-    // pure true
+    // pure true：放行执行（包括第 2 次），不 block —— 这是正常收工路径
     consecutivePureTrue += 1;
 
     if (ctx.hasUI && consecutivePureTrue === 1) {
-      ctx.ui.setStatus("bash-true-done", "grok 完成信号 1/2…");
+      ctx.ui.setStatus("bash-true-done", "grok 收工信号 1/2…");
     }
 
-    if (consecutivePureTrue < DONE_THRESHOLD) {
-      return; // 放行第一次 true
+    if (consecutivePureTrue >= DONE_THRESHOLD) {
+      // 等本条 true 跑完再通知 + abort
+      pendingDoneToolCallId = event.toolCallId;
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("bash-true-done", "grok 收工信号 2/2…");
+      }
     }
 
-    // ── 达到阈值：完成 ──
-    if (!justSignaledDone) {
-      await signalDone(ctx);
-    } else {
-      // 已 signal 过仍又来 true（abort 竞态）→ 直接 block + 再 abort
-      setTimeout(() => {
-        try {
-          ctx.abort();
-        } catch {
-          // ignore
-        }
-      }, 0);
+    // 明确不 return block
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    if (!pendingDoneToolCallId || event.toolCallId !== pendingDoneToolCallId) {
+      return;
     }
 
-    return {
-      block: true,
-      reason: BLOCK_REASON,
-    };
+    // 本次 true 已结束（无论 isError；pure true 几乎不会失败）
+    pendingDoneToolCallId = undefined;
+    await signalNormalComplete(ctx);
+  });
+
+  // 兜底：若 tool_result 未对上 id（少见），agent_end 时计数已满也收工
+  pi.on("agent_end", async (_event, ctx) => {
+    if (doneNotified) return;
+    if (consecutivePureTrue >= DONE_THRESHOLD) {
+      await signalNormalComplete(ctx);
+    }
   });
 }
