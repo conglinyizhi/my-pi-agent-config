@@ -9,7 +9,9 @@
 // 动作：
 //   1. 标记 continuation-guard，让 task-notification 跳过「任务完成」
 //   2. 桌面 + TUI 警告：大模型 API 出现了意外终止，自动进行重试
-//   3. sendUserMessage("因截断而终止，继续")
+//   3. sendUserMessage(..., { deliverAs: "followUp" }) 排队续写
+//      agent_end 监听器结算前 isStreaming 仍为 true，必须带 deliverAs，
+//      否则会抛 Agent is already processing
 //
 // 连续空正文最多续 MAX_CONTINUES 次，防止死循环。
 
@@ -175,20 +177,23 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     void fireWarning(ctx, attempt);
     clearPendingUi(ctx);
 
-    try {
-      pi.sendUserMessage(CONTINUE_PROMPT);
-    } catch {
-      try {
-        pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" });
-      } catch (err) {
-        clearSuppressTaskComplete();
-        pendingContinue = false;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (ctx.hasUI) {
-          ctx.ui.notify(`自动续跑失败: ${msg}`, "error");
-        }
+    // agent_end 监听器仍在运行时 isStreaming===true（核心约定：
+    // agent 要等 awaited agent_end 监听器全部 settle 后才 idle）。
+    // 无 deliverAs 会同步/异步抛：
+    //   Agent is already processing. Specify streamingBehavior ('steer' or 'followUp')
+    // 续写应在本轮结束后再开新 turn → followUp，而不是 steer 打断当前收尾。
+    // 注意：pi.sendUserMessage 实际返回 Promise，必须按异步处理，
+    // 不能靠同步 try/catch 兜底（否则变成 unhandled rejection → Extension "<runtime>"）。
+    void Promise.resolve(
+      pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" }),
+    ).catch((err: unknown) => {
+      clearSuppressTaskComplete();
+      pendingContinue = false;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (ctx.hasUI) {
+        ctx.ui.notify(`自动续跑失败: ${msg}`, "error");
       }
-    }
+    });
 
     pendingContinue = false;
   }

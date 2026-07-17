@@ -20,7 +20,7 @@
 |------|------|
 | 1 | `markSuppressTaskComplete()`，`task-notification` 跳过「任务完成」 |
 | 2 | TUI `warning` + 桌面 `urgency: critical`：「大模型 API 出现了意外终止，自动进行重试」 |
-| 3 | `sendUserMessage("因截断而终止，继续")` 开启新一轮 |
+| 3 | `sendUserMessage("因截断而终止，继续", { deliverAs: "followUp" })` 排队开启新一轮（`agent_end` 时仍在 streaming，必须带 `deliverAs`） |
 
 连续空正文最多自动续 **3** 次，超限报错并停止。
 
