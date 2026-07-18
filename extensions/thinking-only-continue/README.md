@@ -27,10 +27,10 @@
 | 步骤 | 动作 |
 |------|------|
 | 1 | `markSuppressTaskComplete()`，`task-notification` 跳过「任务完成」 |
-| 2 | TUI `warning` + 桌面 `urgency: critical`：「大模型 API 出现了意外终止，自动进行重试」 |
-| 3 | `sendUserMessage("因截断而终止，继续", { deliverAs: "followUp" })` 排队开启新一轮（`agent_end` 时仍在 streaming，必须带 `deliverAs`） |
+| 2 | TUI `warning` + 桌面 `urgency: critical`：「大模型 API 出现了异常截断输出，自动进行重试」 |
+| 3 | `sendUserMessage(...)` 排队开启新一轮（`agent_end` 时仍在 streaming，必须带 `deliverAs`） |
 
-连续空正文最多自动续 **3** 次，超限报错并停止。
+连续异常截断输出最多自动续 **3** 次，超限报错并停止。
 
 ## 与 task-notification 协作
 
@@ -43,4 +43,4 @@
 
 扩展目录自动加载。`/reload` 或重启 pi 后生效。
 
-无需命令；失败时 status 栏会短暂显示「空正文，准备自动续跑…」。
+无需命令；失败时 status 栏会短暂显示「异常截断输出，准备自动续跑…」。

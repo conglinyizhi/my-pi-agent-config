@@ -57,7 +57,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
     // 仅在有 UI 的情况下发送通知
     if (!ctx.hasUI) return;
 
-    // 空正文自动续跑中：不发「任务完成」，改由 thinking-only-continue 发警告
+    // 异常截断输出自动续跑中：不发「任务完成」，改由 thinking-only-continue 发警告
     if (shouldSuppressTaskComplete()) {
       cancelDeferred();
       return;
@@ -85,7 +85,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
       deferredSummary = summarizeLastAssistantMessage(event.messages);
       // 3 秒后如果 agent 没有恢复（未触发 agent_start），说明对话终止
       deferredTimer = setTimeout(async () => {
-        // 延迟窗口内若已进入空正文续跑，同样抑制
+        // 延迟窗口内若已进入异常截断输出续跑，同样抑制
         if (shouldSuppressTaskComplete()) {
           deferredTimer = undefined;
           deferredSummary = "";

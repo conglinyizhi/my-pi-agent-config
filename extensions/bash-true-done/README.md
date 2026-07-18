@@ -35,7 +35,7 @@ bash → command: "true"
 
 ## 与其它扩展
 
-- 独立于 `thinking-only-continue`（空正文续跑）
+- 独立于 `thinking-only-continue`（异常截断输出续跑）
 - 不依赖模型 id 过滤；文案标明 grok-4.5
 
 ## 使用

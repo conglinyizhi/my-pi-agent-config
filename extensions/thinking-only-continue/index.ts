@@ -1,4 +1,4 @@
-// 思维链空正文自动续跑：仅 thinking、无可见正文时自动发送续写提示并警告通知
+// 思维链异常截断输出自动续跑：仅 thinking、无可见正文时自动发送续写提示并警告通知
 //
 // 判定（最后一条 assistant）：
 //   - 去掉空白后 type=text 正文长度为 0
@@ -9,12 +9,12 @@
 //
 // 动作：
 //   1. 标记 continuation-guard，让 task-notification 跳过「任务完成」
-//   2. 桌面 + TUI 警告：大模型 API 出现了意外终止，自动进行重试
+//   2. 桌面 + TUI 警告：大模型 API 出现了异常截断输出，自动进行重试
 //   3. sendUserMessage(..., { deliverAs: "followUp" }) 排队续写
 //      agent_end 监听器结算前 isStreaming 仍为 true，必须带 deliverAs，
 //      否则会抛 Agent is already processing
 //
-// 连续空正文最多续 MAX_CONTINUES 次，防止死循环。
+// 连续异常截断输出最多续 MAX_CONTINUES 次，防止死循环。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -35,7 +35,7 @@ import { notify } from "../../lib/notify-send";
 const MAX_CONTINUES = 3;
 const CONTINUE_PROMPT = "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情";
 const WARNING_TITLE = "Pi Agent";
-const WARNING_BODY = "大模型 API 出现了意外终止，自动进行重试";
+const WARNING_BODY = "大模型 API 出现了异常截断输出，自动进行重试";
 
 // ---------------------------------------------------------------------------
 // 消息判定
@@ -155,7 +155,7 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     // message_end 早于 agent_end：先于 task-notification 压制「任务完成」
     markSuppressTaskComplete();
     if (ctx.hasUI) {
-      ctx.ui.setStatus("thinking-only-continue", "⚠ 空正文，准备自动续跑…");
+      ctx.ui.setStatus("thinking-only-continue", "⚠ 异常截断输出，准备自动续跑…");
     }
   }
 
@@ -186,9 +186,9 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
       clearPendingUi(ctx);
       resetContinueAttempts();
       if (ctx.hasUI) {
-        ctx.ui.notify(`空正文自动续跑已达上限（${MAX_CONTINUES} 次），请手动处理`, "error");
+        ctx.ui.notify(`异常截断输出自动续跑已达上限（${MAX_CONTINUES} 次），请手动处理`, "error");
       }
-      void notify(WARNING_TITLE, `空正文自动续跑已达上限（${MAX_CONTINUES} 次）`, {
+      void notify(WARNING_TITLE, `异常截断输出自动续跑已达上限（${MAX_CONTINUES} 次）`, {
         urgency: "critical",
         timeout: 20_000,
       });

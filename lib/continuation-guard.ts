@@ -1,5 +1,5 @@
 /**
- * 跨扩展协作：思维链空正文自动续跑 ⇄ 任务完成通知
+ * 跨扩展协作：思维链异常截断输出自动续跑 ⇄ 任务完成通知
  *
  * thinking-only-continue 在判定需要自动续跑时调用 markSuppressTaskComplete()；
  * task-notification 在发送「任务完成」前调用 shouldSuppressTaskComplete()。
@@ -10,7 +10,7 @@
 let suppressTaskComplete = false;
 let consecutiveContinues = 0;
 
-/** 标记：即将/正在因空正文自动续跑，抑制任务完成通知 */
+/** 标记：即将/正在因异常截断输出自动续跑，抑制任务完成通知 */
 export function markSuppressTaskComplete(): void {
   suppressTaskComplete = true;
 }

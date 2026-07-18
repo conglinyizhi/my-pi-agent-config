@@ -10,7 +10,7 @@
 - **用户手动取消**（`stopReason === "aborted"`）→ 不通知
 - **可重试的网络错误** → 延迟 3 秒通知，若 agent 在此期间恢复（触发 `agent_start`）则取消
 - **不可重试错误导致终止** → 发送通知
-- **空正文自动续跑中**（`shouldSuppressTaskComplete()`）→ 不发「任务完成」，由 `thinking-only-continue` 发警告级通知
+- **异常截断输出自动续跑中**（`shouldSuppressTaskComplete()`）→ 不发「任务完成」，由 `thinking-only-continue` 发警告级通知
 
 ## 初始化
 
