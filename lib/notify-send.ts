@@ -23,6 +23,18 @@ async function execNotifyAsync(command: string, argsOrOptions?: string[] | ExecO
  */
 const DEFAULT_TIMEOUT = 60_000; // 1 分钟
 
+/**
+ * 默认通知音效路径
+ * 当 sound=true 且未指定 soundFile 时统一使用此文件
+ */
+const DEFAULT_NOTIFICATION_SOUND = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "assets",
+  "sounds",
+  "task-complete-change.ogg",
+);
+
 export interface NotifyOptions {
   title: string;
   message: string;
@@ -30,7 +42,7 @@ export interface NotifyOptions {
   timeout?: number; // 毫秒
   icon?: string;
   sound?: boolean;
-  /** 自定义音频文件路径（优先于系统默认声音） */
+  /** 自定义音频文件路径（优先于默认音效；sound=true 且未指定时自动回落到默认 ogg） */
   soundFile?: string;
 }
 
@@ -326,17 +338,22 @@ async function playMacSound(soundFile: string): Promise<void> {
  */
 export async function sendNotification(options: NotifyOptions): Promise<boolean> {
   const os = getOS();
+  // sound=true 但未指定 soundFile 时，统一使用默认 ogg，避免各调用方忘记带文件
+  const resolved: NotifyOptions =
+    options.sound && !options.soundFile
+      ? { ...options, soundFile: DEFAULT_NOTIFICATION_SOUND }
+      : options;
 
   try {
     switch (os) {
       case "linux":
-        await sendLinuxNotification(options);
+        await sendLinuxNotification(resolved);
         break;
       case "windows":
-        await sendWindowsNotification(options);
+        await sendWindowsNotification(resolved);
         break;
       case "macos":
-        await sendMacNotification(options);
+        await sendMacNotification(resolved);
         break;
       default:
         return false;
@@ -369,11 +386,6 @@ export async function notifyTaskStart(taskDescription: string): Promise<boolean>
 }
 
 /**
- * 默认任务完成音效路径
- */
-const DEFAULT_TASK_COMPLETE_SOUND = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "sounds", "task-complete-change.ogg");
-
-/**
  * 发送任务完成通知
  */
 export async function notifyTaskComplete(taskDescription: string): Promise<boolean> {
@@ -381,7 +393,6 @@ export async function notifyTaskComplete(taskDescription: string): Promise<boole
     urgency: "normal",
     timeout: DEFAULT_TIMEOUT,
     sound: true,
-    soundFile: DEFAULT_TASK_COMPLETE_SOUND,
   });
 }
 
@@ -405,7 +416,6 @@ export async function notifyQuestion(question: string): Promise<boolean> {
     urgency: "normal",
     timeout: DEFAULT_TIMEOUT,
     sound: true,
-    soundFile: DEFAULT_TASK_COMPLETE_SOUND,
   });
 }
 
@@ -443,13 +453,13 @@ export async function testNotificationSound(): Promise<{ success: boolean; metho
   try {
     switch (os) {
       case "linux":
-        await playLinuxSound(DEFAULT_TASK_COMPLETE_SOUND);
+        await playLinuxSound(DEFAULT_NOTIFICATION_SOUND);
         return { success: true, method: `paplay/ffplay` };
       case "macos":
-        await playMacSound(DEFAULT_TASK_COMPLETE_SOUND);
+        await playMacSound(DEFAULT_NOTIFICATION_SOUND);
         return { success: true, method: `afplay` };
       case "windows":
-        await playWindowsSound(DEFAULT_TASK_COMPLETE_SOUND);
+        await playWindowsSound(DEFAULT_NOTIFICATION_SOUND);
         return { success: true, method: `SoundPlayer` };
       default:
         return { success: false, method: "unknown", error: `不支持的操作系统: ${os}` };
