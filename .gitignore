@@ -17,3 +17,4 @@ skills/*
 skill-states.json
 .pi-sync-state.json
 *.log
+models-store.json
