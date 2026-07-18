@@ -33,7 +33,9 @@ import { notify, notifyTaskComplete } from "../../lib/notify-send";
 // ── 习性一：异常截断输出 ──
 
 const MAX_CONTINUES = 3;
-const CONTINUE_PROMPT = "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情";
+const CONTINUE_PROMPT =
+  "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情；如果你重复看到了这条消息，请调用 bash 工具：";
+const BASH_HIT = "echo job done already";
 const WARNING_TITLE = "Pi Agent";
 const WARNING_BODY = "大模型 API 出现了异常截断输出，自动进行重试";
 
@@ -78,12 +80,7 @@ function bodyIsBlank(parts: ContentPart[]): boolean {
 }
 
 function hasNonEmptyThinking(parts: ContentPart[]): boolean {
-  return parts.some(
-    (p) =>
-      p.type === "thinking" &&
-      typeof p.thinking === "string" &&
-      p.thinking.replace(/\s+/g, "").length > 0,
-  );
+  return parts.some((p) => p.type === "thinking" && typeof p.thinking === "string" && p.thinking.replace(/\s+/g, "").length > 0);
 }
 
 function hasToolCall(parts: ContentPart[]): boolean {
@@ -213,9 +210,7 @@ export default function forGrok45(pi: ExtensionAPI) {
     void fireWarning(ctx, attempt);
     clearPendingUi(ctx);
 
-    void Promise.resolve(
-      pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" }),
-    ).catch((err: unknown) => {
+    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" })).catch((err: unknown) => {
       clearSuppressTaskComplete();
       pendingContinue = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -348,7 +343,18 @@ export default function forGrok45(pi: ExtensionAPI) {
       return;
     }
 
-    if (!isPureTrueCommand(event.input.command)) {
+    const cmd = event.input.command as string;
+
+    // 习性二 · 快速通道：bash 输出包含 BASH_HIT → 即刻收工
+    if (typeof cmd === "string" && cmd.includes(BASH_HIT)) {
+      pendingDoneToolCallId = event.toolCallId;
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("for-grok-4-5", "grok 主动报告完成…");
+      }
+      return;
+    }
+
+    if (!isPureTrueCommand(cmd)) {
       if (consecutivePureTrue > 0) resetTrueStreak();
       return;
     }
