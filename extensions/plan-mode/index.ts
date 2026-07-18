@@ -272,13 +272,14 @@ ${todoList}
     // 发送桌面通知提醒用户确认计划
     notify("Pi Agent", "计划已生成，请确认下一步操作。", { urgency: "normal", sound: true }).catch(() => {});
 
-    const choice = await ctx.ui.select("计划模式：下一步做什么？", [
-      todoItems.length > 0 ? "执行计划（跟踪进度）" : "执行计划",
-      "继续停留在计划模式",
-      "细化计划",
+    const choice = await ctx.ui.select("计划已生成。请选择下一步（退出后可手动输入后面指令继续操作）：", [
+      todoItems.length > 0 ? "(执行计划) 跟踪进度 /plan:start" : "(执行计划) /plan:start",
+      "(继续) 停留在计划模式 /plan:continue",
+      "(细化) 计划 /plan:refine",
+      "不做任何行动，我亲自掌舵",
     ]);
 
-    if (choice?.startsWith("执行计划")) {
+    if (choice?.includes("执行计划")) {
       planModeEnabled = false;
       executionMode = todoItems.length > 0;
       pi.setActiveTools(NORMAL_MODE_TOOLS);
@@ -293,11 +294,20 @@ ${todoList}
         },
         { triggerTurn: true },
       );
-    } else if (choice === "细化计划") {
+    } else if (choice?.includes("细化")) {
       const refinement = await ctx.ui.editor("细化计划：", "");
       if (refinement?.trim()) {
         pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
       }
+    } else if (choice?.includes("亲自掌舵")) {
+      // 用户选择亲自掌舵：安全退出计划模式，不触发任何后续行动
+      planModeEnabled = false;
+      executionMode = false;
+      todoItems = [];
+      pi.setActiveTools(NORMAL_MODE_TOOLS);
+      updateStatus(ctx);
+      ctx.ui.notify("已退出计划模式，您现在完全掌控。", "success");
+      persistState();
     }
   });
 
