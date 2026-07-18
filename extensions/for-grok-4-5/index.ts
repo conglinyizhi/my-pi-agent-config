@@ -210,7 +210,7 @@ export default function forGrok45(pi: ExtensionAPI) {
     void fireWarning(ctx, attempt);
     clearPendingUi(ctx);
 
-    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" })).catch((err: unknown) => {
+    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT + BASH_HIT, { deliverAs: "followUp" })).catch((err: unknown) => {
       clearSuppressTaskComplete();
       pendingContinue = false;
       const msg = err instanceof Error ? err.message : String(err);
