@@ -2,32 +2,25 @@
 
 ## 功能概述
 
-流式状态监视器，在 TUI 状态栏实时显示：
-- Token 流入速度（tok/s，基于 3 秒滑动窗口计算）
-- 累计 token 数和已用时间
-- 工具执行时的运行时长
+状态栏看流式是否还在动、大概多快、工具跑了多久。数字是粗估，不是账单。
 
 ## 状态栏显示
 
-- **流式输出中**：`⚡ 123 tok/s | 4.2k tok | 35.2s`
-- **工具执行中**：`🔧 bash (2m15s)`
-- **空闲**：隐藏
+- **流式中**：`⚡ 123 tok/s  |  1.2k tok  |  35.2s`
+- **流式结束**：保留最终快照（全程平均 tok/s），直到下一次流式 `start`
+- **单个工具**：`🔧 bash (2m15s)`
+- **并行工具**：`🔧 bash +2 (2m15s)`（最早启动的那个 + 额外个数）
+- **空闲且无快照**：隐藏
 
-## 实现细节
+## 实现要点
 
-- **流速计算**：3 秒滑动窗口，`.length` 估算而非精确 tokenize（`estimateTokens`）
-- **节流**：`text_delta` 事件频发，500ms 节流更新 UI
-- **自定义工作指示器**：替换默认旋转动画为 `W- O- R- K-` 帧序列
-- **无状态缓存**：不缓存 ctx，每次从事件参数获取，避免 session 替换后过期引用
+- **token**：`estimateTextTokens` 粗估（CJK≈1/字，ASCII≈4 字/token），够看趋势即可
+- **速度**：3 秒滑动窗口；结束后用全程平均
+- **刷新**：delta 500ms 节流 + ticker 推进工具计时/窗口
+- **并行工具**：`Map<toolCallId>`，end 只删对应 id
+- **指示器**：session 起脉冲 `· • ● •`，shutdown 恢复默认
+- **清理**：`session_shutdown` / `agent_end` 清残留
 
-## 事件钩子
+## 事件
 
-- `session_start` — 重置状态、设置自定义工作指示器
-- `message_update` — 追踪 text_delta 更新流速
-- `message_end` — 流式结束，清除状态
-- `tool_execution_start/update/end` — 显示/更新/清除工具执行状态
-
-## 依赖
-
-- `../lib/token-utils` — estimateTokens
-- `@earendil-works/pi-coding-agent` — ExtensionAPI
+`session_start` · `session_shutdown` · `message_update` · `message_end` · `tool_execution_*` · `agent_end`
