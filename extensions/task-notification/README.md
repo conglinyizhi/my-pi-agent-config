@@ -10,7 +10,7 @@
 - **用户手动取消**（`stopReason === "aborted"`）→ 不通知
 - **可重试的网络错误** → 延迟 3 秒通知，若 agent 在此期间恢复（触发 `agent_start`）则取消
 - **不可重试错误导致终止** → 发送通知
-- **异常截断输出自动续跑中**（`shouldSuppressTaskComplete()`）→ 不发「任务完成」，由 `thinking-only-continue` 发警告级通知
+- **异常截断输出自动续跑中**（`shouldSuppressTaskComplete()`）→ 不发「任务完成」，由 `for-grok-4-5` 发警告级通知
 
 ## 初始化
 
@@ -27,4 +27,4 @@
 - `../../lib/notify-send` — 桌面通知发送 + 支持检测
 - `../../lib/message-utils` — 消息摘要提取
 - `../../lib/error-utils` — 可重试错误判断
-- `../../lib/continuation-guard` — 与 `thinking-only-continue` 协作，抑制误报完成通知
+- `../../lib/continuation-guard` — 与 `for-grok-4-5` 协作，抑制误报完成通知

@@ -57,7 +57,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
     // 仅在有 UI 的情况下发送通知
     if (!ctx.hasUI) return;
 
-    // 异常截断输出自动续跑中：不发「任务完成」，改由 thinking-only-continue 发警告
+    // 异常截断输出自动续跑中：不发「任务完成」，改由 for-grok-4-5 发警告
     if (shouldSuppressTaskComplete()) {
       cancelDeferred();
       return;

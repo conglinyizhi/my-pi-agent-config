@@ -1,22 +1,20 @@
-// 思维链异常截断输出自动续跑：仅 thinking、无可见正文时自动发送续写提示并警告通知
+// for-grok-4-5：强大、实惠、但疯跑的孩子
 //
-// 判定（最后一条 assistant）：
-//   - 去掉空白后 type=text 正文长度为 0
-//   - 无 toolCall
-//   - 有非空 thinking，或 stopReason 为 length（截断）
-//   - stopReason 不是 aborted；可重试 error 交给 pi 内置重试
-//   - thinking 未表达「已完成 / 无需再追问」（见 isThinkingDoneIntention）
+// grok-4.5 两大顽疾的自动化处理：
 //
-// 动作：
-//   1. 标记 continuation-guard，让 task-notification 跳过「任务完成」
-//   2. 桌面 + TUI 警告：大模型 API 出现了异常截断输出，自动进行重试
-//   3. sendUserMessage(..., { deliverAs: "followUp" }) 排队续写
-//      agent_end 监听器结算前 isStreaming 仍为 true，必须带 deliverAs，
-//      否则会抛 Agent is already processing
+//   习性一 · 只 thinking、不吐正文就停
+//     判定：最后一条 assistant 无正文、无 toolCall、有非空 thinking（或 stopReason === "length"），
+//     且 thinking 未表达「已完成 / 无需再追问」
+//     动作：续写提示 + 警告通知，最多续 3 次
 //
-// 连续异常截断输出最多续 MAX_CONTINUES 次，防止死循环。
+//   习性二 · 反复 true 空转不停
+//     判定：连续两次 bash 且 command 去空白后严格等于 "true"
+//     动作：第二次 true 正常执行后发「任务完成」通知，随后 abort 打断空转
+//
+// 两个习性独立判定、独立处理，互不干扰。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
   clearSuppressTaskComplete,
   getContinueAttempts,
@@ -26,20 +24,27 @@ import {
   resetContinueAttempts,
 } from "../../lib/continuation-guard";
 import { isRetryableError } from "../../lib/error-utils";
-import { notify } from "../../lib/notify-send";
+import { notify, notifyTaskComplete } from "../../lib/notify-send";
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // 常量
-// ---------------------------------------------------------------------------
+// ===========================================================================
+
+// ── 习性一：异常截断输出 ──
 
 const MAX_CONTINUES = 3;
 const CONTINUE_PROMPT = "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情";
 const WARNING_TITLE = "Pi Agent";
 const WARNING_BODY = "大模型 API 出现了异常截断输出，自动进行重试";
 
-// ---------------------------------------------------------------------------
-// 消息判定
-// ---------------------------------------------------------------------------
+// ── 习性二：bash true 空转 ──
+
+const DONE_THRESHOLD = 2;
+const DONE_SUMMARY = "任务处理完成（grok-4.5：连续 bash true 正常收工）";
+
+// ===========================================================================
+// 习性一：消息判定
+// ===========================================================================
 
 interface ContentPart {
   type: string;
@@ -62,7 +67,6 @@ function extractParts(msg: AssistantLike): ContentPart[] {
   return msg.content;
 }
 
-/** 正文去掉空白后是否一个字都没有 */
 function bodyIsBlank(parts: ContentPart[]): boolean {
   let body = "";
   for (const p of parts) {
@@ -74,7 +78,12 @@ function bodyIsBlank(parts: ContentPart[]): boolean {
 }
 
 function hasNonEmptyThinking(parts: ContentPart[]): boolean {
-  return parts.some((p) => p.type === "thinking" && typeof p.thinking === "string" && p.thinking.replace(/\s+/g, "").length > 0);
+  return parts.some(
+    (p) =>
+      p.type === "thinking" &&
+      typeof p.thinking === "string" &&
+      p.thinking.replace(/\s+/g, "").length > 0,
+  );
 }
 
 function hasToolCall(parts: ContentPart[]): boolean {
@@ -107,7 +116,7 @@ export function isThinkingDoneIntention(thinking: string): boolean {
  * 是否「仅思维链 / 截断导致无正文」需要自动续跑
  */
 export function isThinkingOnlyEmptyBody(msg: AssistantLike | undefined | null): boolean {
-  if (msg?.role !== "assistant") return false;
+  if (!msg || msg.role !== "assistant") return false;
 
   const reason = msg.stopReason;
   if (reason === "aborted") return false;
@@ -117,7 +126,6 @@ export function isThinkingOnlyEmptyBody(msg: AssistantLike | undefined | null): 
   if (hasToolCall(parts)) return false;
   if (!bodyIsBlank(parts)) return false;
 
-  // 思维链已表明「做完了 / 不要再追问」→ 视为正常收工，不自动续跑
   if (isThinkingDoneIntention(getThinkingText(parts))) return false;
 
   if (hasNonEmptyThinking(parts)) return true;
@@ -134,28 +142,35 @@ function findLastAssistant(messages: unknown[]): AssistantLike | undefined {
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// 扩展
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// 习性二：bash true 判定
+// ===========================================================================
 
-export default function thinkingOnlyContinue(pi: ExtensionAPI) {
-  /** message_end 已判定需要续跑 */
+export function isPureTrueCommand(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  return command.trim() === "true";
+}
+
+// ===========================================================================
+// 扩展入口
+// ===========================================================================
+
+export default function forGrok45(pi: ExtensionAPI) {
+  // ── 习性一 状态 ──
   let pendingContinue = false;
-  /** 同一 agent_end 周期内只 dispatch 一次 */
   let continueDispatched = false;
 
   function clearPendingUi(ctx: ExtensionContext) {
     if (ctx.hasUI) {
-      ctx.ui.setStatus("thinking-only-continue", undefined);
+      ctx.ui.setStatus("for-grok-4-5", undefined);
     }
   }
 
   function armContinue(ctx: ExtensionContext) {
     pendingContinue = true;
-    // message_end 早于 agent_end：先于 task-notification 压制「任务完成」
     markSuppressTaskComplete();
     if (ctx.hasUI) {
-      ctx.ui.setStatus("thinking-only-continue", "⚠ 异常截断输出，准备自动续跑…");
+      ctx.ui.setStatus("for-grok-4-5", "⚠ 异常截断输出，准备自动续跑…");
     }
   }
 
@@ -198,14 +213,9 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     void fireWarning(ctx, attempt);
     clearPendingUi(ctx);
 
-    // agent_end 监听器仍在运行时 isStreaming===true（核心约定：
-    // agent 要等 awaited agent_end 监听器全部 settle 后才 idle）。
-    // 无 deliverAs 会同步/异步抛：
-    //   Agent is already processing. Specify streamingBehavior ('steer' or 'followUp')
-    // 续写应在本轮结束后再开新 turn → followUp，而不是 steer 打断当前收尾。
-    // 注意：pi.sendUserMessage 实际返回 Promise，必须按异步处理，
-    // 不能靠同步 try/catch 兜底（否则变成 unhandled rejection → Extension "<runtime>"）。
-    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" })).catch((err: unknown) => {
+    void Promise.resolve(
+      pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" }),
+    ).catch((err: unknown) => {
       clearSuppressTaskComplete();
       pendingContinue = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -217,23 +227,75 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     pendingContinue = false;
   }
 
-  // ── 会话生命周期 ──
+  // ── 习性二 状态 ──
+  let consecutivePureTrue = 0;
+  let pendingDoneToolCallId: string | undefined;
+  let doneNotified = false;
+
+  function resetTrueStreak() {
+    consecutivePureTrue = 0;
+    pendingDoneToolCallId = undefined;
+  }
+
+  function resetTrueAll() {
+    consecutivePureTrue = 0;
+    pendingDoneToolCallId = undefined;
+    doneNotified = false;
+  }
+
+  async function signalNormalComplete(ctx: ExtensionContext) {
+    if (doneNotified) return;
+    doneNotified = true;
+
+    if (ctx.hasUI) {
+      ctx.ui.notify(DONE_SUMMARY, "info");
+      ctx.ui.setStatus("for-grok-4-5", "✓ 正常完成（grok true×2）");
+      setTimeout(() => {
+        try {
+          ctx.ui.setStatus("for-grok-4-5", undefined);
+        } catch {
+          // session 可能已切换
+        }
+      }, 4000);
+    }
+
+    try {
+      await notifyTaskComplete(DONE_SUMMARY);
+    } catch {
+      // 桌面通知失败不影响收工
+    }
+
+    setTimeout(() => {
+      try {
+        ctx.abort();
+      } catch {
+        // ignore
+      }
+    }, 0);
+  }
+
+  // =========================================================================
+  // 生命周期（两个习性共享）
+  // =========================================================================
 
   pi.on("session_start", () => {
     pendingContinue = false;
     continueDispatched = false;
     resetContinuationGuard();
+    resetTrueAll();
   });
 
   pi.on("input", (event) => {
-    // 用户真实输入：重置连续计数（extension 注入的续跑提示不重置）
     if (event.source !== "extension") {
       resetContinueAttempts();
+      resetTrueAll();
     }
     return { action: "continue" as const };
   });
 
-  // ── 比 agent_end 更早 mark，保证 task-notification 能读到 suppress ──
+  // =========================================================================
+  // 习性一：message_end / agent_end
+  // =========================================================================
 
   pi.on("message_end", (event, ctx) => {
     if (event.message.role !== "assistant") return;
@@ -244,7 +306,6 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
       return;
     }
 
-    // 有正文或工具调用 → 正常/续跑成功
     const parts = extractParts(msg);
     if (!bodyIsBlank(parts) || hasToolCall(parts)) {
       if (getContinueAttempts() > 0) {
@@ -257,22 +318,61 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     }
   });
 
-  // ── 回合结束：执行续跑 ──
-
   pi.on("agent_end", (event, ctx) => {
+    // ── 习性一：续跑 dispatch ──
     continueDispatched = false;
 
-    // 主路径：message_end 已 arm
     if (pendingContinue) {
       dispatchContinue(ctx);
+    } else {
+      const last = findLastAssistant(event.messages ?? []);
+      if (isThinkingOnlyEmptyBody(last)) {
+        armContinue(ctx);
+        dispatchContinue(ctx);
+      }
+    }
+
+    // ── 习性二：兜底收工（true 计数已满但 tool_result 未对上） ──
+    if (!doneNotified && consecutivePureTrue >= DONE_THRESHOLD) {
+      void signalNormalComplete(ctx);
+    }
+  });
+
+  // =========================================================================
+  // 习性二：tool_call / tool_result
+  // =========================================================================
+
+  pi.on("tool_call", (event, ctx) => {
+    if (!isToolCallEventType("bash", event)) {
+      if (consecutivePureTrue > 0) resetTrueStreak();
       return;
     }
 
-    // 兜底：用本 run 最后一条 assistant 再判一次
-    const last = findLastAssistant(event.messages ?? []);
-    if (isThinkingOnlyEmptyBody(last)) {
-      armContinue(ctx);
-      dispatchContinue(ctx);
+    if (!isPureTrueCommand(event.input.command)) {
+      if (consecutivePureTrue > 0) resetTrueStreak();
+      return;
     }
+
+    consecutivePureTrue += 1;
+
+    if (ctx.hasUI && consecutivePureTrue === 1) {
+      ctx.ui.setStatus("for-grok-4-5", "grok 收工信号 1/2…");
+    }
+
+    if (consecutivePureTrue >= DONE_THRESHOLD) {
+      pendingDoneToolCallId = event.toolCallId;
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("for-grok-4-5", "grok 收工信号 2/2…");
+      }
+    }
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    if (!pendingDoneToolCallId || event.toolCallId !== pendingDoneToolCallId) {
+      return;
+    }
+
+    pendingDoneToolCallId = undefined;
+    await signalNormalComplete(ctx);
   });
 }

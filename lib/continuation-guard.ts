@@ -1,7 +1,7 @@
 /**
  * 跨扩展协作：思维链异常截断输出自动续跑 ⇄ 任务完成通知
  *
- * thinking-only-continue 在判定需要自动续跑时调用 markSuppressTaskComplete()；
+ * for-grok-4-5 在判定需要自动续跑时调用 markSuppressTaskComplete()；
  * task-notification 在发送「任务完成」前调用 shouldSuppressTaskComplete()。
  *
  * 标志为进程内全局状态（单 pi 进程、多扩展共享）。
