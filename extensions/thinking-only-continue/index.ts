@@ -5,6 +5,7 @@
 //   - 无 toolCall
 //   - 有非空 thinking，或 stopReason 为 length（截断）
 //   - stopReason 不是 aborted；可重试 error 交给 pi 内置重试
+//   - thinking 未表达「已完成 / 无需再追问」（见 isThinkingDoneIntention）
 //
 // 动作：
 //   1. 标记 continuation-guard，让 task-notification 跳过「任务完成」
@@ -32,7 +33,7 @@ import { notify } from "../../lib/notify-send";
 // ---------------------------------------------------------------------------
 
 const MAX_CONTINUES = 3;
-const CONTINUE_PROMPT = "因截断而终止，继续";
+const CONTINUE_PROMPT = "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情";
 const WARNING_TITLE = "Pi Agent";
 const WARNING_BODY = "大模型 API 出现了意外终止，自动进行重试";
 
@@ -73,23 +74,40 @@ function bodyIsBlank(parts: ContentPart[]): boolean {
 }
 
 function hasNonEmptyThinking(parts: ContentPart[]): boolean {
-  return parts.some(
-    (p) =>
-      p.type === "thinking" &&
-      typeof p.thinking === "string" &&
-      p.thinking.replace(/\s+/g, "").length > 0,
-  );
+  return parts.some((p) => p.type === "thinking" && typeof p.thinking === "string" && p.thinking.replace(/\s+/g, "").length > 0);
 }
 
 function hasToolCall(parts: ContentPart[]): boolean {
   return parts.some((p) => p.type === "toolCall");
 }
 
+/** 拼接全部 thinking 文本 */
+function getThinkingText(parts: ContentPart[]): string {
+  let text = "";
+  for (const p of parts) {
+    if (p.type === "thinking" && typeof p.thinking === "string") {
+      text += p.thinking;
+    }
+  }
+  return text;
+}
+
+/**
+ * thinking 是否已表达「任务完成、无需再追问」
+ * - 同时包含「完成」与「简单回复」（与逻辑）
+ * - 或包含「不要再调用工具」
+ */
+export function isThinkingDoneIntention(thinking: string): boolean {
+  if (!thinking) return false;
+  if (thinking.includes("不要再调用工具")) return true;
+  return thinking.includes("完成") && thinking.includes("简单回复");
+}
+
 /**
  * 是否「仅思维链 / 截断导致无正文」需要自动续跑
  */
 export function isThinkingOnlyEmptyBody(msg: AssistantLike | undefined | null): boolean {
-  if (!msg || msg.role !== "assistant") return false;
+  if (msg?.role !== "assistant") return false;
 
   const reason = msg.stopReason;
   if (reason === "aborted") return false;
@@ -98,6 +116,9 @@ export function isThinkingOnlyEmptyBody(msg: AssistantLike | undefined | null): 
   const parts = extractParts(msg);
   if (hasToolCall(parts)) return false;
   if (!bodyIsBlank(parts)) return false;
+
+  // 思维链已表明「做完了 / 不要再追问」→ 视为正常收工，不自动续跑
+  if (isThinkingDoneIntention(getThinkingText(parts))) return false;
 
   if (hasNonEmptyThinking(parts)) return true;
   if (reason === "length") return true;
@@ -184,9 +205,7 @@ export default function thinkingOnlyContinue(pi: ExtensionAPI) {
     // 续写应在本轮结束后再开新 turn → followUp，而不是 steer 打断当前收尾。
     // 注意：pi.sendUserMessage 实际返回 Promise，必须按异步处理，
     // 不能靠同步 try/catch 兜底（否则变成 unhandled rejection → Extension "<runtime>"）。
-    void Promise.resolve(
-      pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" }),
-    ).catch((err: unknown) => {
+    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" })).catch((err: unknown) => {
       clearSuppressTaskComplete();
       pendingContinue = false;
       const msg = err instanceof Error ? err.message : String(err);
