@@ -1,5 +1,5 @@
 import { dangerousPatterns } from "./dangerous-patterns";
-import { safePatternHandlers } from "./safe-patterns";
+import { safePatternHandlers } from "./safe-patterns/index";
 
 /** 按 && 分割命令为切片，过滤空串。尾部多余的 && 不会产生空切片。 */
 export function splitSlices(command: string): string[] {

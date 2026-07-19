@@ -6,12 +6,17 @@
 
 ```
 permission-gate/
-├── index.ts              # 主入口，组装扩展并 export default
-├── dangerous-patterns.ts # 危险模式正则定义
-├── safe-patterns.ts      # 安全模式白名单处理器
-├── helpers.ts            # 切片、查找、判断工具函数
-└── README.md             # 本文件
+├── index.ts                  # 主入口，组装扩展并 export default
+├── dangerous-patterns.ts     # 危险模式正则定义
+├── helpers.ts                # 切片、查找、判断工具函数
+├── README.md                 # 本文件
+└── safe-patterns/
+    ├── index.ts              # 聚合导出 safePatternHandlers
+    ├── tmp-recreate.ts       # /tmp 临时目录重建模式
+    └── tmp-recreate.test.ts  # 对应测试（27 用例）
 ```
+
+运行测试：`npx tsx extensions/permission-gate/safe-patterns/tmp-recreate.test.ts`
 
 ## 判定流程
 
@@ -46,25 +51,15 @@ bash 命令
 
 ### 添加新的安全模式
 
-编辑 `safe-patterns.ts`，push 一个处理器函数：
+1. 在 `safe-patterns/` 下创建 `xxx.ts`，导出处理器函数（签名 `SafePatternHandler`）
+2. 创建 `xxx.test.ts`，覆盖扫描函数、处理器、端到端三个层级
+3. 在 `safe-patterns/index.ts` 中 import 并 push 到 `safePatternHandlers` 数组
 
-```ts
-(slices) => {
-  // 遍历 slices，找到符合安全模式的切片组合
-  // 返回被此模式标记为安全的切片索引 Set
-  const covered = new Set<number>();
-  // ... 匹配逻辑 ...
-  return covered;
-},
-```
+推荐使用「分别扫描 + 交叉核对」模式（参考 `tmp-recreate.ts`）：
 
-处理器签名：`(slices: string[]) => Set<number>`
-
-- `slices`：命令按 `&&` 分割后的字符串数组，已去除空串
-- 返回值：被此模式覆盖的切片索引集合（其中包含危险切片索引）
-
-安全模式不需要覆盖该模式涉及的全部切片，只需覆盖**匹配危险模式的那些切片**。
-未被安全模式覆盖的危险切片仍会触发确认弹窗。
+1. 写扫描函数提取模式相关的切片位置
+2. 在处理器中对扫描结果交叉核对（顺序、一致性）
+3. 返回覆盖的切片索引 Set
 
 ### 添加新的帮助函数
 
