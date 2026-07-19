@@ -4,7 +4,7 @@
 
 我总不能将 html 或者 vue 那套流程搬过来吧？而且主要是社区行为规范，没有社区的推动，我的想法啥也不是啊
 
-TODO: 新增的这个插件（extensions/external-editor-shortcuts.ts）其实可以直接融合 extensions/open-editor.ts，因为有些功能重叠，但时间太晚了（0:31），记录之后就休息了
+TODO:DONE 新增的这个插件（extensions/external-editor-shortcuts.ts）其实可以直接融合 extensions/open-editor.ts，因为有些功能重叠，但时间太晚了（0:31），记录之后就休息了
 
 上面这一行 AI 建议我改掉，因为风格比较随意……作为仓库甚至我的源码中占比越来越少的人类语言，还是留着吧，万一……算了，我想不到谁会利用这段文本，总之，保留思考痕迹，挺好的
 
