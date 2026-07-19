@@ -1,5 +1,7 @@
 {
   "app.tools.expand": [],
   "app.tree.filter.cycleForward": [],
-  "tui.editor.cursorLineEnd": "end"
+  "tui.editor.cursorLineEnd": "end",
+  "app.clear": "shift+ctrl+c",
+  "tui.input.copy": "ctrl+insert"
 }

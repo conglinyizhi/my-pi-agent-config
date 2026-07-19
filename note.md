@@ -17,3 +17,9 @@ TODO: 这个 skill 也很好，那个 skill 也很好，要不……用云端拉
 # 20260714
 
 TODO: ask_question 超长提问已能正确折行、不再崩 TUI；结果侧已带回完整 question_text。renderCall 仍只 truncateToWidth(question_text, 60) 做预览——若要在工具调用展示里也看到全文，可再改 renderCall。
+
+# 20260719
+
+服了，输入一大堆文本粘贴的时候 Ctrl-C 误触，整个文本没了，写个插件吧 （extensions/ctrl-c-safety.ts）
+
+但是可能需要配合的ban掉对应的快捷键
