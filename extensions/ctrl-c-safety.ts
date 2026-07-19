@@ -76,6 +76,18 @@ export default function (pi: ExtensionAPI) {
             modified = true;
         }
 
+        // tui.select.cancel 默认绑 ctrl+c，需释放（escape 仍可用）
+        const cancelKeys = config["tui.select.cancel"];
+        if (cancelKeys === undefined || cancelKeys === "ctrl+c" ||
+            (Array.isArray(cancelKeys) && cancelKeys.length === 1 && cancelKeys[0] === "ctrl+c")) {
+            // 默认还有 escape，移除 ctrl+c 即可
+            config["tui.select.cancel"] = "escape";
+            modified = true;
+        } else if (Array.isArray(cancelKeys) && cancelKeys.includes("ctrl+c")) {
+            config["tui.select.cancel"] = cancelKeys.filter((k: string) => k !== "ctrl+c");
+            modified = true;
+        }
+
         if (modified) {
             writeFileSync(keybindingsPath, JSON.stringify(config, null, 2) + "\n");
         }

@@ -3,5 +3,6 @@
   "app.tree.filter.cycleForward": [],
   "tui.editor.cursorLineEnd": "end",
   "app.clear": "shift+ctrl+c",
-  "tui.input.copy": "ctrl+insert"
+  "tui.input.copy": "ctrl+insert",
+  "tui.select.cancel": "escape"
 }
