@@ -50,7 +50,7 @@ hint = "用户已经配置好 uv（Rust 实现的 Python 包管理器）。严�
 
 [[tools]]
 name = "pnpm"
-display = "pnpm"
+display = "pn"
 check = "pnpm --version"
 version = '(\S+)'
 hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（pnpm install / pnpm add / pnpm remove 等），禁止使用 npm 或 yarn。如果项目已有 pnpm-lock.yaml，必须用 pnpm install 而非 npm install。"
