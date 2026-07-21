@@ -98,3 +98,9 @@ name = "fount-char"
 source = "https://github.com/conglinyizhi/fount-char-skill"
 description = "fount 角色卡创建助手 — 模板、工具范例与交互式创建向导"
 tags = ["fount", "character"]
+
+[[skills]]
+name = "clyzhi-moonwell-spring"
+source = "https://github.com/conglinyizhi/clyzhi-moonwell-spring"
+description = "MoonBit官方技能热修复层·月井之春。必须与官方 moonbit-*技能同时加载"
+tags = ["moonbit", "hotfix"]
