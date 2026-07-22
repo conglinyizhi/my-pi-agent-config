@@ -24,7 +24,7 @@ TODO: ask_question 超长提问已能正确折行、不再崩 TUI；结果侧已
 
 但是可能需要配合的ban掉对应的快捷键
 
-# 2020720
+# 20260720
 
 cd /tmp && rm -rf mbtest && mkdir mbtest &&
 
@@ -38,7 +38,7 @@ cd /tmp && rm -rf mbtest && mkdir mbtest &&
 - 如果安全检查发现 3 个 rm -rf 但是仅匹配到一个上面的条件，仍然报告风险
 - 如果安全检查发现的指令切片数量和匹配条件一致，视为安全，放行
 
-# 20250721
+# 20260721
 
 MoonBit 写 pi 扩展的可行性验证：JS target 成立，但是同进程、函数调用、零 IPC。但工程障碍在于 MoonBit JS target 产物是 IIFE 自执行格式，不是 ES module，需要手动剥壳包装。方案可以做但不优雅，放弃
 
