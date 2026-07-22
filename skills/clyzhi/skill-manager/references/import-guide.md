@@ -81,6 +81,7 @@ rm -rf /tmp/skill-inspect
 | `source_dir` | 否 | 当仓库目录名 ≠ name 时，覆盖路径 |
 | `bundle` | 否 | `true` 表示多技能聚合仓库 |
 | `link_targets` | 否 | 软链接目标列表（相对于仓库根目录的子路径） |
+| `trigger` | 否 | 一段话描述该技能在什么场景下应被唤醒。agent 用它做语义匹配，而非关键词匹配。参照已有条目的写法即可 |
 
 ### 单技能条目
 
@@ -115,3 +116,9 @@ git pull
 ```
 
 然后重新检查软链接是否完整（对比 `link_targets` 和实际目录），缺的补上。
+
+## 步骤 6：使预检规则生效
+
+预检扩展（`~/.pi/agent/extensions/skill-preflight.ts`）在 session 启动时自动读取 `repo.toml` 中的 `trigger` 字段并缓存。
+
+因此 `repo.toml` 变更（新增技能、修改 trigger）后，只需提示用户：`/reload` 使其生效。

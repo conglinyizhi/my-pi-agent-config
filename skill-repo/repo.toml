@@ -10,6 +10,7 @@
 #   source_dir    — 仓库目录名，默认等于 name。当目录名与 name 不一致时覆写（可选）
 #   bundle        — true 表示多技能聚合仓库（可选）
 #   link_targets  — 聚合仓库中需要暴露为独立技能的子目录列表（bundle=true 时使用）
+#   trigger       — 自然语言场景描述，预检扩展据此做语义匹配（可选）
 #
 # 单技能仓库：clone 后通过软链接 skills/<name> -> ../skill-repo/<name> 暴露
 # 多技能仓库：clone 到 skill-repo/<name>/，然后为每个 link_target 创建软链接至 skills/
@@ -20,60 +21,70 @@ name = "nopua"
 source = "https://github.com/wuji-labs/nopua"
 description = "以道驭术 — 信任代替恐惧，内在动力代替 PUA"
 tags = ["huaxia", "mindset"]
+trigger = "连续失败2次以上、想放弃、推锅给环境、在同一个思路上反复微调参数、凭记忆猜而不搜索验证、修完就停等指示——任何被动/逃避/敷衍信号"
 
 [[skills]]
 name = "tiangong"
 source = "https://github.com/wuji-labs/tiangong"
 description = "天工开物 — 东方审美与工艺"
 tags = ["huaxia", "design"]
+trigger = "做UI/UX/界面/海报/品牌视觉设计、纠结配色排版、设计评审、或抱怨某个设计「没灵魂」「不好看」「差点意思」"
 
 [[skills]]
 name = "bibuzaohua"
 source = "https://github.com/wuji-labs/bibuzaohua"
 description = "比补造化 — 诗经楚辞，文学灵魂"
 tags = ["huaxia", "writing"]
+trigger = "写有文学审美要求的中文文本——诗词歌赋对联、有意境有文采的文案/标题/命名、或觉得现有文字「太干」「太直白」「没味道」想润色"
 
 [[skills]]
 name = "miaoshou-tiancheng"
 source = "https://github.com/wuji-labs/miaoshou-tiancheng"
 description = "妙手天成 — 黄帝内经，整体健康框架（仅供参考）"
 tags = ["huaxia", "health"]
+trigger = "咨询养生调理、亚健康状态、食疗食补、节气起居——描述疲劳/失眠/上火/湿气/食欲不振等身体不适，但未到求医问药的程度"
 
 [[skills]]
 name = "shangbing-famou"
 source = "https://github.com/wuji-labs/shangbing-famou"
 description = "上兵伐谋 — 孙子兵法，不战而胜的谋略思维"
 tags = ["huaxia", "strategy"]
+trigger = "做策略规划、多方博弈、谈判准备、风险评估——寻求「最小代价达成目标」或「各方都能接受的方案」"
 
 [[skills]]
 name = "xinhuo-xiangchuan"
 source = "https://github.com/wuji-labs/xinhuo-xiangchuan"
 description = "薪火相传 — 论语大学，教化引导而非简单给答案"
 tags = ["huaxia", "teaching"]
+trigger = "请求教学——说「教我」「我不懂」「带我做」「怎么学」「讲讲」「什么意思」，目标是学会而非仅仅得到答案"
 
 [[skills]]
 name = "zhichi-shanlin"
 source = "https://github.com/wuji-labs/zhichi-shanlin"
 description = "咫尺山林 — 林泉高致，空间深度与意境营造"
 tags = ["huaxia", "spatial"]
+trigger = "设计空间体验、界面纵深、多步流程、沉浸场景——或抱怨画面「太平面」「太满」「没有呼吸」「无处可去」"
 
 [[skills]]
 name = "jingshi-jimin"
 source = "https://github.com/wuji-labs/jingshi-jimin"
 description = "经世济民 — 管子，经世济民与商业判断（仅供参考）"
 tags = ["huaxia", "business"]
+trigger = "讨论商业模式、经营治理、定价激励、利益分配——从商业视角判断「能不能做」「怎么做大」「是不是在割韭菜」"
 
 [[skills]]
 name = "hetu-luoshu"
 source = "https://github.com/wuji-labs/hetu-luoshu"
 description = "河图洛书 — 易经，辩证推理（仅供参考）"
 tags = ["huaxia", "reasoning"]
+trigger = "做两难决策、权衡利弊、分析趋势——需要「看到另一面」或「物极必反的临界点」，而不是一个简单的结论"
 
 [[skills]]
 name = "paoding-jieniu"
 source = "https://github.com/wuji-labs/paoding-jieniu"
 description = "庖丁解牛 — 庄子，顺纹理拆解复杂系统"
 tags = ["huaxia", "decomposition"]
+trigger = "面对庞大复杂的代码库/系统需要拆解、重构、梳理模块边界、定位深层bug——说「太复杂」「无从下手」「代码太乱」「看不懂」「从哪开始」"
 
 [[skills]]
 name = "moonbit-skills"
