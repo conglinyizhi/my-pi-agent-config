@@ -62,3 +62,9 @@ MoonBit 写 pi 扩展的可行性验证：JS target 成立，但是同进程、�
 - session 启动时读 toml 一次，整个 session 不再动。技能变更 /reload
 - 注入体量选紧凑表格（每技能一行），不把完整描述全塞 system prompt
 - skill-manager 的 import-guide.md 同步更新字段说明和步骤 6（改完 toml 后 /reload）
+
+# 20260722
+
+虽然是 23 号写的记录，但这事儿确实发生再 22 号；简而言之就是发现某个模型有一些 xml 的返回会卡死任务，这需要 agent 适配，就适配了，顺手从 hugging face 上和 codex 源码中复刻了一个 /goal 模式
+
+都这样了我还自己写个锤的 agent，凑活用吧……
