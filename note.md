@@ -68,3 +68,10 @@ MoonBit 写 pi 扩展的可行性验证：JS target 成立，但是同进程、�
 虽然是 23 号写的记录，但这事儿确实发生再 22 号；简而言之就是发现某个模型有一些 xml 的返回会卡死任务，这需要 agent 适配，就适配了，顺手从 hugging face 上和 codex 源码中复刻了一个 /goal 模式
 
 都这样了我还自己写个锤的 agent，凑活用吧……
+
+# 20260723
+
+extensions/session-search
+extensions/session-browse
+
+这俩插件……？想办法给他合并
