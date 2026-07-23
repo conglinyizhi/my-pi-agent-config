@@ -75,3 +75,11 @@ extensions/session-search
 extensions/session-browse
 
 这俩插件……？想办法给他合并
+
+# 20260724
+
+extensions/net-guard.ts 插件开发动机
+
+什么玩意，pi 检查更新竟然会让 pi 在网络不好的情况下出现异常的同时竟然没有显式提示？！甚至 verbose 都不给对应的日志！
+
+怒而写插件提醒未来的自己
