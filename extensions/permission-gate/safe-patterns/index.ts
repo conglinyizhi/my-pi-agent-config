@@ -9,7 +9,9 @@
 
 export type SafePatternHandler = (slices: string[]) => Set<number>;
 
+// DeepSeek V4 Pro 行为
 import { tmpRecreate } from "./tmp-recreate";
+// Qwen 3.x 行为
 import { mktempCleanup } from "./mktemp-cleanup";
 
 export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup];
