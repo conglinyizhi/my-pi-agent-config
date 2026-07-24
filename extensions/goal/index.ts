@@ -36,6 +36,8 @@ const GATE_OUTPUT_MAX = 4000;
 const SUMMARY_RE = /<summary>[\s\S]*<\/summary>/;
 const NEXT_RE = /<next>([\s\S]*?)<\/next>/;
 const PLAN_RE = /<plan>([\s\S]*?)<\/plan>/;
+/** 整条消息去除空白后恰好是一个 <summary> 块，无任何额外文字 */
+const PURE_SUMMARY_RE = /^\s*<summary>[\s\S]*<\/summary>\s*$/;
 
 interface MessageLike {
   content?: string | Array<{ type: string; text?: string }>;
@@ -82,6 +84,18 @@ function checkSummary(text: string): "pending" | "done" | "none" {
 function extractNext(text: string): string {
   const m = text.match(NEXT_RE);
   return m ? m[1].trim() : "";
+}
+
+/** 从纯 <summary> XML 中提取目标描述（取 <next> 内容，回退到 <plan> 首行） */
+function extractGoalFromSummary(text: string): string {
+  const next = extractNext(text);
+  if (next) return next;
+  const planMatch = text.match(PLAN_RE);
+  if (planMatch) {
+    const firstLine = planMatch[1].split("\n").find((l) => l.trim());
+    if (firstLine) return firstLine.trim();
+  }
+  return "";
 }
 
 // ── 续行提示词 ──
@@ -185,6 +199,9 @@ export default function (pi: ExtensionAPI) {
   let lastErrorFingerprint = "";
   let sameErrorCount = 0;
 
+  // 自动检测：已询问过的 entry id，避免重复弹窗
+  let lastPromptedEntryId = "";
+
   function resetState() {
     active = false;
     continueCount = 0;
@@ -193,6 +210,20 @@ export default function (pi: ExtensionAPI) {
     lastErrorFingerprint = "";
     sameErrorCount = 0;
     clearSuppressTaskComplete();
+  }
+
+  /** 激活 goal 模式（命令手动触发 / 自动检测共用） */
+  function activateGoal(ctx: { ui: { setStatus: (k: string, t: string | undefined) => void; notify: (m: string, t?: "info" | "warning" | "error") => void } }, desc: string, gate: string) {
+    active = true;
+    continueCount = 0;
+    goalDescription = desc;
+    gateCommand = gate;
+    lastErrorFingerprint = "";
+    sameErrorCount = 0;
+
+    const label = gate ? `gate:\`${gate}\`` : desc || "目标";
+    ctx.ui.setStatus("goal", "🎯 循环中");
+    ctx.ui.notify(`🎯 Goal 已启用（${label}）`, "info");
   }
 
   async function maybeProgressNotify() {
@@ -288,16 +319,7 @@ export default function (pi: ExtensionAPI) {
         desc = trimmed.replace(gateMatch[0], "").trim();
       }
 
-      active = true;
-      continueCount = 0;
-      goalDescription = desc;
-      gateCommand = gate;
-      lastErrorFingerprint = "";
-      sameErrorCount = 0;
-
-      const label = gate ? `gate:\`${gate}\`` : desc || "目标";
-      ctx.ui.setStatus("goal", "🎯 循环中");
-      ctx.ui.notify(`🎯 Goal 已启用（${label}）`, "info");
+      activateGoal(ctx, desc, gate);
 
       // 有 gate + 有描述：发初始指令让模型开始
       if (gate && desc) {
@@ -328,17 +350,64 @@ export default function (pi: ExtensionAPI) {
 
   // 核心循环
   pi.on("agent_settled", async (_event, ctx) => {
-    if (!active) return;
+    // ── 未激活时：检测纯 <summary> XML，询问是否开启 goal ──
+    if (!active) {
+      if (!ctx.hasUI) return;
+      const branch = ctx.sessionManager.getBranch();
+      let lastEntryId = "";
+      let lastText = "";
+      for (let i = branch.length - 1; i >= 0; i--) {
+        const entry = branch[i];
+        if (entry.type === "message" && entry.message.role === "assistant") {
+          lastEntryId = entry.id;
+          lastText = extractText(entry.message);
+          break;
+        }
+      }
+      if (!lastEntryId || lastEntryId === lastPromptedEntryId) return;
+
+      if (!PURE_SUMMARY_RE.test(lastText)) return;
+
+      lastPromptedEntryId = lastEntryId;
+      const goalDesc = extractGoalFromSummary(lastText);
+      if (!goalDesc) return;
+
+      const preview = goalDesc.length > 80 ? goalDesc.slice(0, 80) + "…" : goalDesc;
+      const ok = await ctx.ui.confirm(
+        "🎯 检测到任务计划",
+        `模型输出了结构化的 <summary> 任务计划。\n\n待办：${preview}\n\n是否开启 Goal 自动续行模式？`,
+      );
+      if (!ok) return;
+
+      activateGoal(ctx, goalDesc, "");
+      // 立即续行第一轮
+      continueCount++;
+      updateWidget(ctx, goalDesc);
+      scheduleContinue(buildContinuePrompt(goalDesc, goalDesc));
+      return;
+    }
 
     // 取最后一条 assistant 消息
     const branch = ctx.sessionManager.getBranch();
     let lastText = "";
+    let lastStopReason: string | undefined;
     for (let i = branch.length - 1; i >= 0; i--) {
       const entry = branch[i];
       if (entry.type === "message" && entry.message.role === "assistant") {
         lastText = extractText(entry.message);
+        lastStopReason = (entry.message as { stopReason?: string }).stopReason;
         break;
       }
+    }
+
+    // 用户手动中断（esc）→ 停止 goal，不再续行
+    if (lastStopReason === "aborted") {
+      const count = continueCount;
+      resetState();
+      ctx.ui.setStatus("goal", undefined);
+      ctx.ui.setWidget("goal-status", undefined);
+      ctx.ui.notify(`🎯 Goal 已停止：手动中断（共 ${count} 轮）`, "info");
+      return;
     }
 
     // 1. XML 检测
