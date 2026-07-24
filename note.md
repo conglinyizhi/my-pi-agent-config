@@ -83,3 +83,17 @@ extensions/net-guard.ts 插件开发动机
 什么玩意，pi 检查更新竟然会让 pi 在网络不好的情况下出现异常的同时竟然没有显式提示？！甚至 verbose 都不给对应的日志！
 
 怒而写插件提醒未来的自己
+
+# 20260724-安全门
+
+发现 Qwen 3.x 模型也存在 DeepSeek 那种调用 bash 去 mktemp 里面瞎折腾的，本身是好事情，但是每次都需要我同意安全指令有点过分，补了一个安全豁免
+
+# 20260724-代理语法糖
+
+extensions/put-http-proxy.ts 每次大模型都笨笨的直接访问raw资源站点，加一个插件，解决很多问题，不过我开始写自己的语法糖咯？行吧……
+
+# 20260724-关闭 Biome 杂音提醒
+
+详见： https://biomejs.dev/assist/actions/organize-imports
+
+终于可以让编辑器消停一点了
