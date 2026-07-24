@@ -97,3 +97,7 @@ extensions/put-http-proxy.ts 每次大模型都笨笨的直接访问raw资源站
 详见： https://biomejs.dev/assist/actions/organize-imports
 
 终于可以让编辑器消停一点了
+
+# 20260724-安全门续修
+
+让 agent 自己分析历史 session 然后挑选几个好修的安全案例修了

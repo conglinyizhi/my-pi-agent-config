@@ -13,5 +13,7 @@ export type SafePatternHandler = (slices: string[]) => Set<number>;
 import { tmpRecreate } from "./tmp-recreate";
 // Qwen 3.x 行为
 import { mktempCleanup } from "./mktemp-cleanup";
+// GLM 5.2 行为
+import { sudoReadonly } from "./sudo-readonly";
 
-export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup];
+export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup, sudoReadonly];
