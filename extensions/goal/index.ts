@@ -30,6 +30,10 @@ const SAME_ERROR_THRESHOLD = 3;
 const PROGRESS_NOTIFY_INTERVAL = 3;
 /** gate 输出截断长度 */
 const GATE_OUTPUT_MAX = 4000;
+/** 连续多少轮没有 <summary> XML → 暂停（无法判断进度） */
+const NO_XML_PAUSE_THRESHOLD = 3;
+/** 总续行轮次安全上限，超过后暂停 */
+const MAX_CONTINUE_ROUNDS = 50;
 
 // ── XML 结构检测 ──
 
@@ -55,14 +59,24 @@ function extractText(message: MessageLike): string {
   return "";
 }
 
-/** 返回 "pending" | "done" | "none"（没有 summary结构） */
+/** <next> 中的明确完成信号 */
+const DONE_SIGNAL_RE = /全部完成|已完成|无待办|无剩余|没有剩余|任务完成|all\s*done|nothing\s*left|\bcomplete[d]?\b|no\s*remaining/i;
+/** <next> 中的待办特征：编号列表、checkbox、无序列表 */
+const PENDING_SIGNAL_RE = /^\s*(\d+[.)]|[-*•]\s*(\[[ xX]?\]\s*)?)/m;
+
+/** 返回 "pending" | "done" | "none"（没有 summary 结构） */
 function checkSummary(text: string): "pending" | "done" | "none" {
   if (!SUMMARY_RE.test(text)) return "none";
 
   const nextMatch = text.match(NEXT_RE);
   if (nextMatch) {
     const nextContent = nextMatch[1].trim();
-    if (/\d+[.)]/.test(nextContent)) return "pending";
+    if (!nextContent) return "done";
+    // 明确完成信号优先（防止「1. 全部完成」被编号误判）
+    if (DONE_SIGNAL_RE.test(nextContent)) return "done";
+    // 有待办列表特征 → 续行
+    if (PENDING_SIGNAL_RE.test(nextContent)) return "pending";
+    // 既不是完成信号也不是待办列表 → 安全优先，视为完成
     return "done";
   }
 
@@ -78,7 +92,8 @@ function checkSummary(text: string): "pending" | "done" | "none" {
     return "done";
   }
 
-  return "pending";
+  // 有 <summary> 但既没有 <next> 也没有 <plan> → 无法判断，安全优先视为完成
+  return "done";
 }
 
 function extractNext(text: string): string {
@@ -108,8 +123,9 @@ function buildContinuePrompt(goalDesc: string, nextContent: string): string {
     "",
     "要求：",
     "1. 继续推进目标",
-    "2. 完成后输出更新版的 <summary> XML（更新 <plan>、<progress>、<next>）",
-    "3. 如果所有任务已完成，<next> 中写「全部完成」",
+    "2. 每轮结束时必须输出 <summary> XML（含 <plan>、<progress>、<next>）",
+    "3. 所有任务完成时，<next> 中写「全部完成」（不要写编号列表）",
+    "4. 还有待办时，<next> 中用编号列出待办项（如 1. xxx）",
     "",
     "完成审计：",
     "- 不要缩小目标或重新定义成功",
@@ -181,9 +197,10 @@ const HELP_TEXT = [
   "行为：",
   "  • 自动检测模型输出的 <summary> XML 判断进度",
   "  • 可选 gate 命令做客观验证（exit0 = 通过）",
-  "  • 无循环上限，跑到完成为止",
+  "  • 无循环上限（安全上限 50 轮），跑到完成为止",
   "  • 每 3 轮发一条带声音的进度通知",
   "  • 连续 3 次相同 gate 错误自动暂停",
+  "  • 连续 3 轮无 <summary> XML 自动暂停",
   "  • 循环期间抑制任务完成通知/音频",
 ].join("\n");
 
@@ -199,6 +216,9 @@ export default function (pi: ExtensionAPI) {
   let lastErrorFingerprint = "";
   let sameErrorCount = 0;
 
+  // 连续无 XML 轮次计数
+  let noXmlStreak = 0;
+
   // 自动检测：已询问过的 entry id，避免重复弹窗
   let lastPromptedEntryId = "";
 
@@ -209,6 +229,9 @@ export default function (pi: ExtensionAPI) {
     gateCommand = "";
     lastErrorFingerprint = "";
     sameErrorCount = 0;
+    noXmlStreak = 0;
+    clearTimeout(continueTimer);
+    continueTimer = undefined;
     clearSuppressTaskComplete();
   }
 
@@ -220,6 +243,7 @@ export default function (pi: ExtensionAPI) {
     gateCommand = gate;
     lastErrorFingerprint = "";
     sameErrorCount = 0;
+    noXmlStreak = 0;
 
     const label = gate ? `gate:\`${gate}\`` : desc || "目标";
     ctx.ui.setStatus("goal", "🎯 循环中");
@@ -266,8 +290,15 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // 续行定时器（resetState 时清除，防止幽灵续行）
+  let continueTimer: ReturnType<typeof setTimeout> | undefined;
+
   function scheduleContinue(prompt: string) {
-    setTimeout(() => pi.sendUserMessage(prompt), 300);
+    clearTimeout(continueTimer);
+    continueTimer = setTimeout(() => {
+      continueTimer = undefined;
+      pi.sendUserMessage(prompt);
+    }, 300);
   }
 
   // ── /goal 命令 ──
@@ -336,6 +367,7 @@ export default function (pi: ExtensionAPI) {
       continueCount = 0;
       lastErrorFingerprint = "";
       sameErrorCount = 0;
+      noXmlStreak = 0;
       clearSuppressTaskComplete();
     }
     return { action: "continue" as const };
@@ -400,6 +432,12 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    // 总轮次安全上限
+    if (continueCount >= MAX_CONTINUE_ROUNDS) {
+      pauseGoal(ctx, `已达 ${MAX_CONTINUE_ROUNDS} 轮上限，自动暂停`);
+      return;
+    }
+
     // 用户手动中断（esc）→ 停止 goal，不再续行
     if (lastStopReason === "aborted") {
       const count = continueCount;
@@ -410,8 +448,26 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // 模型调用出错（网络/限流等瞬态错误）→ 宽容重试，不立即计入无 XML 计数
+    if (lastStopReason === "error") {
+      continueCount++;
+      if (continueCount >= MAX_CONTINUE_ROUNDS) {
+        pauseGoal(ctx, `已达 ${MAX_CONTINUE_ROUNDS} 轮上限，自动暂停`);
+        return;
+      }
+      updateWidget(ctx, "");
+      maybeProgressNotify();
+      scheduleContinue(buildContinuePrompt(goalDescription, ""));
+      return;
+    }
+
     // 1. XML 检测
     const summaryState = checkSummary(lastText);
+
+    // 有 XML → 重置无 XML 计数
+    if (summaryState !== "none") {
+      noXmlStreak = 0;
+    }
 
     if (summaryState === "done") {
       // XML 说完成了 → 如果有 gate再验证一下
@@ -449,7 +505,21 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // 3. 既没有 XML 也没有 gate → 直接续行
+    // 3. 既没有 XML 也没有 gate → 计数保护后续行
+    noXmlStreak++;
+    if (noXmlStreak >= NO_XML_PAUSE_THRESHOLD) {
+      pauseGoal(
+        ctx,
+        `连续 ${NO_XML_PAUSE_THRESHOLD} 轮未检测到 <summary> XML，无法判断进度`,
+        [
+          `⚠️ Goal 已连续 ${NO_XML_PAUSE_THRESHOLD} 轮未检测到 <summary> XML 输出，自动暂停。`,
+          "",
+          "请输出包含 <plan>、<progress>、<next> 的 <summary> XML 以继续，",
+          "或使用 /goal off 关闭。",
+        ].join("\n"),
+      );
+      return;
+    }
     continueCount++;
     updateWidget(ctx, "");
     maybeProgressNotify();
