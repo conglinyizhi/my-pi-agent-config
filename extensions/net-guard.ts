@@ -8,9 +8,11 @@ export default function (pi: ExtensionAPI) {
   let userMessageCount = 0;
   let networkOk = false;
   let statusVisible = true;
+  let sessionGeneration = 0;
 
   pi.on("session_start", async (_event, ctx) => {
     // 重置状态
+    const gen = ++sessionGeneration;
     userMessageCount = 0;
     networkOk = false;
     statusVisible = true;
@@ -19,16 +21,18 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_KEY, "🌍…");
 
     // 异步检测网络，不阻塞启动
-    checkNetwork(ctx).catch(() => {});
+    checkNetwork(ctx, gen).catch(() => {});
   });
 
-  async function checkNetwork(ctx: { ui: { setStatus: Function; notify: Function } }) {
+  async function checkNetwork(ctx: { ui: { setStatus: Function; notify: Function } }, gen: number) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
       await fetch(CHECK_URL, { signal: controller.signal });
       clearTimeout(timer);
+      // 过期会话的回调不再写入状态
+      if (gen !== sessionGeneration) return;
       // 网络正常
       networkOk = true;
       if (statusVisible) {
@@ -36,6 +40,7 @@ export default function (pi: ExtensionAPI) {
       }
     } catch {
       clearTimeout(timer);
+      if (gen !== sessionGeneration) return;
       // 网络异常
       networkOk = false;
       if (statusVisible) {

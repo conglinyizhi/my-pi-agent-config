@@ -132,14 +132,18 @@ export default function settingsSyncExtension(pi: ExtensionAPI): void {
 
   // 启动时：先同步，后注册 watch——两段逻辑分离，初始化写入不会触发回写
   pi.on("session_start", () => {
-    // 1. 初始化同步：tracked → settings.json
-    syncFromTracked();
-
-    // 2. 关闭旧 watcher（reload/new/resume/fork 会重新进入这里）
+    // 1. 先关闭旧 watcher，防止 syncFromTracked 的写入触发回写循环
     if (watcher) {
       watcher.close();
       watcher = null;
     }
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+
+    // 2. 初始化同步：tracked → settings.json
+    syncFromTracked();
 
     // 3. 注册 watch，后续 settings.json 变化时实时回写
     watcher = watch(SOURCE_PATH, () => {

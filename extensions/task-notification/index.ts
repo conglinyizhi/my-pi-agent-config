@@ -109,6 +109,11 @@ export default async function taskNotification(pi: ExtensionAPI) {
     await sendNotification(event.messages);
   });
 
+  // session 关闭/切换时清理延迟通知定时器
+  pi.on("session_shutdown", () => {
+    cancelDeferred();
+  });
+
   // ============================================================
   // /notify-sound-test —— 测试通知音效播放
   // ============================================================

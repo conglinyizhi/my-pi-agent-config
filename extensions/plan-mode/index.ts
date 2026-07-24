@@ -33,6 +33,10 @@ function isPlanModeContextMessage(m: AgentMessage): m is AgentMessage & { custom
   return (m as AgentMessage & { customType?: string }).customType === "plan-mode-context";
 }
 
+function isPlanModeExecuteContextMessage(m: AgentMessage): m is AgentMessage & { customType: "plan-execution-context" } {
+  return (m as AgentMessage & { customType?: string }).customType === "plan-execution-context";
+}
+
 // assistant 消息的类型守卫
 function isAssistantMessage(m: AgentMessage): m is AssistantMessage {
   return m.role === "assistant" && Array.isArray(m.content);
@@ -147,6 +151,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     return {
       messages: event.messages.filter((m) => {
         if (isPlanModeContextMessage(m)) return false;
+        if (isPlanModeExecuteContextMessage(m)) return false;
         if (m.role !== "user") return true;
 
         const content = m.content;
@@ -306,7 +311,7 @@ ${todoList}
       todoItems = [];
       pi.setActiveTools(NORMAL_MODE_TOOLS);
       updateStatus(ctx);
-      ctx.ui.notify("已退出计划模式，您现在完全掌控。", "success");
+      ctx.ui.notify("已退出计划模式，您现在完全掌控。", "info");
       persistState();
     }
   });
