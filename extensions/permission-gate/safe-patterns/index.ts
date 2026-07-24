@@ -10,5 +10,6 @@
 export type SafePatternHandler = (slices: string[]) => Set<number>;
 
 import { tmpRecreate } from "./tmp-recreate";
+import { mktempCleanup } from "./mktemp-cleanup";
 
-export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate];
+export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup];
