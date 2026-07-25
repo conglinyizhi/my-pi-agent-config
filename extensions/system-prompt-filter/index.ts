@@ -14,6 +14,11 @@ import { getAgentDir, getDocsPath, getExamplesPath, getReadmePath } from "@earen
  */
 const AGENT_DIR = getAgentDir();
 
+/** 返回 pi 自身配置仓库的上下文提示词文件路径 */
+function getSelfPromptPath(): string {
+  return `${AGENT_DIR}/extensions/system-prompt-filter/pi-self.md`;
+}
+
 export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     let systemPrompt = event.systemPrompt;
@@ -26,11 +31,11 @@ export default function (pi: ExtensionAPI): void {
     // 去掉自动追加的日期
     systemPrompt = systemPrompt.replace(/\nCurrent date: \d{4}-\d{2}-\d{2}/, "");
 
-    // 在 pi 自身配置目录下工作时，移除全局 AGENTS.md（那是给其他项目用的）
+    // 在 pi 自身配置目录下工作时，注入专用的上下文提示词
     if (ctx.cwd === AGENT_DIR) {
       try {
-        const agentsContent = readFileSync(`${AGENT_DIR}/AGENTS.md`, "utf8");
-        systemPrompt = systemPrompt.replace(agentsContent, "");
+        const selfPrompt = readFileSync(getSelfPromptPath(), "utf8");
+        systemPrompt += `\n\n${selfPrompt}`;
       } catch { /* 文件不存在 */ }
     }
 
