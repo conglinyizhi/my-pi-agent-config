@@ -572,7 +572,7 @@ const SubagentParams = Type.Object({
     }),
   ),
   cwd: Type.Optional(Type.String({ description: "agent 进程的工作目录（单任务模式）" })),
-  timeout: Type.Optional(Type.Number({ description: "单个 subagent 任务超时秒数，默认 300（5分钟）", default: 300 })),
+  timeout: Type.Optional(Type.Number({ description: "单个 subagent 任务超时秒数，默认 600（10分钟）", default: 600 })),
 });
 
 type TaskItemInput = Static<typeof TaskItem>;
@@ -746,11 +746,11 @@ export default function (pi: ExtensionAPI) {
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
-      const timeout = (params.timeout ?? 300) * 1000;
+      const timeout = (params.timeout ?? 600) * 1000;
 
       // 合并用户的中止信号与超时信号
       const timeoutController = new AbortController();
-      const timeoutId = setTimeout(() => timeoutController.abort(new Error(`Subagent 超时（${params.timeout ?? 300}s）`)), timeout);
+      const timeoutId = setTimeout(() => timeoutController.abort(new Error(`Subagent 超时（${params.timeout ?? 600}s）`)), timeout);
       const combinedSignal = signal
         ? AbortSignal.any([signal, timeoutController.signal])
         : timeoutController.signal;
