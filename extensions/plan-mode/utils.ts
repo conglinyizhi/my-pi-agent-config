@@ -38,6 +38,17 @@ const DESTRUCTIVE_PATTERNS = [
   /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
   /\bservice\s+\S+\s+(start|stop|restart)/i,
   /\b(vim?|nano|emacs|code|subl)\b/i,
+  //解释器管道注入：curl ... | bash等
+  /\|\s*(bash|sh|zsh|perl|ruby|python\d*|node)\b/i,
+  //解释器执行模式
+  /\b(bash|sh|zsh)\s+-c\b/i,
+  /\bperl\s+-[eE]\b/i,
+  /\bruby\s+-e\b/i,
+  /\bnode\s+-e\b/i,
+  /\bpython\d*\s+-c\b/i,
+  /\bxargs\b/i,
+  /\beval\b/i,
+  /\b(source|\.)\s+\S/i,
 ];
 
 // 在 plan mode 中允许的安全只读命令
@@ -81,8 +92,12 @@ const SAFE_PATTERNS = [
   /^\s*git\s+ls-/i,
   /^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
   /^\s*yarn\s+(list|info|why|audit)/i,
-  /^\s*node\s+--version/i,
-  /^\s*python\s+--version/i,
+  /^\s*node\s+(--version|-v)\b/i,
+  /^\s*python\d*\s+(--version|-V)\b/i,
+  /^\s*perl\s+(--version|-v)\b/i,
+  /^\s*ruby\s+(--version|-v)\b/i,
+  /^\s*bash\s+--version\b/i,
+  /^\s*zsh\s+--version\b/i,
   /^\s*curl\s/i,
   /^\s*wget\s+-O\s*-/i,
   /^\s*jq\b/,
