@@ -377,6 +377,7 @@ async function spawnPiProcess(
       cwd,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PI_SUBAGENT: "1" },
     });
     let buffer = "";
 
@@ -571,6 +572,7 @@ const SubagentParams = Type.Object({
     }),
   ),
   cwd: Type.Optional(Type.String({ description: "agent 进程的工作目录（单任务模式）" })),
+  timeout: Type.Optional(Type.Number({ description: "单个 subagent 任务超时秒数，默认 300（5分钟）", default: 300 })),
 });
 
 type TaskItemInput = Static<typeof TaskItem>;
@@ -715,6 +717,9 @@ function formatParallelSummary(results: SingleResult[]): string {
  * @param pi - 扩展 API 实例
  */
 export default function (pi: ExtensionAPI) {
+  // 子进程不注册 subagent 工具，防止递归嵌套
+  if (process.env.PI_SUBAGENT) return;
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -741,6 +746,16 @@ export default function (pi: ExtensionAPI) {
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
       const confirmProjectAgents = params.confirmProjectAgents ?? true;
+      const timeout = (params.timeout ?? 300) * 1000;
+
+      // 合并用户的中止信号与超时信号
+      const timeoutController = new AbortController();
+      const timeoutId = setTimeout(() => timeoutController.abort(new Error(`Subagent 超时（${params.timeout ?? 300}s）`)), timeout);
+      const combinedSignal = signal
+        ? AbortSignal.any([signal, timeoutController.signal])
+        : timeoutController.signal;
+
+      try {
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -790,21 +805,22 @@ export default function (pi: ExtensionAPI) {
 
         for (let i = 0; i < params.chain.length; i++) {
           const step = params.chain[i];
-          const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+          const taskWithContext = step.task.replace(/\{previous\}/g, `\n---\n上一步输出：\n${previousOutput}\n---\n`);
 
           const chainUpdate = createChainUpdate(results, onUpdate, makeDetails("chain"));
 
-          const result = await runSingleAgent(ctx.cwd, agents, step.agent, taskWithContext, step.cwd, i + 1, signal, chainUpdate, makeDetails("chain"));
+          const result = await runSingleAgent(ctx.cwd, agents, step.agent, taskWithContext, step.cwd, i + 1, combinedSignal, chainUpdate, makeDetails("chain"));
           results.push(result);
 
           const isError = isFailedResult(result);
           if (isError) {
             const errorMsg = getResultOutput(result);
+            const completedSteps = results.filter((r) => !isFailedResult(r)).map((r) => `  ${r.step}. ${r.agent} ✓`).join("\n");
             return {
               content: [
                 {
                   type: "text",
-                  text: `串行链在第 ${i + 1} 步（${step.agent}）停止：${errorMsg}`,
+                  text: `串行链在第 ${i + 1} 步（${step.agent}）失败：${errorMsg}\n\n已完成步骤：\n${completedSteps || "（无）"}\n\n失败步骤的中间结果保留在详情的 results 数组中。`,
                 },
               ],
               details: makeDetails("chain")(results),
@@ -861,7 +877,7 @@ export default function (pi: ExtensionAPI) {
         const emitParallelUpdate = createEmitParallelUpdate(onUpdate, allResults, makeDetails("parallel"));
 
         const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, (t, index) =>
-          runParallelTask(ctx.cwd, agents, t, index, allResults, signal, emitParallelUpdate, makeDetails("parallel")),
+          runParallelTask(ctx.cwd, agents, t, index, allResults, combinedSignal, emitParallelUpdate, makeDetails("parallel")),
         );
 
         return {
@@ -871,7 +887,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (params.agent && params.task) {
-        const result = await runSingleAgent(ctx.cwd, agents, params.agent, params.task, params.cwd, undefined, signal, onUpdate, makeDetails("single"));
+        const result = await runSingleAgent(ctx.cwd, agents, params.agent, params.task, params.cwd, undefined, combinedSignal, onUpdate, makeDetails("single"));
         const isError = isFailedResult(result);
         if (isError) {
           const errorMsg = getResultOutput(result);
@@ -902,6 +918,9 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: `参数无效。可用 agents：${available}` }],
         details: makeDetails("single")([]),
       };
+      } finally {
+        clearTimeout(timeoutId);
+      }
     },
 
     /**
