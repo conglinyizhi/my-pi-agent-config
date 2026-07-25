@@ -1,5 +1,5 @@
 {
-  "externalEditor": "code --wait",
+  "externalEditor": "kate --block",
   "npmCommand": [
     "pnpm",
     "install",
