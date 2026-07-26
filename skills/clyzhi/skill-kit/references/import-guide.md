@@ -119,6 +119,6 @@ git pull
 
 ## 步骤 6：使预检规则生效
 
-预检扩展（`~/.pi/agent/extensions/skill-preflight.ts`）在 session 启动时自动读取 `repo.toml` 中的 `trigger` 字段并缓存。
+预检扩展（`~/.pi/agent/extensions/skill-kit/index.ts`）在 session 启动时自动读取 `repo.toml` 中的 `trigger` 字段并缓存。
 
 因此 `repo.toml` 变更（新增技能、修改 trigger）后，只需提示用户：`/reload` 使其生效。

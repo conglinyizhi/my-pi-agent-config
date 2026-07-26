@@ -61,7 +61,7 @@ MoonBit 写 pi 扩展的可行性验证：JS target 成立，但是同进程、�
 - extension 完全通用，不硬编码任何技能名称、不做截断、不对 nopua 等做特殊处理。引入新技能只改 toml + /reload
 - session 启动时读 toml 一次，整个 session 不再动。技能变更 /reload
 - 注入体量选紧凑表格（每技能一行），不把完整描述全塞 system prompt
-- skill-manager 的 import-guide.md 同步更新字段说明和步骤 6（改完 toml 后 /reload）
+- skill-kit 的 import-guide.md 同步更新字段说明和步骤 6（改完 toml 后 /reload）
 
 # 20260722
 

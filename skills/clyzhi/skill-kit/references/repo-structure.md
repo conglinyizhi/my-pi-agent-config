@@ -15,10 +15,8 @@
 │
 ├── skills/                       ← Pi 扫描此目录（递归）
 │   ├── clyzhi/                   ← 用户自有技能（git 追踪）
-│   │   ├── skill-manager/SKILL.md
-│   │   ├── pi-docs/SKILL.md
-│   │   ├── data-name/SKILL.md
-│   │   └── lazycat-dev/SKILL.md
+│   │   ├── skill-kit/SKILL.md
+│   │   └── ...
 │   ├── nopua -> ../skill-repo/nopua          ← 软链接（git 忽略）
 │   ├── moonbit-orientation -> ../skill-repo/moonbit-skills/skills/moonbit-orientation
 │   └── ...
@@ -66,4 +64,4 @@ skills/*               ← 忽略所有软链接
 
 - **clone 与软链接分离**：`skill-repo/` 只放实体，`skills/` 只放软链接
 - **相对路径软链接**：不用绝对路径，目录可整体迁移
-- **repo.toml 是唯一真相源**：跨机器只需 clone + 跑 install.sh 即可重建
+- **repo.toml 是唯一真相源**：跨机器只需 clone + 启动 Pi 即可重建

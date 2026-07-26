@@ -10,7 +10,7 @@ cd ~/.pi/agent && pnpm install
 pi
 ```
 
-第一次启动，`skill-sync` 会自动把第三方 skill 全拉下来，不用你操心。
+第一次启动，`skill-kit` 会自动把第三方 skill 全拉下来，不用你操心。
 
 ## 里面有什么
 
@@ -18,7 +18,7 @@ pi
 
 **for-grok-4-5** — 「强大、实惠、但疯跑的孩子」。grok-4.5 两大顽疾补丁：①空正文自动续跑 ②连续 bash true 空转识别为正常收工。续跑提示还会引导 grok 用 `echo job done already` 主动报完成。
 
-**skill-sync** — 启动时扫一眼 skill 目录，缺了谁就帮你 git clone 回来。换机器的底气全靠它。
+**skill-kit** — 技能管理一体化工具箱。启动时自动同步技能仓库（clone + 软链接），/skill-manager 开关技能，同时负责系统提示词过滤和技能预检唤醒。换机器的底气全靠它。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 
@@ -54,7 +54,7 @@ pi
 
 **tool-checker** — 注册工具检测器，用于调试工具是否正常工作。（开发用）
 
-**system-prompt-filter** 和 **editor-margin** — 前者过滤系统提示里的敏感路径，后者调编辑器边距，都属于"虽然小但舒服"的类型。
+**editor-margin** — 调编辑器边距，虽然小但舒服。
 
 ### 暂时停用插件
 
@@ -74,7 +74,7 @@ pi
 
 **git-commit** — 分析 Git 差异并生成符合约定式提交规范的中文 commit message。
 
-**skill-manager** — 技能管理器，新增/拉取/拆分 skill 仓库。
+**skill-kit** — 技能工具箱，导入外部技能仓库、从零创建新技能。
 
 第三方 skill（详情参阅 [skill-repo/repo.toml](skill-repo/repo.toml)）：
 
