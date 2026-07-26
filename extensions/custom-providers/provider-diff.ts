@@ -154,13 +154,13 @@ export function formatDiffReport(diff: ModelDiff, providerId: string): string | 
   return `"${providerId}" 变更报告:\n${lines.join("\n")}`;
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
 }
 
-function fmtPrice(n: number): string {
+export function fmtPrice(n: number): string {
   if (n === 0) return "0";
   if (n < 0.000001) return n.toExponential(2);
   return (n * 1_000_000).toFixed(2) + "/M";

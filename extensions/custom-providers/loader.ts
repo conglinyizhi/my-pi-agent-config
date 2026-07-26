@@ -48,6 +48,7 @@ function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
     costOutput: raw.cost_output as number | undefined,
     costCacheRead: raw.cost_cache_read as number | undefined,
     costCacheWrite: raw.cost_cache_write as number | undefined,
+    cost_locked: raw.cost_locked as boolean | undefined,
   };
 }
 

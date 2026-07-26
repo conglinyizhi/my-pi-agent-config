@@ -5,7 +5,7 @@ import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
 import { resolveModels, toPiApi } from "./models.ts";
-import { diffModelLists, formatDiffReport } from "./provider-diff.ts";
+import { diffModelLists, formatDiffReport, formatTokens, fmtPrice } from "./provider-diff.ts";
 import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
@@ -179,12 +179,12 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           const existingOverrideMap = new Map<string, ModelOverride>();
           for (const m of existingOverrides) existingOverrideMap.set(m.id, m);
 
-          // 新模型：尝试从 models.dev 匹配能力/价格
-          const newModelIds = models.filter(m => !existingOverrideMap.has(m.id)).map(m => m.id);
+          // 所有模型（含已有）批量匹配 models.dev
+          const allModelIds = models.map(m => m.id);
           const matchedDevMap = new Map<string, Parameters<typeof buildMatchedModel>[1]>();
-          if (newModelIds.length > 0) {
+          {
             const matchResults = await Promise.allSettled(
-              newModelIds.map(async id => {
+              allModelIds.map(async id => {
                 const { candidates } = await findModelCandidates(id);
                 return { id, candidate: candidates[0] || null };
               }),
@@ -196,14 +196,36 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
             }
           }
 
+          // 构建写回 TOML 的覆盖列表
           const mergedOverrides: ModelOverride[] = await Promise.all(
             models.map(async m => {
               const existing = existingOverrideMap.get(m.id);
-              if (existing) return existing; // 保留已有的覆盖参数
-              // 新模型：尝试 models.dev 匹配，否则用默认值
-              const candidate = matchedDevMap.get(m.id);
-              if (candidate) {
-                const matched = await buildMatchedModel(m.id, candidate);
+              const devCandidate = matchedDevMap.get(m.id);
+
+              if (existing && devCandidate) {
+                // 已有模型 + models.dev 匹配：能力更新，价格看 cost_locked
+                const matched = await buildMatchedModel(m.id, devCandidate);
+                return {
+                  id: matched.id,
+                  name: matched.name !== matched.id ? matched.name : existing.name,
+                  contextWindow: matched.contextWindow,
+                  maxTokens: matched.maxTokens,
+                  input: matched.input,
+                  reasoning: matched.reasoning,
+                  costInput: existing.cost_locked ? existing.costInput : matched.costInput,
+                  costOutput: existing.cost_locked ? existing.costOutput : matched.costOutput,
+                  costCacheRead: existing.cost_locked ? existing.costCacheRead : matched.costCacheRead,
+                  costCacheWrite: existing.cost_locked ? existing.costCacheWrite : matched.costCacheWrite,
+                  cost_locked: existing.cost_locked,
+                };
+              }
+              if (existing) {
+                // 已有模型但 models.dev 无匹配：保留原配置
+                return existing;
+              }
+              if (devCandidate) {
+                // 新模型 + models.dev 匹配
+                const matched = await buildMatchedModel(m.id, devCandidate);
                 return {
                   id: matched.id,
                   name: matched.name !== matched.id ? matched.name : undefined,
@@ -217,7 +239,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
                   costCacheWrite: matched.costCacheWrite,
                 };
               }
-              // 无匹配：默认值
+              // 新模型无匹配：默认值
               return {
                 id: m.id,
                 name: m.name !== m.id ? m.name : undefined,
@@ -234,65 +256,81 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           );
           allModelsToWrite[provider.id] = mergedOverrides;
 
-          const pricedCount = models.filter(m => m.cost.input > 0 || m.cost.output > 0).length;
-          const priceNote = pricedCount > 0 ? `，${pricedCount} 个含定价` : "";
+          // 下线模型（toml 有但 API 不再返回）
+          const apiModelIds = new Set(models.map(m => m.id));
+          const removedOverrides = [...existingOverrideMap.keys()]
+            .filter(id => !apiModelIds.has(id));
+          if (removedOverrides.length > 0) {
+            ctx.ui.notify(
+              `"${provider.id}" ${removedOverrides.length} 个模型已下线: ${removedOverrides.join(", ")}`,
+              "info",
+            );
+          }
 
-          // 差异报告：用合并后的完整模型列表（已有模型保留覆盖 + 新模型含 models.dev 匹配）
-          const newModelsResolved = await Promise.all(
-            models.map(async m => {
-              const existing = existingOverrideMap.get(m.id);
-              if (existing) {
-                return {
-                  id: existing.id,
-                  name: existing.name || m.name,
-                  api: toPiApi(format),
-                  reasoning: existing.reasoning ?? false,
-                  input: (existing.input as InputCapability[]) || ["text"],
-                  cost: {
-                    input: existing.costInput ?? 0,
-                    output: existing.costOutput ?? 0,
-                    cacheRead: existing.costCacheRead ?? 0,
-                    cacheWrite: existing.costCacheWrite ?? 0,
-                  },
-                  contextWindow: existing.contextWindow ?? 128000,
-                  maxTokens: existing.maxTokens ?? 4096,
-                  compat: { supportsDeveloperRole: false },
-                } as ProviderModelConfig;
-              }
-              // 新模型：复用已有的 models.dev 匹配结果
-              const candidate = matchedDevMap.get(m.id);
-              if (candidate) {
-                const matched = await buildMatchedModel(m.id, candidate);
-                return {
-                  id: matched.id,
-                  name: matched.name,
-                  api: toPiApi(format),
-                  reasoning: matched.reasoning,
-                  input: matched.input,
-                  cost: {
-                    input: matched.costInput,
-                    output: matched.costOutput,
-                    cacheRead: matched.costCacheRead,
-                    cacheWrite: matched.costCacheWrite,
-                  },
-                  contextWindow: matched.contextWindow,
-                  maxTokens: matched.maxTokens,
-                  compat: { supportsDeveloperRole: false },
-                } as ProviderModelConfig;
-              }
-              return m;
-            }),
-          );
+          // 能力/定价更新提醒
+          const capabilityUpdates: string[] = [];
+          const priceUpdates: string[] = [];
+          for (const m of mergedOverrides) {
+            const existing = existingOverrideMap.get(m.id);
+            if (!existing) continue;
+            // 能力（input 排序后比较避免顺序差异）
+            const oldInput = [...(existing.input || [])].sort();
+            const newInput = [...(m.input || [])].sort();
+            const changes: string[] = [];
+            if (existing.contextWindow !== m.contextWindow) changes.push(`上下文: ${formatTokens(existing.contextWindow ?? 0)} → ${formatTokens(m.contextWindow ?? 0)}`);
+            if (JSON.stringify(oldInput) !== JSON.stringify(newInput)) changes.push(`模态: ${oldInput.join("+") || "无"} → ${newInput.join("+")}`);
+            if (existing.reasoning !== m.reasoning) changes.push(`推理: ${existing.reasoning ? "是→否" : "否→是"}`);
+            if (changes.length > 0) capabilityUpdates.push(`  ${m.id}: ${changes.join("，")}`);
+            // 价格（仅非 locked）
+            if (existing.cost_locked) continue;
+            const oldIn = existing.costInput ?? 0;
+            const oldOut = existing.costOutput ?? 0;
+            const newIn = m.costInput ?? 0;
+            const newOut = m.costOutput ?? 0;
+            if (oldIn !== newIn || oldOut !== newOut) {
+              priceUpdates.push(`  ${m.id}: ${fmtPrice(oldIn)}/${fmtPrice(oldOut)} → ${fmtPrice(newIn)}/${fmtPrice(newOut)}`);
+            }
+          }
+          if (capabilityUpdates.length > 0) {
+            ctx.ui.notify(`"${provider.id}" 能力更新:\n${capabilityUpdates.join("\n")}`, "info");
+          }
+          if (priceUpdates.length > 0) {
+            ctx.ui.notify(`"${provider.id}" 定价更新:\n${priceUpdates.join("\n")}`, "info");
+          }
+
+          const pricedCount = mergedOverrides.filter(m => (m.costInput ?? 0) > 0 || (m.costOutput ?? 0) > 0).length;
+          const priceNote = pricedCount > 0 ? `，${pricedCount} 个含定价` : "";
+          const newCount = models.filter(m => !existingOverrideMap.has(m.id)).length;
+          const removedCount = removedOverrides.length;
+
+          // 差异报告：mergedOverrides（含 models.dev 更新）vs 旧 toml
+          const newModelsResolved: ProviderModelConfig[] = mergedOverrides.map(o => ({
+            id: o.id,
+            name: o.name || o.id,
+            api: toPiApi(format),
+            reasoning: o.reasoning ?? false,
+            input: ((o.input as InputCapability[]) || ["text"]).slice().sort() as InputCapability[],
+            cost: {
+              input: o.costInput ?? 0,
+              output: o.costOutput ?? 0,
+              cacheRead: o.costCacheRead ?? 0,
+              cacheWrite: o.costCacheWrite ?? 0,
+            },
+            contextWindow: o.contextWindow ?? 128000,
+            maxTokens: o.maxTokens ?? 4096,
+            compat: { supportsDeveloperRole: false },
+          } as ProviderModelConfig));
+          // 旧模型列表也要包含已下线的（供 diff 报告移除）
           const diff = diffModelLists(oldModels, newModelsResolved);
           const report = formatDiffReport(diff, provider.id);
           allDiffs.push({ providerId: provider.id, report });
 
-          if (newModels.length > 0) {
-            totalNew += newModels.length;
-            ctx.ui.notify(
-              `"${provider.id}" ${newModels.length} 个新模型${priceNote}: ${newModels.map(m => m.id).join(", ")}`,
-              "info",
-            );
+          if (newCount > 0 || removedCount > 0 || capabilityUpdates.length > 0 || priceUpdates.length > 0) {
+            const parts: string[] = [];
+            if (newCount > 0) { parts.push(`${newCount} 个新模型`); totalNew += newCount; }
+            if (removedCount > 0) parts.push(`${removedCount} 个已下线`);
+            parts.push(`${pricedCount} 个含定价`);
+            ctx.ui.notify(`"${provider.id}" ${parts.join("，")}`, "info");
           } else {
             ctx.ui.notify(`"${provider.id}" 模型列表无变化（${models.length} 个模型${priceNote}）`, "info");
           }
@@ -315,7 +353,11 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
               providerEntry.models = models.map(m => tomlModelEntry(m));
             }
           }
-          writeFileSync(CONFIG_PATH, stringify(tomlConfig), "utf8");
+          const newContent = stringify(tomlConfig);
+          // 只有内容真正改变时才写入
+          if (newContent !== config.raw) {
+            writeFileSync(CONFIG_PATH, newContent, "utf8");
+          }
         } catch (err) {
           ctx.ui.notify(
             `更新 providers.toml 失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -570,6 +612,7 @@ function tomlModelEntry(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) entry.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) entry.reasoning = m.reasoning;
   if (m.input !== undefined && m.input.length > 1) entry.input = m.input;
+  if (m.cost_locked) entry.cost_locked = true;
   return entry;
 }
 

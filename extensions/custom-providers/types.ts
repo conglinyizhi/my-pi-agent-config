@@ -18,6 +18,8 @@ export interface ProviderDefaults {
 export interface ModelOverride extends Partial<ProviderDefaults> {
   id: string;
   name?: string;
+  /** 锁定价格，reload-online 不覆盖 */
+  cost_locked?: boolean;
 }
 
 export interface RawProvider {
