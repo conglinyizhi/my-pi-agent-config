@@ -187,14 +187,17 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           });
           allModelsToWrite[provider.id] = mergedOverrides;
 
+          const pricedCount = models.filter(m => m.cost.input > 0 || m.cost.output > 0).length;
+          const priceNote = pricedCount > 0 ? `，${pricedCount} 个含定价` : "";
+
           if (newModels.length > 0) {
             totalNew += newModels.length;
             ctx.ui.notify(
-              `"${provider.id}" 发现 ${newModels.length} 个新模型: ${newModels.map(m => m.id).join(", ")}`,
+              `"${provider.id}" 发现 ${newModels.length} 个新模型${priceNote}: ${newModels.map(m => m.id).join(", ")}`,
               "info",
             );
           } else {
-            ctx.ui.notify(`"${provider.id}" 模型列表无变化（${models.length} 个模型）`, "info");
+            ctx.ui.notify(`"${provider.id}" 模型列表无变化（${models.length} 个模型${priceNote}）`, "info");
           }
         } catch (err) {
           ctx.ui.notify(
@@ -299,7 +302,9 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
         await lockApiFormat(provider, resolved.format, rawToml);
       }
 
-      ctx.ui.notify(`Provider "${providerId}" activated with ${models.length} model(s).`, "info");
+      const pricedCount = models.filter(m => m.cost.input > 0 || m.cost.output > 0).length;
+      const priceNote = pricedCount > 0 ? `，${pricedCount} 个模型含真实定价` : "";
+      ctx.ui.notify(`Provider "${providerId}" activated with ${models.length} model(s)${priceNote}.`, "info");
     } catch (err) {
       ctx.ui.notify(`Failed to activate "${providerId}": ${err instanceof Error ? err.message : String(err)}`, "error");
     }
