@@ -611,7 +611,7 @@ function tomlModelEntry(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheRead !== undefined && m.costCacheRead > 0) entry.cost_cache_read = m.costCacheRead;
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) entry.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) entry.reasoning = m.reasoning;
-  if (m.input !== undefined && m.input.length > 1) entry.input = m.input;
+  if (m.input !== undefined) entry.input = m.input;
   if (m.cost_locked) entry.cost_locked = true;
   return entry;
 }
