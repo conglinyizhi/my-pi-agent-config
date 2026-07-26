@@ -255,8 +255,69 @@ async function discoverModels(
   ctx.ui.notify("正在从 API 拉取模型列表...", "info");
 
   try {
-    const models = await discoverModelsWithCandidates(info.url, info.apiKey);
-    return models;
+    // 并行：静态库匹配 + 平台检测（拉取真实价格）
+    const [modelsResult, detectResult] = await Promise.allSettled([
+      discoverModelsWithCandidates(info.url, info.apiKey),
+      import("./platform-detect.ts").then(m => m.detectPlatform(info.url, info.apiKey!)),
+    ]);
+
+    const models: ModelWithCandidates[] =
+      modelsResult.status === "fulfilled" ? modelsResult.value : [];
+
+    // 如果平台检测成功，用真实价格丰富候选列表
+    if (
+      detectResult.status === "fulfilled" &&
+      detectResult.value.models &&
+      detectResult.value.models.length > 0
+    ) {
+      const detectedModels = detectResult.value.models;
+      const priceMap = new Map(
+        detectedModels.filter(m => m.price).map(m => [m.id, m.price!]),
+      );
+      const type = detectResult.value.type;
+
+      // 为已有的 ModelWithCandidates 补充价格
+      const enrichedIds = new Set<string>();
+      for (const mc of models) {
+        enrichedIds.add(mc.modelId);
+        const price = priceMap.get(mc.modelId);
+        if (!price) continue;
+
+        if (mc.candidates.length > 0) {
+          // 有候选但没价格：补充
+          for (const c of mc.candidates) {
+            if (!c.cost) {
+              c.cost = { input: price.input, output: price.output, cacheRead: price.cacheRead, cacheWrite: price.cacheWrite };
+            }
+          }
+        } else {
+          // 无候选：用平台检测结果构造一个
+          mc.candidates.push({
+            providerId: type,
+            providerName: `平台检测（${type === "new-api" ? "New API" : type}）`,
+            path: "",
+            cost: { input: price.input, output: price.output, cacheRead: price.cacheRead, cacheWrite: price.cacheWrite },
+          });
+        }
+      }
+
+      // 平台检测到的模型尚未出现在 discovered 列表中的，追加
+      const newModels = detectedModels.filter(m => !enrichedIds.has(m.id));
+      for (const m of newModels) {
+        models.push({
+          modelId: m.id,
+          candidates: m.price ? [{
+            providerId: type,
+            providerName: `平台检测（${type === "new-api" ? "New API" : type}）`,
+            path: "",
+            cost: { input: m.price.input, output: m.price.output, cacheRead: m.price.cacheRead, cacheWrite: m.price.cacheWrite },
+          }] : [],
+          baseModelCandidates: [],
+        });
+      }
+    }
+
+    return models.length > 0 ? models : null;
   } catch (err) {
     ctx.ui.notify(
       `拉取模型列表失败: ${err instanceof Error ? err.message : String(err)}\n将使用手动输入模式`,
