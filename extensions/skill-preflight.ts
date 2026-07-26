@@ -1,20 +1,25 @@
 /**
- * 技能预检扩展 — 每次 agent 请求前注入精简的技能唤醒规则。
+ * 技能预检扩展 — 每次 agent 请求前：
+ *   1. 从 system prompt 中移除 disable_model_invocation=true 的技能
+ *   2. 注入精简的技能唤醒规则（trigger 表）
  *
- * 启动时读取 ~/.pi/agent/skill-repo/repo.toml，提取所有 trigger 字段，
- * 构建紧凑预检列表注入 system prompt。
- *
- * 技能变更（新增/删除/修改 trigger）后需 /reload 使其生效。
+ * 启动时读取 ~/.pi/agent/skill-repo/repo.toml。
+ * 配置变更后需 /reload 使其生效。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
+interface SkillConfig {
+  triggers: Map<string, string>;
+  disabled: Set<string>;
+}
+
 // ---------------------------------------------------------------------------
-// 极简 TOML 解析 — 只提取 [[skills]] 块中的 name + trigger
+// 极简 TOML 解析 — 提取 name + trigger + disable_model_invocation
 // ---------------------------------------------------------------------------
-function loadTriggers(): Map<string, string> | null {
+function loadSkillConfig(): SkillConfig | null {
   const tomlPath = resolve(homedir(), ".pi/agent/skill-repo/repo.toml");
   let content: string;
   try {
@@ -24,6 +29,7 @@ function loadTriggers(): Map<string, string> | null {
   }
 
   const triggers = new Map<string, string>();
+  const disabled = new Set<string>();
   let currentName = "";
 
   for (const raw of content.split("\n")) {
@@ -39,6 +45,11 @@ function loadTriggers(): Map<string, string> | null {
     const triggerMatch = line.match(/^trigger\s*=\s*"(.+)"$/);
     if (triggerMatch && currentName) {
       triggers.set(currentName, triggerMatch[1]);
+      continue;
+    }
+
+    if (/^disable_model_invocation\s*=\s*true\s*$/.test(line) && currentName) {
+      disabled.add(currentName);
     }
 
     if (line.startsWith("[[skills]]")) {
@@ -46,7 +57,7 @@ function loadTriggers(): Map<string, string> | null {
     }
   }
 
-  return triggers;
+  return { triggers, disabled };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,15 +86,27 @@ ${lines.join("\n")}
 }
 
 // ---------------------------------------------------------------------------
+// 从 system prompt 中移除 disable_model_invocation=true 的技能
+// ---------------------------------------------------------------------------
+function filterDisabledSkills(prompt: string, disabled: Set<string>): string {
+  if (disabled.size === 0) return prompt;
+  return prompt.replace(
+    /<skill>[\s\S]*?<name>(.*?)<\/name>[\s\S]*?<\/skill>/g,
+    (_match, name) => (disabled.has(name.trim()) ? "" : _match)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 export default function (pi: ExtensionAPI) {
-  const triggers = loadTriggers();
-  if (!triggers) return; // toml 不存在，不注入
+  const config = loadSkillConfig();
+  if (!config) return; // toml 不存在，不注入
 
-  const preflightRule = buildPreflightRule(triggers);
+  const preflightRule = buildPreflightRule(config.triggers);
 
   pi.on("before_agent_start", async (event, ctx) => {
-    return { systemPrompt: event.systemPrompt + preflightRule };
+    const filtered = filterDisabledSkills(event.systemPrompt, config.disabled);
+    return { systemPrompt: filtered + preflightRule };
   });
 }
