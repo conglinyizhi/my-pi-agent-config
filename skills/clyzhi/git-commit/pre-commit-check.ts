@@ -62,6 +62,7 @@ if (untracked.length > 0) {
 // ---------------------------------------------------------------------------
 
 const SELF = new URL(import.meta.url).pathname;
+const PI_AGENT_DIR = resolve(process.env.HOME ?? "/root", ".pi/agent");
 
 // 调试残留只检查代码文件
 const CODE_EXTS = new Set([
@@ -70,10 +71,14 @@ const CODE_EXTS = new Set([
   ".java", ".kt", ".swift", ".sh", ".bash", ".zsh",
 ]);
 
+// console.* 只在 pi 配置目录下视为调试残留，其他项目当作正常代码
+const consolePatterns: { label: string; pattern: RegExp }[] = [
+  { label: "console.log",   pattern: /console\.log\s*\(/ },
+  { label: "console.warn",  pattern: /console\.warn\s*\(/ },
+  { label: "console.error", pattern: /console\.error\s*\(/ },
+];
+
 const debugPatterns: { label: string; pattern: RegExp }[] = [
-  { label: "console.log",    pattern: /console\.log\s*\(/ },
-  { label: "console.warn",   pattern: /console\.warn\s*\(/ },
-  { label: "console.error",  pattern: /console\.error\s*\(/ },
   { label: "debugger",       pattern: /debugger/ },
   { label: "print()",        pattern: /print\s*\(\s*$/m },
   { label: "<!-- DEBUG -->", pattern: /<!-- DEBUG -->/ },
@@ -82,6 +87,28 @@ const debugPatterns: { label: string; pattern: RegExp }[] = [
   { label: "fit",            pattern: /fit\s*\(/ },
 ];
 
+// console.* — 仅当文件在 ~/.pi/agent 下才报告
+for (const { label, pattern } of consolePatterns) {
+  const hits: string[] = [];
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    if (resolve(f) === SELF) continue;
+    if (!resolve(f).startsWith(PI_AGENT_DIR)) continue;
+    if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
+    const content = readFileSync(f, "utf-8");
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (pattern.test(lines[i])) {
+        hits.push(`\`${f}:${i + 1}\` ${lines[i].trim().slice(0, 80)}`);
+      }
+    }
+  }
+  if (hits.length > 0) {
+    issue("ERROR", `疑似调试代码 — ${label}`, hits);
+  }
+}
+
+// 其他调试残留 — 所有代码文件通用
 for (const { label, pattern } of debugPatterns) {
   const hits: string[] = [];
   for (const f of files) {
