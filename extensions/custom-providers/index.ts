@@ -5,6 +5,8 @@ import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
 import { resolveModels, toPiApi } from "./models.ts";
+import { diffModelLists, formatDiffReport } from "./provider-diff.ts";
+import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
 
@@ -72,8 +74,13 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
         ctx.ui.notify("providers.toml 不存在，可用 /provider:fast-add 添加供应商", "info");
         return;
       }
-      await registerProviders(config.providers, config.raw);
-      ctx.ui.notify(`已重新加载 providers.toml（${registeredIds.size} 个供应商）`, "info");
+      const diffs = await registerProviders(config.providers, config.raw);
+      const baseMsg = `已重新加载 providers.toml（${registeredIds.size} 个供应商）`;
+      if (diffs.length > 0) {
+        ctx.ui.notify(`${baseMsg}\n${diffs.join("\n")}`, "info");
+      } else {
+        ctx.ui.notify(baseMsg, "info");
+      }
     },
   });
 
@@ -98,6 +105,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       let totalSkipped = 0;
       let totalRefreshed = 0;
       const allModelsToWrite: Record<string, ModelOverride[]> = {};
+      const allDiffs: Array<{ providerId: string; report: string | null }> = [];
 
       for (const provider of config.providers) {
         const apiKey = getApiKey(provider.id);
@@ -149,6 +157,9 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           // 对比找出新模型
           const newModels = models.filter(m => !existingIds.has(m.id));
 
+          // 构建旧模型列表（用于完整差异对比）
+          const oldModels = await buildOldModelList(provider, format);
+
           // 反注册旧的、注册新的
           pi.unregisterProvider(provider.id);
           registeredIds.delete(provider.id);
@@ -161,39 +172,125 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           registeredIds.add(provider.id);
           totalRefreshed++;
 
-          // 构建要写回 TOML 的模型覆盖列表（合并已有覆盖 + 新模型默认值）
+          // 构建要写回 TOML 的模型覆盖列表（合并已有覆盖 + 新模型 models.dev 匹配）
           const existingOverrides: ModelOverride[] = Array.isArray(provider.models)
             ? provider.models
             : [];
           const existingOverrideMap = new Map<string, ModelOverride>();
           for (const m of existingOverrides) existingOverrideMap.set(m.id, m);
 
-          const mergedOverrides: ModelOverride[] = models.map(m => {
-            const existing = existingOverrideMap.get(m.id);
-            if (existing) return existing; // 保留已有的覆盖参数
-            // 新模型：从 API 返回的值构建覆盖
-            return {
-              id: m.id,
-              name: m.name !== m.id ? m.name : undefined,
-              contextWindow: m.contextWindow,
-              maxTokens: m.maxTokens,
-              input: m.input as InputCapability[],
-              reasoning: m.reasoning,
-              costInput: m.cost.input,
-              costOutput: m.cost.output,
-              costCacheRead: m.cost.cacheRead,
-              costCacheWrite: m.cost.cacheWrite,
-            };
-          });
+          // 新模型：尝试从 models.dev 匹配能力/价格
+          const newModelIds = models.filter(m => !existingOverrideMap.has(m.id)).map(m => m.id);
+          const matchedDevMap = new Map<string, Parameters<typeof buildMatchedModel>[1]>();
+          if (newModelIds.length > 0) {
+            const matchResults = await Promise.allSettled(
+              newModelIds.map(async id => {
+                const { candidates } = await findModelCandidates(id);
+                return { id, candidate: candidates[0] || null };
+              }),
+            );
+            for (const r of matchResults) {
+              if (r.status === "fulfilled" && r.value.candidate) {
+                matchedDevMap.set(r.value.id, r.value.candidate);
+              }
+            }
+          }
+
+          const mergedOverrides: ModelOverride[] = await Promise.all(
+            models.map(async m => {
+              const existing = existingOverrideMap.get(m.id);
+              if (existing) return existing; // 保留已有的覆盖参数
+              // 新模型：尝试 models.dev 匹配，否则用默认值
+              const candidate = matchedDevMap.get(m.id);
+              if (candidate) {
+                const matched = await buildMatchedModel(m.id, candidate);
+                return {
+                  id: matched.id,
+                  name: matched.name !== matched.id ? matched.name : undefined,
+                  contextWindow: matched.contextWindow,
+                  maxTokens: matched.maxTokens,
+                  input: matched.input,
+                  reasoning: matched.reasoning,
+                  costInput: matched.costInput,
+                  costOutput: matched.costOutput,
+                  costCacheRead: matched.costCacheRead,
+                  costCacheWrite: matched.costCacheWrite,
+                };
+              }
+              // 无匹配：默认值
+              return {
+                id: m.id,
+                name: m.name !== m.id ? m.name : undefined,
+                contextWindow: m.contextWindow,
+                maxTokens: m.maxTokens,
+                input: m.input as InputCapability[],
+                reasoning: m.reasoning,
+                costInput: m.cost.input,
+                costOutput: m.cost.output,
+                costCacheRead: m.cost.cacheRead,
+                costCacheWrite: m.cost.cacheWrite,
+              };
+            }),
+          );
           allModelsToWrite[provider.id] = mergedOverrides;
 
           const pricedCount = models.filter(m => m.cost.input > 0 || m.cost.output > 0).length;
           const priceNote = pricedCount > 0 ? `，${pricedCount} 个含定价` : "";
 
+          // 差异报告：用合并后的完整模型列表（已有模型保留覆盖 + 新模型含 models.dev 匹配）
+          const newModelsResolved = await Promise.all(
+            models.map(async m => {
+              const existing = existingOverrideMap.get(m.id);
+              if (existing) {
+                return {
+                  id: existing.id,
+                  name: existing.name || m.name,
+                  api: toPiApi(format),
+                  reasoning: existing.reasoning ?? false,
+                  input: (existing.input as InputCapability[]) || ["text"],
+                  cost: {
+                    input: existing.costInput ?? 0,
+                    output: existing.costOutput ?? 0,
+                    cacheRead: existing.costCacheRead ?? 0,
+                    cacheWrite: existing.costCacheWrite ?? 0,
+                  },
+                  contextWindow: existing.contextWindow ?? 128000,
+                  maxTokens: existing.maxTokens ?? 4096,
+                  compat: { supportsDeveloperRole: false },
+                } as ProviderModelConfig;
+              }
+              // 新模型：复用已有的 models.dev 匹配结果
+              const candidate = matchedDevMap.get(m.id);
+              if (candidate) {
+                const matched = await buildMatchedModel(m.id, candidate);
+                return {
+                  id: matched.id,
+                  name: matched.name,
+                  api: toPiApi(format),
+                  reasoning: matched.reasoning,
+                  input: matched.input,
+                  cost: {
+                    input: matched.costInput,
+                    output: matched.costOutput,
+                    cacheRead: matched.costCacheRead,
+                    cacheWrite: matched.costCacheWrite,
+                  },
+                  contextWindow: matched.contextWindow,
+                  maxTokens: matched.maxTokens,
+                  compat: { supportsDeveloperRole: false },
+                } as ProviderModelConfig;
+              }
+              return m;
+            }),
+          );
+          const diff = diffModelLists(oldModels, newModelsResolved);
+          const report = formatDiffReport(diff, provider.id);
+          allDiffs.push({ providerId: provider.id, report });
+
           if (newModels.length > 0) {
             totalNew += newModels.length;
             ctx.ui.notify(
-              `"${provider.id}" 发现 ${newModels.length} 个新模型${priceNote}: ${newModels.map(m => m.id).join(", ")}`,
+              `"${provider.id}" ${newModels.length} 个新模型${priceNote}: ${newModels.map(m => m.id).join(", ")}`,
               "info",
             );
           } else {
@@ -230,10 +327,16 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       // 汇总
       const summary: string[] = [];
       if (totalRefreshed > 0) summary.push(`${totalRefreshed} 个供应商已刷新`);
-      if (totalNew > 0) summary.push(`发现 ${totalNew} 个新模型`);
+      if (totalNew > 0) summary.push(`${totalNew} 个新模型`);
       if (totalSkipped > 0) summary.push(`${totalSkipped} 个跳过`);
       if (summary.length === 0) summary.push("无可用供应商");
       ctx.ui.notify(summary.join("，"), "info");
+
+      // 差异报告（有变更才展示）
+      const changedDiffs = allDiffs.filter(d => d.report && !d.report.includes("无变化"));
+      for (const d of changedDiffs) {
+        ctx.ui.notify(d.report!, "info");
+      }
     },
   });
 
@@ -303,7 +406,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       }
 
       const pricedCount = models.filter(m => m.cost.input > 0 || m.cost.output > 0).length;
-      const priceNote = pricedCount > 0 ? `，${pricedCount} 个模型含真实定价` : "";
+      const priceNote = pricedCount > 0 ? `，${pricedCount} 个模型含定价` : "";
       ctx.ui.notify(`Provider "${providerId}" activated with ${models.length} model(s)${priceNote}.`, "info");
     } catch (err) {
       ctx.ui.notify(`Failed to activate "${providerId}": ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -312,7 +415,35 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
 
   // ---- 加载与注册逻辑 ----
 
-  async function registerProviders(providers: RawProvider[], raw: string): Promise<void> {
+  /** 从已有 provider 配置重建旧模型列表（用于变更对比） */
+  async function buildOldModelList(
+    provider: RawProvider,
+    format: ResolvedApiFormat["format"],
+  ): Promise<ProviderModelConfig[]> {
+    // 用当前配置（非 auto）解析模型列表
+    const oldProvider: RawProvider = {
+      ...provider,
+      // 如果 models 是 "auto"，回退到空（说明此前未完成激活，旧模型列表为空）
+      models: provider.models === "auto" ? [] : provider.models,
+    };
+    try {
+      return await resolveModels(oldProvider, format, provider.baseUrl, "");
+    } catch {
+      return [];
+    }
+  }
+
+  async function registerProviders(providers: RawProvider[], raw: string): Promise<string[]> {
+    // 清理前：捕获旧模型列表
+    const oldSnapshots = new Map<string, ProviderModelConfig[]>();
+    for (const provider of providers) {
+      const explicitApi = provider.api && provider.api !== "auto";
+      if (explicitApi) {
+        const format = provider.api as ResolvedApiFormat["format"];
+        oldSnapshots.set(provider.id, await buildOldModelList(provider, format));
+      }
+    }
+
     // 清理旧注册
     for (const id of registeredIds) {
       pi.unregisterProvider(id);
@@ -345,6 +476,21 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
         registeredIds.add(provider.id);
       }
     }
+
+    // 构建新模型列表并生成差异报告
+    const diffs: string[] = [];
+    for (const provider of providers) {
+      const explicitApi = provider.api && provider.api !== "auto";
+      if (!explicitApi) continue;
+      const format = provider.api as ResolvedApiFormat["format"];
+      const newModels = await buildOldModelList(provider, format);
+      const oldModels = oldSnapshots.get(provider.id) || [];
+      const diff = diffModelLists(oldModels, newModels);
+      const report = formatDiffReport(diff, provider.id);
+      if (report) diffs.push(report);
+    }
+
+    return diffs;
   }
 
   // ---- 初始化 ----
