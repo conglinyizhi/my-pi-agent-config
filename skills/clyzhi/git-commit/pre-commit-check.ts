@@ -71,6 +71,11 @@ const CODE_EXTS = new Set([
   ".java", ".kt", ".swift", ".sh", ".bash", ".zsh",
 ]);
 
+/** 测试文件中的 console 是合理行为，跳过检查 */
+function isTestFile(f: string): boolean {
+  return f.endsWith(".test.ts") || f.endsWith(".test.tsx") || f.endsWith(".test.js");
+}
+
 // console.* 只在 pi 配置目录下视为调试残留，其他项目当作正常代码
 const consolePatterns: { label: string; pattern: RegExp }[] = [
   { label: "console.log",   pattern: /console\.log\s*\(/ },
@@ -93,6 +98,7 @@ for (const { label, pattern } of consolePatterns) {
   for (const f of files) {
     if (!existsSync(f)) continue;
     if (resolve(f) === SELF) continue;
+    if (isTestFile(f)) continue;
     if (!resolve(f).startsWith(PI_AGENT_DIR)) continue;
     if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
     const content = readFileSync(f, "utf-8");
@@ -114,6 +120,7 @@ for (const { label, pattern } of debugPatterns) {
   for (const f of files) {
     if (!existsSync(f)) continue;
     if (resolve(f) === SELF) continue;
+    if (isTestFile(f)) continue;
     if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
     const content = readFileSync(f, "utf-8");
     const lines = content.split("\n");
@@ -137,6 +144,7 @@ const conflictHits: string[] = [];
 for (const f of files) {
   if (!existsSync(f)) continue;
   if (resolve(f) === SELF) continue;
+  if (isTestFile(f)) continue;
   if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
   const content = readFileSync(f, "utf-8");
   const lines = content.split("\n");
