@@ -18,3 +18,7 @@ skill-states.json
 .pi-sync-state.json
 *.log
 models-store.json
+
+# 三叉戟
+providers.roles.toml
+queue/

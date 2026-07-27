@@ -1,0 +1,11 @@
+# 三叉戟模型路由配置
+# 复制本文件为 providers.roles.toml 并填入实际模型名
+# 格式：provider:model
+# 此文件进入 git；providers.roles.toml 不进入 git
+
+[roles]
+oc = "anthropic:claude-sonnet-4"
+translator = "google:gemini-2.5-pro"
+planner = "anthropic:claude-sonnet-4"
+worker = "openrouter:deepseek/deepseek-v3"
+reviewer = "openrouter:deepseek/deepseek-v3"
