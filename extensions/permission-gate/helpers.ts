@@ -1,4 +1,4 @@
-import { dangerousPatterns } from "./dangerous-patterns";
+import { dangerousPatterns, dangerousRules, type DangerousRule } from "./dangerous-patterns";
 import { safePatternHandlers } from "./safe-patterns/index";
 
 /** 按 && 或换行符分割命令为切片，过滤空串。 */
@@ -18,6 +18,21 @@ export function findDangerousSlices(slices: string[]): Set<number> {
     }
   }
   return dangerous;
+}
+
+/** 获取第一个匹配的危险规则的 tip 消息 */
+export function getDangerousTip(command: string): string | undefined {
+  for (const rule of dangerousRules) {
+    if (rule.pattern.test(command)) {
+      return rule.tip;
+    }
+  }
+  return undefined;
+}
+
+/** 检查命令是否匹配自动拒绝规则 */
+export function isAutoReject(command: string): boolean {
+  return dangerousRules.some(r => r.autoReject && r.pattern.test(command));
 }
 
 /** 收集所有安全模式处理器标记的切片索引 */

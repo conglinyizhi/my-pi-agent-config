@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { isCommandSafe } from "./helpers";
+import { isCommandSafe, getDangerousTip, isAutoReject } from "./helpers";
 
 export default async function (pi: ExtensionAPI) {
   const support = await checkNotificationSupport();
@@ -28,9 +28,19 @@ export default async function (pi: ExtensionAPI) {
     // 安全模式白名单放行
     if (isCommandSafe(command)) return undefined;
 
+    // 自动拒绝模式（不弹窗，直接拦）
+    if (isAutoReject(command)) {
+      const tip = getDangerousTip(command);
+      return { block: true, reason: `自动拒绝：${tip}` };
+    }
+
     // 无 UI 则直接阻止
     if (!ctx.hasUI) {
-      return { block: true, reason: "危险命令已阻止（没有可用于确认的 UI）" };
+      const tip = getDangerousTip(command);
+      const reason = tip
+        ? `危险命令已阻止：${tip}`
+        : "危险命令已阻止（没有可用于确认的 UI）";
+      return { block: true, reason };
     }
 
     // 桌面通知

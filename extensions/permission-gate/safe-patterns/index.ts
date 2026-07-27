@@ -15,5 +15,7 @@ import { tmpRecreate } from "./tmp-recreate";
 import { mktempCleanup } from "./mktemp-cleanup";
 // GLM 5.2 行为
 import { sudoReadonly } from "./sudo-readonly";
+// venv 激活后的 pip install 放行
+import { pipAfterVenv } from "./pip-after-venv";
 
-export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup, sudoReadonly];
+export const safePatternHandlers: SafePatternHandler[] = [tmpRecreate, mktempCleanup, sudoReadonly, pipAfterVenv];
