@@ -7,7 +7,7 @@ git/
 node_modules/
 .DS_Store
 mcp-cache.json
-docs/superpowers
+docs/superpowers/
 .worktrees/
 *.d.ts
 skill-repo/*
