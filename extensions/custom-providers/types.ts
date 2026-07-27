@@ -15,11 +15,23 @@ export interface ProviderDefaults {
   costCacheWrite?: number;
 }
 
+/** TOML compat 字段名（snake_case）与 JS 字段名（camelCase）的对照 */
+export interface CompatOverride {
+  thinking_format?: string;
+  requires_reasoning_content_on_assistant_messages?: boolean;
+  requires_thinking_as_text?: boolean;
+  supports_reasoning_effort?: boolean;
+  supports_developer_role?: boolean;
+  force_adaptive_thinking?: boolean;
+  supports_eager_tool_input_streaming?: boolean;
+}
+
 export interface ModelOverride extends Partial<ProviderDefaults> {
   id: string;
   name?: string;
   /** 锁定价格，reload-online 不覆盖 */
   cost_locked?: boolean;
+  compat?: CompatOverride;
 }
 
 export interface RawProvider {
@@ -29,6 +41,7 @@ export interface RawProvider {
   api?: ApiFormat;
   models?: string | ModelOverride[];
   defaults?: ProviderDefaults;
+  compat?: CompatOverride;
 }
 
 export interface ProvidersConfig {

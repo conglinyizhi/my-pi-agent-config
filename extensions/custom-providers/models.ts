@@ -1,6 +1,6 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { parseCommaList } from "../../lib/string-utils";
-import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
+import type { CompatOverride, InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 
 /** @deprecated 请使用 lib/string-utils 中的 parseCommaList */
 export const parseModelIds = parseCommaList;
@@ -72,6 +72,36 @@ async function fetchModelIds(format: ResolvedApiFormat["format"], baseUrl: strin
   return (data.data || []).map((m) => m.id).sort();
 }
 
+/**
+ * 根据模型 ID 和 provider 信息自动推断 compat。
+ * 仅作为默认值，会被 TOML 中显式配置的 compat 覆盖。
+ */
+function detectCompat(id: string, _provider: RawProvider): Record<string, unknown> {
+  const compat: Record<string, unknown> = { supportsDeveloperRole: false };
+
+  // deepseek 模型：自动使用 DeepSeek thinking 格式
+  if (/^deepseek/i.test(id)) {
+    compat.thinkingFormat = "deepseek";
+    compat.requiresReasoningContentOnAssistantMessages = true;
+  }
+
+  return compat;
+}
+
+/** 将 TOML snake_case compat 转为 JS camelCase */
+function toJsCompat(raw: CompatOverride | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  const c: Record<string, unknown> = {};
+  if (raw.thinking_format !== undefined) c.thinkingFormat = raw.thinking_format;
+  if (raw.requires_reasoning_content_on_assistant_messages !== undefined) c.requiresReasoningContentOnAssistantMessages = raw.requires_reasoning_content_on_assistant_messages;
+  if (raw.requires_thinking_as_text !== undefined) c.requiresThinkingAsText = raw.requires_thinking_as_text;
+  if (raw.supports_reasoning_effort !== undefined) c.supportsReasoningEffort = raw.supports_reasoning_effort;
+  if (raw.supports_developer_role !== undefined) c.supportsDeveloperRole = raw.supports_developer_role;
+  if (raw.force_adaptive_thinking !== undefined) c.forceAdaptiveThinking = raw.force_adaptive_thinking;
+  if (raw.supports_eager_tool_input_streaming !== undefined) c.supportsEagerToolInputStreaming = raw.supports_eager_tool_input_streaming;
+  return Object.keys(c).length > 0 ? c : undefined;
+}
+
 export function buildModelConfig(id: string, provider: RawProvider, override?: ModelOverride): Omit<ProviderModelConfig, "api"> {
   const defaults = provider.defaults || {};
   const anthropic = ANTHROPIC_MODELS.find((m) => m.id === id);
@@ -80,6 +110,12 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   const maxTokens = override?.maxTokens ?? anthropic?.maxTokens ?? defaults.maxTokens ?? DEFAULT_MAX_TOKENS;
   const input = override?.input ?? anthropic?.input ?? defaults.input ?? ["text"];
   const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
+
+  // compat 合并优先级：模型级 TOML compat > provider 级 TOML compat > 自动检测
+  const autoCompat = detectCompat(id, provider);
+  const providerCompat = toJsCompat(provider.compat);
+  const modelCompat = toJsCompat(override?.compat);
+  const mergedCompat = { ...autoCompat, ...providerCompat, ...modelCompat };
 
   return {
     id,
@@ -94,7 +130,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
     },
     contextWindow,
     maxTokens,
-    compat: { supportsDeveloperRole: false },
+    compat: mergedCompat,
   };
 }
 

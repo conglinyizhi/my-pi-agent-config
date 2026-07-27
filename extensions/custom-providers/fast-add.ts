@@ -514,6 +514,7 @@ function tomlModel(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) result.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) result.reasoning = m.reasoning;
   if (m.input !== undefined && m.input.length > 1) result.input = m.input;
+  if (m.compat && Object.keys(m.compat).length > 0) result.compat = m.compat;
   return result;
 }
 
@@ -663,21 +664,41 @@ async function applyAndRegister(
       api: resolvedApi,
       ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
-      models: allModelsForRegister.map(m => ({
-        id: m.id,
-        name: m.name || m.id,
-        api: resolvedApi,
-        reasoning: m.reasoning || false,
-        input: m.input || ["text"] as const,
-        cost: {
-          input: m.costInput || 0,
-          output: m.costOutput || 0,
-          cacheRead: m.costCacheRead || 0,
-          cacheWrite: m.costCacheWrite || 0,
-        },
-        contextWindow: m.contextWindow || 128000,
-        maxTokens: m.maxTokens || 4096,
-      })),
+      models: allModelsForRegister.map(m => {
+        // 自动推断 compat：deepseek 模型使用 DeepSeek thinking 格式
+        const autoCompat: Record<string, unknown> = { supportsDeveloperRole: false };
+        if (/^deepseek/i.test(m.id)) {
+          autoCompat.thinkingFormat = "deepseek";
+          autoCompat.requiresReasoningContentOnAssistantMessages = true;
+        }
+        // 合并显式配置的 compat（来自 TOML 或 models.dev）
+        const modelCompat = m.compat && Object.keys(m.compat).length > 0
+          ? Object.fromEntries(
+              Object.entries(m.compat)
+                .filter(([, v]) => v !== undefined)
+                .map(([k, v]) => [
+                  k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+                  v,
+                ])
+            )
+          : {};
+        return {
+          id: m.id,
+          name: m.name || m.id,
+          api: resolvedApi,
+          reasoning: m.reasoning || false,
+          input: m.input || ["text"] as const,
+          cost: {
+            input: m.costInput || 0,
+            output: m.costOutput || 0,
+            cacheRead: m.costCacheRead || 0,
+            cacheWrite: m.costCacheWrite || 0,
+          },
+          contextWindow: m.contextWindow || 128000,
+          maxTokens: m.maxTokens || 4096,
+          compat: { ...autoCompat, ...modelCompat },
+        };
+      }),
     });
 
     const totalModels = allModelsForRegister.length;
