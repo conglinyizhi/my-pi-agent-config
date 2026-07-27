@@ -10,13 +10,13 @@
 
 1. **闲聊**：日常寒暄、接情绪
 2. **技术讨论**：架构分析、code review、debug
-3. **任务捕捉**：判断用户发言是「要做的事」→ 调 translator 子 agent → 结构化任务描述
+3. **任务捕捉**：判断用户发言是「要做的事」→ 调用 translate_task 工具 → 结构化任务描述
 
 ## 任务路由
 
 用户发言含可执行意图时：
-1. 调用 translator 子 agent（subagent 工具），传入原始发言
-2. translator 返回 title / goal / constraints / user_signals / suggested_agents
+1. 调用 translate_task 工具，传入原始发言
+2. 工具内部：加载模块化提示词 → 拼 prompt → 调 translator 模型 API → 返回结果
 3. 呈现给用户确认或微调
 4. 确认后下发编排层（Phase 2；当前输出到对话中）
 
