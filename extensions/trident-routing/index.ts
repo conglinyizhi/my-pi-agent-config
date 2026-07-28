@@ -7,10 +7,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanTodos, visibleWidth, truncateToWidth, type TodoItem, type ScanState } from "./todo-scan";
+import * as os from "node:os";
+import { spawn, execSync } from "node:child_process";
+import { scanTodos, type TodoItem, type ScanState } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,47 +106,18 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════════════════
 
   const WIDGET_ID = "todo-scanner";
-  const MAX_DISPLAY = 15;
   let todoState: ScanState = { status: "idle" };
 
   function buildTodoWidget(state: ScanState) {
     return (_tui: unknown, theme: any) => ({
-      render(width: number): string[] {
-        if (state.status === "idle" || state.status === "scanning") {
-          return [theme.fg("dim", `📋 TODO: ${state.status === "scanning" ? "扫描中…" : "就绪"}`)];
-        }
+      render(_width: number): string[] {
+        if (state.status === "scanning") return [theme.fg("dim", "📋 TODO: 扫描中…")];
         if (state.status === "timeout") return [theme.fg("error", "📋 TODO: 扫描超时")];
         if (state.status === "error") return [theme.fg("warning", `📋 TODO: ${state.message}`)];
-
-        const { items, total, doneCount, expanded } = state;
-        if (total === 0) return [theme.fg("success", "📋 TODO(s): 0/0 ✓")];
-        if (doneCount === total) return [theme.fg("success", `📋 TODO(s): ${doneCount}/${total} ✓`)];
-
-        const pending = items.filter((i) => !i.done);
-        if (!expanded) {
-          return [theme.fg("accent", `📋 TODO(s): ${doneCount}/${total}`) + theme.fg("dim", "  /scan-todo 展开")];
-        }
-
-        const showing = Math.min(pending.length, MAX_DISPLAY);
-        const header = `📋 TODO(s): ${doneCount}/${total}${pending.length > MAX_DISPLAY ? `（显示前 ${showing} 项）` : ""}`;
-        const lines: string[] = [theme.fg("accent", header)];
-        for (const [idx, item] of pending.slice(0, MAX_DISPLAY).entries()) {
-          const num = theme.fg("warning", String(idx + 1).padStart(2));
-          const locText = truncateToWidth(`${item.file}:${item.line}`, Math.min(50, Math.floor(width * 0.3)));
-          const locW = visibleWidth(locText);
-          const loc = theme.fg("muted", locText);
-          const content = theme.fg("dim", truncateToWidth(item.text, Math.max(20, width - 10 - locW)));
-          lines.push(` ${num} ${loc}${theme.fg("dim", " │ ")}${content}`);
-        }
-        const done = items.filter((i) => i.done);
-        if (done.length > 0) {
-          const maxDone = 5;
-          lines.push(theme.fg("dim", `  已完成 ${done.length} 项`));
-          for (const item of done.slice(0, maxDone)) {
-            lines.push(theme.fg("dim", `   ${truncateToWidth(`${item.file}:${item.line}`, 50)}  ${truncateToWidth(item.text, Math.max(10, width - 56))}`));
-          }
-        }
-        return lines;
+        if (state.status === "idle") return [];
+        if (state.total === 0) return [theme.fg("success", "📋 TODO(s): 0/0 ✓")];
+        if (state.doneCount === state.total) return [theme.fg("success", `📋 TODO(s): ${state.doneCount}/${state.total} ✓`)];
+        return [theme.fg("accent", `📋 TODO(s): ${state.doneCount}/${state.total}`) + theme.fg("dim", "  /scan-todo 展开")];
       },
       invalidate() {},
     });
@@ -155,8 +128,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
     const result = await scanTodos(pi, ctx.cwd);
     if (result === null) { todoState = { status: "timeout" }; ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState)); return; }
-    const prevExpanded = todoState.status === "done" ? todoState.expanded : false;
-    todoState = { status: "done", ...result, expanded: prevExpanded };
+    todoState = { status: "done", ...result, expanded: false };
     ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
     pi.events.emit("todo-scanner:result", { count: result.total, done: result.doneCount });
   }
@@ -166,40 +138,60 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("scan-todo", {
-    description: "展开 TODO 列表，或选中指定 TODO 发送给 AI",
-    handler: async (args, ctx: any) => {
+    description: "打开 TODO 调度 GUI：选中、定位文件、补充说明后发送",
+    handler: async (_args: string, ctx: any) => {
       if (!ctx.hasUI) return;
       await refreshTodos(ctx);
       if (todoState.status !== "done") { ctx.ui.notify("TODO 扫描失败", "error"); return; }
 
-      const trimmed = args.trim();
-      if (!trimmed) {
-        todoState.expanded = true;
-        ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
-        ctx.ui.notify(`TODO: ${todoState.doneCount}/${todoState.total}`, "info");
+      const todos = todoState.items;
+      if (todos.length === 0) { ctx.ui.notify("没有 TODO", "info"); return; }
+
+      // 找 electron
+      let electronBin: string | null = null;
+      try {
+        const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
+          .trim().split("\n").filter(Boolean).sort().reverse();
+        electronBin = bins[0] || null;
+      } catch {}
+      if (!electronBin) { ctx.ui.notify("未找到 electron", "error"); return; }
+
+      const guiDir = join(os.homedir(), ".pi", "agent", "extensions", "trident-routing", "gui");
+      const appJs = join(guiDir, "app.js");
+      const distHtml = join(guiDir, "dist", "index.html");
+      if (!existsSync(appJs) || !existsSync(distHtml)) {
+        ctx.ui.notify("GUI 未构建。执行 pnpm build:gui-route", "error");
         return;
       }
 
-      const pending = todoState.items.filter((i) => !i.done);
-      const rawSet = new Set<number>();
-      for (const part of trimmed.split(",")) {
-        const seg = part.trim();
-        const rm = seg.match(/^(\d+)-(\d+)$/);
-        if (rm) { for (let i = +rm[1]!; i <= +rm[2]!; i++) rawSet.add(i); }
-        else { const n = parseInt(seg, 10); if (!isNaN(n) && n >= 1) rawSet.add(n); }
-      }
-      const indices = [...rawSet].sort((a, b) => a - b);
-      if (indices.length === 0 || indices[0]! > pending.length) { ctx.ui.notify("序号无效", "warning"); return; }
+      const tmpDir = mkdtempSync(join(os.tmpdir(), "todo-gui-"));
+      const reqFile = join(tmpDir, "request.json");
+      const resFile = join(tmpDir, "response.json");
+      writeFileSync(reqFile, JSON.stringify({ todos }));
 
-      const selected = indices.map((i) => pending[i - 1]!);
-      const note = await ctx.ui.input(selected.length === 1 ? `补充信息 — ${selected[0]!.file}:${selected[0]!.line}` : `补充信息 — ${selected.length} 个 TODO`);
-      const block = selected.map((item) => `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");
-      let msg = `处理以下 TODO:\n\n${block}`;
-      if (note) msg += `\n\n补充: ${note}`;
+      const proc = spawn(electronBin, [appJs, reqFile, resFile], { stdio: "ignore", detached: true });
+
+      // 等 GUI 关闭
+      const result = await new Promise<any>((resolve) => {
+        const timer = setTimeout(() => resolve({ cancelled: true }), 300_000);
+        const check = setInterval(() => {
+          try {
+            const data = JSON.parse(readFileSync(resFile, "utf-8"));
+            clearTimeout(timer); clearInterval(check); resolve(data);
+          } catch {}
+        }, 200);
+      });
+
+      try { proc.kill("SIGTERM"); } catch {}
+
+      if (!result || result.action === "cancel" || !result.todos?.length) return;
+
+      const itemsBlock = result.todos.map((item: { file: string; line: number; text: string }) =>
+        `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");
+      let msg = `处理以下 TODO:\n\n${itemsBlock}`;
+      if (result.note) msg += `\n\n补充: ${result.note}`;
       pi.sendUserMessage(msg);
-      todoState.expanded = false;
-      ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
-      ctx.ui.notify(`已发送 ${indices.length} 个 TODO`, "info");
+      ctx.ui.notify(`已发送 ${result.todos.length} 个 TODO`, "info");
     },
   });
 
