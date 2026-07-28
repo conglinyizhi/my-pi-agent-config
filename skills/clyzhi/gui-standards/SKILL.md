@@ -20,7 +20,7 @@ description: pi 扩展 GUI 开发规范——gui-kit 骨架 + 目录结构 + 构
 extensions/<name>/gui/
 ├── app.ts              ← createGuiApp() 配置
 ├── renderer/
-│   ├── index.html      ← 通常不动
+│   ├── index.html      ← 含 CSP 标签，从现有 GUI 复制
 │   ├── index.ts        ← Vue 入口
 │   └── App.vue         ← 主组件
 ├── rsbuild.config.ts   ← 从已有 GUI 复制
@@ -70,6 +70,28 @@ pnpm build:gui-<name>   # 一次完成 esbuild + rsbuild
 - 主进程注入 `window.__INIT_DATA__`
 - Vue 组件读 `window.__INIT_DATA__`
 - 响应：`fs.writeFileSync(responseFile, JSON.stringify(...))` + `window.close()`
+
+## index.html 模板
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "Microsoft YaHei", monospace; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+</body>
+</html>
+```
+
+CSP 说明：`default-src 'self'` 只允许加载本地资源，`style-src 'unsafe-inline'` 是 Vue scoped 样式必须的。纯本地 Electron 窗口无远程内容，消除 Electron 安全警告即可。
 
 ## 注意事项
 
