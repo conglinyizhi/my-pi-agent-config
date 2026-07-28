@@ -41,6 +41,7 @@
 </template>
 
 <script setup lang="ts">
+import "../../../../lib/gui-theme.css";
 import { ref, computed, onMounted } from "vue";
 
 // ── 初始化数据 ──

@@ -57,6 +57,7 @@
 </template>
 
 <script setup lang="ts">
+import "../../../../lib/gui-theme.css";
 import { ref, computed, onMounted, nextTick } from "vue";
 
 const $ = (window as any).__INIT_DATA__;
