@@ -49,6 +49,8 @@ export async function scanTodos(
       "-n", "--no-heading",
       "-g", "!node_modules", "-g", "!.git", "-g", "!dist", "-g", "!build", "-g", "!target",
       "-g", "!extensions/todo-scanner.ts",
+      "-g", "!extensions/trident-routing/*",
+      "-g", "!extensions/trident-queue/*",
       TODO_PATTERN, ".",
     ], { timeout: SEARCH_TIMEOUT_MS, cwd });
   } catch {
@@ -58,6 +60,8 @@ export async function scanTodos(
         "--exclude-dir=node_modules", "--exclude-dir=.git",
         "--exclude-dir=dist", "--exclude-dir=build", "--exclude-dir=target",
         "--exclude=todo-scanner.ts",
+        "--exclude-dir=trident-routing",
+        "--exclude-dir=trident-queue",
         TODO_PATTERN, ".",
       ], { timeout: SEARCH_TIMEOUT_MS, cwd });
     } catch {
