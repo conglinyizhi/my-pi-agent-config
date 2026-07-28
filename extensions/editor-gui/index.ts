@@ -1,3 +1,5 @@
+// GUI 构建参考：skill gui-kit（GUI 骨架 + Vue + rsbuild + esbuild 模式）
+//
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import { spawn, execSync } from "node:child_process";
