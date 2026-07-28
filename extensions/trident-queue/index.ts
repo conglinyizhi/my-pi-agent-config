@@ -316,14 +316,27 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- /trident-setup 向导 ---
+  // --- /trident-setup 向导（TUI 选择模型） ---
   pi.registerCommand("trident-setup", {
-    description: "交互式向导：配置三叉戟模型路由",
+    description: "交互式向导：TUI选择模型配置三叉戟路由",
     handler: async (_args, ctx) => {
       const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
       const examplePath = path.join(os.homedir(), ".pi", "agent", "providers.roles.example.toml");
 
-      // 读取当前配置或示例
+      // 获取所有可用模型
+      const allModels = ctx.modelRegistry.getAll();
+      if (allModels.length === 0) {
+        ctx.ui.notify("未找到可用模型。请先配置 providers。", "error");
+        return;
+      }
+
+      // 构建选项列表：provider:id — name
+      const modelOptions = allModels.map((m) => ({
+        value: `${m.provider}:${m.id}`,
+        label: `${m.provider}:${m.id}  (${m.name || m.id})`,
+      }));
+
+      // 读取当前配置
       let roles: Record<string, string> = {};
       if (fs.existsSync(rolesPath)) {
         roles = parseRolesToml(fs.readFileSync(rolesPath, "utf-8"));
@@ -332,26 +345,37 @@ export default function (pi: ExtensionAPI) {
       }
 
       const roleDescriptions: Record<string, string> = {
-        oc: "OC Agent（对话层，唯一跟你聊天的入口）",
-        translator: "翻译工具（与OC不同厂商，形成双视角）",
-        planner: "任务拆解（架构决策，需聪明模型）",
-        worker: "执行层（按计划干活，便宜即可）",
-        reviewer: "审查层（diff检查，便宜即可）",
+        oc: "OC Agent — 跟你聊天的入口，需要对话质感",
+        translator: "翻译工具 — 与OC不同厂商，形成双视角",
+        planner: "任务拆解 — 架构决策，需聪明模型",
+        worker: "执行层 — 按计划干活，便宜即可",
+        reviewer: "审查层 — diff检查，便宜即可",
       };
 
       const newRoles: Record<string, string> = {};
       for (const role of ["oc", "translator", "planner", "worker", "reviewer"]) {
         const current = roles[role] || "";
         const desc = roleDescriptions[role] || "";
-        const value = await ctx.ui.input(
+
+        // 找到当前值在选项中的位置（用于预选）
+        const optionsWithCurrent = [...modelOptions];
+        if (current && !modelOptions.find((o) => o.value === current)) {
+          optionsWithCurrent.unshift({ value: current, label: `${current}（当前）` });
+        }
+
+        const choice = await ctx.ui.select(
           `${role} — ${desc}`,
-          current || "provider:model"
+          optionsWithCurrent.map((o) => o.label)
         );
-        if (value === undefined) {
+
+        if (choice === undefined) {
           ctx.ui.notify("已取消。", "warning");
           return;
         }
-        if (value.trim()) newRoles[role] = value.trim();
+
+        // 从 label 反查 value
+        const chosen = optionsWithCurrent.find((o) => o.label === choice);
+        if (chosen) newRoles[role] = chosen.value;
       }
 
       // 写入配置文件
@@ -360,17 +384,15 @@ export default function (pi: ExtensionAPI) {
         toml += `${role} = "${model}"\n`;
       }
 
-      // 保留 workers 节（如果原文件有）
+      // 保留 workers 节
       if (fs.existsSync(rolesPath)) {
         const original = fs.readFileSync(rolesPath, "utf-8");
         const workersMatch = original.match(/\[workers\.\w+\][\s\S]*/);
-        if (workersMatch) {
-          toml += "\n" + workersMatch[0];
-        }
+        if (workersMatch) toml += "\n" + workersMatch[0];
       }
 
       fs.writeFileSync(rolesPath, toml, "utf-8");
-      ctx.ui.notify("配置已保存到 providers.roles.toml", "info");
+      ctx.ui.notify("配置已保存到 providers.roles.toml，/reload 生效", "info");
     },
   });
 }
