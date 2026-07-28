@@ -49,16 +49,8 @@ export default function (pi: ExtensionAPI) {
       skipNextGreeting = true;
       ctx.ui.notify("⚓ 返回母港。本会话不限制工具，可自由编辑。", "info");
       await ctx.newSession({
-        setup: (sm) => {
-          sm.appendMessage({
-            role: "user",
-            content: [{ type: "text", text: "（返回母港——解除限制模式）" }],
-            timestamp: Date.now(),
-          });
-        },
         withSession: async (c) => {
           c.ui.notify("已进入母港。write/edit 可用。", "info");
-          await c.sendUserMessage("母港模式已就绪。需要我做什么？");
         },
       });
     },
