@@ -273,4 +273,63 @@ export default function (pi: ExtensionAPI) {
     // 每次 agent 结束后刷新
     pi.on("agent_settled", () => updateWidget());
   });
+
+  // --- /trident-models 命令 ---
+  pi.registerCommand("trident-models", {
+    description: "查看/切换三叉戟模型路由配置",
+    handler: async (args, ctx) => {
+      const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
+      if (!fs.existsSync(rolesPath)) {
+        ctx.ui.notify("providers.roles.toml 不存在。从 providers.roles.example.toml 复制一份并填入模型。", "warning");
+        return;
+      }
+
+      const content = fs.readFileSync(rolesPath, "utf-8");
+      const roles = parseRolesToml(content);
+
+      if (args) {
+        // 切换模式：/trident-models worker openrouter:deepseek/deepseek-chat
+        const parts = args.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const [role, model] = [parts[0], parts.slice(1).join(" ")];
+          if (roles[role] !== undefined) {
+            const escaped = model.includes('"') ? model : model;
+            const newContent = content.replace(
+              new RegExp(`^${role}\\s*=\\s*.*$`, "m"),
+              `${role} = "${escaped}"`
+            );
+            fs.writeFileSync(rolesPath, newContent, "utf-8");
+            ctx.ui.notify(`${role} → ${model}`, "info");
+          } else {
+            ctx.ui.notify(`未知角色：${role}。可用：${Object.keys(roles).join(", ")}`, "error");
+          }
+        }
+        return;
+      }
+
+      // 查看模式
+      const lines = ["当前模型路由："];
+      for (const [role, model] of Object.entries(roles)) {
+        lines.push(`  ${role} → ${model}`);
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+}
+
+function parseRolesToml(content: string): Record<string, string> {
+  const roles: Record<string, string> = {};
+  let inRoles = false;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "[roles]") { inRoles = true; continue; }
+    if (inRoles && trimmed.startsWith("[")) break;
+    if (!inRoles) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+    if (key && value) roles[key] = value;
+  }
+  return roles;
 }

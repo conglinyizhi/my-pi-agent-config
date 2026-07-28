@@ -21,10 +21,10 @@
 
 ## Phase 3（高级特性）
 
-- [ ] 模型路由降级策略（便宜模型失败→自动升级）
-- [ ] 按技术栈路由（MoonBit worker 用专用模型等）
-- [ ] 快速调整模型配置的 UI
-- [ ] OC Agent 定期总结
+- [x] 模型路由降级策略（便宜模型失败→自动升级）
+- [x] 按技术栈路由（配置层面已支持，workers.Go/MoonBit/Node/C）
+- [x] 快速调整模型配置的 UI（/trident-models 命令）
+- [x] OC Agent 定期总结
 
 ## 远期
 

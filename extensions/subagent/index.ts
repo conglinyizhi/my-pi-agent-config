@@ -701,7 +701,7 @@ async function runParallelTask(
   emitParallelUpdate: () => void,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
 ): Promise<SingleResult> {
-  const result = await runSingleAgent(
+  let result = await runSingleAgent(
     cwd,
     agents,
     task.agent,
@@ -717,6 +717,25 @@ async function runParallelTask(
     },
     makeDetails,
   );
+
+  // 降级策略：并行任务中便宜模型失败 → 自动用 planner 重试
+  if (isFailedResult(result) && agents["planner"]) {
+    const taskAgent = agents[task.agent];
+    const isCheap = taskAgent && taskAgent.model &&
+      taskAgent.model !== "planner" && taskAgent.model !== "oc";
+    if (isCheap) {
+      const retryResult = await runSingleAgent(
+        cwd, agents, "planner",
+        `[降级重试] 原 agent ${task.agent} 失败，改用 planner 重试。\n原始任务：${task.task}`,
+        task.cwd, undefined, signal,
+        (_partial) => {}, makeDetails,
+      );
+      if (!isFailedResult(retryResult)) {
+        result = retryResult;
+      }
+    }
+  }
+
   allResults[index] = result;
   emitParallelUpdate();
   return result;
@@ -836,11 +855,30 @@ export default function (pi: ExtensionAPI) {
 
           const chainUpdate = createChainUpdate(results, onUpdate, makeDetails("chain"));
 
-          const result = await runSingleAgent(ctx.cwd, agents, step.agent, taskWithContext, step.cwd, i + 1, combinedSignal, chainUpdate, makeDetails("chain"));
+          let result = await runSingleAgent(ctx.cwd, agents, step.agent, taskWithContext, step.cwd, i + 1, combinedSignal, chainUpdate, makeDetails("chain"));
+          let chainIsError = isFailedResult(result);
+
+          // 降级策略：链中某步便宜模型失败 → 自动用 planner 重试
+          if (chainIsError && agents["planner"]) {
+            const stepAgent = agents[step.agent];
+            const isCheap = stepAgent && stepAgent.model &&
+              stepAgent.model !== "planner" && stepAgent.model !== "oc";
+            if (isCheap) {
+              const retryResult = await runSingleAgent(
+                ctx.cwd, agents, "planner",
+                `[降级重试] 原 agent ${step.agent} 失败，改用 planner 重试。\n原始任务：${taskWithContext}`,
+                step.cwd, i + 1, combinedSignal, chainUpdate, makeDetails("chain")
+              );
+              if (!isFailedResult(retryResult)) {
+                result = retryResult;
+                chainIsError = false;
+              }
+            }
+          }
+
           results.push(result);
 
-          const isError = isFailedResult(result);
-          if (isError) {
+          if (chainIsError) {
             const errorMsg = getResultOutput(result);
             const completedSteps = results.filter((r) => !isFailedResult(r)).map((r) => `  ${r.step}. ${r.agent} ✓`).join("\n");
             return {
@@ -914,8 +952,31 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (params.agent && params.task) {
-        const result = await runSingleAgent(ctx.cwd, agents, params.agent, params.task, params.cwd, undefined, combinedSignal, onUpdate, makeDetails("single"));
-        const isError = isFailedResult(result);
+        let result = await runSingleAgent(ctx.cwd, agents, params.agent, params.task, params.cwd, undefined, combinedSignal, onUpdate, makeDetails("single"));
+        let isError = isFailedResult(result);
+
+        // 降级策略：便宜模型失败 → 自动用 planner 或 oc 模型重试一次
+        if (isError && agents["planner"]) {
+          const agent = agents[params.agent];
+          const isCheapModel = agent && agent.model &&
+            agent.model !== "planner" && agent.model !== "oc";
+          if (isCheapModel) {
+            const smartAgentName = agents["planner"] ? "planner" : "oc";
+            if (agents[smartAgentName]) {
+              const retryResult = await runSingleAgent(
+                ctx.cwd, agents, smartAgentName,
+                `[降级重试] 原 agent ${params.agent} 失败，改用 ${smartAgentName} 重试。\n原始任务：${params.task}`,
+                params.cwd, undefined, combinedSignal, onUpdate, makeDetails("single")
+              );
+              if (!isFailedResult(retryResult)) {
+                result = retryResult;
+                isError = false;
+                result.messages.unshift(...retryResult.messages);
+              }
+            }
+          }
+        }
+
         if (isError) {
           const errorMsg = getResultOutput(result);
           return {
