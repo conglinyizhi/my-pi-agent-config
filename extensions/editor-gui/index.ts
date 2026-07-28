@@ -1,3 +1,5 @@
+// GUI 构建参考：skill gui-standards（GUI 骨架 + Vue + rsbuild + esbuild 模式）
+//
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import { spawn, execSync } from "node:child_process";
@@ -30,9 +32,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "editor-gui", "gui", "app.js");
-			if (!fs.existsSync(appJs)) {
-				ctx.ui.notify("GUI 入口未找到", "error");
+			const guiDir = path.join(os.homedir(), ".pi", "agent", "extensions", "editor-gui", "gui");
+			const appJs = path.join(guiDir, "app.js");
+			const distHtml = path.join(guiDir, "dist", "index.html");
+			if (!fs.existsSync(appJs) || !fs.existsSync(distHtml)) {
+				ctx.ui.notify("GUI 未构建。请执行：pnpm build:gui-editor", "error");
 				return;
 			}
 
