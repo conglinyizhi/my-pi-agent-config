@@ -475,7 +475,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         let toml = "# 三叉戟模型路由配置\n# 由 /trident-setup 生成\n\n[roles]\n";
-        for (const role of ["oc", "translator", "planner", "worker"]) {
+        for (const role of ["oc", "translator", "worker"]) {
           if (result.roles[role]) {
             toml += `${role} = "${result.roles[role]}"\n`;
           }

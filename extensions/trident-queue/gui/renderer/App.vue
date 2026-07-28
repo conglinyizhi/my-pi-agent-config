@@ -57,10 +57,9 @@ const providerFilter = ref("");
 const selected = ref<Record<string, string>>({ ...initialRoles });
 
 const roleNames = [
-  { name: "oc", desc: "OC Agent — 跟你聊天的入口" },
-  { name: "translator", desc: "翻译工具 — 与OC不同厂商" },
-  { name: "planner", desc: "任务拆解 — 架构决策" },
-  { name: "worker", desc: "执行层 — 便宜即可" },
+  { name: "oc", desc: "主对话 — 聪明模型" },
+  { name: "translator", desc: "任务翻译 — 建议与 OC 不同厂商" },
+  { name: "worker", desc: "subagent 执行 — 便宜即可" },
 ];
 
 // 按 provider 分组

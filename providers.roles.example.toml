@@ -1,20 +1,14 @@
 # 三叉戟模型路由配置
 # 复制本文件为 providers.roles.toml 并填入实际模型名
-# 格式：provider/model
+# 格式：provider/model（与 pi --model 一致）
 # 此文件进入 git；providers.roles.toml 不进入 git
+#
+# 仅三个角色：
+#   oc         — 主对话（林汐），建议聪明模型
+#   translator — 任务翻译，建议与 oc 不同厂商，形成双视角
+#   worker     — subagent 执行，建议便宜模型
 
 [roles]
 oc = "anthropic/claude-sonnet-4"
 translator = "google/gemini-2.5-pro"
-planner = "anthropic/claude-sonnet-4"
-worker = "openrouter/deepseek/deepseek-v3"
-
-# 按技术栈路由（可选，未配置则使用 [roles] 中的 worker）
-# [workers.Go]
-# model = "openrouter/deepseek/deepseek-v3"
-# [workers.MoonBit]
-# model = "kimi:k2"
-# [workers.Node]
-# model = "openrouter:deepseek/deepseek-v3"
-# [workers.C]
-# model = "openrouter:deepseek/deepseek-v3"
+worker = "deepseek/deepseek-v4-flash"
