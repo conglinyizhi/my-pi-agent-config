@@ -2,7 +2,7 @@ import { app, BrowserWindow } from "electron";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
-import { loadRequest } from "../../../../lib/electron-gui.mjs";
+import { loadRequest } from "../../../lib/electron-gui.mjs";
 
 const requestFile = process.argv[2];
 const responseFile = process.argv[3];
