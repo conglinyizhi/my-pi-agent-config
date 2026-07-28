@@ -37,6 +37,23 @@ createGuiApp({
 });
 ```
 
+## 共享样式
+
+所有 GUI 在 `<script setup>` 开头引入：
+
+```typescript
+import "../../../../lib/gui-theme.css";
+```
+
+`lib/gui-theme.css` 定义了基础暗色主题变量和组件类：
+- `.btn` / `.btn-deny` / `.btn-warn` / `.btn-allow` / `.btn-cancel` — 按钮
+- `.overlay` — 覆盖层（弹层遮罩）
+- `.dialog` — 对话框容器
+- `.actions` / `.count` — 页脚操作栏
+- `.collapse-header` / `.collapse-body` — 折叠面板
+
+不要在每个 GUI 里重复定义这些基础样式。只需添加 GUI 特有的样式即可。
+
 ## 构建
 
 ```bash
