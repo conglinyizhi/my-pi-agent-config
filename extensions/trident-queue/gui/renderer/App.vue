@@ -61,14 +61,13 @@ const roleNames = [
   { name: "translator", desc: "翻译工具 — 与OC不同厂商" },
   { name: "planner", desc: "任务拆解 — 架构决策" },
   { name: "worker", desc: "执行层 — 便宜即可" },
-  { name: "reviewer", desc: "审查层 — 便宜即可" },
 ];
 
 // 按 provider 分组
 const grouped = computed(() => {
   const g: Record<string, typeof allModels> = {};
   for (const m of allModels) {
-    const prov = m.value.split(":")[0];
+    const prov = m.value.split("/")[0];
     if (!g[prov]) g[prov] = [];
     g[prov].push(m);
   }
@@ -79,7 +78,7 @@ const grouped = computed(() => {
 const visibleModels = computed(() => {
   let result = allModels;
   if (providerFilter.value) {
-    result = result.filter(m => m.value.startsWith(providerFilter.value + ":"));
+    result = result.filter(m => m.value.startsWith(providerFilter.value + "/"));
   }
   if (search.value) {
     try {
@@ -96,7 +95,7 @@ const visibleModels = computed(() => {
 const filteredGrouped = computed(() => {
   const g: Record<string, typeof allModels> = {};
   for (const m of visibleModels.value) {
-    const prov = m.value.split(":")[0];
+    const prov = m.value.split("/")[0];
     if (!g[prov]) g[prov] = [];
     g[prov].push(m);
   }
