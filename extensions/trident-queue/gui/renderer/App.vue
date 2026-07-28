@@ -6,8 +6,8 @@
     </header>
 
     <div class="filters">
-      <input v-model="search" placeholder="grep 搜索模型...（支持正则，如 claude|gemini）" class="search-box">
-      <select v-model="providerFilter" class="provider-select">
+      <input data-name="model-search" v-model="search" placeholder="grep 搜索模型...（支持正则，如 claude|gemini）" class="search-box">
+      <select data-name="provider-filter" v-model="providerFilter" class="provider-select">
         <option value="">所有供应商</option>
         <option v-for="(models, prov) in grouped" :key="prov" :value="prov">
           {{ prov }} ({{ models.length }})
@@ -22,7 +22,7 @@
           <strong>{{ role.name }}</strong>
           <span class="role-desc">{{ role.desc }}</span>
         </div>
-        <select v-model="selected[role.name]" class="model-select">
+        <select :data-name="`model-select-${role.name}`" v-model="selected[role.name]" class="model-select">
           <option v-if="selected[role.name] && !visibleModels.some(m => m.value === selected[role.name])"
             :value="selected[role.name]">{{ selected[role.name] }}（已选）</option>
           <optgroup v-for="(models, prov) in filteredGrouped" :key="prov" :label="prov">
@@ -36,8 +36,8 @@
 
     <footer class="actions">
       <span class="count">{{ visibleModels.length }} 个匹配</span>
-      <button class="btn btn-cancel" @click="cancel">取消</button>
-      <button class="btn btn-save" @click="save">保存配置</button>
+      <button data-name="setup-cancel" class="btn btn-cancel" @click="cancel">取消</button>
+      <button data-name="setup-save" class="btn btn-save" @click="save">保存配置</button>
     </footer>
   </div>
 </template>

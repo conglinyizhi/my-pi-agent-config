@@ -20,8 +20,8 @@
       </div>
       <div class="list" v-else>
         <div class="file-open">
-          <input v-model="filePath" placeholder="输入文件路径..." @keyup.enter="openFile">
-          <button class="btn btn-small" @click="openFile">打开</button>
+          <input data-name="file-path" v-model="filePath" placeholder="输入文件路径..." @keyup.enter="openFile">
+          <button data-name="file-open-btn" class="btn btn-small" @click="openFile">打开</button>
         </div>
       </div>
     </aside>
@@ -32,9 +32,9 @@
       <textarea v-model="editorText" spellcheck="false" class="editor"></textarea>
       <footer class="footer">
         <span class="file-info">{{ fileInfo }}</span>
-        <button class="btn btn-restore" @click="restoreToPi">↩ 恢复到输入框</button>
-        <button class="btn btn-save" @click="saveFile">💾 保存</button>
-        <button class="btn btn-cancel" @click="cancel">取消</button>
+        <button data-name="restore-btn" class="btn btn-restore" @click="restoreToPi">↩ 恢复到输入框</button>
+        <button data-name="save-btn" class="btn btn-save" @click="saveFile">💾 保存</button>
+        <button data-name="cancel-btn" class="btn btn-cancel" @click="cancel">取消</button>
       </footer>
     </main>
   </div>
