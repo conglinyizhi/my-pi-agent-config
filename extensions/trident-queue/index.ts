@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
+import { visibleWidth, truncateToWidth } from "../trident-routing/todo-scan";
 
 const QUEUE_DIR = path.join(os.homedir(), ".pi", "agent", "queue");
 const ACTIVE_DIR = path.join(QUEUE_DIR, "active");
@@ -315,7 +316,8 @@ export default function (pi: ExtensionAPI) {
               t.status === "blocked" ? "⏸" :
               t.status === "planning" ? "📋" :
               t.status === "reviewing" ? "🔍" : "○";
-            const shortTitle = t.title.length > 40 ? t.title.slice(0, 37) + "..." : t.title;
+            const maxTitleW = Math.max(10, _width - 3);
+            const shortTitle = truncateToWidth(t.title, maxTitleW);
             lines.push(`${icon} ${shortTitle}`);
           }
           return lines;
