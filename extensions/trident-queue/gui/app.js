@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from "electron";
-import { loadRequest } from "../../../../lib/electron-gui.mjs";
+import { loadRequest } from "#lib/electron-gui";
 import { writeFileSync } from "fs";
 
 const requestFile = process.argv[2];

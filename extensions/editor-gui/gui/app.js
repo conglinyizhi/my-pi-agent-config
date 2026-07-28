@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from "electron";
-import { loadRequest } from "../../../lib/electron-gui.mjs";
+import { loadRequest } from "#lib/electron-gui";
 import { writeFileSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
