@@ -1,4 +1,4 @@
-// GUI 构建参考：skill gui-kit（GUI 骨架 + Vue + rsbuild + esbuild 模式）
+// GUI 构建参考：skill gui-standards（GUI 骨架 + Vue + rsbuild + esbuild 模式）
 //
 /**
  * 权限闸门扩展
