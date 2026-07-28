@@ -126,7 +126,7 @@ git commit -m "feat(trident): 实现translate_task翻译工具扩展"
 ### Task 4: 配置模型路由
 
 **Files:**
-- Create: `providers.roles.toml.example`
+- Create: `providers.roles.example.toml`
 - Modify: `.gitignore`
 
 ✅ 已完成。commit `cb3aadc`。`providers.roles.toml` 需用户手动创建。
@@ -182,7 +182,7 @@ echo "=== 三叉戟文件 ==="
 ls -la SYSTEM.md
 ls -la skills/clyzhi/trident/SKILL.md
 ls -la extensions/trident-translator/index.ts
-ls -la providers.roles.toml.example
+ls -la providers.roles.example.toml
 ```
 
 - [ ] **Step 2: 确认 gitignore 生效**

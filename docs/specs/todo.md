@@ -2,7 +2,7 @@
 
 ## 现在就做
 
-- [ ] `cp providers.roles.toml.example providers.roles.toml` 并填入实际模型
+- [ ] `cp providers.roles.example.toml providers.roles.toml` 并填入实际模型
 - [ ] `/reload` 加载新扩展和 SYSTEM.md
 - [ ] 测试：对 OC Agent 说一句带任务意图的话，看它是否调 translate_task
 - [ ] push 到远程
