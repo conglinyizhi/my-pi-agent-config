@@ -44,7 +44,7 @@
         <label style="font-size:11px;color:#888;display:block;margin:6px 0 3px">理由：</label>
         <select v-model="txt" style="width:100%;padding:5px 8px;background:#0d0d1a;border:1px solid #333;border-radius:3px;color:#e0e0e0;font-family:inherit;font-size:12px">
           <option value="">-- 手动输入 --</option>
-          <option v-for="r in reasons" :key="r" :value="r">{{ r.slice(0,80) }}</option>
+          <option v-for="r in reasons" :key="r.t" :value="r.content">{{ r.title }}</option>
         </select>
         <textarea v-model="txt" placeholder="拒绝理由..." rows="2" style="width:100%;padding:5px 8px;background:#0d0d1a;border:1px solid #333;border-radius:3px;color:#e0e0e0;font-family:inherit;font-size:12px;margin-top:6px;resize:vertical"></textarea>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
@@ -72,7 +72,7 @@ const tipPos = ref({});
 const cur = ref(0);
 const dlg = ref(false);
 const txt = ref("");
-const reasons = ref<string[]>([]);
+const reasons = ref<ReasonEntry[]>([]);
 const flg = ref<Set<number>>(new Set());
 const showRules = ref(false);
 const cmdBox = ref<HTMLElement | null>(null);
@@ -117,12 +117,78 @@ function submit() { const c = txt.value.trim(); if (c) svR(c); respond("deny", c
 function respond(a: string, c?: string, f?: number[]) { const p: any = { action: a }; if (c) p.comment = c; if (f && f.length > 0) p.flagged = f; fs.writeFileSync(rsp, JSON.stringify(p)); (window as any).close(); }
 
 function ldR() {
-  const p = (window as any).require("path").join((window as any).require("os").homedir(), ".pi", "agent", "permission-gate-reasons.json");
-  try { if (fs.existsSync(p)) reasons.value = JSON.parse(fs.readFileSync(p, "utf-8")); } catch {}
+  const csvPath = (window as any).require("path").join((window as any).require("os").homedir(), ".pi", "agent", "permission-gate-reasons.csv");
+  const oldPath = (window as any).require("path").join((window as any).require("os").homedir(), ".pi", "agent", "permission-gate-reasons.json");
+  const entries: ReasonEntry[] = [];
+
+  // 迁移旧 JSON 格式
+  try {
+    if (fs.existsSync(oldPath)) {
+      const old = JSON.parse(fs.readFileSync(oldPath, "utf-8"));
+      for (const r of old) {
+        entries.push({ t: new Date().toISOString(), title: r.slice(0, 40), kw: "", content: r });
+      }
+      fs.rmSync(oldPath);
+    }
+  } catch {}
+
+  // 读 CSV
+  try {
+    if (fs.existsSync(csvPath)) {
+      const lines = fs.readFileSync(csvPath, "utf-8").trim().split("\n");
+      for (let i = 1; i < lines.length; i++) { // 跳过 header
+        const row = parseCSVRow(lines[i]);
+        if (row && row.length >= 4) {
+          entries.push({ t: row[0], title: row[1], kw: row[2], content: row[3] });
+        }
+      }
+    }
+  } catch {}
+
+  reasons.value = entries;
 }
-function svR(r: string) { const rs = reasons.value.filter((x: string) => x !== r); rs.unshift(r); if (rs.length > 20) rs.length = 20;
-  const p = (window as any).require("path").join((window as any).require("os").homedir(), ".pi", "agent", "permission-gate-reasons.json");
-  try { (window as any).require("fs").mkdirSync((window as any).require("path").dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(rs, null, 2)); } catch {} }
+
+function svR(content: string) {
+  const now = new Date().toISOString();
+  const title = content.length > 40 ? content.slice(0, 37) + "..." : content;
+  const entry: ReasonEntry = { t: now, title, kw: "", content };
+  const rs = [entry, ...reasons.value.filter((x: ReasonEntry) => x.content !== content)];
+  if (rs.length > 20) rs.length = 20;
+  reasons.value = rs;
+
+  const p = (window as any).require("path").join((window as any).require("os").homedir(), ".pi", "agent", "permission-gate-reasons.csv");
+  try {
+    (window as any).require("fs").mkdirSync((window as any).require("path").dirname(p), { recursive: true });
+    let csv = "timestamp,title,keywords,content\n";
+    for (const r of rs) {
+      csv += `${r.t},"${escCsv(r.title)}","${escCsv(r.kw)}","${escCsv(r.content)}"\n`;
+    }
+    fs.writeFileSync(p, csv, "utf-8");
+  } catch {}
+}
+
+function escCsv(s: string) { return String(s).replace(/"/g, '""'); }
+function parseCSVRow(line: string): string[] | null {
+  if (!line.trim()) return null;
+  const fields: string[] = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"' && i + 1 < line.length && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { fields.push(cur); cur = ""; }
+      else cur += c;
+    }
+  }
+  fields.push(cur);
+  return fields.length === 4 ? fields : null;
+}
+
+interface ReasonEntry { t: string; title: string; kw: string; content: string; }
 
 onMounted(() => { ldR(); setTimeout(() => respond("timeout"), 120_000); });
 </script>

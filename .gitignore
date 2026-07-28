@@ -22,6 +22,7 @@ models-store.json
 # 三叉戟
 providers.roles.toml
 queue/
+permission-gate-reasons.csv
 
 # GUI 产物
 **/gui/dist/
