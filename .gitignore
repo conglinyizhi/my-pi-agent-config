@@ -22,3 +22,8 @@ models-store.json
 # 三叉戟
 providers.roles.toml
 queue/
+
+# GUI 产物
+**/gui/dist/
+# TS→JS 编译产物（按需添加）
+extensions/editor-gui/gui/app.js
