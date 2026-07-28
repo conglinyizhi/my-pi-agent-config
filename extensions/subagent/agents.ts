@@ -13,7 +13,7 @@ export interface AgentConfig {
   name: string;
   description: string;
   tools?: string[];
-  model?: string;
+  callModelGroup?: string;
   systemPrompt: string;
   source: "user" | "project";
   filePath: string;
@@ -49,7 +49,7 @@ function parseAgentFile(filePath: string, source: "user" | "project"): AgentConf
     name: frontmatter.name,
     description: frontmatter.description,
     tools: parseCommaList(frontmatter.tools),
-    model: frontmatter.model,
+    callModelGroup: frontmatter.callModelGroup,
     systemPrompt: body,
     source,
     filePath,

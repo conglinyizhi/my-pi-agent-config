@@ -259,7 +259,7 @@ function getPiInvocation(args: string[]): PiInvocation {
 
 /**
  * 尝试从 providers.roles.toml 解析模型名。
- * 如果 agent.model 匹配某个角色名（如 planner），返回实际模型名；
+ * 如果 agent.callModelGroup 匹配某个角色名（如 planner），返回实际模型名；
  * 否则原样返回（可能是直接的 model:provider 格式）。
  */
 function resolveModelName(modelOrRole: string): string {
@@ -292,7 +292,7 @@ function resolveModelName(modelOrRole: string): string {
  */
 function buildPiArgs(agent: AgentConfig): string[] {
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (agent.model) args.push("--model", resolveModelName(agent.model));
+  if (agent.callModelGroup) args.push("--model", resolveModelName(agent.callModelGroup));
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
   return args;
 }
@@ -537,7 +537,7 @@ async function runSingleAgent(
       contextTokens: 0,
       turns: 0,
     },
-    model: agent.model,
+    model: agent.callModelGroup,
     step,
   };
 
@@ -721,8 +721,8 @@ async function runParallelTask(
   // 降级策略：并行任务中便宜模型失败 → 自动用 planner 重试
   if (isFailedResult(result) && agents["planner"]) {
     const taskAgent = agents[task.agent];
-    const isCheap = taskAgent && taskAgent.model &&
-      taskAgent.model !== "planner" && taskAgent.model !== "oc";
+    const isCheap = taskAgent && taskAgent.callModelGroup &&
+      taskAgent.callModelGroup !== "planner" && taskAgent.callModelGroup !== "oc";
     if (isCheap) {
       const retryResult = await runSingleAgent(
         cwd, agents, "planner",
@@ -861,8 +861,8 @@ export default function (pi: ExtensionAPI) {
           // 降级策略：链中某步便宜模型失败 → 自动用 planner 重试
           if (chainIsError && agents["planner"]) {
             const stepAgent = agents[step.agent];
-            const isCheap = stepAgent && stepAgent.model &&
-              stepAgent.model !== "planner" && stepAgent.model !== "oc";
+            const isCheap = stepAgent && stepAgent.callModelGroup &&
+              stepAgent.callModelGroup !== "planner" && stepAgent.callModelGroup !== "oc";
             if (isCheap) {
               const retryResult = await runSingleAgent(
                 ctx.cwd, agents, "planner",
@@ -958,8 +958,8 @@ export default function (pi: ExtensionAPI) {
         // 降级策略：便宜模型失败 → 自动用 planner 或 oc 模型重试一次
         if (isError && agents["planner"]) {
           const agent = agents[params.agent];
-          const isCheapModel = agent && agent.model &&
-            agent.model !== "planner" && agent.model !== "oc";
+          const isCheapModel = agent && agent.callModelGroup &&
+            agent.callModelGroup !== "planner" && agent.callModelGroup !== "oc";
           if (isCheapModel) {
             const smartAgentName = agents["planner"] ? "planner" : "oc";
             if (agents[smartAgentName]) {
