@@ -19,9 +19,20 @@ export interface TaskItem {
   source: "chat" | "manual";
   status: "pending" | "planning" | "executing" | "reviewing" | "done" | "blocked";
   created_at: string;
+  session: string;
   subtasks: string[];
   context: string;
 }
+
+// 状态流转表：每个状态只能转到指定状态
+const VALID_TRANSITIONS: Record<string, string[]> = {
+  pending: ["planning"],
+  planning: ["executing", "blocked"],
+  executing: ["reviewing", "blocked"],
+  reviewing: ["done", "blocked"],
+  done: [],
+  blocked: ["pending", "executing"],
+};
 
 function ensureDirs(): void {
   for (const dir of [ACTIVE_DIR, DONE_DIR, BLOCKED_DIR]) {
@@ -115,7 +126,7 @@ export default function (pi: ExtensionAPI) {
       context: Type.String({ description: "任务上下文和详情" }),
       source: Type.Optional(Type.String({ description: "chat 或 manual，默认 chat" })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const existing = readTask(params.id);
       if (existing) {
         return {
@@ -124,12 +135,15 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      const sessionFile = ctx.sessionManager?.getSessionFile?.() || "unknown";
+
       const task: TaskItem = {
         id: params.id,
         title: params.title,
         source: (params.source as "chat" | "manual") || "chat",
         status: "pending",
         created_at: new Date().toISOString(),
+        session: path.basename(sessionFile),
         subtasks: [],
         context: params.context,
       };
@@ -203,6 +217,16 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (params.status) {
+        const allowed = VALID_TRANSITIONS[task.status] || [];
+        if (!allowed.includes(params.status)) {
+          return {
+            content: [{
+              type: "text",
+              text: `不允许从 ${task.status} 直接转到 ${params.status}。允许的流转：${allowed.join(", ") || "（终态，不可变更）"}`,
+            }],
+            details: { error: "invalid_transition", current: task.status, requested: params.status, allowed },
+          };
+        }
         task.status = params.status as TaskItem["status"];
       }
       if (params.append_context) {
@@ -254,7 +278,12 @@ export default function (pi: ExtensionAPI) {
   // --- status widget ---
   pi.on("session_start", (_event, ctx) => {
     const updateWidget = () => {
-      const tasks = listTasks();
+      const allTasks = listTasks();
+      const sessionFile = ctx.sessionManager?.getSessionFile?.();
+      const sessionName = sessionFile ? path.basename(sessionFile) : "";
+      const tasks = sessionName
+        ? allTasks.filter((t) => !t.session || t.session === "unknown" || t.session === sessionName)
+        : allTasks;
       if (tasks.length === 0) {
         ctx.ui.setWidget("trident-queue", undefined);
         return;
