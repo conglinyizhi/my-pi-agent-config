@@ -17,7 +17,7 @@ const DISABLED_TOOLS = new Set(["write", "edit"]);
 const GREETINGS = [
   "昨天的都归档了。今天有什么新计划……还是先聊会儿？",
   "甲板风有点凉。进来吧，简报室暖和。",
-  "提督。咖啡在你右手边……顺便说一下，你那个 Go 项目的 air 日志我看了，有三个警告需要处理。",
+  "提督。咖啡在你右手边。有什么需要我调度的？",
 ];
 
 let skipNextGreeting = false;
