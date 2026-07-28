@@ -15,24 +15,24 @@
 
     <div v-if="tip" style="position:fixed;background:#1a1a2e;border:1px solid #e67e22;padding:5px 10px;border-radius:4px;font-size:12px;color:#e67e22;z-index:100;pointer-events:none" :style="tipPos">⚠️ {{ tip }}</div>
 
-    <div @click="showRules=!showRules" style="padding:2px 16px;font-size:11px;color:#777;cursor:pointer;border-top:1px solid #2a2a4a" title="点击展开/收起规则">
+    <div @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
       {{ showRules ? '▼' : '▶' }} {{ rules.length }} 条规则匹配
     </div>
-    <div v-if="showRules" style="padding:4px 16px 8px;background:#16213e;font-size:11px">
+    <div v-if="showRules" class="collapse-body">
       <div v-for="(r,i) in rules" :key="i" style="padding:3px 6px;margin-bottom:2px;border-left:2px solid #ff6b6b44;display:flex;gap:6px">
         <code style="color:#ce9178;background:#0d0d1a;padding:1px 4px;border-radius:2px">{{ r.pattern }}</code>
         <span style="color:#999">{{ r.tip }}</span>
       </div>
     </div>
 
-    <footer style="padding:10px 16px;border-top:1px solid #2a2a4a;display:flex;gap:10px;justify-content:flex-end;align-items:center">
-      <button data-name="action-deny" @click="denyDirect" style="padding:10px 24px;border:none;border-radius:4px;font-size:13px;cursor:pointer;background:#e74c3c;color:#fff;font-family:inherit">🚫 拒绝</button>
-      <button data-name="action-deny-reason" @click="openDialog" style="padding:10px 24px;border:none;border-radius:4px;font-size:13px;cursor:pointer;background:#e67e22;color:#fff;font-family:inherit">📝 拒绝并说明理由</button>
-      <button data-name="action-allow" @click="respond('allow')" style="padding:10px 24px;border:none;border-radius:4px;font-size:13px;cursor:pointer;background:#2ecc71;color:#fff;font-family:inherit">✅ 放行</button>
+    <footer class="actions">
+      <button data-name="action-deny" @click="denyDirect" class="btn btn-deny">🚫 拒绝</button>
+      <button data-name="action-deny-reason" @click="openDialog" class="btn btn-warn">📝 拒绝并说明理由</button>
+      <button data-name="action-allow" @click="respond('allow')" class="btn btn-allow">✅ 放行</button>
     </footer>
 
-    <div v-if="dlg" @click.self="dlg=false" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;z-index:100">
-      <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;width:90%;max-width:500px;max-height:80vh;overflow-y:auto">
+    <div v-if="dlg" @click.self="dlg=false" class="overlay">
+      <div class="dialog">
         <h2 style="font-size:14px;color:#ff6b6b;margin-bottom:8px">审核意见</h2>
         <div v-for="(r,i) in rules" :key="i" @click="tog(i)" style="padding:4px 6px;margin-bottom:3px;border-radius:3px;font-size:11px;cursor:pointer;display:flex;gap:6px;align-items:center"
           :style="flg.has(i)?'background:#2a1a0a;border-left:2px solid #e67e22':'background:#16213e;border-left:2px solid #ff6b6b'">
@@ -42,14 +42,14 @@
         </div>
         <div v-if="flg.size>0" style="font-size:11px;color:#e67e22;margin-bottom:4px">已标记 {{ flg.size }} 个危险点</div>
         <label style="font-size:11px;color:#888;display:block;margin:6px 0 3px">理由：</label>
-        <select data-name="reason-select" v-model="txt" style="width:100%;padding:5px 8px;background:#0d0d1a;border:1px solid #333;border-radius:3px;color:#e0e0e0;font-family:inherit;font-size:12px">
+        <select data-name="reason-select" v-model="txt">
           <option value="">-- 手动输入 --</option>
           <option v-for="r in reasons" :key="r.t" :value="r.content">{{ r.title }}</option>
         </select>
         <textarea data-name="reason-text" v-model="txt" placeholder="拒绝理由..." rows="2" style="width:100%;padding:5px 8px;background:#0d0d1a;border:1px solid #333;border-radius:3px;color:#e0e0e0;font-family:inherit;font-size:12px;margin-top:6px;resize:vertical"></textarea>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
-          <button data-name="dialog-cancel" @click="dlg=false" style="padding:6px 14px;border:none;border-radius:4px;font-size:12px;cursor:pointer;background:#555;color:#ccc;font-family:inherit">取消</button>
-          <button data-name="dialog-confirm" @click="submit" style="padding:6px 14px;border:none;border-radius:4px;font-size:12px;cursor:pointer;background:#e74c3c;color:#fff;font-family:inherit">确认拒绝</button>
+          <button data-name="dialog-cancel" @click="dlg=false" class="btn btn-cancel">取消</button>
+          <button data-name="dialog-confirm" @click="submit" class="btn btn-deny">确认拒绝</button>
         </div>
       </div>
     </div>

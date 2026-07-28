@@ -32,8 +32,8 @@
       <textarea v-model="editorText" spellcheck="false" class="editor"></textarea>
       <footer class="footer">
         <span class="file-info">{{ fileInfo }}</span>
-        <button data-name="restore-btn" class="btn btn-restore" @click="restoreToPi">↩ 恢复到输入框</button>
-        <button data-name="save-btn" class="btn btn-save" @click="saveFile">💾 保存</button>
+        <button data-name="restore-btn" class="btn btn-warn" @click="restoreToPi">↩ 恢复到输入框</button>
+        <button data-name="save-btn" class="btn btn-allow" @click="saveFile">💾 保存</button>
         <button data-name="cancel-btn" class="btn btn-cancel" @click="cancel">取消</button>
       </footer>
     </main>
