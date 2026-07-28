@@ -20,40 +20,42 @@ app.whenReady().then(() => {
 
   const { models, roles } = request;
 
-  // 构建模型选项（带搜索）
-  const modelOptions = models
-    .map(m => `<option value="${escapeAttr(m.value)}">${escapeHtml(m.value)}  —  ${escapeHtml(m.name || m.id)}</option>`)
-    .join("");
+  // 按 provider 分组
+  const byProvider = new Map();
+  for (const m of models) {
+    const [provider, ...rest] = m.value.split(":");
+    const modelPart = rest.join(":");
+    if (!byProvider.has(provider)) byProvider.set(provider, []);
+    byProvider.get(provider).push({ value: m.value, name: m.name, model: modelPart });
+  }
+
+  const providers = [...byProvider.keys()].sort();
+  const providerOptions = providers.map(p => `<option value="${escapeAttr(p)}">${escapeHtml(p)} (${byProvider.get(p).length})</option>`).join("");
+
+  // 把所有模型序列化为 JSON 供 JS 使用
+  const modelsJson = JSON.stringify(models);
+  const rolesJson = JSON.stringify(roles || {});
 
   const roleDescriptions = {
-    oc: "OC Agent — 跟你聊天的入口，需要对话质感",
-    translator: "翻译工具 — 与 OC 不同厂商，形成双视角",
-    planner: "任务拆解 — 架构决策，需聪明模型",
-    worker: "执行层 — 按计划干活，便宜即可",
-    reviewer: "审查层 — diff 检查，便宜即可",
+    oc: "OC Agent — 跟你聊天的入口，需对话质感",
+    translator: "翻译工具 — 与 OC 不同厂商",
+    planner: "任务拆解 — 架构决策，需聪明",
+    worker: "执行层 — 便宜即可",
+    reviewer: "审查层 — 便宜即可",
   };
 
   const roleSelects = ["oc", "translator", "planner", "worker", "reviewer"]
-    .map(role => {
-      const current = roles[role] || "";
-      return `
+    .map(role => `
     <div class="role-row">
       <div class="role-label">
         <strong>${role}</strong>
         <span class="role-desc">${roleDescriptions[role]}</span>
       </div>
       <select id="sel-${role}" data-role="${role}">
-        ${modelOptions.replace(
-          `value="${escapeAttr(current)}"`,
-          `value="${escapeAttr(current)}" selected`
-        )}
       </select>
-    </div>`;
-    })
+    </div>`)
     .join("");
 
-  const modelCount = models.length;
-  const winHeight = Math.min(200 + 5 * 70 + 80, 700);
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -73,14 +75,20 @@ app.whenReady().then(() => {
   .header h1 { font-size: 16px; color: #4ec9b0; }
   .header .sub { font-size: 12px; color: #888; margin-top: 4px; }
 
-  .search-box {
-    margin: 8px 20px;
+  .filters {
+    margin: 8px 20px; display: flex; gap: 10px;
+  }
+  .filters input, .filters select {
     padding: 8px 12px;
     background: #0d0d1a; border: 1px solid #333;
     border-radius: 4px; color: #e0e0e0; font-size: 13px;
     font-family: inherit;
   }
-  .search-box:focus { outline: none; border-color: #4ec9b0; }
+  .filters input { flex: 1; }
+  .filters input:focus, .filters select:focus {
+    outline: none; border-color: #4ec9b0;
+  }
+  .filters .hint { font-size: 11px; color: #666; align-self: center; }
 
   .roles {
     flex: 1; overflow-y: auto; margin: 0 20px;
@@ -98,6 +106,7 @@ app.whenReady().then(() => {
     flex: 1; padding: 8px 10px;
     background: #0d0d1a; border: 1px solid #333; border-radius: 4px;
     color: #e0e0e0; font-size: 13px; font-family: inherit;
+    max-width: 100%;
   }
   .role-row select:focus { outline: none; border-color: #4ec9b0; }
 
@@ -119,26 +128,115 @@ app.whenReady().then(() => {
 <body>
 <div class="header">
   <h1>⚓ 三叉戟 · 模型路由配置</h1>
-  <div class="sub">${modelCount} 个可用模型 — 为每个角色选择模型</div>
+  <div class="sub">共 ${models.length} 个可用模型</div>
 </div>
-<input class="search-box" id="search" placeholder="搜索模型..." oninput="onSearch()">
+<div class="filters">
+  <input id="search" placeholder="grep 搜索模型...（支持正则，如 claude|gemini）" oninput="applyFilters()">
+  <select id="providerFilter" onchange="applyFilters()">
+    <option value="">所有供应商</option>
+    ${providerOptions}
+  </select>
+  <span class="hint">Ctrl+F 聚焦搜索</span>
+</div>
 <div class="roles">
   ${roleSelects}
 </div>
 <div class="actions">
-  <span class="count">${modelCount} 个模型</span>
+  <span class="count" id="matchCount"></span>
   <button class="btn-cancel" onclick="respond({cancelled:true})">取消</button>
   <button class="btn-save" onclick="save()">保存配置</button>
 </div>
 
 <script>
   var responded = false;
+  var MODELS = ${modelsJson};
+  var ROLES = ${rolesJson};
 
   function respond(payload) {
     if (responded) return;
     responded = true;
     require('fs').writeFileSync(${JSON.stringify(responseFile)}, JSON.stringify(payload));
     window.close();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // 过滤模型
+  function getFilteredModels() {
+    var q = document.getElementById('search').value.trim();
+    var provider = document.getElementById('providerFilter').value;
+    var regex = null;
+    if (q) {
+      try { regex = new RegExp(q, 'i'); } catch(e) { regex = new RegExp(q.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&'), 'i'); }
+    }
+
+    return MODELS.filter(function(m) {
+      if (provider && !m.value.startsWith(provider + ':')) return false;
+      if (regex && !regex.test(m.value) && !regex.test(m.name)) return false;
+      return true;
+    });
+  }
+
+  // 重建所有 role select 的选项
+  function rebuildSelects() {
+    var filtered = getFilteredModels();
+    document.getElementById('matchCount').textContent = filtered.length + ' 个匹配';
+
+    ['oc','translator','planner','worker','reviewer'].forEach(function(role) {
+      var sel = document.getElementById('sel-' + role);
+      var currentValue = sel.value;
+
+      // 按 provider 分组
+      var groups = {};
+      filtered.forEach(function(m) {
+        var parts = m.value.split(':');
+        var provider = parts[0];
+        var modelName = parts.slice(1).join(':');
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push(m);
+      });
+
+      sel.innerHTML = '';
+      if (filtered.length === 0) {
+        sel.innerHTML = '<option value="">无匹配模型</option>';
+        return;
+      }
+
+      Object.keys(groups).sort().forEach(function(provider) {
+        var optgroup = document.createElement('optgroup');
+        optgroup.label = provider;
+        groups[provider].forEach(function(m) {
+          var opt = document.createElement('option');
+          opt.value = m.value;
+          opt.textContent = m.value + '  —  ' + m.name;
+          optgroup.appendChild(opt);
+        });
+        sel.appendChild(optgroup);
+      });
+
+      // 恢复选中值
+      if (currentValue && filtered.find(function(m) { return m.value === currentValue; })) {
+        sel.value = currentValue;
+      }
+    });
+  }
+
+  function applyFilters() {
+    rebuildSelects();
+  }
+
+  // 初始状态：为每个 role 预设 ROLES 中的值
+  function initSelections() {
+    ['oc','translator','planner','worker','reviewer'].forEach(function(role) {
+      var sel = document.getElementById('sel-' + role);
+      sel.value = ROLES[role] || '';
+    });
   }
 
   function save() {
@@ -149,14 +247,9 @@ app.whenReady().then(() => {
     respond({ roles: roles });
   }
 
-  // 搜索过滤
-  function onSearch() {
-    var q = document.getElementById('search').value.toLowerCase();
-    document.querySelectorAll('.role-row select option').forEach(function(opt) {
-      var text = (opt.textContent || '').toLowerCase();
-      opt.style.display = !q || text.includes(q) ? '' : 'none';
-    });
-  }
+  // 初始化
+  rebuildSelects();
+  initSelections();
 
   // 键盘快捷键
   document.addEventListener('keydown', function(e) {
@@ -171,8 +264,8 @@ app.whenReady().then(() => {
 </html>`;
 
   const win = new BrowserWindow({
-    width: 900,
-    height: winHeight,
+    width: 960,
+    height: 600,
     title: "三叉戟 · 模型路由配置",
     resizable: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false },
@@ -196,9 +289,9 @@ app.on("window-all-closed", () => {
 });
 
 function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function escapeAttr(s) {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
