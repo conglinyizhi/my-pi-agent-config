@@ -32,7 +32,7 @@
       <textarea v-model="editorText" spellcheck="false" class="editor"></textarea>
       <footer class="footer">
         <span class="file-info">{{ fileInfo }}</span>
-        <button class="btn btn-restore" @click="restoreToPi">↩ 恢复到 pi</button>
+        <button class="btn btn-restore" @click="restoreToPi">↩ 恢复到输入框</button>
         <button class="btn btn-save" @click="saveFile">💾 保存</button>
         <button class="btn btn-cancel" @click="cancel">取消</button>
       </footer>
@@ -63,7 +63,7 @@ const fileInfo = ref("");
 const headerText = computed(() => {
   if (currentFile.value) return currentFile.value;
   if (selectedIndex.value >= 0) return `Ctrl+C 历史 #${selectedIndex.value + 1}`;
-  return "选择一条历史或打开一个文件";
+  return "选择一条历史或打开一个文件开始编辑";
 });
 
 // ── 方法 ──

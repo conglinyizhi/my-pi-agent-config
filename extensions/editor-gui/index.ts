@@ -17,8 +17,8 @@ function loadHistory(): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("edit-gui", {
-		description: "打开 GUI 编辑器（查看 Ctrl+C 历史 / 编辑文件）",
+	pi.registerCommand("prompt-edit-gui", {
+		description: "提示词编辑工具（查看 Ctrl+C 历史 / 编辑文件）",
 		handler: async (args, ctx) => {
 			// 查找 electron
 			let electronBin: string | null = null;
@@ -40,7 +40,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "edit-gui-"));
+			const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prompt-edit-gui-"));
 			const requestFile = path.join(tmpDir, "request.json");
 			const responseFile = path.join(tmpDir, "response.json");
 
@@ -56,7 +56,7 @@ export default function (pi: ExtensionAPI) {
 
 			fs.writeFileSync(requestFile, JSON.stringify(request));
 
-			ctx.ui.notify("正在启动编辑器...", "info");
+			ctx.ui.notify("正在启动提示词编辑工具...", "info");
 
 			try {
 				const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
@@ -101,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 
 				if (result.action === "restore" && result.text) {
 					ctx.ui.setEditorText(result.text);
-					ctx.ui.notify("内容已恢复到编辑器", "info");
+					ctx.ui.notify("内容已恢复到输入框", "info");
 				}
 			} finally {
 				try { fs.rmSync(tmpDir, { recursive: true }); } catch {}

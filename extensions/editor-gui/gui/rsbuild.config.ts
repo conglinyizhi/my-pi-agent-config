@@ -14,6 +14,6 @@ export default defineConfig({
   },
   html: {
     template: "./renderer/index.html",
-    title: "编辑 · pi",
+    title: "提示词编辑 · pi",
   },
 });

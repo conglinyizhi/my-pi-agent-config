@@ -2,7 +2,7 @@
  * Ctrl+C 历史保存插件
  *
  * 按下 Ctrl+C 时不拦截，而是保存当前编辑器内容到历史队列，然后清空编辑器。
- * /edit-gui 命令可以查看和恢复历史内容。
+ * /prompt-edit-gui 命令可以查看和恢复历史内容。
  *
  * 实现原理：
  * 1. 注册 ctrl+c 快捷键：保存内容 → 清空编辑器
@@ -82,13 +82,13 @@ export default function (pi: ExtensionAPI) {
 
   // ========== 注册 ctrl+c 快捷键：保存 → 清空 ==========
   pi.registerShortcut("ctrl+c", {
-    description: "保存当前编辑器内容到历史队列后清空（/edit-gui 可恢复）",
+    description: "保存当前编辑器内容到历史队列后清空（/prompt-edit-gui 可恢复）",
     handler: async (ctx) => {
       try {
         const text = ctx.ui.getEditorText?.() ?? "";
         if (text.trim()) {
           pushHistory(text);
-          ctx.ui.notify("内容已保存到历史队列。输入 /edit-gui 可回溯恢复。", "info");
+          ctx.ui.notify("内容已保存到历史队列。输入 /prompt-edit-gui 可回溯恢复。", "info");
         }
         ctx.ui.setEditorText("");
       } catch {

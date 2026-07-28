@@ -1,7 +1,7 @@
 import { createGuiApp } from "#lib/gui-kit";
 
 createGuiApp({
-  name: "编辑 · pi",
+  name: "提示词编辑 · pi",
   width: 1100,
   height: 700,
   requestFile: process.argv[2],
