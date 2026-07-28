@@ -167,7 +167,7 @@ export default function (pi: ExtensionAPI) {
       const tmpDir = mkdtempSync(join(os.tmpdir(), "todo-gui-"));
       const reqFile = join(tmpDir, "request.json");
       const resFile = join(tmpDir, "response.json");
-      writeFileSync(reqFile, JSON.stringify({ todos }));
+      writeFileSync(reqFile, JSON.stringify({ todos, cwd: ctx.cwd }));
 
       const proc = spawn(electronBin, [appJs, reqFile, resFile], { stdio: "ignore", detached: true });
 
