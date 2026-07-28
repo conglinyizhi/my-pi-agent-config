@@ -2,7 +2,6 @@ import { app, BrowserWindow } from "electron";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
-import { readFileSync as _readFileSync } from "fs";
 
 const requestFile = process.argv[2];
 const responseFile = process.argv[3];
@@ -49,7 +48,7 @@ app.whenReady().then(() => {
   const reasons = loadReasons();
 
   // 高亮：收集所有正则匹配区间
-  const highlights: [number, number, string][] = []; // [start, end, pattern]
+  const highlights = [];
   for (const rule of rules) {
     try {
       const re = new RegExp(rule.pattern, "gi");
