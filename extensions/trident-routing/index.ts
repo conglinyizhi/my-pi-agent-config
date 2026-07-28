@@ -6,6 +6,7 @@
 // /homeport 指令可临时解除限制，用于开发调试。
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,9 +22,33 @@ const GREETINGS = [
 ];
 
 let skipNextGreeting = false;
+let homeportSession = false;
+
+async function enterHomeport(pi: ExtensionAPI, ctx: any) {
+  skipNextGreeting = true;
+  homeportSession = true;
+  ctx.ui.notify("⚓ 返回母港。本会话不限制工具，可自由编辑。", "info");
+  await ctx.newSession({
+    withSession: async (c: any) => {
+      c.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
+    },
+  });
+}
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (event) => {
+  pi.on("session_start", async (event, ctx) => {
+    // 启动时在 pi 配置目录 → 询问是否进母港
+    if (event.reason === "startup" && ctx.cwd === getAgentDir()) {
+      const ok = await ctx.ui.confirm(
+        "⚓ 进入母港？",
+        "检测到你在 pi 配置目录。要进入母港模式维修林汐吗？（母港模式保留 write/edit，禁用 subagent）"
+      );
+      if (ok) {
+        pi.sendUserMessage("/homeport");
+        return;
+      }
+    }
+
     const isHomeport = event.reason === "new" && skipNextGreeting;
     skipNextGreeting = false;
 
@@ -53,20 +78,10 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // /homeport — 回母港（解除限制的新会话）
-  let homeportSession = false;
-
   pi.registerCommand("homeport", {
     description: "返回母港：创建无限制的新会话（保留 write/edit，跳过开场白）",
     handler: async (args, ctx) => {
-      skipNextGreeting = true;
-      homeportSession = true;
-      ctx.ui.notify("⚓ 返回母港。本会话不限制工具，可自由编辑。", "info");
-      await ctx.newSession({
-        withSession: async (c) => {
-          c.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
-        },
-      });
+      await enterHomeport(pi, ctx);
     },
   });
 
