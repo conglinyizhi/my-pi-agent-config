@@ -40,7 +40,7 @@ async function tryGuiApproval(
   command: string,
   rules: MatchedRule[],
   signal: AbortSignal | undefined,
-): Promise<"allow" | "deny" | "reject-all" | "gui-unavailable"> {
+): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string } | "gui-unavailable"> {
   const electronBin = findElectron();
   if (!electronBin) return "gui-unavailable";
 
@@ -71,7 +71,7 @@ async function tryGuiApproval(
     });
 
     // 等待响应文件出现
-    const result = await new Promise<"allow" | "deny" | "reject-all" | "gui-unavailable">((resolve) => {
+    const result = await new Promise<{ action: string; comment?: string } | "gui-unavailable">((resolve) => {
       const timeout = setTimeout(() => {
         try { proc.kill("SIGTERM"); } catch {}
         resolve("gui-unavailable");
@@ -82,9 +82,7 @@ async function tryGuiApproval(
           const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
           clearTimeout(timeout);
           clearInterval(check);
-          resolve(data.action === "allow" ? "allow" :
-                   data.action === "deny" ? "deny" :
-                   data.action === "reject-all" ? "reject-all" : "deny");
+          resolve(data);
         } catch {
           // response 还没写完，继续等
         }
@@ -96,11 +94,11 @@ async function tryGuiApproval(
             const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
             clearTimeout(timeout);
             clearInterval(check);
-            resolve(data.action);
+            resolve(data);
           } catch {
             clearTimeout(timeout);
             clearInterval(check);
-            resolve("deny"); // 关了窗口没点按钮 = 拒绝
+            resolve({ action: "deny", comment: "window-closed" });
           }
         }, 100);
       });
@@ -171,11 +169,26 @@ export default async function (pi: ExtensionAPI) {
     // 1. 尝试 Electron GUI
     const guiResult = await tryGuiApproval(command, rules, ctx.signal);
 
-    if (guiResult === "allow") return undefined; // 放行
-    if (guiResult === "deny") return { block: true, reason: "GUI 审批拒绝" };
-    if (guiResult === "reject-all") {
-      // TODO: 记住本次 session 拒绝同类命令
-      return { block: true, reason: "GUI 审批全部拒绝" };
+    if (guiResult === "gui-unavailable") { /* fall through to TUI */ }
+    else if (guiResult.action === "allow") return undefined;
+    else if (guiResult.action === "deny" || guiResult.action === "reject-all") {
+      // 保存审核意见
+      if (guiResult.comment) {
+        try {
+          const reasonsFile = path.join(os.homedir(), ".pi", "agent", "permission-gate-reasons.json");
+          const reasons: string[] = fs.existsSync(reasonsFile)
+            ? JSON.parse(fs.readFileSync(reasonsFile, "utf-8"))
+            : [];
+          reasons.unshift(guiResult.comment);
+          if (reasons.length > 20) reasons.length = 20;
+          fs.mkdirSync(path.dirname(reasonsFile), { recursive: true });
+          fs.writeFileSync(reasonsFile, JSON.stringify(reasons, null, 2));
+        } catch {}
+      }
+      const reason = guiResult.comment
+        ? `GUI 审批拒绝：${guiResult.comment}`
+        : "GUI 审批拒绝";
+      return { block: true, reason };
     }
 
     // 2. GUI 不可用 → TUI 回退
