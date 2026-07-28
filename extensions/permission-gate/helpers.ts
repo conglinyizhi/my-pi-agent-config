@@ -1,6 +1,13 @@
 import { dangerousPatterns, dangerousRules, type DangerousRule } from "./dangerous-patterns";
 import { safePatternHandlers } from "./safe-patterns/index";
 
+/** 匹配到的规则详情（给 GUI/TUI 展示用） */
+export interface MatchedRule {
+  pattern: string;
+  tip: string;
+  autoReject: boolean;
+}
+
 /** 按 && 或换行符分割命令为切片，过滤空串。 */
 export function splitSlices(command: string): string[] {
   return command
@@ -28,6 +35,17 @@ export function getDangerousTip(command: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/** 获取所有匹配的危险规则（含 pattern、tip、autoReject） */
+export function getMatchedRules(command: string): MatchedRule[] {
+  return dangerousRules
+    .filter(r => r.pattern.test(command))
+    .map(r => ({
+      pattern: r.pattern.source,
+      tip: r.tip,
+      autoReject: r.autoReject || false,
+    }));
 }
 
 /** 检查命令是否匹配自动拒绝规则 */
