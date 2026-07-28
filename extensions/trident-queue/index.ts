@@ -315,6 +315,64 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
+
+  // --- /trident-setup 向导 ---
+  pi.registerCommand("trident-setup", {
+    description: "交互式向导：配置三叉戟模型路由",
+    handler: async (_args, ctx) => {
+      const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
+      const examplePath = path.join(os.homedir(), ".pi", "agent", "providers.roles.example.toml");
+
+      // 读取当前配置或示例
+      let roles: Record<string, string> = {};
+      if (fs.existsSync(rolesPath)) {
+        roles = parseRolesToml(fs.readFileSync(rolesPath, "utf-8"));
+      } else if (fs.existsSync(examplePath)) {
+        roles = parseRolesToml(fs.readFileSync(examplePath, "utf-8"));
+      }
+
+      const roleDescriptions: Record<string, string> = {
+        oc: "OC Agent（对话层，唯一跟你聊天的入口）",
+        translator: "翻译工具（与OC不同厂商，形成双视角）",
+        planner: "任务拆解（架构决策，需聪明模型）",
+        worker: "执行层（按计划干活，便宜即可）",
+        reviewer: "审查层（diff检查，便宜即可）",
+      };
+
+      const newRoles: Record<string, string> = {};
+      for (const role of ["oc", "translator", "planner", "worker", "reviewer"]) {
+        const current = roles[role] || "";
+        const desc = roleDescriptions[role] || "";
+        const value = await ctx.ui.input(
+          `${role} — ${desc}`,
+          current || "provider:model"
+        );
+        if (value === undefined) {
+          ctx.ui.notify("已取消。", "warning");
+          return;
+        }
+        if (value.trim()) newRoles[role] = value.trim();
+      }
+
+      // 写入配置文件
+      let toml = "# 三叉戟模型路由配置\n# 由 /trident-setup 生成\n\n[roles]\n";
+      for (const [role, model] of Object.entries(newRoles)) {
+        toml += `${role} = "${model}"\n`;
+      }
+
+      // 保留 workers 节（如果原文件有）
+      if (fs.existsSync(rolesPath)) {
+        const original = fs.readFileSync(rolesPath, "utf-8");
+        const workersMatch = original.match(/\[workers\.\w+\][\s\S]*/);
+        if (workersMatch) {
+          toml += "\n" + workersMatch[0];
+        }
+      }
+
+      fs.writeFileSync(rolesPath, toml, "utf-8");
+      ctx.ui.notify("配置已保存到 providers.roles.toml", "info");
+    },
+  });
 }
 
 function parseRolesToml(content: string): Record<string, string> {

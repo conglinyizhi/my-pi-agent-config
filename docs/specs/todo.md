@@ -3,6 +3,7 @@
 ## 现在就做
 
 - [ ] `cp providers.roles.example.toml providers.roles.toml` 并填入实际模型
+- [x] 或运行 `/trident-setup` 交互式向导自动配置
 - [ ] `/reload` 加载新扩展和 SYSTEM.md
 - [ ] 测试：对 OC Agent 说一句带任务意图的话，看它是否调 translate_task
 - [x] push 到远程
