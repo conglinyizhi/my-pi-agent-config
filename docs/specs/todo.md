@@ -16,8 +16,8 @@
 
 - [x] 事项队列（`~/.pi/agent/queue/`，JSON 文件，跨 session）
 - [x] 状态指示器 UI（Widget 显示活跃事项）
-- [ ] 扩展 subagent 系统：任务拆解 + 模型路由
-- [ ] planner/worker/reviewer 模型路由实际生效
+- [x] 扩展 subagent 系统：任务拆解 + 模型路由
+- [x] planner/worker/reviewer 模型路由实际生效
 
 ## Phase 3（高级特性）
 

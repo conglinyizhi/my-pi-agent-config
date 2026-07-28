@@ -258,6 +258,33 @@ function getPiInvocation(args: string[]): PiInvocation {
 }
 
 /**
+ * 尝试从 providers.roles.toml 解析模型名。
+ * 如果 agent.model 匹配某个角色名（如 planner），返回实际模型名；
+ * 否则原样返回（可能是直接的 model:provider 格式）。
+ */
+function resolveModelName(modelOrRole: string): string {
+  const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
+  try {
+    const content = fs.readFileSync(rolesPath, "utf-8");
+    let inRoles = false;
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed === "[roles]") { inRoles = true; continue; }
+      if (inRoles && trimmed.startsWith("[")) break;
+      if (!inRoles) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+      if (key === modelOrRole && value) return value;
+    }
+  } catch {
+    // 配置文件不存在或无权限，直接返回原名
+  }
+  return modelOrRole;
+}
+
+/**
  * 根据 agent 配置构建启动 pi 进程所需的参数数组。
  *
  * @param agent - agent 配置
@@ -265,7 +292,7 @@ function getPiInvocation(args: string[]): PiInvocation {
  */
 function buildPiArgs(agent: AgentConfig): string[] {
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (agent.model) args.push("--model", agent.model);
+  if (agent.model) args.push("--model", resolveModelName(agent.model));
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
   return args;
 }
