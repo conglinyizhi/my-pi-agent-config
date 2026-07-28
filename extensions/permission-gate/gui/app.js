@@ -14,7 +14,7 @@ const TIMEOUT_MS = 120_000;
 const REASONS_FILE = join(homedir(), ".pi", "agent", "permission-gate-reasons.json");
 
 /** 加载常用审核理由 */
-function loadReasons(): string[] {
+function loadReasons() {
   try {
     if (existsSync(REASONS_FILE)) {
       return JSON.parse(readFileSync(REASONS_FILE, "utf-8"));
@@ -24,7 +24,7 @@ function loadReasons(): string[] {
 }
 
 /** 保存审核理由 */
-function saveReason(reason: string) {
+function saveReason(reason) {
   const reasons = loadReasons().filter(r => r !== reason);
   reasons.unshift(reason);
   if (reasons.length > 20) reasons.length = 20;
@@ -65,12 +65,12 @@ app.whenReady().then(() => {
   // 构建高亮 HTML
   let cmdHtml = "";
   let pos = 0;
-  const merged: [number, number][] = [];
+  const merged = [];
   for (const [s, e] of highlights) {
     let mergedEnd = e;
     // 合并重叠/相邻区间
     while (merged.length > 0 && merged[merged.length - 1][1] >= s) {
-      const prev = merged.pop()!;
+      const prev = merged.pop();
       mergedEnd = Math.max(mergedEnd, prev[1]);
     }
     merged.push([s, mergedEnd]);
