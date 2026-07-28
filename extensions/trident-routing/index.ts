@@ -6,6 +6,11 @@
 // /homeport 指令可临时解除限制，用于开发调试。
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DISABLED_TOOLS = new Set(["write", "edit"]);
 
@@ -68,8 +73,8 @@ export default function (pi: ExtensionAPI) {
   // 母港模式：替换系统提示词
   pi.on("before_agent_start", (event) => {
     if (!homeportSession) return;
-    return {
-      systemPrompt: "你是直接编码助手。用户在做 pi 扩展开发，需要你直接读写文件、执行命令。不要套用任何舰娘人设。简洁高效即可。",
-    };
+    const promptPath = join(__dirname, "homeport-prompt.md");
+    const prompt = existsSync(promptPath) ? readFileSync(promptPath, "utf-8") : "直接编码助手。";
+    return { systemPrompt: prompt };
   });
 }
