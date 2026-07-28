@@ -130,8 +130,10 @@ export default function (pi: ExtensionAPI) {
         const lines: string[] = [theme.fg("accent", header)];
         for (const [idx, item] of pending.slice(0, MAX_DISPLAY).entries()) {
           const num = theme.fg("warning", String(idx + 1).padStart(2));
-          const loc = theme.fg("muted", truncateToWidth(`${item.file}:${item.line}`, Math.min(60, Math.floor(width * 0.35))));
-          const content = theme.fg("dim", truncateToWidth(item.text, Math.max(20, width - 8 - visibleWidth(truncateToWidth(`${item.file}:${item.line}`, Math.min(60, Math.floor(width * 0.35)))))));
+          const locText = truncateToWidth(`${item.file}:${item.line}`, Math.min(50, Math.floor(width * 0.3)));
+          const locW = visibleWidth(locText);
+          const loc = theme.fg("muted", locText);
+          const content = theme.fg("dim", truncateToWidth(item.text, Math.max(20, width - 10 - locW)));
           lines.push(` ${num} ${loc}${theme.fg("dim", " │ ")}${content}`);
         }
         const done = items.filter((i) => i.done);
