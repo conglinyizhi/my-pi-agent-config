@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawn, execSync } from "node:child_process";
 
 const QUEUE_DIR = path.join(os.homedir(), ".pi", "agent", "queue");
 const ACTIVE_DIR = path.join(QUEUE_DIR, "active");
@@ -316,83 +317,129 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- /trident-setup 向导（TUI 选择模型） ---
+  // --- /trident-setup 向导（Electron GUI） ---
   pi.registerCommand("trident-setup", {
-    description: "交互式向导：TUI选择模型配置三叉戟路由",
+    description: "GUI：选择模型配置三叉戟路由",
     handler: async (_args, ctx) => {
+      // 查找 electron 二进制
+      let electronBin: string | null = null;
+      try {
+        const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
+          .trim().split("\n").filter(Boolean).sort().reverse();
+        electronBin = bins[0] || null;
+      } catch {}
+
+      if (!electronBin) {
+        ctx.ui.notify("未找到 electron。请安装：yay -S electron", "error");
+        return;
+      }
+
       const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
       const examplePath = path.join(os.homedir(), ".pi", "agent", "providers.roles.example.toml");
 
-      // 获取所有可用模型
       const allModels = ctx.modelRegistry.getAll();
       if (allModels.length === 0) {
         ctx.ui.notify("未找到可用模型。请先配置 providers。", "error");
         return;
       }
 
-      // 构建选项列表：provider:id — name
-      const modelOptions = allModels.map((m) => ({
+      const models = allModels.map((m) => ({
         value: `${m.provider}:${m.id}`,
-        label: `${m.provider}:${m.id}  (${m.name || m.id})`,
+        name: m.name || m.id,
       }));
 
-      // 读取当前配置
       let roles: Record<string, string> = {};
-      if (fs.existsSync(rolesPath)) {
-        roles = parseRolesToml(fs.readFileSync(rolesPath, "utf-8"));
-      } else if (fs.existsSync(examplePath)) {
-        roles = parseRolesToml(fs.readFileSync(examplePath, "utf-8"));
+      try {
+        if (fs.existsSync(rolesPath)) {
+          roles = parseRolesToml(fs.readFileSync(rolesPath, "utf-8"));
+        } else if (fs.existsSync(examplePath)) {
+          roles = parseRolesToml(fs.readFileSync(examplePath, "utf-8"));
+        }
+      } catch {}
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "trident-setup-"));
+      const requestFile = path.join(tmpDir, "request.json");
+      const responseFile = path.join(tmpDir, "response.json");
+      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui", "app.js");
+
+      if (!fs.existsSync(appJs)) {
+        fs.rmSync(tmpDir, { recursive: true });
+        ctx.ui.notify("GUI app.js 未找到", "error");
+        return;
       }
 
-      const roleDescriptions: Record<string, string> = {
-        oc: "OC Agent — 跟你聊天的入口，需要对话质感",
-        translator: "翻译工具 — 与OC不同厂商，形成双视角",
-        planner: "任务拆解 — 架构决策，需聪明模型",
-        worker: "执行层 — 按计划干活，便宜即可",
-        reviewer: "审查层 — diff检查，便宜即可",
-      };
+      fs.writeFileSync(requestFile, JSON.stringify({ models, roles }));
 
-      const newRoles: Record<string, string> = {};
-      for (const role of ["oc", "translator", "planner", "worker", "reviewer"]) {
-        const current = roles[role] || "";
-        const desc = roleDescriptions[role] || "";
+      ctx.ui.notify("正在启动模型选择器...", "info");
 
-        // 找到当前值在选项中的位置（用于预选）
-        const optionsWithCurrent = [...modelOptions];
-        if (current && !modelOptions.find((o) => o.value === current)) {
-          optionsWithCurrent.unshift({ value: current, label: `${current}（当前）` });
-        }
+      try {
+        const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
+          stdio: "ignore",
+          detached: true,
+        });
 
-        const choice = await ctx.ui.select(
-          `${role} — ${desc}`,
-          optionsWithCurrent.map((o) => o.label)
-        );
+        const GUI_TIMEOUT = 120_000;
+        const result = await new Promise<any>((resolve) => {
+          const timeout = setTimeout(() => {
+            try { proc.kill("SIGTERM"); } catch {}
+            resolve({ cancelled: true });
+          }, GUI_TIMEOUT);
 
-        if (choice === undefined) {
+          const check = setInterval(() => {
+            try {
+              const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
+              clearTimeout(timeout);
+              clearInterval(check);
+              resolve(data);
+            } catch {}
+          }, 300);
+
+          proc.on("close", () => {
+            setTimeout(() => {
+              try {
+                const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
+                clearTimeout(timeout);
+                clearInterval(check);
+                resolve(data);
+              } catch {
+                clearTimeout(timeout);
+                clearInterval(check);
+                resolve({ cancelled: true });
+              }
+            }, 100);
+          });
+        });
+
+        if (result.cancelled) {
           ctx.ui.notify("已取消。", "warning");
           return;
         }
 
-        // 从 label 反查 value
-        const chosen = optionsWithCurrent.find((o) => o.label === choice);
-        if (chosen) newRoles[role] = chosen.value;
-      }
+        if (!result.roles) {
+          ctx.ui.notify("无效的响应。", "error");
+          return;
+        }
 
-      // 写入配置文件
-      let toml = "# 三叉戟模型路由配置\n# 由 /trident-setup 生成\n\n[roles]\n";
-      for (const [role, model] of Object.entries(newRoles)) {
-        toml += `${role} = "${model}"\n`;
-      }
+        let toml = "# 三叉戟模型路由配置\n# 由 /trident-setup 生成\n\n[roles]\n";
+        for (const role of ["oc", "translator", "planner", "worker", "reviewer"]) {
+          if (result.roles[role]) {
+            toml += `${role} = "${result.roles[role]}"\n`;
+          }
+        }
 
-      // 保留 workers 节
-      if (fs.existsSync(rolesPath)) {
-        const original = fs.readFileSync(rolesPath, "utf-8");
-        const workersMatch = original.match(/\[workers\.\w+\][\s\S]*/);
-        if (workersMatch) toml += "\n" + workersMatch[0];
-      }
+        try {
+          if (fs.existsSync(rolesPath)) {
+            const original = fs.readFileSync(rolesPath, "utf-8");
+            const workersMatch = original.match(/\[workers\.\w+\][\s\S]*/);
+            if (workersMatch) toml += "\n" + workersMatch[0];
+          }
+        } catch {}
 
-      fs.writeFileSync(rolesPath, toml, "utf-8");
-      ctx.ui.notify("配置已保存到 providers.roles.toml，/reload 生效", "info");
+        fs.writeFileSync(rolesPath, toml, "utf-8");
+        ctx.ui.notify("配置已保存到 providers.roles.toml，/reload 生效", "info");
+      } finally {
+        try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+      }
     },
   });
 }
