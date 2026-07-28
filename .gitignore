@@ -27,3 +27,4 @@ queue/
 **/gui/dist/
 # TS→JS 编译产物（按需添加）
 extensions/editor-gui/gui/app.js
+extensions/editor-gui/gui/app.js.map
