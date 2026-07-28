@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from "electron";
-import { readFileSync, writeFileSync } from "fs";
+import { loadRequest } from "../../../../lib/electron-gui.mjs";
+import { writeFileSync } from "fs";
 
 const requestFile = process.argv[2];
 const responseFile = process.argv[3];
@@ -9,14 +10,8 @@ if (!requestFile || !responseFile) {
 }
 
 app.whenReady().then(() => {
-  let request;
-  try {
-    request = JSON.parse(readFileSync(requestFile, "utf-8"));
-  } catch {
-    writeFileSync(responseFile, JSON.stringify({ cancelled: true }));
-    app.quit();
-    return;
-  }
+  const request = loadRequest(requestFile, responseFile);
+  if (!request) { app.quit(); return; }
 
   const { models, roles } = request;
 
@@ -148,13 +143,13 @@ app.whenReady().then(() => {
 </div>
 
 <script>
-  var responded = false;
   var MODELS = ${modelsJson};
   var ROLES = ${rolesJson};
+  var _responded = false;
 
   function respond(payload) {
-    if (responded) return;
-    responded = true;
+    if (_responded) return;
+    _responded = true;
     require('fs').writeFileSync(${JSON.stringify(responseFile)}, JSON.stringify(payload));
     window.close();
   }

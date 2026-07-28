@@ -2,6 +2,7 @@ import { app, BrowserWindow } from "electron";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
+import { loadRequest } from "../../../../lib/electron-gui.mjs";
 
 const requestFile = process.argv[2];
 const responseFile = process.argv[3];
@@ -35,14 +36,8 @@ function saveReason(reason) {
 }
 
 app.whenReady().then(() => {
-  let request;
-  try {
-    request = JSON.parse(readFileSync(requestFile, "utf-8"));
-  } catch {
-    writeFileSync(responseFile, JSON.stringify({ action: "deny", reason: "bad-request" }));
-    app.quit();
-    return;
-  }
+  const request = loadRequest(requestFile, responseFile);
+  if (!request) { app.quit(); return; }
 
   const { command, rules } = request;
   const reasons = loadReasons();
@@ -288,14 +283,7 @@ app.whenReady().then(() => {
 
   win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
-  win.on("closed", () => {
-    try {
-      if (!existsSync(responseFile)) {
-        writeFileSync(responseFile, JSON.stringify({ action: "deny", reason: "window-closed" }));
-      }
-    } catch {}
-    app.quit();
-  });
+  win.on("closed", onWindowClosed(responseFile, { action: "deny", reason: "window-closed" }));
 });
 
 app.on("window-all-closed", () => {
