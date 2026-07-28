@@ -49,7 +49,7 @@ async function tryGuiApproval(
   const responseFile = path.join(tmpDir, "response.json");
   const appJs = path.join(__dirname, "gui", "app.js");
 
-  if (!fs.existsSync(appJs)) {
+  if (!fs.existsSync(appJs) || !fs.existsSync(path.join(path.dirname(appJs), "dist", "index.html"))) {
     fs.rmSync(tmpDir, { recursive: true });
     return "gui-unavailable";
   }

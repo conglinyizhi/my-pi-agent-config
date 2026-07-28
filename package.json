@@ -4,7 +4,9 @@
     "#lib/*": "./lib/*.mjs"
   },
   "scripts": {
-    "build:gui-editor": "cd extensions/editor-gui/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build"
+    "build:gui-editor": "cd extensions/editor-gui/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
+    "build:gui-gate": "cd extensions/permission-gate/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
+    "build:gui-setup": "cd extensions/trident-queue/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build"
   },
   "dependencies": {
     "@rsbuild/core": "^2.1.8",
