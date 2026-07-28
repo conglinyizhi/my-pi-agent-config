@@ -13,7 +13,7 @@ export default defineConfig({
     assetPrefix: "./",
   },
   html: {
-    template: "./renderer/index.html",
+    template: "../../../lib/gui-index.html",
     title: "TODO 调度 · 三叉戟",
   },
 });

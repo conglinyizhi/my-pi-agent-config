@@ -13,7 +13,7 @@ export default defineConfig({
     assetPrefix: "./",
   },
   html: {
-    template: "./renderer/index.html",
+    template: "../../../lib/gui-index.html",
     title: "提示词编辑 · pi",
   },
 });
