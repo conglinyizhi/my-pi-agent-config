@@ -1,0 +1,75 @@
+/* gui-theme.css — 所有 Electron GUI 共享样式
+   用法：在 rsbuild.config.ts 中 import 或直接 @import
+*/
+
+:root {
+  --bg: #1a1a2e;
+  --bg-alt: #0d0d1a;
+  --bg-hover: #16213e;
+  --bg-active: #1a3a5c;
+  --border: #2a2a4a;
+  --text: #e0e0e0;
+  --text-dim: #888;
+  --text-muted: #666;
+  --accent: #4ec9b0;
+  --danger: #e74c3c;
+  --danger-bg: #ff6b6b44;
+  --warn: #e67e22;
+  --warn-bg: #e67e2244;
+  --success: #2ecc71;
+  --code-bg: #0d0d1a;
+  --code-fg: #ce9178;
+  --radius: 4px;
+  --font: -apple-system, "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* 通用按钮 */
+.btn {
+  padding: 8px 20px; border: none; border-radius: var(--radius);
+  font-size: 13px; cursor: pointer; font-family: var(--font);
+}
+.btn:hover { filter: brightness(1.1); }
+.btn-deny { background: var(--danger); color: #fff; }
+.btn-warn { background: var(--warn); color: #fff; }
+.btn-allow { background: var(--success); color: #fff; }
+.btn-cancel { background: #555; color: #ccc; }
+.btn-small { padding: 4px 12px; font-size: 11px; }
+
+/* 覆盖层 */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; justify-content: center; align-items: center; z-index: 100;
+}
+
+/* 对话框 */
+.dialog {
+  background: var(--bg); border: 1px solid #333; border-radius: 8px;
+  padding: 16px; width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto;
+}
+.dialog h2 { font-size: 14px; color: var(--danger); margin: 0 0 8px; }
+.dialog label { font-size: 11px; color: var(--text-dim); display: block; margin: 6px 0 3px; }
+.dialog select, .dialog textarea {
+  width: 100%; padding: 5px 8px; background: var(--bg-alt);
+  border: 1px solid #333; border-radius: 3px;
+  color: var(--text); font-family: inherit; font-size: 12px;
+}
+.dialog textarea { resize: vertical; }
+.dialog .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.dialog .btns .btn { padding: 6px 14px; font-size: 12px; }
+
+/* 页脚操作栏 */
+.actions {
+  padding: 10px 16px; border-top: 1px solid var(--border);
+  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+}
+.actions .count { font-size: 11px; color: var(--text-muted); margin-right: auto; }
+
+/* 折叠面板 */
+.collapse-header {
+  padding: 2px 16px; font-size: 11px; color: var(--text-dim);
+  cursor: pointer; border-top: 1px solid var(--border);
+}
+.collapse-body {
+  padding: 4px 16px 8px; background: var(--bg-hover); font-size: 11px;
+}
