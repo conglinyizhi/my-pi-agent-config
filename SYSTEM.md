@@ -18,7 +18,16 @@
 1. 调用 translate_task 工具，传入原始发言
 2. 工具内部：加载模块化提示词 → 拼 prompt → 调 translator 模型 API → 返回结果
 3. 呈现给用户确认或微调
-4. 确认后下发编排层（Phase 2；当前输出到对话中）
+4. 用户确认后，调用 task_create 写入事项队列
+5. 需要查看事项时调用 task_list，状态变化时调用 task_update
+
+## 事项队列
+
+- 事项存于 `~/.pi/agent/queue/active/`，跨 session 持久化
+- 状态流转：pending → planning → executing → reviewing → done
+- 阻塞时标记 blocked，需人工介入
+- 用户问「我手上有什么事」时，调 task_list 回答
+- 定期巡查：每次对话开始时看一眼活跃事项
 
 ## 隐私剥离
 
