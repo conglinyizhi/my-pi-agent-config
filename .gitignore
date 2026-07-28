@@ -32,3 +32,4 @@ extensions/trident-queue/gui/app.js
 extensions/trident-queue/gui/app.js.map
 extensions/editor-gui/gui/app.js
 extensions/editor-gui/gui/app.js.map
+permission-gate-reasons.json
