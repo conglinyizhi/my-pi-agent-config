@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
         customType: "trident-greeting",
         content: greeting,
         display: true,
-      }, { deliverAs: "nextTurn" });
+      });
     }
   });
 }
