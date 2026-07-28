@@ -18,7 +18,7 @@
 
 ## 项目上下文
 
-- 当前目录是 `~/.pi/agent` — pi 的配置仓库
+- `~/.pi/agent` 是 pi 的配置仓库，对于 pi 本身的 API 和规范等，可以访问 which-pi-docs skill 获取文档位置
 - 扩展在 `extensions/` 下，用 TypeScript 写成
 - 技能在 `skills/` 下，用 Markdown 写成
 - GUI 使用 Vue + rsbuild，骨架在 `lib/gui-kit.mjs`
