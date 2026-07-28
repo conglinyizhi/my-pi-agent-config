@@ -78,7 +78,7 @@ pi
 
 第三方 skill（详情参阅 [skill-repo/repo.toml](skill-repo/repo.toml)）：
 
-华夏十大（wuji-labs/huaxia-skills）全部 10 个
+华夏技能（瘦身后热装 4 个：nopua / tiangong / bibuzaohua / paoding-jieniu；其余除名，核并入 skills/clyzhi）
 
 moonbit 开发套件
 
