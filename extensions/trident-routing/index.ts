@@ -22,13 +22,19 @@ export default function (pi: ExtensionAPI) {
     const isHomeport = event.reason === "new" && skipNextGreeting;
     skipNextGreeting = false;
 
-    // 母港模式：不限制工具
+    // 非母港：限制 write/edit
     if (!isHomeport) {
+      homeportSession = false;
       const active = pi.getActiveTools();
       const filtered = active.filter((t: string) => !DISABLED_TOOLS.has(t));
       if (filtered.length !== active.length) {
         pi.setActiveTools(filtered);
       }
+    } else {
+      // 母港：禁用 subagent
+      const active = pi.getActiveTools();
+      const filtered = active.filter((t: string) => t !== "subagent");
+      if (filtered.length !== active.length) pi.setActiveTools(filtered);
     }
 
     // 新会话时注入开场白（母港模式跳过）
@@ -43,16 +49,27 @@ export default function (pi: ExtensionAPI) {
   });
 
   // /homeport — 回母港（解除限制的新会话）
+  let homeportSession = false;
+
   pi.registerCommand("homeport", {
     description: "返回母港：创建无限制的新会话（保留 write/edit，跳过开场白）",
     handler: async (args, ctx) => {
       skipNextGreeting = true;
+      homeportSession = true;
       ctx.ui.notify("⚓ 返回母港。本会话不限制工具，可自由编辑。", "info");
       await ctx.newSession({
         withSession: async (c) => {
-          c.ui.notify("已进入母港。write/edit 可用。", "info");
+          c.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
         },
       });
     },
+  });
+
+  // 母港模式：替换系统提示词
+  pi.on("before_agent_start", (event) => {
+    if (!homeportSession) return;
+    return {
+      systemPrompt: "你是直接编码助手。用户在做 pi 扩展开发，需要你直接读写文件、执行命令。不要套用任何舰娘人设。简洁高效即可。",
+    };
   });
 }
