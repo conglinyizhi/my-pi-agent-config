@@ -76,10 +76,10 @@ app.whenReady().then(() => {
   .header .sub { font-size: 12px; color: #888; margin-top: 4px; }
 
   .filters {
-    margin: 8px 20px; display: flex; gap: 10px;
+    margin: 8px 20px; display: flex; gap: 10px; align-items: center;
   }
   .filters input, .filters select {
-    padding: 8px 12px;
+    padding: 8px 12px; height: 36px;
     background: #0d0d1a; border: 1px solid #333;
     border-radius: 4px; color: #e0e0e0; font-size: 13px;
     font-family: inherit;
@@ -185,24 +185,43 @@ app.whenReady().then(() => {
 
   // 重建所有 role select 的选项
   function rebuildSelects() {
+    // 保存当前选中值
+    var savedSelections = {};
+    ['oc','translator','planner','worker','reviewer'].forEach(function(role) {
+      savedSelections[role] = document.getElementById('sel-' + role).value;
+    });
+
     var filtered = getFilteredModels();
     document.getElementById('matchCount').textContent = filtered.length + ' 个匹配';
 
     ['oc','translator','planner','worker','reviewer'].forEach(function(role) {
       var sel = document.getElementById('sel-' + role);
-      var currentValue = sel.value;
+      var prevValue = savedSelections[role];
 
       // 按 provider 分组
       var groups = {};
       filtered.forEach(function(m) {
         var parts = m.value.split(':');
         var provider = parts[0];
-        var modelName = parts.slice(1).join(':');
         if (!groups[provider]) groups[provider] = [];
         groups[provider].push(m);
       });
 
       sel.innerHTML = '';
+
+      // 如果之前选了模型且不在过滤结果中，加一条"已选"选项保留它
+      if (prevValue && !filtered.find(function(m) { return m.value === prevValue; })) {
+        var keepOpt = document.createElement('option');
+        keepOpt.value = prevValue;
+        keepOpt.textContent = prevValue + '（已选）';
+        keepOpt.style.color = '#4ec9b0';
+        sel.appendChild(keepOpt);
+        if (filtered.length === 0) {
+          sel.innerHTML = keepOpt.outerHTML;
+          return;
+        }
+      }
+
       if (filtered.length === 0) {
         sel.innerHTML = '<option value="">无匹配模型</option>';
         return;
@@ -221,8 +240,8 @@ app.whenReady().then(() => {
       });
 
       // 恢复选中值
-      if (currentValue && filtered.find(function(m) { return m.value === currentValue; })) {
-        sel.value = currentValue;
+      if (prevValue && filtered.find(function(m) { return m.value === prevValue; })) {
+        sel.value = prevValue;
       }
     });
   }
