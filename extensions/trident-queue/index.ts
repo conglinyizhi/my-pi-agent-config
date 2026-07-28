@@ -276,34 +276,55 @@ export default function (pi: ExtensionAPI) {
   });
 
   // --- status widget ---
+  let todoData: { count: number; done: number } | null = null;
+
   pi.on("session_start", (_event, ctx) => {
-    const updateWidget = () => {
+    // 监听 todo-scanner 的扫描结果
+    pi.events.on("todo-scanner:result", (data: any) => {
+      if (data) {
+        todoData = { count: data.count, done: data.done ?? 0 };
+        refreshWidget();
+      }
+    });
+
+    const refreshWidget = () => {
       const allTasks = listTasks();
       const sessionFile = ctx.sessionManager?.getSessionFile?.();
       const sessionName = sessionFile ? path.basename(sessionFile) : "";
       const tasks = sessionName
         ? allTasks.filter((t) => !t.session || t.session === "unknown" || t.session === sessionName)
         : allTasks;
-      if (tasks.length === 0) {
+
+      const tc = todoData?.count ?? null;
+      if (tasks.length === 0 && (tc === null || tc === 0)) {
         ctx.ui.setWidget("trident-queue", undefined);
         return;
       }
 
-      const lines: string[] = [`⚓ 舰队事项（${tasks.length}）`];
-      for (const t of tasks) {
-        const icon = t.status === "executing" ? "▶" :
-          t.status === "blocked" ? "⏸" :
-          t.status === "planning" ? "📋" :
-          t.status === "reviewing" ? "🔍" : "○";
-        const shortTitle = t.title.length > 40 ? t.title.slice(0, 37) + "..." : t.title;
-        lines.push(`${icon} ${shortTitle}`);
-      }
-      ctx.ui.setWidget("trident-queue", lines);
+      const todoLabel = tc === null ? "…" : `${todoData!.done}/${tc}`;
+      const headerLine = `⚓ 舰队事项(${tasks.length}) | 📋备战事项(${todoLabel})`;
+      const hintLine = tc !== null && tc > 0
+        ? `<还有${tc - (todoData!.done ?? 0)}个todo待处理>  /scan-todo 展开` : null;
+
+      ctx.ui.setWidget("trident-queue", (_tui: any, theme: any) => ({
+        render: (_width: number) => {
+          const lines: string[] = [theme.fg("accent", headerLine)];
+          if (hintLine) lines.push(theme.fg("dim", hintLine));
+          for (const t of tasks) {
+            const icon = t.status === "executing" ? "▶" :
+              t.status === "blocked" ? "⏸" :
+              t.status === "planning" ? "📋" :
+              t.status === "reviewing" ? "🔍" : "○";
+            const shortTitle = t.title.length > 40 ? t.title.slice(0, 37) + "..." : t.title;
+            lines.push(`${icon} ${shortTitle}`);
+          }
+          return lines;
+        },
+      }));
     };
 
-    updateWidget();
-    // 每次 agent 结束后刷新
-    pi.on("agent_settled", () => updateWidget());
+    refreshWidget();
+    pi.on("agent_settled", () => refreshWidget());
   });
 
   // --- /trident-models 命令 ---

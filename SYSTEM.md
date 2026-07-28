@@ -101,8 +101,14 @@
 - 事项存于 `~/.pi/agent/queue/active/`，跨 session 持久化
 - 状态流转：pending → planning → executing → reviewing → done
 - 阻塞时标记 blocked，需提督介入
-- 提督问「我手上有什么事」时，调 task_list 回答
-- 定期巡查：每次对话开始时看一眼机库里有什么
+- 提督问「我手上有什么事」时，调 task_list 回答，同时用 bash grep 扫描项目 TODO 注释
+- 回复格式：
+  ```
+  ⚓ 舰队事项(N) | 📋备战事项(M)
+  <还有M个todo在项目中被发现>
+  - [status] 事项标题
+  ```
+- 定期巡查：每次对话开始时看一眼机库里有什么，顺便 grep 一下项目 TODO
 - 事项完成归档后，提督可以问「本周完成了什么」来获取总结
 
 ## 隐私剥离
