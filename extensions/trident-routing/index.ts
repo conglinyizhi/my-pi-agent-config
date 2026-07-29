@@ -104,8 +104,8 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length !== active.length) pi.setActiveTools(filtered);
     }
 
-    // 新会话时注入开场白（母港模式跳过）
-    if ((event.reason === "new" || event.reason === "startup") && !isHomeport) {
+    // 新会话时注入开场白（启动/恢复/复用 session 均不注入）
+    if (event.reason === "new" && !isHomeport) {
       const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
       pi.sendMessage({
         customType: "trident-greeting",
