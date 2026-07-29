@@ -13,6 +13,7 @@ import { visibleWidth, truncateToWidth } from "../trident-routing/todo-scan";
 import { getTranslatorModel, callPiTranslate, TRANSLATOR_SYSTEM_PROMPT, looksStructured } from "../../lib/translate";
 import { runSubagent, getResultOutput, isFailedResult, formatUsageStats, getWorkerModel } from "../../lib/subagent-run";
 import type { SubagentResult } from "../../lib/subagent-run";
+import { notifyBrief, notifyTaskComplete } from "../../lib/notify-send";
 
 const QUEUE_DIR = path.join(os.homedir(), ".pi", "agent", "queue");
 const ACTIVE_DIR = path.join(QUEUE_DIR, "active");
@@ -203,6 +204,18 @@ async function showTaskReviewGui(
 // 跟踪正在运行的子进程 PID，供 /task-manager 紧急终止
 const runningPids = new Map<string, number>();
 
+/** 检查任务完成情况并发送通知 */
+async function checkAndNotify(justCompleted: string) {
+  const all = listTasks();
+  const remaining = all.filter((t) => t.status === "executing").length;
+  if (remaining === 0) {
+    const doneCount = all.filter((t) => t.status === "done").length;
+    await notifyTaskComplete(`全部 ${doneCount} 个任务已完成`);
+  } else {
+    await notifyBrief(`「${justCompleted}」完成，${remaining} 个任务仍在执行`);
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   ensureDirs();
 
@@ -335,11 +348,13 @@ export default function (pi: ExtensionAPI) {
             task.context += `\n---\n执行完成：\n${output}`;
           }
           writeTask(task);
+          checkAndNotify(title);
         }).catch((err) => {
           runningPids.delete(id);
           task.status = "blocked";
           task.context += `\n---\n执行异常：${String(err)}`;
           writeTask(task);
+          checkAndNotify(title);
         });
       }
 
@@ -575,11 +590,13 @@ export default function (pi: ExtensionAPI) {
                     task.context += `\n---\n执行完成：\n${getResultOutput(r)}`;
                   }
                   writeTask(task);
+                  checkAndNotify(task.title);
                 }).catch((err) => {
                   runningPids.delete(task.id);
                   task.status = "blocked";
                   task.context += `\n---\n执行异常：${String(err)}`;
                   writeTask(task);
+                  checkAndNotify(task.title);
                 });
               }
               started++;
