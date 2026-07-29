@@ -221,11 +221,13 @@ export default function (pi: ExtensionAPI) {
     label: "Create Task (Dispatch)",
     description:
       "将用户发言转为结构化任务并后台执行。支持单个字符串（单任务）或字符串数组（并行多任务）。异步发射，立即返回。",
-    promptSnippet: "Create and dispatch task(s) from user utterance(s)",
+    promptSnippet: "Dispatch a side-quest to a worker subagent",
     promptGuidelines: [
-      "当用户说「帮我做X」时，调 task_create({ utterance: '用户原话' })，任务在后台执行，不会阻塞对话。",
-      "需要并行多个任务时传数组：task_create({ utterance: ['A原话', 'B原话'] })。",
-      "任务完成后自动更新状态，用户可通过 task_list 查看进度，/task-manager 管理。",
+      "task_create 是支线任务分发系统，不是 TODO 列表。用于将大型、独立的子任务委派给 worker 后台执行。",
+      "判断标准：当前任务是否需要多步操作、涉及多个文件、或需要独立上下文？是 → task_create。否 → 林汐自己动手。",
+      "小活直接做：改个拼写、加一行注释、修个小 bug，不用起 task。大活分发：重构模块、新增功能、跨文件改动，用 task_create。",
+      "需要并行多个独立任务时传数组：task_create({ utterance: ['A', 'B'] })，系统并行派发。",
+      "任务完成后自动更新状态，task_list 查看进度，/task-manager 管理。",
     ],
     parameters: Type.Object({
       utterance: Type.Union([

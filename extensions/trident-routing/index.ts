@@ -16,14 +16,9 @@ import { scanTodos, type TodoItem, type ScanState } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DISABLED_TOOLS = new Set([
-  // pi 内置编辑工具
-  "write", "edit",
-  // MCP better-edit-tools — 全部禁用，避免干扰 OC 判断
-  "be-read", "be-replace", "be-write", "be-delete", "be-insert", "be-insert-chip",
-  "be-func-range", "be-tag-range", "be-balance", "be-trx",
-  // MCP 代理工具
-  "mcp",
+const DISABLED_TOOLS = new Set<string>([
+  // 林汐保留完整能力：write、edit、bash、MCP 全系列
+  // 小活自己干，大活走 task_create 分发支线任务
 ]);
 
 // 开场白：说人话，先落点；在场不报到，环境点到为止。
@@ -47,11 +42,11 @@ const GREETINGS = [
   "咖啡在你右手边，缓一下也行",
   "要是还没缓过来，先歇着也行，有事再开口",
   "不急着上，你准备好了再说",
-  // 任务向（口语；能力声明可以，进度声明不行）
-  "今天想先动哪一块？",
-  "有目标就丢过来，侦察林汐来，长活再派下去",
-  "要过事项就说一声，林汐再去查，想好了直接开干也行",
-  // 航母接活（认真，不阅兵，不报假进度）
+  // 任务向（口语；小活自己动手，大活分发支线）
+  "今天想先动哪一块？小活林汐直接来，大活派下去",
+  "有目标就丢过来，林汐判断自己上还是起支线",
+  "要过事项就说一声，林汐再去查",
+  // 航母接活（分发支线是核心能力）
   "编组的事可以交给林汐，你先说目标",
   "要开会就开会，要派工就派工，你开口",
 ];
