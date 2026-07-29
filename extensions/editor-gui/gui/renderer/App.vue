@@ -1,209 +1,424 @@
 <template>
-  <div class="app">
-    <aside class="sidebar">
-      <div class="tabs">
-        <button :class="{ active: tab === 'history' }" @click="tab = 'history'">📋 历史</button>
-        <button :class="{ active: tab === 'file' }" @click="tab = 'file'">📁 文件</button>
+  <div class="app" @keydown.escape="cancel">
+    <!-- header -->
+    <header class="header">
+      <span class="title">提示词输入</span>
+      <div class="header-right">
+        <button class="hist-toggle" @click="showHistory = !showHistory">
+          📋 历史<span v-if="clipHistory.length">({{ clipHistory.length }})</span>
+        </button>
       </div>
-      <div class="list" v-if="tab === 'history'">
-        <div
-          v-for="(item, i) in clipHistory"
-          :key="i"
-          class="list-item"
-          :class="{ selected: selectedIndex === i }"
-          @click="selectHistory(i)"
+    </header>
+
+    <!-- XML 标签栏 -->
+    <div class="tag-bar">
+      <button
+        v-for="tag in presetTags"
+        :key="tag"
+        class="tag-btn"
+        @click="insertTag(tag)"
+      >&lt;{{ tag }}&gt;</button>
+      <span class="tag-custom">
+        <input
+          v-model="customTag"
+          placeholder="自定义标签"
+          class="tag-input"
+          @keyup.enter="insertTag(customTag)"
         >
-          <div class="preview">{{ item.slice(0, 120).replace(/\n/g, '↵ ') }}</div>
-          <div class="meta">#{{ i + 1 }} {{ item.length }} 字符</div>
+        <button class="tag-btn tag-add" @click="insertTag(customTag)">+</button>
+      </span>
+    </div>
+
+    <!-- 主编辑器 -->
+    <textarea
+      ref="editorRef"
+      v-model="editorText"
+      spellcheck="false"
+      class="editor"
+      placeholder="在此编辑内容，或从下方输入快速插入…"
+    ></textarea>
+
+    <!-- 底部插入栏 -->
+    <div class="insert-bar">
+      <input
+        v-model="quickInput"
+        placeholder="输入要插入的内容…"
+        class="insert-input"
+        @keyup.enter="insertQuick"
+      >
+      <button class="btn btn-insert" @click="insertQuick">→ 插入到编辑器</button>
+    </div>
+
+    <!-- 底部操作 -->
+    <footer class="footer">
+      <button class="btn btn-primary" @click="restoreToPi">↩ 恢复到输入框</button>
+      <button class="btn btn-cancel" @click="cancel">取消</button>
+    </footer>
+
+    <!-- 历史浮层 -->
+    <Teleport to="body">
+      <div v-if="showHistory" class="hist-overlay" @click.self="showHistory = false">
+        <div class="hist-dropdown">
+          <div class="hist-header">
+            <span>剪贴板历史</span>
+            <button class="hist-close" @click="showHistory = false">✕</button>
+          </div>
+          <div class="hist-list">
+            <div
+              v-for="(item, i) in clipHistory"
+              :key="i"
+              class="hist-item"
+              @click="pickHistory(i)"
+            >
+              <span class="hist-num">#{{ i + 1 }}</span>
+              <span class="hist-preview">{{ item.slice(0, 60).replace(/\n/g, ' ') }}</span>
+            </div>
+            <div v-if="clipHistory.length === 0" class="hist-empty">暂无历史</div>
+          </div>
         </div>
-        <div v-if="clipHistory.length === 0" class="empty">暂无 Ctrl+C 历史</div>
       </div>
-      <div class="list" v-else>
-        <div class="file-open">
-          <input data-name="file-path" v-model="filePath" placeholder="输入文件路径..." @keyup.enter="openFile">
-          <button data-name="file-open-btn" class="btn btn-small" @click="openFile">打开</button>
-        </div>
-      </div>
-    </aside>
-    <main class="main">
-      <header class="header">
-        <span class="header-text">{{ headerText }}</span>
-      </header>
-      <textarea v-model="editorText" spellcheck="false" class="editor"></textarea>
-      <footer class="footer">
-        <span class="file-info">{{ fileInfo }}</span>
-        <button data-name="restore-btn" class="btn btn-warn" @click="restoreToPi">↩ 恢复到输入框</button>
-        <button data-name="save-btn" class="btn btn-allow" @click="saveFile">💾 保存</button>
-        <button data-name="cancel-btn" class="btn btn-cancel" @click="cancel">取消</button>
-      </footer>
-    </main>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import "../../../../lib/gui-theme.css";
-import { ref, computed, onMounted } from "vue";
+import { ref, nextTick } from "vue";
 
-// ── 初始化数据 ──
 const initData = (window as any).__INIT_DATA__ || {};
 const clipHistory: string[] = initData.clipHistory || [];
 const responseFile: string = initData.responseFile || "";
-const openFileArg: string = initData.file || "";
-
 const fs = (window as any).require("fs");
 
-// ── 状态 ──
-const tab = ref<"history" | "file">("history");
-const selectedIndex = ref<number>(-1);
+const presetTags = ["reflection", "think", "response", "analysis"];
+
+const showHistory = ref(false);
+const editorRef = ref<HTMLTextAreaElement | null>(null);
 const editorText = ref("");
-const currentFile = ref<string | null>(null);
-const filePath = ref(openFileArg);
-const fileInfo = ref("");
+const customTag = ref("");
+const quickInput = ref("");
 
-const headerText = computed(() => {
-  if (currentFile.value) return currentFile.value;
-  if (selectedIndex.value >= 0) return `Ctrl+C 历史 #${selectedIndex.value + 1}`;
-  return "选择一条历史或打开一个文件开始编辑";
-});
-
-// ── 方法 ──
-function selectHistory(i: number) {
-  selectedIndex.value = i;
-  currentFile.value = null;
-  editorText.value = clipHistory[i] || "";
-  fileInfo.value = "";
+function getTextarea(): HTMLTextAreaElement | null {
+  return editorRef.value;
 }
 
-function openFile() {
-  const p = filePath.value.trim();
-  if (!p) return;
-  try {
-    const content = fs.readFileSync(p, "utf-8");
-    editorText.value = content;
-    currentFile.value = p;
-    selectedIndex.value = -1;
-    fileInfo.value = `已加载 ${content.length} 字符`;
-  } catch (e: any) {
-    fileInfo.value = `错误: ${e.message}`;
-  }
-}
-
-function saveFile() {
-  if (!currentFile.value) {
-    fileInfo.value = "请先打开一个文件";
+function insertAtCursor(text: string) {
+  const ta = getTextarea();
+  if (!ta) {
+    editorText.value += text;
     return;
   }
-  try {
-    fs.writeFileSync(currentFile.value, editorText.value, "utf-8");
-    fileInfo.value = "已保存";
-  } catch (e: any) {
-    fileInfo.value = `保存失败: ${e.message}`;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const before = editorText.value.slice(0, start);
+  const after = editorText.value.slice(end);
+  editorText.value = before + text + after;
+  nextTick(() => {
+    ta.focus();
+    const pos = start + text.length;
+    ta.setSelectionRange(pos, pos);
+  });
+}
+
+function insertTag(tag: string) {
+  if (!tag.trim()) return;
+  const tagName = tag.trim().replace(/[<>]/g, "");
+  const ta = getTextarea();
+  if (ta && ta.selectionStart !== ta.selectionEnd) {
+    // 包裹选中文本
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const selected = editorText.value.slice(start, end);
+    const wrapped = `<${tagName}>${selected}</${tagName}>`;
+    editorText.value =
+      editorText.value.slice(0, start) + wrapped + editorText.value.slice(end);
+    nextTick(() => {
+      ta.focus();
+      ta.setSelectionRange(start + wrapped.length, start + wrapped.length);
+    });
+  } else {
+    // 插入空标签，选中中间内容
+    const inner = `\n\n`;
+    const text = `<${tagName}>${inner}</${tagName}>`;
+    insertAtCursor(text);
+    if (ta) {
+      const pos = ta.selectionStart;
+      const innerStart = pos - text.length + tagName.length + 2;
+      ta.setSelectionRange(innerStart, innerStart + 2);
+    }
   }
+  customTag.value = "";
+}
+
+function insertQuick() {
+  if (!quickInput.value.trim()) return;
+  insertAtCursor(quickInput.value);
+  quickInput.value = "";
+}
+
+function pickHistory(i: number) {
+  editorText.value = (clipHistory as string[])[i] || "";
+  showHistory.value = false;
 }
 
 function restoreToPi() {
   if (!editorText.value.trim()) return;
-  respond({ action: "restore", text: editorText.value });
+  fs.writeFileSync(responseFile, JSON.stringify({ action: "restore", text: editorText.value }));
+  (window as any).close();
+  showHistory.value = false;
 }
 
 function cancel() {
-  respond({ cancelled: true });
-}
-
-function respond(payload: any) {
-  fs.writeFileSync(responseFile, JSON.stringify(payload));
+  fs.writeFileSync(responseFile, JSON.stringify({ cancelled: true }));
   (window as any).close();
 }
-
-// ── 快捷键 ──
-document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-    e.preventDefault();
-    saveFile();
-  }
-  if (e.key === "Escape") cancel();
-});
-
-// ── 初始 ──
-onMounted(() => {
-  if (openFileArg) openFile();
-  else if (clipHistory.length > 0) selectHistory(0);
-});
 </script>
 
 <style scoped>
 .app {
-  display: flex; height: 100vh; overflow: hidden;
-  background: #1a1a2e; color: #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-primary, #1a1a2e);
+  color: var(--text-primary, #e0e0e0);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
 }
 
-/* 侧栏 */
-.sidebar {
-  width: 280px; border-right: 1px solid #2a2a4a;
-  display: flex; flex-direction: column;
+/* header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-subtle, #2a2a4a);
+  flex-shrink: 0;
 }
-
-.tabs {
-  display: flex; border-bottom: 1px solid #2a2a4a;
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-accent, #4ec9b0);
 }
-.tabs button {
-  flex: 1; padding: 10px; background: transparent;
-  border: none; color: #888; font-size: 13px; cursor: pointer;
+.header-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.hist-toggle {
+  background: var(--bg-secondary, #16213e);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  color: var(--text-secondary, #888);
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
   font-family: inherit;
 }
-.tabs button.active { color: #4ec9b0; border-bottom: 2px solid #4ec9b0; }
+.hist-toggle:hover {
+  background: var(--bg-hover, #1a3a5c);
+  color: var(--text-primary, #e0e0e0);
+}
 
-.list { flex: 1; overflow-y: auto; }
-.list-item {
-  padding: 10px 12px; border-bottom: 1px solid #1f1f3a;
+/* tag bar */
+.tag-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-subtle, #2a2a4a);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.tag-btn {
+  background: var(--bg-tag, #1e2d3d);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  color: var(--text-accent, #4ec9b0);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
   cursor: pointer;
+  font-family: inherit;
 }
-.list-item:hover { background: #16213e; }
-.list-item.selected { background: #1a3a5c; border-left: 3px solid #4ec9b0; }
-.preview {
-  font-size: 12px; color: #ccc; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-all;
-  max-height: 3.6em; overflow: hidden;
+.tag-btn:hover {
+  background: var(--bg-hover, #1a3a5c);
+  border-color: var(--text-accent, #4ec9b0);
 }
-.meta { font-size: 10px; color: #666; margin-top: 4px; }
-.empty { padding: 16px; color: #666; font-size: 13px; }
-.file-open {
-  padding: 16px; display: flex; flex-direction: column; gap: 8px;
+.tag-custom {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 8px;
 }
-.file-open input {
-  width: 100%; padding: 8px;
-  background: #0d0d1a; border: 1px solid #333; border-radius: 4px;
-  color: #e0e0e0; font-size: 13px; font-family: inherit;
+.tag-input {
+  width: 100px;
+  padding: 3px 8px;
+  background: var(--bg-input, #0d0d1a);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  border-radius: 12px;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 12px;
+  font-family: inherit;
+}
+.tag-add {
+  padding: 3px 8px;
+  font-weight: bold;
 }
 
-/* 主面板 */
-.main { flex: 1; display: flex; flex-direction: column; }
-.header {
-  padding: 8px 16px; border-bottom: 1px solid #2a2a4a;
-  font-size: 12px; color: #888;
-}
+/* editor */
 .editor {
-  flex: 1; padding: 16px; border: none; outline: none; resize: none;
-  background: #0d0d1a; color: #e0e0e0;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 14px; line-height: 1.7;
+  flex: 1;
+  padding: 12px 16px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg-editor, #0d0d1a);
+  color: var(--text-primary, #e0e0e0);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
 }
+.editor::placeholder {
+  color: var(--text-muted, #555);
+}
+
+/* insert bar */
+.insert-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-subtle, #2a2a4a);
+  flex-shrink: 0;
+  align-items: center;
+}
+.insert-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-input, #0d0d1a);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  border-radius: 4px;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 13px;
+  font-family: inherit;
+}
+.insert-input::placeholder {
+  color: var(--text-muted, #555);
+}
+
+/* footer */
 .footer {
-  padding: 8px 16px; border-top: 1px solid #2a2a4a;
-  display: flex; gap: 8px; justify-content: flex-end; align-items: center;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-subtle, #2a2a4a);
+  flex-shrink: 0;
 }
-.file-info {
-  font-size: 11px; color: #666; margin-right: auto;
-}
+
+/* buttons */
 .btn {
-  padding: 8px 20px; border: none; border-radius: 4px;
-  font-size: 13px; cursor: pointer; font-family: inherit;
+  padding: 8px 24px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
 }
-.btn-small { padding: 6px 14px; font-size: 12px; }
-.btn-restore { background: #3498db; color: #fff; }
-.btn-restore:hover { background: #2980b9; }
-.btn-save { background: #2ecc71; color: #fff; }
-.btn-save:hover { background: #27ae60; }
-.btn-cancel { background: #555; color: #ccc; }
-.btn-cancel:hover { background: #666; }
+.btn-primary {
+  background: var(--accent, #3498db);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: #2980b9;
+}
+.btn-insert {
+  background: var(--bg-tag, #1e2d3d);
+  color: var(--text-accent, #4ec9b0);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.btn-insert:hover {
+  background: var(--bg-hover, #1a3a5c);
+  border-color: var(--text-accent, #4ec9b0);
+}
+.btn-cancel {
+  background: var(--bg-secondary, #2a2a3e);
+  color: var(--text-secondary, #999);
+}
+.btn-cancel:hover {
+  background: #444;
+}
+
+/* history overlay */
+.hist-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.3);
+}
+.hist-dropdown {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  width: 340px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-primary, #1a1a2e);
+  border: 1px solid var(--border-subtle, #2a2a4a);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.hist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle, #2a2a4a);
+  font-size: 13px;
+  color: var(--text-secondary, #888);
+  position: sticky;
+  top: 0;
+  background: var(--bg-primary, #1a1a2e);
+}
+.hist-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+}
+.hist-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-subtle, #1f1f3a);
+  cursor: pointer;
+  font-size: 12px;
+}
+.hist-item:hover {
+  background: var(--bg-hover, #16213e);
+}
+.hist-num {
+  color: var(--text-muted, #555);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.hist-preview {
+  color: var(--text-secondary, #ccc);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hist-empty {
+  padding: 16px;
+  color: var(--text-muted, #666);
+  font-size: 13px;
+  text-align: center;
+}
 </style>
