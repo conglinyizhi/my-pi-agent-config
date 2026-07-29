@@ -26,11 +26,9 @@ permission-gate-reasons.csv
 
 # GUI 产物
 **/gui/dist/
-# TS→JS 编译产物（按需添加）
-extensions/permission-gate/gui/app.js
-extensions/permission-gate/gui/app.js.map
-extensions/trident-queue/gui/app.js
-extensions/trident-queue/gui/app.js.map
-extensions/editor-gui/gui/app.js
-extensions/editor-gui/gui/app.js.map
+# TS→JS 编译产物
+**/gui/app.js
+**/gui/app.js.map
+**/gui-review/app.js
+**/gui-manager/app.js
 permission-gate-reasons.json
