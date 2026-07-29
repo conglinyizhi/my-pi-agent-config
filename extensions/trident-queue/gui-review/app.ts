@@ -1,15 +1,13 @@
 import { createGuiApp } from "#lib/gui-kit";
 
 createGuiApp({
-  name: "权限闸门 · 危险命令审计",
-  width: 800,
-  height: 520,
+  name: "任务确认 · 三叉戟",
+  width: 600,
+  height: 680,
   requestFile: process.argv[2],
   responseFile: process.argv[3],
   inject: (request, { responseFile }) => ({
-    command: request.command,
-    taskId: request.taskId || null,
-    rules: request.rules,
+    text: request.text,
     responseFile,
   }),
 });

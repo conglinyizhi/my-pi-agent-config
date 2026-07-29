@@ -4,11 +4,13 @@
     "#lib/*": "./lib/*.mjs"
   },
   "scripts": {
-    "build:gui": "node -e \"['editor-gui','permission-gate','trident-queue','trident-routing'].forEach(d=>require('fs').rmSync('extensions/'+d+'/gui/dist',{recursive:true,force:true}))\" && pnpm build:gui-editor && pnpm build:gui-gate && pnpm build:gui-setup && pnpm build:gui-route",
+    "build:gui": "node -e \"['editor-gui','permission-gate','trident-queue','trident-routing'].forEach(d=>require('fs').rmSync('extensions/'+d+'/gui/dist',{recursive:true,force:true}))\" && node -e \"['trident-queue'].forEach(d=>{['gui-review','gui-manager'].forEach(s=>{try{require('fs').rmSync('extensions/'+d+'/'+s+'/dist',{recursive:true,force:true})}catch{}})})\" && pnpm build:gui-editor && pnpm build:gui-gate && pnpm build:gui-setup && pnpm build:gui-route && pnpm build:gui-review && pnpm build:gui-manager",
     "build:gui-editor": "cd extensions/editor-gui/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
     "build:gui-gate": "cd extensions/permission-gate/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
     "build:gui-setup": "cd extensions/trident-queue/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
-    "build:gui-route": "cd extensions/trident-routing/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build"
+    "build:gui-route": "cd extensions/trident-routing/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
+    "build:gui-review": "cd extensions/trident-queue/gui-review && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build",
+    "build:gui-manager": "cd extensions/trident-queue/gui-manager && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.js && rsbuild build"
   },
   "dependencies": {
     "@rsbuild/core": "^2.1.8",

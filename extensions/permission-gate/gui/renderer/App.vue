@@ -2,7 +2,10 @@
   <div v-if="!initData" style="color:red;padding:20px">initData 为空</div>
   <div v-else style="display:flex;flex-direction:column;height:100vh;background:#1a1a2e;color:#e0e0e0">
     <header style="padding:8px 16px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center">
-      <h1 style="font-size:15px;color:#ff6b6b;margin:0">⚠️ 危险命令审计</h1>
+      <div style="display:flex;align-items:center;gap:10px">
+        <h1 style="font-size:15px;color:#ff6b6b;margin:0">⚠️ 危险命令审计</h1>
+        <span v-if="taskId" style="font-size:11px;color:#7aa2f7;background:#1a1a3e;padding:2px 8px;border-radius:4px">📋 {{ taskId }}</span>
+      </div>
       <div v-if="highlights.length > 0" style="display:flex;gap:6px;align-items:center;font-size:12px">
         <span style="color:#888">{{ cur + 1 }} / {{ highlights.length }}</span>
         <button data-name="highlight-prev" @click="prev" :disabled="cur<=0" style="padding:3px 10px;background:#2a2a4a;border:1px solid #444;border-radius:3px;color:#ccc;cursor:pointer;font-size:11px;disabled:opacity:0.4">◀ 上一个</button>
@@ -63,6 +66,7 @@ import { ref, computed, onMounted, nextTick } from "vue";
 const $ = (window as any).__INIT_DATA__;
 const initData = !!$;
 const cmd = $?.command || "";
+const taskId = $?.taskId || null;
 const rules = $?.rules || [];
 const rsp = $?.responseFile || "";
 const fs = (window as any).require("fs");

@@ -59,6 +59,7 @@ async function tryGuiApproval(
   // 写请求
   fs.writeFileSync(requestFile, JSON.stringify({
     command,
+    taskId: process.env.PI_TASK_ID || null,
     rules: rules.map(r => ({
       pattern: r.pattern,
       tip: r.tip,

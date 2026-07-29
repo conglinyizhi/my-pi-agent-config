@@ -1,292 +1,241 @@
-# 三叉戟 · pi 多 Agent 集群设计
+# 三叉戟 · pi 多 Agent 集群设计（修订版）
 
-> 代号"三叉戟"——OC Agent 为唯一入口，三条能力分叉（闲聊/翻译/讨论），后端编排层驱动 agent 集群协同工作。
+> 代号"三叉戟"——OC Agent 为唯一入口，三条能力分叉（闲聊/翻译/讨论），一键 task_new 贯通翻译→记录→执行全链路。
 
-## 一、目标
-
-将现有 pi 单 agent 改造为分层多 agent 集群，使：
-
-1. 你只需自然对话，不需手写 prompt
-2. 对话中自然捕捉"要做的事"，自动下发执行
-3. 聪明模型做策划、便宜模型做执行
-4. 事项跨 session 持久化，支持多事项并行
-
-## 二、架构总览
+## 一、架构总览
 
 ```
                          你
                          │
                     ┌────▼────┐
-                    │ OC Agent │  ← 唯一对话入口
+                    │ OC Agent │  ← 唯一对话入口（林汐）
                     └────┬────┘
                          │ 判断：闲聊 / 任务？
               ┌──────────┼──────────┐
               ▼          ▼          ▼
-           闲聊      翻译工具    直接讨论
-         (就是聊天)  (信号→模块)  (技术搭档)
+           闲聊       task_new    技术讨论
+         (就是聊天)   (一键贯通)  (技术搭档)
                          │
-                    ┌────▼────┐
-                    │ 编排层   │  ← 计划分解 / 模型路由 / 下发
-                    └────┬────┘
-                         │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-           planner    worker    reviewer
-           (聪明)      (便宜)    (便宜)
-                         │
-                    ┌────▼────┐
-                    │ 事项队列  │  ← 跨 session 持久化
-                    └─────────┘
+              ┌──────────▼──────────┐
+              │   task_new 内部链路   │
+              │                     │
+              │ 1. translate(翻译)   │  ← translator 模型
+              │ 2. GUI 确认 ←── 你   │  ← 同意 / 修改 / 提意见
+              │ 3. task_create      │  ← 写入事项队列
+              │ 4. subagent 执行     │  ← worker 模型
+              │ 5. task_update      │  ← 自动回写状态
+              └─────────────────────┘
 ```
 
-核心原则：OC Agent 是你**唯一对话的东西**。它内部有三条能力分叉（闲聊、翻译工具调用、技术讨论），自己判断当前用哪个。翻译工具是薄的一层——进了模块化提示词系统，出来就是结构化任务描述。编排层拿到后做计划、分模型、下发执行。
+核心原则：LLM 只看到一个入口——`task_new`。内部翻译→创建→执行→回写全自动，LLM 不需要手动编排工作流。
+
+## 二、LLM 心智模型
+
+**唯一入口：**
+
+```
+用户说"帮我做X" → OC 调 task_new(用户原话) → 等着看结果
+用户问"我手上有什么事" → OC 调 task_list → 回答
+```
+
+**管理工具（辅助）：**
+
+| 工具 | 用途 |
+|------|------|
+| `task_new` | **唯一入口**：翻译 + 创建 + 执行，一气呵成 |
+| `task_list` | 查看当前事项 |
+| `task_update` | 手动改状态/追加备注 |
+| `task_delete` | 归档或删除 |
+
+LLM 不需要知道 translate_task、subagent 的存在。那些是 `task_new` 内部实现细节。
 
 ## 三、组件设计
 
-### 3.1 OC Agent（对话层）
+### 3.1 OC Agent（林汐）
 
-#### 角色定位
+已实现。角色设定见 `SYSTEM.md`，舰队指挥隐喻 + 技术搭档人格。
+扩展 `trident-routing` 提供：
+- 会话开场白（随机选择风格）
+- 母港模式（`/homeport`，开发调试用，保留 write/edit）
+- 非母港模式：禁止 write/edit，强制通过 task_new 调度
 
-技术搭档 + 舰队指挥隐喻。跟你平起平坐，能接住情绪碎片，随时切进技术讨论。角色定位区别于秘书或角色扮演伴侣。
+### 3.2 task_new（核心工具）
 
-#### 能力三角
+**注册在 trident-queue 扩展中。**
 
-- **闲聊**：日常寒暄、接情绪、朋友式对话
-- **翻译工具调用**：判断你的话是"要做的事"，调用翻译工具产出结构化任务描述
-- **技术讨论**：架构分析、代码 review、debug
-
-这三者不是模式切换，是同一人格在不同深度上的自然表现。
-
-#### 实现形态
-
-pi skill。内容来自模块化提示词系统的基础层（01 人格画像 + 02 技术评估 + 03 敏感边界），叠加舰队指挥角色设定。翻译工具作为 skill 内注册的工具函数暴露给 OC Agent。
-
-### 3.2 隐私剥离
-
-自然对话中可能包含私人语境：角色名、个人经历、不宜公开的内容等。这些在写入公开仓库（spec、commit message、代码注释等）之前必须剥离。
-
-规则位置：挂在"写入公开文件"这个动作上，而不是挂在 SYSTEM.md 或 OC Agent 人格上。避免"不能想白熊"式的反效果——规则越靠近输出端，越不需要在对话中自我审查。
-
-实现：翻译工具输出结构化任务描述后、编排层将结果写入公开文件前，经过一道中性措辞替换。不影响对话体验，只在最终输出时生效。
-
-另注：这是翻译层和 OC agent 层设计都要考虑的事情，从这一层剥离之后，plan 和 worker 就不知道这些奇怪的词汇和信息了
-
-### 3.3 翻译工具（翻译层）
-
-#### 职责
-
-接收原始发言 → 信号检测 → 模块拼装 → 输出结构化任务描述。
-
-#### 工作流程
+内部流程：
 
 ```
-你的话 → OC 判断"这是任务" → 调翻译工具
-                              │
-                    ┌─────────▼─────────┐
-                    │ 信号检测（99 动态调整）│
-                    │ 模块拼装（00 组装指南）│
-                    │ prompt 组装           │
-                    └─────────┬─────────┘
-                              │
-                    ┌─────────▼─────────┐
-                    │ 结构化任务描述       │
-                    │ - title            │  由翻译层生成，OC 可改
-                    │ - goal             │
-                    │ - constraints      │  含技术栈等硬约束
-                    │ - user_signals     │  用户状态信号
-                    │ - suggested_agents  │  建议的 agent 组合
-                    └────────────────────┘
-                              │
-                         → 交给编排层
+task_new(utterance)
+  │
+  ├─ 1. 调翻译（translator 模型，独立 pi 进程，无工具）
+  │     输入：用户原话
+  │     输出：title + goal + constraints + context
+  │
+  ├─ 2. 弹 GUI 确认（Electron 弹窗）
+  │     展示翻译结果：title / goal / constraints / context
+  │
+  │     用户三选一：
+  │     ✅ 同意  → 用翻译结果直接继续
+  │     ✏️ 修改  → 在 GUI 中直接编辑 prompt，改完继续
+  │     💬 提意见 → 输入反馈文字，退回给 OC 重新翻译
+  │
+  │     退回重译时，OC 收到反馈意见，
+  │     可重新调 task_new 或手动修改后继续
+  │
+  ├─ 3. task_create（生成 kebab-case id，写入 active/）
+  │     状态：pending → executing
+  │
+  ├─ 4. 起 subagent（worker 模型，隔离 pi 进程）
+  │     prompt = 确认后的 title + goal + constraints + context
+  │     cwd = 当前项目目录
+  │     timeout = 600s
+  │
+  └─ 5. 根据 subagent 结果自动 task_update
+        成功 → done（附结果摘要）
+        失败 → blocked（附错误信息）
 ```
 
-#### 模型选择
+**GUI 实现：** 复用 `/trident-setup` 的 Electron + 临时文件通信模式。
+翻译结果写入 `/tmp/trident-review-*.json`，Electron 窗口展示并等待用户操作，
+结果写回 response 文件，task_new 根据返回值决定下一步。
 
-翻译工具使用**与 OC Agent 不同厂商的聪明模型**，形成双视角：OC Agent 懂你但可能太顺着你，翻译工具更"客观"。两者产出后，你可以任选一个微调或直接发送。
-
-#### 实现形态
-
-pi skill，内部封装模块化提示词系统（00、01、02、03、99 以及场景模块 05-12）。模块按 00 组装指南的规则动态加载。
-
-### 3.4 编排层
-
-#### 职责
-
-收到翻译层输出的结构化任务描述后，依序执行：
-
-1. **任务拆解**（planner，聪明模型）：拆成可并行或串行的子任务
-2. **模型路由**：按角色路由表分配模型
-3. **下发执行**：复用现有 subagent 的 single/parallel/chain 模式
-4. **状态追踪**：写入事项队列
-
-#### 任务状态机
+**LLM 看到的签名：**
 
 ```
-pending → planning → executing → reviewing → done
-              │            │           │
-              └────────────┴───────────┘
-                       失败/阻塞 → blocked
+task_new(utterance: string) → 翻译结果 + 用户确认状态 + 执行结果
 ```
 
-- **pending**：OC Agent 刚下发，等待拆解
-- **planning**：planner 拆分任务中
-- **executing**：子任务在 worker 池执行
-- **reviewing**：全部执行完，reviewer 检查
-- **done**：完成
-- **blocked**：测试不过、信息不足、需人工决策
+### 3.3 翻译（内部函数）
 
-#### 状态指示器
+不暴露为独立工具。从 `trident-translator` 提取核心逻辑，作为 `task_new` 的内部步骤。
 
-不主动打断你。类似 IDE 底部进度条的小型 UI，一眼扫过即可。基于现有 task-notification 扩展增强。
+保留 `providers.roles.toml` 中的 `translator` 角色配置，与 OC 不同模型形成第二视角。
 
-#### 实现形态
+翻译 prompt 包含隐私剥离规则：私人角色名、个人经历等用中性措辞替换后再写入 task context。
 
-pi 扩展，扩展 subagent 系统的能力。
+### 3.4 subagent（内部函数）
+
+不暴露为独立工具。从 `extensions/subagent/` 提取核心逻辑，作为 `task_new` 的内部步骤。
+
+保留 `providers.roles.toml` 中的 `worker` 角色配置（便宜模型）。
+
+起隔离 pi 进程，`PI_SUBAGENT=1` 环境变量防止递归注册。
+
+**MCP 接入：** 启动参数显式传 `--mcp-config ~/.pi/agent/mcp.json`，
+确保 subagent 进程有 MCP 工具可用（pi-mcp-adapter 通过 `mcp()` 工具代理）。
+不依赖自动发现，行为确定。
 
 ### 3.5 事项队列
 
-#### 结构
+**存储不变：** `~/.pi/agent/queue/{active,done,blocked}/`
+
+**状态机精简：**
+
+```
+pending → executing → done
+                ↘ blocked
+```
+
+去掉 planning、reviewing——没有编排层，不需要这些中间态。
+
+**TaskItem 结构不变：**
 
 ```json
 {
-  "id": "go-air-config",
-  "title": "Go 项目 air 配置修复",
+  "id": "kebab-case",
+  "title": "...",
   "source": "chat",
-  "status": "pending",
-  "created_at": "2025-07-27T20:00:00+08:00",
+  "status": "pending|executing|done|blocked",
+  "created_at": "ISO-8601",
   "subtasks": [],
-  "context": "用户说 air 调试时多进程管理有问题..."
+  "context": "..."
 }
 ```
 
-各字段说明：
-
-- **id**：主键，kebab-case
-- **title**：翻译层生成，OC Agent 可改
-- **source**：`chat`（对话中捕捉）或 `manual`（手动登记）
-- **status**：状态机当前状态
-- **created_at**：创建时间
-- **subtasks**：编排层拆解后的子任务
-- **context**：原始上下文和任务详情，额外信息全塞这里
-
-#### 存储
-
-```
-~/.pi/agent/queue/
-├── active/          ← 当前活跃事项
-├── done/            ← 已完成（保留 7 天后自动清理）
-└── blocked/         ← 阻塞中
-```
-
-纯本地 JSON 文件，不进 git。
-
-#### 查看方式
-
-1. OC Agent 查询：你问"我手上有什么事"，它读队列回答
-2. 状态指示器 UI：小面板或侧栏
-
 ### 3.6 模型路由
 
-#### 路由配置
-
-`providers.roles.toml`，不进 git 仓库（含 `.gitignore`）：
+`providers.roles.toml`：
 
 ```toml
 [roles]
-oc = "anthropic:claude-sonnet-4"
-translator = "google:gemini-2.5-pro"
-planner = "anthropic:claude-sonnet-4"
-worker = "openrouter:deepseek/deepseek-v3"
-reviewer = "openrouter:deepseek/deepseek-v3"
+oc = "deepseek/deepseek-v4-pro"
+translator = "deepseek/deepseek-v4-flash"
+worker = "deepseek/deepseek-v4-flash"
 ```
 
-格式：`provider:model`，对齐现有 providers 配置风格。
+去掉 planner、reviewer——不需要。
 
-#### 路由规则
+### 3.7 状态指示器
 
-| 环节     | 模型                   | 理由       |
-| -------- | ---------------------- | ---------- |
-| OC Agent | 聪明（不同厂商）       | 对话质感   |
-| 翻译工具 | 聪明（与 OC 不同厂商） | 双视角可选 |
-| planner  | 聪明                   | 架构决策   |
-| worker   | 便宜                   | 按计划执行 |
-| reviewer | 便宜                   | diff 检查  |
+trident-queue widget：在 TUI 底部显示活跃事项数量 + 简要状态。
 
-#### 降级
+### 3.8 /task-manager（任务管理 GUI）
 
-便宜模型连续失败或输出质量太差 → 自动升级到聪明模型重试。不打扰你。
+命令 `/task-manager`，启动 Electron GUI，提供：
 
-#### 后续扩展
+- **任务列表**：所有活跃/阻塞任务，带状态图标
+- **查看详情**：点击单个任务，展示完整 context、执行日志、时间线
+- **紧急终止**：对 executing 状态的任务发送 SIGTERM → SIGKILL，状态标记为 blocked
 
-预留按技术栈路由的能力，当前版本不做。
+实现：复用 `/trident-setup` 的 Electron + 临时文件通信模式。
+
+### 3.9 权限放行 GUI 关联 task
+
+当 subagent 内部触发了 permission-gate 审批弹窗时，弹窗应显示是哪个 task 发起的。
+
+实现：
+- task_new 启动 subagent 时设置环境变量 `PI_TASK_ID=xxx`
+- permission-gate 读取 `PI_TASK_ID`，有值时在 GUI 标题/内容中展示
+- task_new 终止 subagent（超时或 /task-manager 强制关停）时清理进程
 
 ## 四、仓库策略
 
-| 内容                     | 位置                   | 是否开源     |
-| ------------------------ | ---------------------- | ------------ |
-| 核心架构（扩展 + skill） | pi config 仓库         | ✅ 公开      |
-| OC 角色卡                | pi config 仓库         | ✅ 公开      |
-| 翻译层模块系统           | pi config 仓库         | ✅ 公开      |
-| 编排层逻辑               | pi config 仓库         | ✅ 公开      |
-| 个性化配置               | `settings.json`        | ❌ gitignore |
-| 模型路由表               | `providers.roles.toml` | ❌ gitignore |
-| 事项队列                 | `~/.pi/agent/queue/`   | ❌ gitignore |
-| 项目级上下文             | 各项目 `agent.md`      | 随项目       |
+| 内容 | 位置 | 开源 |
+|------|------|------|
+| OC 角色卡 | `SYSTEM.md` | ✅ |
+| trident-routing（权限 + 母港 + 开场白） | `extensions/trident-routing/` | ✅ |
+| trident-queue（task_* 工具 + 事项队列） | `extensions/trident-queue/` | ✅ |
+| trident-translator（翻译逻辑，内部函数） | `extensions/trident-translator/` | ✅ |
+| subagent（进程管理逻辑，内部函数） | `extensions/subagent/` | ✅ |
+| 模型路由表 | `providers.roles.toml` | ❌ gitignore |
+| 事项队列 | `~/.pi/agent/queue/` | ❌ gitignore |
 
-## 五、分期计划
+## 五、当前状态
 
-### 第一期：OC Agent + 翻译工具
+### ✅ 已完成
 
-- 创建 OC Agent skill（角色设定 + 舰队指挥隐喻）
-- 移植模块化提示词系统为翻译 skill
-- OC Agent 集成翻译工具调用
-- 双模型视角：OC 和翻译用不同模型
+- OC Agent（林汐人格 + SYSTEM.md）
+- trident-routing（开场白、母港模式、工具限制）
+- trident-queue（task_create/list/update/delete + widget + /trident-setup GUI）
+- trident-translator（translate_task 工具 + 翻译逻辑）
+- subagent（隔离进程执行）
+- providers.roles.toml + /trident-setup 模型选择 GUI
+- 事项队列文件存储
 
-**交付物**：你能跟 OC Agent 自然聊天，它判断"这是任务"后调翻译工具产出结构化任务描述。
+### 🔧 待重构
 
-### 第二期：编排层 + 事项队列
+1. **合并为 task_new**：translate_task → GUI 确认 → task_create → subagent → task_update 全链路打通为单一工具
+2. **GUI 确认弹窗**：翻译完成后弹出 Electron 窗口，用户可同意/修改/提意见
+3. **翻译降级为内部函数**：translate_task 不再暴露为独立工具，移入 task_new 内部
+4. **subagent 降级为内部函数**：subagent 工具移除，逻辑移入 task_new 内部
+5. **状态机瘦身**：去掉 planning、reviewing，只留 pending→executing→done/blocked
+6. **清理 providers.roles.toml**：去掉 planner、reviewer 角色
+7. **/task-manager GUI**：任务列表 + 查看详情 + 紧急终止
+8. **permission-gate 关联 task**：审批弹窗显示发起 task，通过 PI_TASK_ID 环境变量传递
+9. **subagent 接入 MCP**：启动参数显式传 `--mcp-config`，确保 worker 进程有 MCP 工具
 
-- 扩展 subagent 系统：任务拆解 + 模型路由
-- 实现事项队列（文件存储 + 状态机）
-- 状态指示器 UI
-- 跨 session 持久化
+### 📋 未来可做
 
-**交付物**：翻译产出的任务能自动拆解、分发、执行。关掉 pi 再打开，事项还在。
+- 模型降级策略（worker 失败自动换聪明模型）
+- OC Agent 定期总结
+- 隐私剥离的独立实现（当前只在翻译 prompt 里口头要求）
+- task_new 支持 `background: true`（异步执行，不阻塞对话）
 
-### 第三期：高级特性
+## 六、不做的
 
-- 模型路由降级策略
-- 按技术栈路由（可选）
-- 快速调整模型配置的 UI
-- OC Agent 定期总结"本周完成了什么"
-
-## 六、风险
-
-1. **OC Agent prompt 复杂度**：闲聊、技术讨论、任务判断三者合一，prompt 可能过长。缓解：模块动态加载，根据信号只注入当前需要的模块。
-2. **翻译层与编排层理解偏差**：翻译层产出可能不够精准。缓解：双模型视角交替可选，你确认后再下发。
-3. **pi 架构天花板**：深度依赖 pi 内部 API。缓解：核心逻辑独立为 skill/扩展，与 pi 本体松耦合，未来可迁移。
-4. **跨 session 状态的并发问题**：多个 session 同时写事项队列。缓解：第一期只支持单 session 活跃，后续用文件锁。
-
-## 七、未来架构方向：独立进程集群
-
-当前 spec 三期均基于单 pi 进程、扩展+skill 分层。长期来看，更干净的架构是每个 agent 独立为一个 pi 进程，各自拥有独立 config 目录：
-
-```
-pi 进程 (OC Agent) ──socket── pi 进程 (翻译) ──socket── pi 进程 (编排)
-                                     │
-                          ┌──────────┼──────────┐
-                      pi (planner)  pi (worker)  pi (reviewer)
-```
-
-优势：进程级隔离、天然模型独立配置、架构清晰、名副其实的"集群"。
-
-代价：需要设计 agent 间通信协议（消息格式、超时重试、断连恢复、进程管理），工程量显著增加。
-
-策略：三期验证完所有功能后，若 pi 单进程天花板确实构成了限制，再拆进程。届时已有清晰的通信需求，不易过度设计。
-
-## 八、不做的
-
-- 不做完整的多用户支持
-- 不做 Web UI（状态指示器用 pi TUI 即可）
-- 不替换现有 skills 系统（增量叠加）
-- 不做自动修复被阻塞的任务（需人工介入）
+- 不做编排层（planner/reviewer/chain/parallel）
+- 不做模块化提示词系统
+- 不做双模型视角可选（翻译结果直接给 OC 判断，不让你来回选）
+- 不做多用户支持
+- 不做 Web UI
