@@ -105,7 +105,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     // 新会话时注入开场白（启动/恢复/复用 session 均不注入）
-    if (event.reason === "new" && !isHomeport) {
+    // 用排他逻辑：非 startup 且非 resume → 视为新会话
+    if (event.reason !== "startup" && event.reason !== "resume" && !isHomeport) {
       const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
       pi.sendMessage({
         customType: "trident-greeting",
