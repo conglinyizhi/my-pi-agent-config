@@ -166,7 +166,7 @@ export default function (pi: ExtensionAPI) {
     if (ctx.hasUI) await refreshTodos(ctx);
   });
 
-  pi.registerCommand("scan-todo", {
+  pi.registerCommand("gui:scan-todo", {
     description: "打开 TODO 调度 GUI：选中、定位文件、补充说明后发送",
     handler: async (_args: string, ctx: any) => {
       if (!ctx.hasUI) return;

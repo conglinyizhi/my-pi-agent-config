@@ -201,7 +201,7 @@ async function showTaskReviewGui(
 
 // ═══════════════════════════════════
 
-// 跟踪正在运行的子进程 PID，供 /task-manager 紧急终止
+// 跟踪正在运行的子进程 PID，供 /gui:task-manager 紧急终止
 const runningPids = new Map<string, number>();
 
 /** 检查任务完成情况并发送通知 */
@@ -240,7 +240,7 @@ export default function (pi: ExtensionAPI) {
       "判断标准：当前任务是否需要多步操作、涉及多个文件、或需要独立上下文？是 → task_create。否 → 林汐自己动手。",
       "小活直接做：改个拼写、加一行注释、修个小 bug，不用起 task。大活分发：重构模块、新增功能、跨文件改动，用 task_create。",
       "需要并行多个独立任务时传数组：task_create({ utterance: ['A', 'B'] })，系统并行派发。",
-      "任务完成后自动更新状态，task_list 查看进度，/task-manager 管理。",
+      "任务完成后自动更新状态，task_list 查看进度，/gui:task-manager 管理。",
     ],
     parameters: Type.Object({
       utterance: Type.Union([
@@ -362,7 +362,7 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{
           type: "text",
-          text: `已派遣 ${launched.length} 个任务（后台执行）\n\n${lines.join("\n")}\n\n使用 task_list 查看进度，/task-manager 管理。`,
+          text: `已派遣 ${launched.length} 个任务（后台执行）\n\n${lines.join("\n")}\n\n使用 task_list 查看进度，/gui:task-manager 管理。`,
         }],
         details: { launched },
       };
@@ -489,10 +489,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ═══════════════════════════
-  // /task-manager GUI
+  // /gui:task-manager GUI
   // ═══════════════════════════
 
-  pi.registerCommand("task-manager", {
+  pi.registerCommand("gui:task-manager", {
     description: "GUI：查看任务详情、紧急关停运行中的任务",
     handler: async (_args, ctx) => {
       const electronBin = findElectron();
@@ -644,7 +644,7 @@ export default function (pi: ExtensionAPI) {
       const todoLabel = tc === null ? "…" : `${todoData!.done}/${tc}`;
       const headerLine = `⚓ 舰队事项(${tasks.length}) | 📋备战事项(${todoLabel})`;
       const hintLine = tc !== null && tc > 0
-        ? `<还有${tc - (todoData!.done ?? 0)}个todo待处理>  /scan-todo 展开` : null;
+        ? `<还有${tc - (todoData!.done ?? 0)}个todo待处理>  /gui:scan-todo 展开` : null;
 
       ctx.ui.setWidget("trident-queue", (_tui: any, theme: any) => ({
         render: (_width: number) => {
@@ -710,10 +710,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ═══════════════════════════
-  // /trident-setup
+  // /gui:trident-setup
   // ═══════════════════════════
 
-  pi.registerCommand("trident-setup", {
+  pi.registerCommand("gui:trident-setup", {
     description: "GUI：选择模型配置三叉戟路由",
     handler: async (_args, ctx) => {
       const electronBin = findElectron();
@@ -807,7 +807,7 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        let toml = "# 三叉戟模型路由配置\n# 由 /trident-setup 生成\n\n[roles]\n";
+        let toml = "# 三叉戟模型路由配置\n# 由 /gui:trident-setup 生成\n\n[roles]\n";
         for (const role of ["oc", "translator", "worker"]) {
           if (result.roles[role]) {
             toml += `${role} = "${result.roles[role]}"\n`;
