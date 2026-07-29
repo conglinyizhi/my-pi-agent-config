@@ -162,17 +162,7 @@ onMounted(() => {
 }
 .model-select:focus { outline: none; border-color: #4ec9b0; }
 
-.actions {
-  padding: 12px 20px; border-top: 1px solid #2a2a4a;
-  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
-}
-.count { font-size: 12px; color: #777; margin-right: auto; }
-.btn {
-  padding: 10px 28px; border: none; border-radius: 4px;
-  font-size: 14px; cursor: pointer; font-family: inherit;
-}
+/* button variants (base .btn / .actions / .count from gui-theme) */
 .btn-save { background: #2ecc71; color: #fff; }
 .btn-save:hover { background: #27ae60; }
-.btn-cancel { background: #555; color: #ccc; }
-.btn-cancel:hover { background: #666; }
 </style>

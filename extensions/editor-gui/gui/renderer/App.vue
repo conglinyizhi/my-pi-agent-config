@@ -314,15 +314,7 @@ function cancel() {
   flex-shrink: 0;
 }
 
-/* buttons */
-.btn {
-  padding: 8px 24px;
-  border: none;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-  font-family: inherit;
-}
+/* button variants (base .btn from gui-theme) */
 .btn-primary {
   background: var(--accent, #3498db);
   color: #fff;
@@ -334,23 +326,11 @@ function cancel() {
   background: var(--bg-tag, #1e2d3d);
   color: var(--text-accent, #4ec9b0);
   border: 1px solid var(--border-subtle, #2a2a4a);
-  padding: 8px 16px;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-  font-family: inherit;
   white-space: nowrap;
 }
 .btn-insert:hover {
   background: var(--bg-hover, #1a3a5c);
   border-color: var(--text-accent, #4ec9b0);
-}
-.btn-cancel {
-  background: var(--bg-secondary, #2a2a3e);
-  color: var(--text-secondary, #999);
-}
-.btn-cancel:hover {
-  background: #444;
 }
 
 /* history overlay */

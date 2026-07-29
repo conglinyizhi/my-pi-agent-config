@@ -183,15 +183,7 @@ function respond(payload: any) {
 .note-area textarea:focus { outline: none; border-color: #4ec9b0; }
 .note-area textarea::placeholder { color: #555; }
 
-.actions {
-  padding: 10px 20px; border-top: 1px solid #2a2a4a;
-  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
-}
-.count { font-size: 11px; color: #777; margin-right: auto; }
-.btn {
-  padding: 8px 20px; border: none; border-radius: 4px;
-  font-size: 13px; cursor: pointer; font-family: inherit;
-}
+/* page controls (base .btn / .actions / .count from gui-theme) */
 .btn-clear { background: #444; color: #ccc; }
 .btn-clear:hover { background: #555; }
 
