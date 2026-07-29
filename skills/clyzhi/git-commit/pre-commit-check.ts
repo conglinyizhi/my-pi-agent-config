@@ -76,6 +76,11 @@ function isTestFile(f: string): boolean {
   return f.endsWith(".test.ts") || f.endsWith(".test.tsx") || f.endsWith(".test.js");
 }
 
+/** scripts/ 目录下的脚本 console 是程序正常输出，跳过检查 */
+function isScriptFile(f: string): boolean {
+  return f.startsWith("scripts/");
+}
+
 // console.* 只在 pi 配置目录下视为调试残留，其他项目当作正常代码
 const consolePatterns: { label: string; pattern: RegExp }[] = [
   { label: "console.log",   pattern: /console\.log\s*\(/ },
@@ -99,6 +104,7 @@ for (const { label, pattern } of consolePatterns) {
     if (!existsSync(f)) continue;
     if (resolve(f) === SELF) continue;
     if (isTestFile(f)) continue;
+    if (isScriptFile(f)) continue;
     if (!resolve(f).startsWith(PI_AGENT_DIR)) continue;
     if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
     const content = readFileSync(f, "utf-8");
@@ -121,6 +127,7 @@ for (const { label, pattern } of debugPatterns) {
     if (!existsSync(f)) continue;
     if (resolve(f) === SELF) continue;
     if (isTestFile(f)) continue;
+    if (isScriptFile(f)) continue;
     if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
     const content = readFileSync(f, "utf-8");
     const lines = content.split("\n");
@@ -145,6 +152,7 @@ for (const f of files) {
   if (!existsSync(f)) continue;
   if (resolve(f) === SELF) continue;
   if (isTestFile(f)) continue;
+  if (isScriptFile(f)) continue;
   if (!CODE_EXTS.has(f.slice(f.lastIndexOf(".")))) continue;
   const content = readFileSync(f, "utf-8");
   const lines = content.split("\n");
