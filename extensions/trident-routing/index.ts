@@ -16,7 +16,15 @@ import { scanTodos, type TodoItem, type ScanState } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DISABLED_TOOLS = new Set(["write", "edit"]);
+const DISABLED_TOOLS = new Set([
+  // pi 内置编辑工具
+  "write", "edit",
+  // MCP better-edit-tools — 全部禁用，避免干扰 OC 判断
+  "be-read", "be-replace", "be-write", "be-delete", "be-insert", "be-insert-chip",
+  "be-func-range", "be-tag-range", "be-balance", "be-trx",
+  // MCP 代理工具
+  "mcp",
+]);
 
 // 开场白：说人话，先落点；在场不报到，环境点到为止。
 // 禁止系统腔；禁止未查证的队列/进度/归档等完成态（开场时尚未读事项，不许谎报军情）。
@@ -63,6 +71,8 @@ async function enterHomeport(pi: ExtensionAPI, ctx: any) {
 }
 
 export default function (pi: ExtensionAPI) {
+  // 子进程内不限制工具，worker 需要 MCP 编辑能力
+  if (process.env.PI_SUBAGENT) return;
   pi.on("session_start", async (event, ctx) => {
     // 启动时在 pi 配置目录 → 询问是否进母港
     if (event.reason === "startup" && ctx.cwd === getAgentDir()) {
