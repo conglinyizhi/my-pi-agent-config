@@ -119,7 +119,7 @@ export default function (pi: ExtensionAPI) {
     description: "创建一个新事项。id 使用 kebab-case。",
     promptSnippet: "Create a new task in the task queue",
     promptGuidelines: [
-      "Use task_create to save a task after translate_task produces a structured description. Generate a kebab-case id from the title.",
+      "Use task_create to save a task after translate_task (or manual structuring) is confirmed. Generate a kebab-case id from the title."
     ],
     parameters: Type.Object({
       id: Type.String({ description: "唯一标识，kebab-case" }),

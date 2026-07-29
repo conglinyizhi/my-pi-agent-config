@@ -3,9 +3,9 @@
 ## 立即验证
 
 - [x] `cp providers.roles.example.toml providers.roles.toml` 并填入实际模型
-- [ ] `/reload` → 加载 OC 林汐 + 4 个新扩展 + 3 个 GUI
-- [ ] 聊天测试：跟林汐说「帮我记个 todo：修 Go 项目的 air 多进程管理」
-- [ ] 权限闸门测试：在 pi 里执行 `rm -rf /tmp/test-dir` 看 GUI 是否弹出
+- [x] `/reload` → 加载 OC 林汐 + 4 个新扩展 + 3 个 GUI
+- [x] 聊天测试：跟林汐说「帮我记个 todo：修 Go 项目的 air 多进程管理」
+- [x] 权限闸门测试：在 pi 里执行 `rm -rf /tmp/test-dir` 看 GUI 是否弹出
 
 ## Phase 1 — OC Agent + 翻译层
 
