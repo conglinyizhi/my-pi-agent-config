@@ -128,9 +128,9 @@ function findElectron(): string | null {
 }
 
 async function showTaskReviewGui(
-  text: string,
+  texts: string[],
   signal: AbortSignal | undefined,
-): Promise<{ action: string; text?: string; comment?: string } | "gui-unavailable"> {
+): Promise<{ action: string; texts?: string[]; feedbacks?: Array<{ index: number; comment: string }> } | "gui-unavailable"> {
   const electronBin = findElectron();
   if (!electronBin) return "gui-unavailable";
 
@@ -141,7 +141,7 @@ async function showTaskReviewGui(
   const requestFile = path.join(tmpDir, "request.json");
   const responseFile = path.join(tmpDir, "response.json");
 
-  fs.writeFileSync(requestFile, JSON.stringify({ text }));
+  fs.writeFileSync(requestFile, JSON.stringify({ texts }));
 
   try {
     const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
@@ -213,167 +213,156 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════
   // task_new — 唯一入口
   // ═══════════════════════════
+  // task_create — 唯一入口（支持单任务/并行多任务）
+  // ═══════════════════════════
 
   pi.registerTool({
-    name: "task_new",
-    label: "New Task (Dispatch)",
+    name: "task_create",
+    label: "Create Task (Dispatch)",
     description:
-      "将用户发言转为结构化任务并自动执行。内部自动完成翻译→确认→创建→worker执行→回写状态。",
-    promptSnippet: "Create and dispatch a new task from a user utterance",
+      "将用户发言转为结构化任务并自动执行。支持单个字符串（单任务）或字符串数组（并行多任务）。",
+    promptSnippet: "Create and dispatch task(s) from user utterance(s)",
     promptGuidelines: [
-      "当用户说「帮我做X」「处理一下Y」时，直接调 task_new，传入用户原话。",
-      "task_new 内部自动完成翻译（translator 模型）、GUI 确认、subagent 执行（worker 模型）、状态回写。",
-      "如果返回 action='feedback'，说明用户提了修改意见，根据 comment 重新组织后再次调用 task_new。",
+      "当用户说「帮我做X」时，调 task_create({ utterance: '用户原话' })。",
+      "当用户同时提出多个独立任务时，调 task_create({ utterance: ['任务A原话', '任务B原话'] })，系统会并行执行。",
+      "如果返回 action='feedback'，说明用户对某些任务提了修改意见，根据 feedbacks 调整后再次调用。",
     ],
     parameters: Type.Object({
-      utterance: Type.String({ description: "用户的原始发言（保持原文，不修改）" }),
+      utterance: Type.Union([
+        Type.String({ description: "单个用户的原始发言" }),
+        Type.Array(Type.String(), { description: "多个用户的原始发言，并行执行" }),
+      ]),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const utterance = params.utterance;
+      const raw = params.utterance;
+      const utterances: string[] = Array.isArray(raw) ? raw : [raw];
 
-      // 1. 翻译
+      // 1. 并行翻译
       const translatorModel = getTranslatorModel();
       if (!translatorModel) {
         return {
-          content: [{ type: "text", text: "错误：未配置 translator 模型。请在 providers.roles.toml 中设置。" }],
+          content: [{ type: "text", text: "错误：未配置 translator 模型。" }],
           details: { error: "no_translator_model" },
         };
       }
 
-      const { text, stderr, exitCode } = await callPiTranslate(
-        translatorModel,
-        TRANSLATOR_SYSTEM_PROMPT,
-        utterance,
-        signal,
+      const translateResults = await Promise.all(
+        utterances.map(async (u) => {
+          try {
+            const { text, stderr, exitCode } = await callPiTranslate(
+              translatorModel, TRANSLATOR_SYSTEM_PROMPT, u, signal,
+            );
+            if (exitCode !== 0 || !text || !looksStructured(text)) {
+              return { error: `翻译失败`, raw: text || "", stderr };
+            }
+            return { text };
+          } catch (err) {
+            return { error: String(err) };
+          }
+        }),
       );
 
-      if (exitCode !== 0 || !text) {
+      const failed = translateResults.filter((r) => r.error);
+      if (failed.length > 0) {
         return {
-          content: [{ type: "text", text: `翻译失败：退出码 ${exitCode}${stderr ? `\n${stderr.slice(0, 300)}` : ""}` }],
-          details: { error: "translate_failed", exitCode, stderr },
+          content: [{ type: "text", text: `${failed.length}/${utterances.length} 个翻译失败：${failed.map((f) => f.error).join("；")}` }],
+          details: { failed },
         };
       }
 
-      if (!looksStructured(text)) {
-        return {
-          content: [{ type: "text", text: `翻译结果格式不符（缺 title/goal）。原文：\n\n${text}` }],
-          details: { error: "unstructured", raw: text },
-        };
-      }
+      const translatedTexts = translateResults.map((r) => r.text!);
 
       // 2. GUI 确认
-      let finalText = text;
+      let finalTexts = translatedTexts;
       if (ctx.hasUI) {
-        const guiResult = await showTaskReviewGui(finalText, signal);
+        const guiResult = await showTaskReviewGui(finalTexts, signal);
         if (guiResult === "gui-unavailable") {
-          // 无 GUI 时直接跳过确认
+          // 跳过确认
         } else if (guiResult.action === "cancelled") {
-          return {
-            content: [{ type: "text", text: "已取消。" }],
-            details: { action: "cancelled" },
-          };
-        } else if (guiResult.action === "feedback") {
-          return {
-            content: [{ type: "text", text: `用户退回重译。意见：${guiResult.comment || "（无）"}` }],
-            details: { action: "feedback", comment: guiResult.comment },
-          };
-        } else if (guiResult.action === "edit") {
-          finalText = guiResult.text || finalText;
+          return { content: [{ type: "text", text: "已取消。" }], details: { action: "cancelled" } };
+        } else if (guiResult.action === "approve") {
+          finalTexts = guiResult.texts || finalTexts;
+          if (guiResult.feedbacks?.length) {
+            const fbDesc = guiResult.feedbacks.map((f) => `[${f.index}] ${f.comment}`).join("；");
+            return {
+              content: [{ type: "text", text: `部分任务被退回重译：${fbDesc}` }],
+              details: { action: "feedback", feedbacks: guiResult.feedbacks },
+            };
+          }
         }
-        // action === "approve" → 用 original text
       }
 
-      // 3. 解析结构化文本
-      const title =
-        finalText.match(/\*\*title\*\*:\s*(.+)/i)?.[1]?.trim() ||
-        "未命名任务";
-      const goal =
-        finalText.match(/\*\*goal\*\*:\s*(.+)/i)?.[1]?.trim() ||
-        finalText.slice(0, 100);
-
-      // 4. 创建 task
-      const id = generateId(title) || `task-${Date.now().toString(36)}`;
+      // 3. 并行创建 + 执行
+      const workerModel = getWorkerModel();
       const sessionFile = ctx.sessionManager?.getSessionFile?.() || "unknown";
 
-      const task: TaskItem = {
-        id,
-        title,
-        source: "chat",
-        status: "executing",
-        created_at: new Date().toISOString(),
-        session: path.basename(sessionFile),
-        subtasks: [],
-        context: `**goal**: ${goal}\n\n${finalText}`,
-      };
+      const results = await Promise.all(
+        finalTexts.map(async (finalText, i) => {
+          const title = finalText.match(/\*\*title\*\*:\s*(.+)/i)?.[1]?.trim() || `任务 ${i + 1}`;
+          const goal = finalText.match(/\*\*goal\*\*:\s*(.+)/i)?.[1]?.trim() || finalText.slice(0, 100);
+          const id = generateId(title) || `task-${Date.now().toString(36)}-${i}`;
 
-      const existing = readTask(id);
-      if (existing) {
-        return {
-          content: [{ type: "text", text: `事项 ${id} 已存在。请手动 task_update 或 task_delete 后再试。` }],
-          details: { error: "duplicate", existing },
-        };
-      }
+          const task: TaskItem = {
+            id, title, source: "chat", status: "executing",
+            created_at: new Date().toISOString(),
+            session: path.basename(sessionFile),
+            subtasks: [],
+            context: `**goal**: ${goal}\n\n${finalText}`,
+          };
 
-      writeTask(task);
+          if (readTask(id)) {
+            return { id, title, error: "duplicate" };
+          }
 
-      // 5. subagent 执行
-      const workerModel = getWorkerModel();
-      const subagentPrompt = `任务目标：${goal}\n\n完整描述：\n${finalText}`;
+          writeTask(task);
+          const subagentPrompt = `任务目标：${goal}\n\n完整描述：\n${finalText}`;
 
-      let subagentResult: SubagentResult;
-      try {
-        subagentResult = await runSubagent({
-          task: subagentPrompt,
-          cwd: ctx.cwd,
-          model: workerModel,
-          signal,
-          taskId: id,
-          onSpawn: (pid) => { runningPids.set(id, pid); },
-        });
-        runningPids.delete(id);
-      } catch (err) {
-        runningPids.delete(id);
-        const message = err instanceof Error ? err.message : String(err);
-        task.status = "blocked";
-        task.context += `\n---\n执行异常：${message}`;
-        writeTask(task);
-        return {
-          content: [{ type: "text", text: `任务执行异常：${message}` }],
-          details: { error: message, task },
-        };
-      }
+          try {
+            const subagentResult = await runSubagent({
+              task: subagentPrompt, cwd: ctx.cwd, model: workerModel,
+              signal, taskId: id,
+              onSpawn: (pid) => { runningPids.set(id, pid); },
+            });
+            runningPids.delete(id);
 
-      // 6. 回写状态
-      const output = getResultOutput(subagentResult);
-      const usageStr = formatUsageStats(subagentResult.usage, subagentResult.model);
+            const output = getResultOutput(subagentResult);
+            const usage = formatUsageStats(subagentResult.usage, subagentResult.model);
 
-      if (isFailedResult(subagentResult)) {
-        task.status = "blocked";
-        task.context += `\n---\n执行失败（exit=${subagentResult.exitCode}）：\n${output}`;
-        writeTask(task);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `❌ 任务执行失败 [${task.id}]：${output.slice(0, 500)}\n\n${usageStr}`,
-            },
-          ],
-          details: { task, result: subagentResult },
-        };
-      }
+            if (isFailedResult(subagentResult)) {
+              task.status = "blocked";
+              task.context += `\n---\n执行失败（exit=${subagentResult.exitCode}）：\n${output}`;
+              writeTask(task);
+              return { id, title, status: "blocked", output, usage };
+            }
 
-      task.status = "done";
-      task.context += `\n---\n执行完成：\n${output}`;
-      writeTask(task);
+            task.status = "done";
+            task.context += `\n---\n执行完成：\n${output}`;
+            writeTask(task);
+            return { id, title, status: "done", output, usage };
+          } catch (err) {
+            runningPids.delete(id);
+            task.status = "blocked";
+            task.context += `\n---\n执行异常：${String(err)}`;
+            writeTask(task);
+            return { id, title, status: "blocked", error: String(err) };
+          }
+        }),
+      );
+
+      // 4. 汇总结果
+      const doneCount = results.filter((r) => r.status === "done").length;
+      const blockedCount = results.filter((r) => r.status === "blocked").length;
+      const lines = results.map((r) => {
+        const icon = r.status === "done" ? "✅" : r.status === "blocked" ? "❌" : "⚠️";
+        return `${icon} [${r.id}] ${r.title}${r.usage ? ` ${r.usage}` : ""}`;
+      });
 
       return {
-        content: [
-          {
-            type: "text",
-            text: `✅ 任务完成 [${task.id}] ${title}\n\n${output.slice(0, 1000)}\n\n${usageStr}`,
-          },
-        ],
-        details: { task, result: subagentResult },
+        content: [{
+          type: "text",
+          text: `完成 ${doneCount}/${results.length} 个任务${blockedCount > 0 ? `（${blockedCount} 失败）` : ""}\n\n${lines.join("\n")}`,
+        }],
+        details: { results },
       };
     },
   });

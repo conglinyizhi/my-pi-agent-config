@@ -29,7 +29,9 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
     name: "review",
     appJs: join(ROOT, "extensions/trident-queue/gui-review/app.js"),
     request: {
-      text: "**title**: 测试任务\n**goal**: 验证 GUI 确认流程\n**constraints**: 无\n**user_signals**: 未识别\n**context**: 这是一条测试发言",
+      texts: [
+        "**title**: 测试任务\n**goal**: 验证 GUI 确认流程\n**constraints**: 无\n**user_signals**: 未识别\n**context**: 这是一条测试发言",
+      ],
     },
   },
   {

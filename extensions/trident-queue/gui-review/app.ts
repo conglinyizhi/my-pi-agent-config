@@ -7,7 +7,7 @@ createGuiApp({
   requestFile: process.argv[2],
   responseFile: process.argv[3],
   inject: (request, { responseFile }) => ({
-    text: request.text,
+    texts: request.texts || [],
     responseFile,
   }),
 });
