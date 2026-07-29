@@ -69,6 +69,9 @@ export default function (pi: ExtensionAPI) {
   // 子进程内不限制工具，worker 需要 MCP 编辑能力
   if (process.env.PI_SUBAGENT) return;
   pi.on("session_start", async (event, ctx) => {
+    // 状态栏
+    ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", "林汐"));
+
     // 启动时在 pi 配置目录 → 询问是否进母港
     if (event.reason === "startup" && ctx.cwd === getAgentDir()) {
       const ok = await ctx.ui.confirm(
@@ -77,6 +80,7 @@ export default function (pi: ExtensionAPI) {
       );
       if (ok) {
         homeportSession = true;
+        ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", "母港"));
         ctx.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
         // 禁用 subagent
         const active = pi.getActiveTools();
@@ -88,6 +92,9 @@ export default function (pi: ExtensionAPI) {
 
     const isHomeport = event.reason === "new" && skipNextGreeting;
     skipNextGreeting = false;
+
+    // 状态栏：母港 / 林汐
+    ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", isHomeport ? "母港" : "林汐"));
 
     // 非母港：限制 write/edit
     if (!isHomeport) {
