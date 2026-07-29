@@ -109,3 +109,9 @@ extensions/put-http-proxy.ts 每次大模型都笨笨的直接访问raw资源站
 # 20260727
 
 TODO:DONE 将 ask_question 改成 GUI :)
+
+# 20260729-task_create 异步设计
+
+本来想参考 kimi code 设计一个同步等待几个 sub agent 完成的，但是我发现主 agent 我还用来其他的调查和交流，不做这个
+task_create 始终异步发射，不提供 await 选项。OC agent 还需用于AI驱动的角色扮演，
+同步等待会阻塞对话流。任务完成后自动回写状态到队列，通过 task_list / /task-manager 查看。

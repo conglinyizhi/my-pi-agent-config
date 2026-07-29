@@ -220,24 +220,21 @@ export default function (pi: ExtensionAPI) {
     name: "task_create",
     label: "Create Task (Dispatch)",
     description:
-      "将用户发言转为结构化任务并自动执行。支持单个字符串（单任务）或字符串数组（并行多任务）。默认异步（创建后立即返回），await=true 时等待全部完成。",
+      "将用户发言转为结构化任务并后台执行。支持单个字符串（单任务）或字符串数组（并行多任务）。异步发射，立即返回。",
     promptSnippet: "Create and dispatch task(s) from user utterance(s)",
     promptGuidelines: [
-      "当用户说「帮我做X」时，调 task_create({ utterance: '用户原话' })，默认异步立即返回。",
-      "用户需要等结果时，传 await: true。短任务（几分钟内）建议 await，长任务异步以免阻塞对话。",
+      "当用户说「帮我做X」时，调 task_create({ utterance: '用户原话' })，任务在后台执行，不会阻塞对话。",
       "需要并行多个任务时传数组：task_create({ utterance: ['A原话', 'B原话'] })。",
-      "异步任务完成后会自动更新状态，用户可通过 task_list 查看进度，/task-manager 管理。",
+      "任务完成后自动更新状态，用户可通过 task_list 查看进度，/task-manager 管理。",
     ],
     parameters: Type.Object({
       utterance: Type.Union([
         Type.String({ description: "单个用户的原始发言" }),
         Type.Array(Type.String(), { description: "多个用户的原始发言，并行执行" }),
       ]),
-      await: Type.Optional(Type.Boolean({ description: "是否等待全部任务完成再返回，默认 false（异步）" })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const raw = params.utterance;
-      const awaitResult = params.await === true;
       const utterances: string[] = Array.isArray(raw) ? raw : [raw];
 
       // 1. 并行翻译
@@ -295,15 +292,17 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // 3. 创建任务 + 执行
+      // 3. 创建任务 + 异步发射
       const workerModel = getWorkerModel();
       const sessionFile = ctx.sessionManager?.getSessionFile?.() || "unknown";
 
-      // 辅助函数：执行单个任务
-      const dispatchOne = async (finalText: string, i: number) => {
+      const launched: Array<{ id: string; title: string }> = [];
+      for (let i = 0; i < finalTexts.length; i++) {
+        const finalText = finalTexts[i];
         const title = finalText.match(/\*\*title\*\*:\s*(.+)/i)?.[1]?.trim() || `任务 ${i + 1}`;
         const goal = finalText.match(/\*\*goal\*\*:\s*(.+)/i)?.[1]?.trim() || finalText.slice(0, 100);
         const id = generateId(title) || `task-${Date.now().toString(36)}-${i}`;
+        launched.push({ id, title });
 
         const task: TaskItem = {
           id, title, source: "chat", status: "executing",
@@ -313,77 +312,43 @@ export default function (pi: ExtensionAPI) {
           context: `**goal**: ${goal}\n\n${finalText}`,
         };
 
-        if (readTask(id)) return { id, title, error: "duplicate" };
+        if (readTask(id)) continue;
         writeTask(task);
+
         const subagentPrompt = `任务目标：${goal}\n\n完整描述：\n${finalText}`;
 
-        try {
-          const subagentResult = await runSubagent({
-            task: subagentPrompt, cwd: ctx.cwd, model: workerModel,
-            signal: awaitResult ? signal : undefined,
-            taskId: id,
-            onSpawn: (pid) => { runningPids.set(id, pid); },
-          });
+        // fire and forget
+        runSubagent({
+          task: subagentPrompt, cwd: ctx.cwd, model: workerModel,
+          taskId: id,
+          onSpawn: (pid) => { runningPids.set(id, pid); },
+        }).then((subagentResult) => {
           runningPids.delete(id);
-
           const output = getResultOutput(subagentResult);
-          const usage = formatUsageStats(subagentResult.usage, subagentResult.model);
-
           if (isFailedResult(subagentResult)) {
             task.status = "blocked";
             task.context += `\n---\n执行失败（exit=${subagentResult.exitCode}）：\n${output}`;
-            writeTask(task);
-            return { id, title, status: "blocked", output, usage };
+          } else {
+            task.status = "done";
+            task.context += `\n---\n执行完成：\n${output}`;
           }
-
-          task.status = "done";
-          task.context += `\n---\n执行完成：\n${output}`;
           writeTask(task);
-          return { id, title, status: "done", output, usage };
-        } catch (err) {
+        }).catch((err) => {
           runningPids.delete(id);
           task.status = "blocked";
           task.context += `\n---\n执行异常：${String(err)}`;
           writeTask(task);
-          return { id, title, status: "blocked", error: String(err) };
-        }
-      };
-
-      if (awaitResult) {
-        // 同步模式：等待全部完成
-        const results = await Promise.all(finalTexts.map(dispatchOne));
-        const doneCount = results.filter((r) => r.status === "done").length;
-        const blockedCount = results.filter((r) => r.status === "blocked").length;
-        const lines = results.map((r) => {
-          const icon = r.status === "done" ? "✅" : r.status === "blocked" ? "❌" : "⚠️";
-          return `${icon} [${r.id}] ${r.title}${r.usage ? ` ${r.usage}` : ""}`;
         });
-        return {
-          content: [{
-            type: "text",
-            text: `完成 ${doneCount}/${results.length} 个任务${blockedCount > 0 ? `（${blockedCount} 失败）` : ""}\n\n${lines.join("\n")}`,
-          }],
-          details: { results },
-        };
-      } else {
-        // 异步模式：发射后立即返回
-        const launched: Array<{ id: string; title: string }> = [];
-        for (let i = 0; i < finalTexts.length; i++) {
-          const title = finalTexts[i].match(/\*\*title\*\*:\s*(.+)/i)?.[1]?.trim() || `任务 ${i + 1}`;
-          const id = generateId(title) || `task-${Date.now().toString(36)}-${i}`;
-          launched.push({ id, title });
-          // fire and forget
-          dispatchOne(finalTexts[i], i);
-        }
-        const lines = launched.map((t) => `▶ [${t.id}] ${t.title}`);
-        return {
-          content: [{
-            type: "text",
-            text: `已派遣 ${launched.length} 个任务（后台执行）\n\n${lines.join("\n")}\n\n使用 task_list 查看进度，/task-manager 管理。`,
-          }],
-          details: { launched },
-        };
       }
+
+      const lines = launched.map((t) => `▶ [${t.id}] ${t.title}`);
+      return {
+        content: [{
+          type: "text",
+          text: `已派遣 ${launched.length} 个任务（后台执行）\n\n${lines.join("\n")}\n\n使用 task_list 查看进度，/task-manager 管理。`,
+        }],
+        details: { launched },
+      };
     },
   });
 
