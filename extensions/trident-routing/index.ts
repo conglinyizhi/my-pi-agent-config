@@ -104,9 +104,21 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length !== active.length) pi.setActiveTools(filtered);
     }
 
-    // 新会话时注入开场白。显式加载历史 session（有 previousSessionFile）则跳过
-    const isExplicitResume = !!event.previousSessionFile;
-    if ((event.reason === "new" || event.reason === "startup") && !isHomeport && !isExplicitResume) {
+    // 新会话时注入开场白。session 已有对话历史则跳过（如 --session 恢复）
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    let hasHistory = false;
+    if (sessionFile) {
+      try {
+        const content = fs.readFileSync(sessionFile, "utf-8").trim();
+        hasHistory = content.split("\n").some((line) => {
+          try {
+            const entry = JSON.parse(line);
+            return entry.type === "user" || entry.type === "assistant";
+          } catch { return false; }
+        });
+      } catch { /* ignore */ }
+    }
+    if ((event.reason === "new" || event.reason === "startup") && !isHomeport && !hasHistory) {
       const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
       pi.sendMessage({
         customType: "trident-greeting",
