@@ -535,19 +535,58 @@ export default function (pi: ExtensionAPI) {
           });
         });
 
-        if (result?.action === "kill" && result.taskId) {
-          const pid = runningPids.get(result.taskId);
-          if (pid) {
-            try { process.kill(pid, "SIGTERM"); } catch {}
-            runningPids.delete(result.taskId);
+        if (result?.action === "batch" && Array.isArray(result.ops)) {
+          let started = 0, killed = 0;
+          for (const { taskId, op } of result.ops) {
+            if (op === "kill") {
+              const pid = runningPids.get(taskId);
+              if (pid) {
+                try { process.kill(pid, "SIGTERM"); } catch {}
+                runningPids.delete(taskId);
+              }
+              const task = readTask(taskId);
+              if (task && task.status === "executing") {
+                task.status = "blocked";
+                task.context += `\n---\n用户手动终止`;
+                writeTask(task);
+              }
+              killed++;
+            } else if (op === "start") {
+              const task = readTask(taskId);
+              if (task && (task.status === "pending" || task.status === "blocked")) {
+                task.status = "executing";
+                writeTask(task);
+                const workerModel = getWorkerModel();
+                runSubagent({
+                  task: task.context,
+                  cwd: ctx.cwd,
+                  model: workerModel,
+                  taskId: task.id,
+                  onSpawn: (pid) => { runningPids.set(task.id, pid); },
+                }).then((r) => {
+                  runningPids.delete(task.id);
+                  if (isFailedResult(r)) {
+                    task.status = "blocked";
+                    task.context += `\n---\n执行失败：${getResultOutput(r)}`;
+                  } else {
+                    task.status = "done";
+                    task.context += `\n---\n执行完成：\n${getResultOutput(r)}`;
+                  }
+                  writeTask(task);
+                }).catch((err) => {
+                  runningPids.delete(task.id);
+                  task.status = "blocked";
+                  task.context += `\n---\n执行异常：${String(err)}`;
+                  writeTask(task);
+                });
+              }
+              started++;
+            }
           }
-          const task = readTask(result.taskId);
-          if (task && task.status === "executing") {
-            task.status = "blocked";
-            task.context += `\n---\n用户手动终止`;
-            writeTask(task);
-          }
-          ctx.ui.notify(`已终止：${result.taskId}`, "warning");
+          const msg: string[] = [];
+          if (started > 0) msg.push(`已启动 ${started} 个`);
+          if (killed > 0) msg.push(`已终止 ${killed} 个`);
+          ctx.ui.notify(msg.join("，"), "info");
         }
       } finally {
         try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
