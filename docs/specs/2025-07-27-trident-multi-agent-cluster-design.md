@@ -194,10 +194,10 @@ trident-queue widget：在 TUI 底部显示活跃事项数量 + 简要状态。
 | 内容 | 位置 | 开源 |
 |------|------|------|
 | OC 角色卡 | `SYSTEM.md` | ✅ |
-| trident-routing（权限 + 母港 + 开场白） | `extensions/trident-routing/` | ✅ |
-| trident-queue（task_* 工具 + 事项队列） | `extensions/trident-queue/` | ✅ |
-| trident-translator（翻译逻辑，内部函数） | `extensions/trident-translator/` | ✅ |
-| subagent（进程管理逻辑，内部函数） | `extensions/subagent/` | ✅ |
+| trident-routing（权限 + 母港 + 开场白 + MCP 拦截） | `extensions/trident-routing/` | ✅ |
+| trident-queue（task_* 工具 + 事项队列 + GUI） | `extensions/trident-queue/` | ✅ |
+| lib/translate.ts（翻译核心） | `lib/translate.ts` | ✅ |
+| lib/subagent-run.ts（subagent 执行核心） | `lib/subagent-run.ts` | ✅ |
 | 模型路由表 | `providers.roles.toml` | ❌ gitignore |
 | 事项队列 | `~/.pi/agent/queue/` | ❌ gitignore |
 
@@ -206,31 +206,29 @@ trident-queue widget：在 TUI 底部显示活跃事项数量 + 简要状态。
 ### ✅ 已完成
 
 - OC Agent（林汐人格 + SYSTEM.md）
-- trident-routing（开场白、母港模式、工具限制）
-- trident-queue（task_create/list/update/delete + widget + /trident-setup GUI）
-- trident-translator（translate_task 工具 + 翻译逻辑）
-- subagent（隔离进程执行）
-- providers.roles.toml + /trident-setup 模型选择 GUI
+- trident-routing（开场白、母港模式、工具限制、MCP 拦截）
+- trident-queue（task_create/list/update/delete + widget + /trident-setup + /task-manager）
+- lib/translate.ts（翻译核心，供 task_create 内部调用）
+- lib/subagent-run.ts（subagent 执行核心，含 MCP + PI_TASK_ID + onSpawn）
+- gui-review（任务确认弹窗，支持多任务审核）
+- gui-manager（任务管理面板，多选批量启停 + 单任务详情）
+- providers.roles.toml（oc/translator/worker，无 planner/reviewer）
 - 事项队列文件存储
+- 状态机：pending→executing→done/blocked
+- permission-gate 审批弹窗显示 PI_TASK_ID
+- OC 禁止 MCP 工具（be-* + mcp），仅 worker 可用
+- task_create 始终异步发射，支持字符串数组并行
+- trident-translator 扩展已删除（逻辑在 lib/translate.ts）
 
-### 🔧 待重构
+### ⚠️ 待清理
 
-1. **合并为 task_new**：translate_task → GUI 确认 → task_create → subagent → task_update 全链路打通为单一工具
-2. **GUI 确认弹窗**：翻译完成后弹出 Electron 窗口，用户可同意/修改/提意见
-3. **翻译降级为内部函数**：translate_task 不再暴露为独立工具，移入 task_new 内部
-4. **subagent 降级为内部函数**：subagent 工具移除，逻辑移入 task_new 内部
-5. **状态机瘦身**：去掉 planning、reviewing，只留 pending→executing→done/blocked
-6. **清理 providers.roles.toml**：去掉 planner、reviewer 角色
-7. **/task-manager GUI**：任务列表 + 查看详情 + 紧急终止
-8. **permission-gate 关联 task**：审批弹窗显示发起 task，通过 PI_TASK_ID 环境变量传递
-9. **subagent 接入 MCP**：启动参数显式传 `--mcp-config`，确保 worker 进程有 MCP 工具
+- `extensions/subagent/` 独立工具注册仍在，可移除（逻辑已在 lib/subagent-run.ts）
 
 ### 📋 未来可做
 
 - 模型降级策略（worker 失败自动换聪明模型）
 - OC Agent 定期总结
 - 隐私剥离的独立实现（当前只在翻译 prompt 里口头要求）
-- task_new 支持 `background: true`（异步执行，不阻塞对话）
 
 ## 六、不做的
 
