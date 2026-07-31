@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TIMEOUT = 60_000; // 每个 GUI 最多等 60 秒
+const TIMEOUT = 30_000; // 每个 GUI 最多等 30 秒
 
 // 找 electron
 let electronBin: string;
@@ -90,37 +90,73 @@ async function runGui(name: string, appJs: string, request: unknown): Promise<st
 
   return new Promise((resolve, reject) => {
     const proc = spawn(electronBin, [appJs, reqFile, resFile], {
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
 
-    const timer = setTimeout(() => {
+    let outBuf = "";
+    proc.stdout.on("data", (d) => { outBuf += d.toString(); });
+    proc.stderr.on("data", (d) => { outBuf += d.toString(); });
+
+    // 自动判定：轮询 ready/error sidecar，不再依赖人工操作关闭窗口
+    const readyFile = `${resFile}.ready`;
+    const errFile = `${resFile}.error`;
+    const started = Date.now();
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(timer);
       try { proc.kill("SIGTERM"); } catch {}
-      reject(new Error("超时"));
+      fn();
+      try { rmSync(tmpDir, { recursive: true }); } catch {}
+    };
+
+    const poll = setInterval(() => {
+      if (existsSync(errFile)) {
+        const errMsg = readFileSync(errFile, "utf-8").split("\n")[0] || "未知主进程异常";
+        finish(() => reject(new Error(`主进程异常：${errMsg}`)));
+        return;
+      }
+      if (existsSync(readyFile)) {
+        const status = readFileSync(readyFile, "utf-8");
+        if (status === "ok") {
+          finish(() => resolve("ready"));
+        } else {
+          finish(() => reject(new Error(`渲染异常：#app 未挂载（status=${status}）`)));
+        }
+        return;
+      }
+      if (Date.now() - started > TIMEOUT) {
+        finish(() => reject(new Error(`超时（${TIMEOUT / 1000}s）：无 ready/error 信号${outBuf ? "\n" + outBuf.trim() : ""}`)));
+      }
+    }, 200);
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`超时（${TIMEOUT / 1000}s）${outBuf ? "\n" + outBuf.trim() : ""}`)));
     }, TIMEOUT);
 
     proc.on("close", () => {
+      // 进程提前退出（如启动即崩）：若已有 sidecar 则由 poll 处理，否则报错
       setTimeout(() => {
-        clearTimeout(timer);
-        try {
-          if (existsSync(resFile)) {
-            const action = JSON.parse(readFileSync(resFile, "utf-8")).action || "ok";
-            resolve(action);
-          } else {
-            reject(new Error("无响应文件"));
-          }
-        } catch {
-          reject(new Error("无响应文件"));
-        } finally {
-          try { rmSync(tmpDir, { recursive: true }); } catch {}
+        if (settled) return;
+        if (existsSync(errFile)) {
+          const errMsg = readFileSync(errFile, "utf-8").split("\n")[0] || "未知主进程异常";
+          finish(() => reject(new Error(`主进程异常：${errMsg}`)));
+        } else if (existsSync(readyFile)) {
+          const status = readFileSync(readyFile, "utf-8");
+          if (status === "ok") finish(() => resolve("ready"));
+          else finish(() => reject(new Error(`渲染异常：#app 未挂载（status=${status}）`)));
+        } else {
+          finish(() => reject(new Error(`进程提前退出，无响应${outBuf ? "\n" + outBuf.trim() : ""}`)));
         }
-      }, 200);
+      }, 300);
     });
 
     proc.on("error", (err) => {
-      clearTimeout(timer);
-      try { rmSync(tmpDir, { recursive: true }); } catch {}
-      reject(err);
+      finish(() => reject(err));
     });
   });
 }
@@ -137,7 +173,7 @@ for (const { name, appJs, request } of tests) {
   process.stdout.write(`  ${name} ... `);
   try {
     const action = await runGui(name, appJs, request);
-    console.log(`✅ (action=${action})`);
+    console.log(`✅ 渲染就绪 (${action})`);
     pass++;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
