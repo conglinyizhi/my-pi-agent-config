@@ -49,7 +49,7 @@ async function tryGuiApproval(
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-gate-"));
   const requestFile = path.join(tmpDir, "request.json");
   const responseFile = path.join(tmpDir, "response.json");
-  const appJs = path.join(__dirname, "gui", "app.js");
+  const appJs = path.join(__dirname, "gui", "app.mjs");
 
   if (!fs.existsSync(appJs) || !fs.existsSync(path.join(path.dirname(appJs), "dist", "index.html"))) {
     fs.rmSync(tmpDir, { recursive: true });
@@ -97,11 +97,16 @@ async function tryGuiApproval(
             const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
             clearTimeout(timeout);
             clearInterval(check);
-            resolve(data);
+            // 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭或未选择 → 视为 GUI 不可用，回退 TUI
+            if (data && (data.action === "allow" || data.action === "deny" || data.action === "reject-all")) {
+              resolve(data);
+            } else {
+              resolve("gui-unavailable");
+            }
           } catch {
             clearTimeout(timeout);
             clearInterval(check);
-            resolve({ action: "deny", comment: "window-closed" });
+            resolve("gui-unavailable");
           }
         }, 100);
       });

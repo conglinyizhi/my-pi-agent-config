@@ -193,7 +193,7 @@ export default function (pi: ExtensionAPI) {
       if (!electronBin) { ctx.ui.notify("未找到 electron", "error"); return; }
 
       const guiDir = join(os.homedir(), ".pi", "agent", "extensions", "trident-routing", "gui");
-      const appJs = join(guiDir, "app.js");
+      const appJs = join(guiDir, "app.mjs");
       const distHtml = join(guiDir, "dist", "index.html");
       if (!existsSync(appJs) || !existsSync(distHtml)) {
         ctx.ui.notify("GUI 未构建。执行 pnpm build:gui-route", "error");

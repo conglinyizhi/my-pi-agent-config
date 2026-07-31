@@ -11,7 +11,7 @@ description: pi 扩展 GUI 开发规范——gui-kit 骨架 + 目录结构 + 构
 
 - `#lib/gui-kit.mjs` — 主进程模板代码
 - `renderer/App.vue` — 界面逻辑（Vue 3）
-- esbuild 编译 `app.ts` → `app.js`
+- esbuild 编译 `app.ts` → `app.mjs`（**必须 .mjs**：输出是 ESM，Electron 43 对 `.js` 扩展名的 ESM 加载会静默崩溃）
 - rsbuild 编译 `renderer/` → `dist/`
 
 ## 目录结构

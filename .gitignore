@@ -28,7 +28,10 @@ permission-gate-reasons.csv
 **/gui/dist/
 # TS→JS 编译产物
 **/gui/app.js
+**/gui/app.mjs
 **/gui/app.js.map
 **/gui-review/app.js
+**/gui-review/app.mjs
 **/gui-manager/app.js
+**/gui-manager/app.mjs
 permission-gate-reasons.json

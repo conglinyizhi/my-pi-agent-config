@@ -135,7 +135,7 @@ async function showTaskReviewGui(
   const electronBin = findElectron();
   if (!electronBin) return "gui-unavailable";
 
-  const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-review", "app.js");
+  const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-review", "app.mjs");
   if (!fs.existsSync(appJs)) return "gui-unavailable";
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-"));
@@ -501,7 +501,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-manager", "app.js");
+      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-manager", "app.mjs");
       if (!fs.existsSync(appJs)) {
         ctx.ui.notify("GUI 未构建。执行 pnpm build:gui-manager", "error");
         return;
@@ -748,11 +748,11 @@ export default function (pi: ExtensionAPI) {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "trident-setup-"));
       const requestFile = path.join(tmpDir, "request.json");
       const responseFile = path.join(tmpDir, "response.json");
-      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui", "app.js");
+      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui", "app.mjs");
 
       if (!fs.existsSync(appJs)) {
         fs.rmSync(tmpDir, { recursive: true });
-        ctx.ui.notify("GUI app.js 未找到", "error");
+        ctx.ui.notify("GUI app.mjs 未找到", "error");
         return;
       }
 
