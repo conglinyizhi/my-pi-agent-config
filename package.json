@@ -11,7 +11,7 @@
     "build:gui-route": "cd extensions/trident-routing/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
     "build:gui-review": "cd extensions/trident-queue/gui-review && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
     "build:gui-manager": "cd extensions/trident-queue/gui-manager && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-fasttest": "node --experimental-strip-types scripts/gui-fasttest.ts"
+    "test:gui": "node --experimental-strip-types scripts/gui-fasttest.ts"
   },
   "dependencies": {
     "@rsbuild/core": "^2.1.8",

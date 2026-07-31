@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// build:gui-fasttest — 并行启动全部 GUI，自动判定渲染就绪/主进程异常，全量报告
+// test:gui — 并行启动全部 GUI，自动判定渲染就绪/主进程异常，全量报告
 //
 // 用法：node scripts/gui-fasttest.ts
 
