@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// build:gui-fasttest — 逐个启动 GUI，等待关闭，检查响应，一个失败就停
+// build:gui-fasttest — 并行启动全部 GUI，自动判定渲染就绪/主进程异常，全量报告
 //
-// 用法：node scripts/gui-fasttest.mjs
+// 用法：node scripts/gui-fasttest.ts
 
 import { execSync } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -169,17 +169,29 @@ console.log("");
 let pass = 0;
 let fail = 0;
 
-for (const { name, appJs, request } of tests) {
-  process.stdout.write(`  ${name} ... `);
-  try {
-    const action = await runGui(name, appJs, request);
-    console.log(`✅ 渲染就绪 (${action})`);
+// 并行启动全部 GUI，全量报告（不再一个失败就停）
+const results = await Promise.allSettled(
+  tests.map(async ({ name, appJs, request }) => {
+    try {
+      const action = await runGui(name, appJs, request);
+      return { name, action };
+    } catch (err) {
+      // 把 GUI 名带进错误信息，失败行才能显示是哪个 GUI
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`${name}: ${msg}`);
+    }
+  })
+);
+
+for (const r of results) {
+  if (r.status === "fulfilled") {
+    const { name, action } = r.value;
+    console.log(`  ${name} ... ✅ 渲染就绪 (${action})`);
     pass++;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log(`❌ ${msg}`);
+  } else {
+    const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+    console.log(`  ❌ ${msg}`);
     fail++;
-    break; // 一个失败就停
   }
 }
 
