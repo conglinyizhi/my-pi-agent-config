@@ -27,7 +27,7 @@ try {
 const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   {
     name: "review",
-    appJs: join(ROOT, "extensions/trident-queue/gui-review/app.js"),
+    appJs: join(ROOT, "extensions/trident-queue/gui-review/app.mjs"),
     request: {
       texts: [
         "**title**: 测试任务\n**goal**: 验证 GUI 确认流程\n**constraints**: 无\n**user_signals**: 未识别\n**context**: 这是一条测试发言",
@@ -36,7 +36,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "manager",
-    appJs: join(ROOT, "extensions/trident-queue/gui-manager/app.js"),
+    appJs: join(ROOT, "extensions/trident-queue/gui-manager/app.mjs"),
     request: {
       tasks: [
         {
@@ -51,7 +51,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "setup",
-    appJs: join(ROOT, "extensions/trident-queue/gui/app.js"),
+    appJs: join(ROOT, "extensions/trident-queue/gui/app.mjs"),
     request: {
       models: [{ value: "test/test-model", name: "Test Model" }],
       roles: { oc: "test/test-model", translator: "test/test-model", worker: "test/test-model" },
@@ -59,7 +59,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "gate",
-    appJs: join(ROOT, "extensions/permission-gate/gui/app.js"),
+    appJs: join(ROOT, "extensions/permission-gate/gui/app.mjs"),
     request: {
       command: "rm -rf /tmp/test",
       taskId: "test-task-001",
@@ -68,7 +68,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "route",
-    appJs: join(ROOT, "extensions/trident-routing/gui/app.js"),
+    appJs: join(ROOT, "extensions/trident-routing/gui/app.mjs"),
     request: {
       todos: [{ file: "test.ts", line: 10, text: "TODO: implement this" }],
       cwd: "/tmp",
@@ -76,7 +76,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "editor",
-    appJs: join(ROOT, "extensions/editor-gui/gui/app.js"),
+    appJs: join(ROOT, "extensions/editor-gui/gui/app.mjs"),
     request: { clipHistory: [], file: null },
   },
 ];
