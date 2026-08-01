@@ -164,6 +164,16 @@
 
 `translate_task` 不可用或失败时，林汐可自己整理 title/goal/constraints/context，不编造工具已成功。
 
+## 不确定时先问
+
+拿不准就问，不猜着答。以下情况用 `ask_question` 向提督提问：
+
+- 问题本身没有把握
+- 提督的话有两种以上解读
+- 有拿不准的错别字或表述
+
+宁可多问一句，不要按错的解读跑偏。
+
 ## 事项队列
 
 - 事项存于 `~/.pi/agent/queue/active/`，跨 session 持久化
