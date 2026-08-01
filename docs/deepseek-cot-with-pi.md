@@ -47,9 +47,33 @@ const isSameModel = assistantMsg.model === model.id;
 `/reload` 时 extension 走 `resolveModels()` → `buildModelConfig()` → `detectCompat()`，自动生效。
 `providers.toml` 保持干净，compat 由扩展代码驱动，不是配置文件持久化的内容。
 
-### 非 deepseek 模型的手动配置
+### 统一开关：`cot_replay`
 
-某些非 deepseek 模型（如 kimi-k3 等）可能需要同样的 CoT 回传行为。在 TOML 中添加：
+将 `thinkingFormat: "deepseek"` + `requiresReasoningContentOnAssistantMessages: true` 合并为一个语义化开关，
+模型级或 provider 级一行开启，适合非 deepseek 命名但需要 CoT 回传的模型（如 kimi-k3 等第三方推理模型）。
+
+模型级（只对该模型生效）：
+
+```toml
+[[providers.models]]
+id = "kimi-k3"
+cot_replay = true
+```
+
+provider 级（该供应商下所有模型生效，模型级优先）：
+
+```toml
+[[providers]]
+id = "my-proxy"
+base_url = "https://..."
+cot_replay = true
+```
+
+`cot_replay` 展开的 compat 与自动检测同级，仍可被显式 `[providers.models.compat]` 覆盖（例如 `thinking_format = "openrouter"` 手动覆盖）。
+
+### 非 deepseek 模型的手动配置（底层写法，一般不需要）
+
+如果需要对单个字段做精细控制，仍可直接写 compat：
 
 ```toml
 [[providers.models]]
@@ -59,7 +83,7 @@ thinking_format = "deepseek"
 requires_reasoning_content_on_assistant_messages = true
 ```
 
-合并优先级：TOML 模型级 > TOML provider 级 > 自动检测，手动配置不会被自动检测覆盖。
+合并优先级：TOML 模型级 > TOML provider 级 > 自动检测 + `cot_replay` 展开，手动配置不会被自动检测覆盖。
 
 ### 长期修复：custom-providers 扩展
 

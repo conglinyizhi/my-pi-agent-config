@@ -217,6 +217,8 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
                   costCacheRead: existing.cost_locked ? existing.costCacheRead : matched.costCacheRead,
                   costCacheWrite: existing.cost_locked ? existing.costCacheWrite : matched.costCacheWrite,
                   cost_locked: existing.cost_locked,
+                  cotReplay: existing.cotReplay,
+                  compat: existing.compat,
                 };
               }
               if (existing) {
@@ -613,6 +615,7 @@ function tomlModelEntry(m: ModelOverride): Record<string, unknown> {
   if (m.reasoning !== undefined) entry.reasoning = m.reasoning;
   if (m.input !== undefined) entry.input = m.input;
   if (m.cost_locked) entry.cost_locked = true;
+  if (m.cotReplay !== undefined) entry.cot_replay = m.cotReplay;
   return entry;
 }
 

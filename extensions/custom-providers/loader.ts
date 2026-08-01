@@ -33,6 +33,7 @@ function normalizeProvider(raw: Record<string, unknown>): RawProvider {
     api: raw.api as RawProvider["api"],
     models: typeof models === "string" ? models : Array.isArray(models) ? models.map(normalizeModelOverride) : undefined,
     defaults: defaults ? normalizeDefaults(defaults) : undefined,
+    cotReplay: raw.cot_replay as boolean | undefined,
     compat: normalizeCompat(raw.compat as Record<string, unknown> | undefined),
   };
 }
@@ -63,6 +64,7 @@ function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
     costCacheRead: raw.cost_cache_read as number | undefined,
     costCacheWrite: raw.cost_cache_write as number | undefined,
     cost_locked: raw.cost_locked as boolean | undefined,
+    cotReplay: raw.cot_replay as boolean | undefined,
     compat: normalizeCompat(raw.compat as Record<string, unknown> | undefined),
   };
 }

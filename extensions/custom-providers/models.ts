@@ -112,7 +112,14 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
 
   // compat 合并优先级：模型级 TOML compat > provider 级 TOML compat > 自动检测
+  // cot_replay 开关（模型级 > provider 级）展开为 deepseek 风格的 CoT 回传 compat，
+  // 与自动检测同级，仍可被 provider/模型级显式 compat 覆盖。
   const autoCompat = detectCompat(id, provider);
+  const cotReplay = override?.cotReplay ?? provider.cotReplay ?? false;
+  if (cotReplay) {
+    autoCompat.thinkingFormat = "deepseek";
+    autoCompat.requiresReasoningContentOnAssistantMessages = true;
+  }
   const providerCompat = toJsCompat(provider.compat);
   const modelCompat = toJsCompat(override?.compat);
   const mergedCompat = { ...autoCompat, ...providerCompat, ...modelCompat };

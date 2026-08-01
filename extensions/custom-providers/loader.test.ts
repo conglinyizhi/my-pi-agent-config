@@ -41,4 +41,28 @@ id = "x"
 `;
     assert.throws(() => parseProvidersToml(toml), /baseUrl is required/);
   });
+
+  it("parses cot_replay at provider and model level", () => {
+    const toml = `
+[[providers]]
+id = "p"
+base_url = "https://example.com"
+cot_replay = true
+
+[[providers.models]]
+id = "m1"
+
+[[providers.models]]
+id = "m2"
+cot_replay = false
+`;
+    const result = parseProvidersToml(toml);
+    const p = result.providers && result.providers[0];
+    assert.ok(p);
+    assert.strictEqual(p.cotReplay, true);
+    const models = p.models as Array<{ id: string; cotReplay?: boolean }>;
+    assert.strictEqual(models.length, 2);
+    assert.strictEqual(models[0].cotReplay, undefined);
+    assert.strictEqual(models[1].cotReplay, false);
+  });
 });

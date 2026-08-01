@@ -31,6 +31,11 @@ export interface ModelOverride extends Partial<ProviderDefaults> {
   name?: string;
   /** 锁定价格，reload-online 不覆盖 */
   cost_locked?: boolean;
+  /**
+   * 一键开启 CoT 回传（thinking_format=deepseek + requires_reasoning_content_on_assistant_messages=true）。
+   * 模型级开关；未设置时回退到 provider 级 cotReplay。
+   */
+  cotReplay?: boolean;
   compat?: CompatOverride;
 }
 
@@ -41,6 +46,8 @@ export interface RawProvider {
   api?: ApiFormat;
   models?: string | ModelOverride[];
   defaults?: ProviderDefaults;
+  /** provider 级 CoT 回传开关，对该 provider 下所有模型生效；模型级 cotReplay 优先 */
+  cotReplay?: boolean;
   compat?: CompatOverride;
 }
 

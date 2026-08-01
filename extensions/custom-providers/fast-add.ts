@@ -513,6 +513,7 @@ function tomlModel(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheRead !== undefined && m.costCacheRead > 0) result.cost_cache_read = m.costCacheRead;
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) result.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) result.reasoning = m.reasoning;
+  if (m.cotReplay !== undefined) result.cot_replay = m.cotReplay;
   if (m.input !== undefined && m.input.length > 1) result.input = m.input;
   if (m.compat && Object.keys(m.compat).length > 0) result.compat = m.compat;
   return result;
@@ -587,6 +588,7 @@ async function applyAndRegister(
                 costCacheRead: (m as Record<string, unknown>).cost_cache_read as number | undefined,
                 costCacheWrite: (m as Record<string, unknown>).cost_cache_write as number | undefined,
                 reasoning: (m as Record<string, unknown>).reasoning as boolean | undefined,
+                cotReplay: (m as Record<string, unknown>).cot_replay as boolean | undefined,
                 input: (m as Record<string, unknown>).input as InputCapability[] | undefined,
               });
             }
@@ -665,9 +667,9 @@ async function applyAndRegister(
       ...(info.apiKey ? { apiKey: info.apiKey } : {}),
       authHeader: true,
       models: allModelsForRegister.map(m => {
-        // 自动推断 compat：deepseek 模型使用 DeepSeek thinking 格式
+        // 自动推断 compat：deepseek 模型或 cot_replay 开启的模型使用 DeepSeek thinking 格式
         const autoCompat: Record<string, unknown> = { supportsDeveloperRole: false };
-        if (/^deepseek/i.test(m.id)) {
+        if (/^deepseek/i.test(m.id) || m.cotReplay) {
           autoCompat.thinkingFormat = "deepseek";
           autoCompat.requiresReasoningContentOnAssistantMessages = true;
         }
