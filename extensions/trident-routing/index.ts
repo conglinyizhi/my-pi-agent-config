@@ -12,7 +12,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { spawn, execSync } from "node:child_process";
-import { scanTodos, type TodoItem, type ScanState } from "./todo-scan";
+import { scanTodos, type TodoItem, type ScanState, type ScanTodosOptions } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -148,6 +148,7 @@ export default function (pi: ExtensionAPI) {
     return (_tui: unknown, theme: any) => ({
       render(_width: number): string[] {
         if (state.status === "scanning") return [theme.fg("dim", "📋 TODO: 扫描中…")];
+        if (state.status === "skipped") return [theme.fg("dim", "📋 TODO: ~ 目录跳过扫描")];
         if (state.status === "timeout") return [theme.fg("error", "📋 TODO: 扫描超时")];
         if (state.status === "error") return [theme.fg("warning", `📋 TODO: ${state.message}`)];
         if (state.status === "idle") return [];
@@ -159,11 +160,12 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function refreshTodos(ctx: any) {
+  async function refreshTodos(ctx: any, opts?: ScanTodosOptions) {
     todoState = { status: "scanning" };
     ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
-    const result = await scanTodos(pi, ctx.cwd);
+    const result = await scanTodos(pi, ctx.cwd, opts);
     if (result === null) { todoState = { status: "timeout" }; ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState)); return; }
+    if ("skipped" in result) { todoState = { status: "skipped" }; ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState)); return; }
     todoState = { status: "done", ...result, expanded: false };
     ctx.ui.setWidget(WIDGET_ID, buildTodoWidget(todoState));
     pi.events.emit("todo-scanner:result", { count: result.total, done: result.doneCount });
@@ -177,7 +179,8 @@ export default function (pi: ExtensionAPI) {
     description: "打开 TODO 调度 GUI：选中、定位文件、补充说明后发送",
     handler: async (_args: string, ctx: any) => {
       if (!ctx.hasUI) return;
-      await refreshTodos(ctx);
+      // GUI 是用户主动启动的：强制扫描（~ 目录也不跳过），且不设超时
+      await refreshTodos(ctx, { force: true, timeout: 0 });
       if (todoState.status !== "done") { ctx.ui.notify("TODO 扫描失败", "error"); return; }
 
       const todos = todoState.items;

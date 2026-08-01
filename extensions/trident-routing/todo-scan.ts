@@ -1,6 +1,8 @@
 // todo-scan.ts — TODO 扫描纯数据层
 // 供 trident-routing/index.ts 调用，不直接操作 UI
 
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExecResult } from "@earendil-works/pi-coding-agent";
 
 const TODO_PATTERN = "TO" + "DO:"; // 拆开避免扫到自己
@@ -16,9 +18,22 @@ export interface TodoItem {
 export type ScanState =
   | { status: "idle" }
   | { status: "scanning" }
+  | { status: "skipped" }
   | { status: "done"; items: TodoItem[]; total: number; doneCount: number; expanded: boolean }
   | { status: "timeout" }
   | { status: "error"; message: string };
+
+export interface ScanTodosOptions {
+  /** 强制扫描：忽略 ~ 目录跳过逻辑（GUI 等用户主动触发的场景） */
+  force?: boolean;
+  /** 超时毫秒；0 或不传表示不超时（默认 5000） */
+  timeout?: number;
+}
+
+export type ScanTodosResult =
+  | { skipped: true }
+  | { items: TodoItem[]; total: number; doneCount: number }
+  | null;
 
 function parseSearchOutput(stdout: string): TodoItem[] {
   const items: TodoItem[] = [];
@@ -41,7 +56,14 @@ function parseSearchOutput(stdout: string): TodoItem[] {
 export async function scanTodos(
   pi: ExtensionAPI,
   cwd: string,
-): Promise<{ items: TodoItem[]; total: number; doneCount: number } | null> {
+  opts?: ScanTodosOptions,
+): Promise<ScanTodosResult> {
+  // 当前目录恰好是 ~ 时，不启动 rg/grep 扫描进程（home 树过大，纯浪费）
+  if (!opts?.force && resolve(cwd) === resolve(homedir())) {
+    return { skipped: true };
+  }
+
+  const timeout = opts?.timeout ?? SEARCH_TIMEOUT_MS;
   let result: ExecResult;
 
   try {
@@ -52,7 +74,7 @@ export async function scanTodos(
       "-g", "!extensions/trident-routing/*",
       "-g", "!extensions/trident-queue/*",
       TODO_PATTERN, ".",
-    ], { timeout: SEARCH_TIMEOUT_MS, cwd });
+    ], { timeout, cwd });
   } catch {
     try {
       result = await pi.exec("grep", [
@@ -63,7 +85,7 @@ export async function scanTodos(
         "--exclude-dir=trident-routing",
         "--exclude-dir=trident-queue",
         TODO_PATTERN, ".",
-      ], { timeout: SEARCH_TIMEOUT_MS, cwd });
+      ], { timeout, cwd });
     } catch {
       return null;
     }
