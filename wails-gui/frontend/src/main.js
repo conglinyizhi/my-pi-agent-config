@@ -1,9 +1,11 @@
 import { createApp } from "vue";
 import SetupView from "./views/SetupView.vue";
+import ReviewView from "./views/ReviewView.vue";
 
-// P2: 窗口路由壳 —— 按 windowName 选视图（P3 逐个加入其余窗口）
+// 窗口路由壳 —— 按 windowName 选视图（P3 逐个加入）
 const views = {
   setup: SetupView,
+  review: ReviewView,
 };
 
 const winName = await window.go.main.App.GetWindowName();
