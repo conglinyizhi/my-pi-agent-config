@@ -3,31 +3,27 @@
 //
 // 用法：node scripts/gui-fasttest.ts
 
-import { execSync } from "node:child_process";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { findGuiBinary } from "../lib/gui-runner.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TIMEOUT = 30_000; // 每个 GUI 最多等 30 秒
 
-// 找 electron
-let electronBin: string;
-try {
-  const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
-    .trim().split("\n").filter(Boolean).sort().reverse();
-  electronBin = bins[0];
-} catch {
-  console.error("❌ 未找到 electron。请安装：yay -S electron");
+// 找 wails-gui 二进制
+const guiBin = findGuiBinary();
+if (!guiBin) {
+  console.error("❌ 未找到 wails-gui。请先构建：cd wails-gui && wails build -tags webkit2_41");
   process.exit(1);
 }
 
-const tests: Array<{ name: string; appJs: string; request: unknown }> = [
+const tests: Array<{ name: string; windowName: string; request: unknown }> = [
   {
     name: "review",
-    appJs: join(ROOT, "extensions/trident-queue/gui-review/app.mjs"),
+    windowName: "review",
     request: {
       texts: [
         "**title**: 测试任务\n**goal**: 验证 GUI 确认流程\n**constraints**: 无\n**user_signals**: 未识别\n**context**: 这是一条测试发言",
@@ -36,7 +32,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "manager",
-    appJs: join(ROOT, "extensions/trident-queue/gui-manager/app.mjs"),
+    windowName: "manager",
     request: {
       tasks: [
         {
@@ -51,7 +47,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "setup",
-    appJs: join(ROOT, "extensions/trident-queue/gui/app.mjs"),
+    windowName: "setup",
     request: {
       models: [{ value: "test/test-model", name: "Test Model" }],
       roles: { oc: "test/test-model", translator: "test/test-model", worker: "test/test-model" },
@@ -59,7 +55,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "gate",
-    appJs: join(ROOT, "extensions/permission-gate/gui/app.mjs"),
+    windowName: "gate",
     request: {
       command: "rm -rf /tmp/test",
       taskId: "test-task-001",
@@ -68,7 +64,7 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "route",
-    appJs: join(ROOT, "extensions/trident-routing/gui/app.mjs"),
+    windowName: "routing",
     request: {
       todos: [{ file: "test.ts", line: 10, text: "TODO: implement this" }],
       cwd: "/tmp",
@@ -76,12 +72,12 @@ const tests: Array<{ name: string; appJs: string; request: unknown }> = [
   },
   {
     name: "editor",
-    appJs: join(ROOT, "extensions/editor-gui/gui/app.mjs"),
+    windowName: "editor",
     request: { clipHistory: [], file: null },
   },
 ];
 
-async function runGui(name: string, appJs: string, request: unknown): Promise<string> {
+async function runGui(name: string, windowName: string, request: unknown): Promise<string> {
   const tmpDir = mkdtempSync(join(tmpdir(), "pi-guitest-"));
   const reqFile = join(tmpDir, "request.json");
   const resFile = join(tmpDir, "response.json");
@@ -89,7 +85,7 @@ async function runGui(name: string, appJs: string, request: unknown): Promise<st
   writeFileSync(reqFile, JSON.stringify(request));
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(electronBin, [appJs, reqFile, resFile], {
+    const proc = spawn(guiBin, [windowName, reqFile, resFile], {
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -171,9 +167,9 @@ let fail = 0;
 
 // 并行启动全部 GUI，全量报告（不再一个失败就停）
 const results = await Promise.allSettled(
-  tests.map(async ({ name, appJs, request }) => {
+  tests.map(async ({ name, windowName, request }) => {
     try {
-      const action = await runGui(name, appJs, request);
+      const action = await runGui(name, windowName, request);
       return { name, action };
     } catch (err) {
       // 把 GUI 名带进错误信息，失败行才能显示是哪个 GUI
