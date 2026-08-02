@@ -17,6 +17,8 @@ export interface TokenRule {
   name: string;
   tip: string;
   autoReject?: boolean;
+  /** 命中的 token（命令名/子命令/flag/参数），供 GUI 高亮 */
+  matched?: string[];
 }
 
 interface RuleDef {
@@ -108,18 +110,29 @@ function findCommandIndex(tokens: string[]): number {
 // 规则匹配
 // ═══════════════════════════════════════════════════
 
-function matchRule(tokens: string[], rule: RuleDef): boolean {
+/** 匹配规则：命中返回命中的 token 列表（供 GUI 高亮），否则 null */
+function matchRule(tokens: string[], rule: RuleDef): string[] | null {
   const cmdIdx = findCommandIndex(tokens);
   const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
-  if (!cmds.includes(tokens[cmdIdx])) return false;
+  if (!cmds.includes(tokens[cmdIdx])) return null;
+  const matched: string[] = [tokens[cmdIdx]];
   if (rule.subcmd) {
     for (let i = 0; i < rule.subcmd.length; i++) {
-      if (tokens[cmdIdx + 1 + i] !== rule.subcmd[i]) return false;
+      if (tokens[cmdIdx + 1 + i] !== rule.subcmd[i]) return null;
     }
+    matched.push(...rule.subcmd);
   }
-  if (rule.anyFlags && !rule.anyFlags.some((f) => tokens.includes(f))) return false;
-  if (rule.anyArgs && !rule.anyArgs.some((a) => tokens.includes(a))) return false;
-  return true;
+  if (rule.anyFlags) {
+    const hit = rule.anyFlags.filter((f) => tokens.includes(f));
+    if (hit.length === 0) return null;
+    matched.push(...hit);
+  }
+  if (rule.anyArgs) {
+    const hit = rule.anyArgs.filter((a) => tokens.includes(a));
+    if (hit.length === 0) return null;
+    matched.push(...hit);
+  }
+  return matched;
 }
 
 /** 命中所有危险规则（跨段聚合、去重） */
@@ -128,9 +141,10 @@ export function matchDangerous(cmd: string): TokenRule[] {
   const result: TokenRule[] = [];
   for (const seg of splitCommands(cmd)) {
     for (const r of RULES) {
-      if (matchRule(seg, r) && !seen.has(r.name)) {
+      const matched = matchRule(seg, r);
+      if (matched && !seen.has(r.name)) {
         seen.add(r.name);
-        result.push({ name: r.name, tip: r.tip, autoReject: r.autoReject });
+        result.push({ name: r.name, tip: r.tip, autoReject: r.autoReject, matched });
       }
     }
   }
@@ -178,7 +192,7 @@ export function isCommandSafe(cmd: string): boolean {
       venvActive = true;
       continue;
     }
-    const dangerous = RULES.filter((r) => matchRule(seg, r));
+    const dangerous = RULES.filter((r) => matchRule(seg, r) !== null);
     if (dangerous.length > 0) {
       const pipOnly = dangerous.every((r) => r.name === "bare-pip" || r.name === "python-m-pip" || r.name === "uv-system");
       if (venvActive && pipOnly && isPipInstall(seg)) continue;

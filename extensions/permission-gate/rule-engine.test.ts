@@ -165,5 +165,34 @@ dyn("E18 引号内转义非动态", "echo \"a\\nb\"", false);
 dyn("E19 env 前缀非动态", "FOO=1 cmd", false);
 
 // ═══════════════════════════════════════════════════
+// F. matched tokens（GUI 高亮数据）
+// ═══════════════════════════════════════════════════
+const matchedHas = (name: string, cmd: string, ruleName: string, tokens: string[]) =>
+  check(name, () => {
+    const rules = matchDangerous(cmd);
+    const r = rules.find((x) => x.name === ruleName);
+    assert.ok(r, `期望命中规则 ${ruleName}: ${cmd}`);
+    for (const t of tokens) {
+      assert.ok(r.matched?.includes(t), `期望 matched 含 ${t}，实际: ${r.matched?.join(",")}`);
+    }
+  });
+
+matchedHas("F1 rm 递归 matched", "rm -rf /tmp", "rm-recursive", ["rm", "-rf"]);
+matchedHas("F2 system matched", "uv pip install requests --system", "uv-system", ["uv", "--system"]);
+matchedHas("F3 裸 pip matched", "pip install x", "bare-pip", ["pip", "install"]);
+matchedHas("F4 sudo matched", "sudo apt update", "sudo", ["sudo"]);
+matchedHas("F5 777 matched", "chmod 777 f", "chmod-777", ["777"]);
+matchedHas("F6 python -m matched", "python -m pip install x", "python-m-pip", ["python", "-m", "pip", "install"]);
+check("F7 matched 不含无关参数", () => {
+  const rules = matchDangerous("rm -rf /tmp");
+  const r = rules.find((x) => x.name === "rm-recursive");
+  assert.ok(r);
+  assert.ok(!r.matched?.includes("/tmp"), "matched 不应含路径参数");
+});
+check("F8 放行命令 matched 为空", () => {
+  assert.deepStrictEqual(matchDangerous("uv pip install x"), []);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

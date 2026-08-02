@@ -21,7 +21,8 @@
     </div>
     <div v-if="showRules" class="collapse-body">
       <div v-for="(r,i) in rules" :key="i" class="rule-row">
-        <code class="rule-pattern">{{ r.pattern }}</code>
+        <code class="rule-pattern">{{ r.name }}</code>
+        <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
         <span class="rule-tip">{{ r.tip }}</span>
       </div>
     </div>
@@ -38,7 +39,8 @@
         <h2 class="dialog-title">审核意见</h2>
         <div v-for="(r,i) in rules" :key="i" @click="tog(i)" class="dialog-rule" :class="{ flagged: flg.has(i) }">
           <input data-name="rule-check" type="checkbox" :checked="flg.has(i)" class="dialog-check">
-          <code class="rule-pattern">{{ r.pattern }}</code>
+          <code class="rule-pattern">{{ r.name }}</code>
+          <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
           <span class="rule-tip">{{ r.tip }}</span>
         </div>
         <div v-if="flg.size>0" class="flagged-hint">已标记 {{ flg.size }} 个危险点</div>
@@ -79,14 +81,15 @@ const cmdBox = ref(null);
 const highlights = computed(() => {
   const r = [];
   for (const rule of rules.value) {
-    try {
-      const re = new RegExp(rule.pattern, "gi");
-      let m;
-      while ((m = re.exec(cmd.value)) !== null) {
-        r.push({ s: m.index, e: m.index + m[0].length, t: rule.tip });
-        if (m[0].length === 0) break;
+    // 命中 token 精确子串搜索（替代旧正则高亮，无转义/回溯问题）
+    for (const token of rule.matched || []) {
+      if (!token) continue;
+      let idx = 0;
+      while ((idx = cmd.value.indexOf(token, idx)) !== -1) {
+        r.push({ s: idx, e: idx + token.length, t: rule.tip });
+        idx += token.length;
       }
-    } catch {}
+    }
   }
   return r.sort((a, b) => a.s - b.s);
 });
@@ -183,6 +186,7 @@ onMounted(async () => {
 /* ── 规则列表 ── */
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }
 .rule-pattern { color: #ce9178; background: #0d0d1a; padding: 1px 4px; border-radius: 2px; }
+.rule-matched { color: #e67e22; background: #2a1a0a; padding: 1px 4px; border-radius: 2px; font-family: monospace; font-size: 11px; }
 .rule-tip { color: #999; }
 
 /* ── 对话框 ── */

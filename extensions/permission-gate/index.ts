@@ -18,14 +18,21 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { isCommandSafe, getMatchedRules, isAutoReject, type MatchedRule } from "./helpers";
+import { isCommandSafe, matchDangerous, hasDynamicConstructs, type TokenRule } from "./rule-engine";
+
+/** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
+const DYNAMIC_RULE: TokenRule = {
+  name: "dynamic-construct",
+  tip: "命令含动态构造（命令替换/eval/变量作命令等），无法静态判断，请人工确认",
+  autoReject: false,
+};
 
 const GUI_TIMEOUT_MS = 120_000; // 2 分钟
 
 /** 通过 GUI 审批（Wails 版，替代 Electron） */
 async function tryGuiApproval(
   command: string,
-  rules: MatchedRule[],
+  rules: TokenRule[],
   signal: AbortSignal | undefined,
 ): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string } | "gui-unavailable"> {
   if (!findGuiBinary()) return "gui-unavailable";
@@ -34,9 +41,10 @@ async function tryGuiApproval(
     command,
     taskId: process.env.PI_TASK_ID || null,
     rules: rules.map(r => ({
-      pattern: r.pattern,
+      name: r.name,
       tip: r.tip,
       autoReject: r.autoReject || false,
+      matched: r.matched ?? [],
     })),
   }, { timeoutMs: GUI_TIMEOUT_MS, signal });
 
@@ -48,10 +56,10 @@ async function tryGuiApproval(
 }
 
 /** 生成规则的 TUI 展示文本 */
-function formatRulesForTui(rules: MatchedRule[]): string {
+function formatRulesForTui(rules: TokenRule[]): string {
   if (rules.length === 0) return "";
   const lines = rules.map(r =>
-    `  · ${r.autoReject ? "[自动拒绝] " : ""}${r.pattern} → ${r.tip}`
+    `  · ${r.autoReject ? "[自动拒绝] " : ""}${r.name}${r.matched?.length ? ` (${r.matched.join(" ")})` : ""} → ${r.tip}`
   );
   return `\n命中规则：\n${lines.join("\n")}`;
 }
@@ -65,21 +73,22 @@ export default async function (pi: ExtensionAPI) {
 
     const command: string = event.input.command as string;
 
-    // 安全模式白名单放行
-    if (isCommandSafe(command)) return undefined;
+    // 安全判定：白名单覆盖（venv 保护）或无危险规则 → 字面量命令完全放行；含动态构造则降级人工确认
+    const safe = isCommandSafe(command);
+    const rules = matchDangerous(command);
+    const dynamic = hasDynamicConstructs(command);
+    if (safe && !dynamic) return undefined;
+    if (dynamic && rules.length === 0) rules.push(DYNAMIC_RULE);
 
-    // 获取匹配的规则
-    const rules = getMatchedRules(command);
-
-    // 全部命中规则都是 autoReject → 直接拦
-    if (rules.length > 0 && rules.every(r => r.autoReject)) {
+    // 未被白名单覆盖且全部命中规则都是 autoReject → 直接拦（白名单覆盖时降级确认而非静默拦）
+    if (!safe && rules.every(r => r.autoReject)) {
       const tipText = rules.map(r => r.tip).join("；");
       return { block: true, reason: `自动拒绝：${tipText}` };
     }
 
     // 无 UI 则直接阻止
     if (!ctx.hasUI) {
-      const tipText = rules.map(r => `${r.pattern}: ${r.tip}`).join("；");
+      const tipText = rules.map(r => `${r.name}: ${r.tip}`).join("；");
       return { block: true, reason: tipText ? `危险命令已阻止：${tipText}` : "危险命令已阻止" };
     }
 
