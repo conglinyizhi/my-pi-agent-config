@@ -31,7 +31,14 @@ export const dangerousRules: DangerousRule[] = [
     autoReject: true,
   },
   {
-    pattern: /\bpip3?\s+install\b/i,
+    // 兜底层：任何 uv 命令段（同一分号段内）带 --system 都拦，覆盖顺序/间隔变体
+    pattern: /\buv\b[^;]*(?:^|\s)--system\b/i,
+    tip: "严禁 uv 使用 --system 标志，会污染系统 Python 环境。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
+    autoReject: true,
+  },
+  {
+    // 排除 uv pip install：uv 自带 venv 隔离、不污染系统（--system 由上面规则单独拦）
+    pattern: /(?<!\buv\s)\bpip3?\s+install\b/i,
     tip: "请使用 uv 代替 pip。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
     autoReject: true,
   },
