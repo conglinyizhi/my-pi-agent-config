@@ -1,6 +1,6 @@
-// trident-queue — 事项队列 + task_new 全链路工具
+// trident-queue — 事项队列 + task_create 全链路工具
 //
-// task_new：翻译 → GUI 确认 → 创建 → subagent 执行 → 自动回写状态
+// task_create：翻译 → GUI 确认 → 创建 → worker 执行 → 自动回写状态
 // 状态机：pending → executing → done（失败→blocked）
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

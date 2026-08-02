@@ -1,9 +1,9 @@
 // trident-routing — 主Agent（林汐）工具权限控制
 //
-// 航母不亲自出击。禁止主Agent使用 write/edit 工具，
-// 强制她通过 translate_task / task_create / subagent 调度工作。
+// 林汐保留完整能力：write、edit、bash、MCP 全系列。
+// 小活自己干，大活走 task_create 分发支线任务。
 // 
-// /homeport 指令可临时解除限制，用于开发调试。
+// /homeport 指令可进入母港（维修模式）：替换系统提示词、跳过开场白。
 
 import type { EntryRenderer, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -58,10 +58,10 @@ let homeportSession = false;
 async function enterHomeport(pi: ExtensionAPI, ctx: any) {
   skipNextGreeting = true;
   homeportSession = true;
-  ctx.ui.notify("⚓ 返回母港。本会话不限制工具，可自由编辑。", "info");
+  ctx.ui.notify("⚓ 返回母港。维修模式。", "info");
   await ctx.newSession({
     withSession: async (c: any) => {
-      c.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
+      c.ui.notify("已进入母港。维修模式。", "info");
     },
   });
 }
@@ -89,17 +89,13 @@ export default function (pi: ExtensionAPI) {
     if (event.reason === "startup" && ctx.cwd === getAgentDir()) {
       const ok = await ctx.ui.confirm(
         "⚓ 进入母港？",
-        "检测到你在 pi 配置目录。要进入母港模式维修林汐吗？（母港模式保留 write/edit，禁用 subagent）"
+        "检测到你在 pi 配置目录。要进入母港模式维修林汐吗？"
       );
       if (ok) {
         homeportSession = true;
         ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", "母港"));
-        ctx.ui.notify("已进入母港。write/edit 可用，subagent 已禁用。", "info");
-        // 禁用 subagent
-        const active = pi.getActiveTools();
-        const filtered = active.filter((t: string) => t !== "subagent");
-        if (filtered.length !== active.length) pi.setActiveTools(filtered);
-        return; // 跳过正常 startup 的限制逻辑
+        ctx.ui.notify("已进入母港。维修模式。", "info");
+        return;
       }
     }
 
@@ -109,7 +105,7 @@ export default function (pi: ExtensionAPI) {
     // 状态栏：母港 / 林汐
     ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", isHomeport ? "母港" : "林汐"));
 
-    // 非母港：限制 write/edit
+    // 当前不禁用任何工具（DISABLED_TOOLS 为空集：林汐保留完整能力）
     if (!isHomeport) {
       homeportSession = false;
       const active = pi.getActiveTools();
@@ -117,11 +113,6 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length !== active.length) {
         pi.setActiveTools(filtered);
       }
-    } else {
-      // 母港：禁用 subagent
-      const active = pi.getActiveTools();
-      const filtered = active.filter((t: string) => t !== "subagent");
-      if (filtered.length !== active.length) pi.setActiveTools(filtered);
     }
 
     // 新会话时注入开场白（母港模式跳过）—— 仅显示在 TUI，不进入 LLM 上下文
