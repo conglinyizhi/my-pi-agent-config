@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { spawn, execSync } from "node:child_process";
+import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { visibleWidth, truncateToWidth } from "../trident-routing/todo-scan";
 import { getTranslatorModel, callPiTranslate, TRANSLATOR_SYSTEM_PROMPT, looksStructured } from "../../lib/translate";
 import { runSubagent, getResultOutput, isFailedResult, formatUsageStats, getWorkerModel } from "../../lib/subagent-run";
@@ -115,88 +115,21 @@ function generateId(title: string): string {
 }
 
 // ═══════════════════════════════════
-// GUI 确认（Electron）
+// GUI 确认（Wails）
 // ═══════════════════════════════════
-
-function findElectron(): string | null {
-  try {
-    const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
-      .trim().split("\n").filter(Boolean).sort().reverse();
-    return bins[0] || null;
-  } catch {
-    return null;
-  }
-}
 
 async function showTaskReviewGui(
   texts: string[],
   signal: AbortSignal | undefined,
 ): Promise<{ action: string; texts?: string[]; feedbacks?: Array<{ index: number; comment: string }> } | "gui-unavailable"> {
-  const electronBin = findElectron();
-  if (!electronBin) return "gui-unavailable";
+  if (!findGuiBinary()) return "gui-unavailable";
 
-  const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-review", "app.mjs");
-  if (!fs.existsSync(appJs)) return "gui-unavailable";
-
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-"));
-  const requestFile = path.join(tmpDir, "request.json");
-  const responseFile = path.join(tmpDir, "response.json");
-
-  fs.writeFileSync(requestFile, JSON.stringify({ texts }));
-
-  try {
-    const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
-      stdio: "ignore",
-      detached: true,
-    });
-
-    const GUI_TIMEOUT = 120_000;
-    const result = await new Promise<any>((resolve) => {
-      const timeout = setTimeout(() => {
-        try { proc.kill("SIGTERM"); } catch {}
-        resolve({ action: "cancelled" });
-      }, GUI_TIMEOUT);
-
-      const check = setInterval(() => {
-        try {
-          const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-          clearTimeout(timeout);
-          clearInterval(check);
-          resolve(data);
-        } catch {}
-      }, 300);
-
-      proc.on("close", () => {
-        setTimeout(() => {
-          try {
-            const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-            clearTimeout(timeout);
-            clearInterval(check);
-            resolve(data);
-          } catch {
-            clearTimeout(timeout);
-            clearInterval(check);
-            resolve({ action: "cancelled" });
-          }
-        }, 100);
-      });
-
-      if (signal) {
-        const onAbort = () => {
-          clearTimeout(timeout);
-          clearInterval(check);
-          try { proc.kill("SIGTERM"); } catch {}
-          resolve("gui-unavailable");
-        };
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
-
-    return result;
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  const result = await runGuiWindow("review", { texts }, { timeoutMs: 120_000, signal });
+  if (!result.ok) {
+    if (result.reason === "aborted" || result.reason === "unavailable") return "gui-unavailable";
+    return { action: "cancelled" }; // timeout / exited → 对齐原 cancelled 语义
   }
+  return result.data;
 }
 
 // ═══════════════════════════════════
@@ -495,66 +428,17 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("gui:task-manager", {
     description: "GUI：查看任务详情、紧急关停运行中的任务",
     handler: async (_args, ctx) => {
-      const electronBin = findElectron();
-      if (!electronBin) {
-        ctx.ui.notify("未找到 electron。请安装：yay -S electron", "error");
-        return;
-      }
-
-      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui-manager", "app.mjs");
-      if (!fs.existsSync(appJs)) {
-        ctx.ui.notify("GUI 未构建。执行 pnpm build:gui-manager", "error");
+      if (!findGuiBinary()) {
+        ctx.ui.notify("未找到 wails-gui，请先构建", "error");
         return;
       }
 
       const tasks = listTasks();
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-manager-"));
-      const requestFile = path.join(tmpDir, "request.json");
-      const responseFile = path.join(tmpDir, "response.json");
+      const result = await runGuiWindow("manager", { tasks }, { timeoutMs: 300_000 });
 
-      fs.writeFileSync(requestFile, JSON.stringify({ tasks }));
-
-      try {
-        const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
-          stdio: "ignore",
-          detached: true,
-        });
-
-        const GUI_TIMEOUT = 300_000;
-        const result = await new Promise<any>((resolve) => {
-          const timeout = setTimeout(() => {
-            try { proc.kill("SIGTERM"); } catch {}
-            resolve({ cancelled: true });
-          }, GUI_TIMEOUT);
-
-          const check = setInterval(() => {
-            try {
-              const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-              clearTimeout(timeout);
-              clearInterval(check);
-              resolve(data);
-            } catch {}
-          }, 300);
-
-          proc.on("close", () => {
-            setTimeout(() => {
-              try {
-                const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-                clearTimeout(timeout);
-                clearInterval(check);
-                resolve(data);
-              } catch {
-                clearTimeout(timeout);
-                clearInterval(check);
-                resolve({ cancelled: true });
-              }
-            }, 100);
-          });
-        });
-
-        if (result?.action === "batch" && Array.isArray(result.ops)) {
+        if (result.data?.action === "batch" && Array.isArray(result.data.ops)) {
           let started = 0, killed = 0;
-          for (const { taskId, op } of result.ops) {
+          for (const { taskId, op } of result.data.ops) {
             if (op === "kill") {
               const pid = runningPids.get(taskId);
               if (pid) {
@@ -607,9 +491,6 @@ export default function (pi: ExtensionAPI) {
           if (killed > 0) msg.push(`已终止 ${killed} 个`);
           ctx.ui.notify(msg.join("，"), "info");
         }
-      } finally {
-        try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
-      }
     },
   });
 
@@ -716,9 +597,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("gui:trident-setup", {
     description: "GUI：选择模型配置三叉戟路由",
     handler: async (_args, ctx) => {
-      const electronBin = findElectron();
-      if (!electronBin) {
-        ctx.ui.notify("未找到 electron。请安装：yay -S electron", "error");
+      if (!findGuiBinary()) {
+        ctx.ui.notify("未找到 wails-gui，请先构建", "error");
         return;
       }
 
@@ -745,72 +625,24 @@ export default function (pi: ExtensionAPI) {
         }
       } catch {}
 
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "trident-setup-"));
-      const requestFile = path.join(tmpDir, "request.json");
-      const responseFile = path.join(tmpDir, "response.json");
-      const appJs = path.join(os.homedir(), ".pi", "agent", "extensions", "trident-queue", "gui", "app.mjs");
-
-      if (!fs.existsSync(appJs)) {
-        fs.rmSync(tmpDir, { recursive: true });
-        ctx.ui.notify("GUI app.mjs 未找到", "error");
-        return;
-      }
-
-      fs.writeFileSync(requestFile, JSON.stringify({ models, roles }));
       ctx.ui.notify("正在启动模型选择器...", "info");
 
-      try {
-        const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
-          stdio: "ignore",
-          detached: true,
-        });
+      const result = await runGuiWindow("setup", { models, roles }, { timeoutMs: 120_000 });
 
-        const GUI_TIMEOUT = 120_000;
-        const result = await new Promise<any>((resolve) => {
-          const timeout = setTimeout(() => {
-            try { proc.kill("SIGTERM"); } catch {}
-            resolve({ cancelled: true });
-          }, GUI_TIMEOUT);
-
-          const check = setInterval(() => {
-            try {
-              const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-              clearTimeout(timeout);
-              clearInterval(check);
-              resolve(data);
-            } catch {}
-          }, 300);
-
-          proc.on("close", () => {
-            setTimeout(() => {
-              try {
-                const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-                clearTimeout(timeout);
-                clearInterval(check);
-                resolve(data);
-              } catch {
-                clearTimeout(timeout);
-                clearInterval(check);
-                resolve({ cancelled: true });
-              }
-            }, 100);
-          });
-        });
-
-        if (result.cancelled) {
+        if (!result.ok || result.data?.cancelled) {
           ctx.ui.notify("已取消。", "warning");
           return;
         }
 
-        if (!result.roles) {
+        if (!result.data.roles) {
           ctx.ui.notify("无效的响应。", "error");
           return;
         }
 
         let toml = "# 三叉戟模型路由配置\n# 由 /gui:trident-setup 生成\n\n[roles]\n";
         for (const role of ["oc", "translator", "worker"]) {
-          if (result.roles[role]) {
-            toml += `${role} = "${result.roles[role]}"\n`;
+          if (result.data.roles[role]) {
+            toml += `${role} = "${result.data.roles[role]}"\n`;
           }
         }
 
@@ -824,9 +656,6 @@ export default function (pi: ExtensionAPI) {
 
         fs.writeFileSync(rolesPath, toml, "utf-8");
         ctx.ui.notify("配置已保存到 providers.roles.toml，/reload 生效", "info");
-      } finally {
-        try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
-      }
     },
   });
 }

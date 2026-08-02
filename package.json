@@ -4,22 +4,12 @@
     "#lib/*": "./lib/*.mjs"
   },
   "scripts": {
-    "build:gui": "node -e \"['editor-gui','permission-gate','trident-queue','trident-routing'].forEach(d=>require('fs').rmSync('extensions/'+d+'/gui/dist',{recursive:true,force:true}))\" && node -e \"['trident-queue'].forEach(d=>{['gui-review','gui-manager'].forEach(s=>{try{require('fs').rmSync('extensions/'+d+'/'+s+'/dist',{recursive:true,force:true})}catch{}})})\" && pnpm build:gui-editor && pnpm build:gui-gate && pnpm build:gui-setup && pnpm build:gui-route && pnpm build:gui-review && pnpm build:gui-manager",
-    "build:gui-editor": "cd extensions/editor-gui/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-gate": "cd extensions/permission-gate/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-setup": "cd extensions/trident-queue/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-route": "cd extensions/trident-routing/gui && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-review": "cd extensions/trident-queue/gui-review && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
-    "build:gui-manager": "cd extensions/trident-queue/gui-manager && esbuild app.ts --bundle --platform=node --format=esm --external:electron --outfile=app.mjs && rsbuild build",
     "test:gui": "node --experimental-strip-types scripts/gui-fasttest.ts",
     "test:todo-scan": "node --experimental-strip-types extensions/trident-routing/todo-scan.test.ts"
   },
   "dependencies": {
-    "@rsbuild/core": "^2.1.8",
-    "@rsbuild/plugin-vue": "^2.0.1",
     "handlebars": "^4.7.8",
-    "smol-toml": "^1.7.0",
-    "vue": "^3.5.40"
+    "smol-toml": "^1.7.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.80.10",
@@ -27,7 +17,6 @@
     "@earendil-works/pi-coding-agent": "^0.80.10",
     "@earendil-works/pi-tui": "^0.80.10",
     "@types/node": "^25.9.3",
-    "esbuild": "^0.28.1",
     "tsx": "^4.19.0",
     "typebox": "^1.2.8",
     "typescript": "^6.0.3"

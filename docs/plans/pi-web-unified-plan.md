@@ -2,6 +2,9 @@
 
 > 状态：草案 | 日期：2025-08-01 | 整合自：pi-webd-server-plan + pi-web-gui-plan
 
+> ⚠️ 2026 迁移标注：本文提到的「6 个 Electron GUI」已于 2026 全量迁移到 **Wails**（`wails-gui/`，单二进制 + windowName 路由，Electron 链已退役）。
+> 若后续执行 pi-web 统一，迁移路径应从 Wails 出发（复用 `wails-gui/frontend/src/views/*.vue` 源码），不再是 rsbuild→vite。
+
 上游仓库：https://github.com/jmfederico/pi-web （仅保留其 sessiond 层，前端 Lit 与 web server 层废弃）
 
 ## 背景与决策
