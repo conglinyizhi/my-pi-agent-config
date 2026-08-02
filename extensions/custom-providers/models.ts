@@ -110,6 +110,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   const maxTokens = override?.maxTokens ?? anthropic?.maxTokens ?? defaults.maxTokens ?? DEFAULT_MAX_TOKENS;
   const input = override?.input ?? anthropic?.input ?? defaults.input ?? ["text"];
   const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
+  const thinkingLevelMap = override?.thinkingLevelMap ?? defaults.thinkingLevelMap;
 
   // compat 合并优先级：模型级 TOML compat > provider 级 TOML compat > 自动检测
   // cot_replay 开关（模型级 > provider 级）展开为 deepseek 风格的 CoT 回传 compat，
@@ -128,6 +129,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
     id,
     name: override?.name ?? anthropic?.name ?? id,
     reasoning,
+    thinkingLevelMap,
     input,
     cost: {
       input: override?.costInput ?? defaults.costInput ?? 0,

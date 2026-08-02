@@ -51,6 +51,15 @@ function normalizeCompat(raw: Record<string, unknown> | undefined): CompatOverri
   };
 }
 
+function normalizeThinkingLevelMap(raw: Record<string, unknown> | undefined): Record<string, string | null> | undefined {
+  if (!raw) return undefined;
+  const map: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    map[k] = v === null ? null : String(v);
+  }
+  return Object.keys(map).length > 0 ? map : undefined;
+}
+
 function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
   return {
     id: raw.id as string,
@@ -65,6 +74,7 @@ function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
     costCacheWrite: raw.cost_cache_write as number | undefined,
     cost_locked: raw.cost_locked as boolean | undefined,
     cotReplay: raw.cot_replay as boolean | undefined,
+    thinkingLevelMap: normalizeThinkingLevelMap(raw.thinking_level_map as Record<string, unknown> | undefined),
     compat: normalizeCompat(raw.compat as Record<string, unknown> | undefined),
   };
 }
@@ -79,6 +89,7 @@ function normalizeDefaults(raw: Record<string, unknown>): ProviderDefaults {
     costOutput: raw.cost_output as number | undefined,
     costCacheRead: raw.cost_cache_read as number | undefined,
     costCacheWrite: raw.cost_cache_write as number | undefined,
+    thinkingLevelMap: normalizeThinkingLevelMap(raw.thinking_level_map as Record<string, unknown> | undefined),
   };
 }
 

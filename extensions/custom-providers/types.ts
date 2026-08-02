@@ -13,6 +13,8 @@ export interface ProviderDefaults {
   costOutput?: number;
   costCacheRead?: number;
   costCacheWrite?: number;
+  /** 思考档位映射：pi thinking level → provider 参数值；null 标记不支持（off~high 默认支持，xhigh/max 必须显式声明） */
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 /** TOML compat 字段名（snake_case）与 JS 字段名（camelCase）的对照 */
