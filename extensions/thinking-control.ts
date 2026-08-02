@@ -7,42 +7,14 @@ export default function (pi: ExtensionAPI) {
     description: "切换思考深度",
     handler: async (_args, ctx) => {
       const current = pi.getThinkingLevel();
-
-      // 探测当前模型实际支持哪些级别
-      const available: string[] = [];
-      for (const level of ALL_LEVELS) {
-        pi.setThinkingLevel(level);
-        const actual = pi.getThinkingLevel();
-        if (actual === level && !available.includes(level)) {
-          available.push(level);
-        }
-      }
-      pi.setThinkingLevel(current);
-
       const choice = await ctx.ui.select(
         `当前: ${current}`,
-        ALL_LEVELS.map((l) => {
-          const forced = !available.includes(l);
-          const cur = l === current ? " ←" : "";
-          return `${l}${forced ? "（强制）" : ""}${cur}`;
-        }),
+        ALL_LEVELS.map((l) => (l === current ? `${l} ←` : l)),
       );
-
       if (choice) {
-        const level = choice
-          .replace(" ←", "")
-          .replace("（强制）", "") as Parameters<typeof pi.setThinkingLevel>[0];
-        const forced = !available.includes(level);
+        const level = choice.replace(" ←", "") as Parameters<typeof pi.setThinkingLevel>[0];
         pi.setThinkingLevel(level);
-        const applied = pi.getThinkingLevel();
-        ctx.ui.notify(
-          applied !== level
-            ? forced
-              ? `${level} 未生效（当前 ${applied}）`
-              : `${level} 不支持，已设为 ${applied}`
-            : `已切换: ${applied}`,
-          applied !== level ? (forced ? "info" : "warning") : "info",
-        );
+        ctx.ui.notify(`已切换: ${level}`, "info");
       }
     },
   });
