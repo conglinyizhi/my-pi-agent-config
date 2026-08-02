@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("think", {
