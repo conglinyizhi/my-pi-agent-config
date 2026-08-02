@@ -7,12 +7,30 @@ export default function (pi: ExtensionAPI) {
     description: "切换思考强度",
     handler: async (_args, ctx) => {
       const current = pi.getThinkingLevel();
+
+      // 探测当前模型不认可的档位（仅用于标注 *，不拦截选择）
+      const unsupported: string[] = [];
+      for (const level of ALL_LEVELS) {
+        pi.setThinkingLevel(level);
+        if (pi.getThinkingLevel() !== level && !unsupported.includes(level)) {
+          unsupported.push(level);
+        }
+      }
+      pi.setThinkingLevel(current);
+
       const choice = await ctx.ui.select(
-        `当前: ${current}`,
-        ALL_LEVELS.map((l) => (l === current ? `${l} ←` : l)),
+        `当前: ${current}（带 * 的是不稳定选项）`,
+        ALL_LEVELS.map((l) => {
+          const star = unsupported.includes(l) ? "*" : "";
+          const cur = l === current ? " ←" : "";
+          return `${star}${l}${cur}`;
+        }),
       );
+
       if (choice) {
-        const level = choice.replace(" ←", "") as Parameters<typeof pi.setThinkingLevel>[0];
+        const level = choice
+          .replace(" ←", "")
+          .replace(/^\*/, "") as Parameters<typeof pi.setThinkingLevel>[0];
         pi.setThinkingLevel(level);
         ctx.ui.notify(`已切换: ${level}`, "info");
       }
