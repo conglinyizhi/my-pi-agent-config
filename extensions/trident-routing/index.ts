@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
     const content = entry.data?.content;
     if (!content) return undefined;
     const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-    box.addChild(new Text(theme.fg("customMessageText", content), 0, 0));
+    box.addChild(new Text(theme.fg("accent", "林汐: ") + theme.fg("customMessageText", content), 0, 0));
     return box;
   };
   pi.registerEntryRenderer("trident-greeting", greetingRenderer);
