@@ -13,51 +13,24 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
 import { isCommandSafe, getMatchedRules, isAutoReject, type MatchedRule } from "./helpers";
 
 const GUI_TIMEOUT_MS = 120_000; // 2 分钟
 
-/** 查找可用的 electron 二进制 */
-function findElectron(): string | null {
-  try {
-    const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .sort()
-      .reverse(); // 最新优先
-    return bins[0] || null;
-  } catch {
-    return null;
-  }
-}
-
-/** 通过 Electron GUI 审批 */
+/** 通过 GUI 审批（Wails 版，替代 Electron） */
 async function tryGuiApproval(
   command: string,
   rules: MatchedRule[],
   signal: AbortSignal | undefined,
 ): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string } | "gui-unavailable"> {
-  const electronBin = findElectron();
-  if (!electronBin) return "gui-unavailable";
+  if (!findGuiBinary()) return "gui-unavailable";
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-gate-"));
-  const requestFile = path.join(tmpDir, "request.json");
-  const responseFile = path.join(tmpDir, "response.json");
-  const appJs = path.join(__dirname, "gui", "app.mjs");
-
-  if (!fs.existsSync(appJs) || !fs.existsSync(path.join(path.dirname(appJs), "dist", "index.html"))) {
-    fs.rmSync(tmpDir, { recursive: true });
-    return "gui-unavailable";
-  }
-
-  // 写请求
-  fs.writeFileSync(requestFile, JSON.stringify({
+  const result = await runGuiWindow("gate", {
     command,
     taskId: process.env.PI_TASK_ID || null,
     rules: rules.map(r => ({
@@ -65,68 +38,13 @@ async function tryGuiApproval(
       tip: r.tip,
       autoReject: r.autoReject || false,
     })),
-  }));
+  }, { timeoutMs: GUI_TIMEOUT_MS, signal });
 
-  try {
-    const proc = spawn(electronBin, [appJs, requestFile, responseFile], {
-      stdio: "ignore",
-      detached: true,
-    });
-
-    // 等待响应文件出现
-    const result = await new Promise<{ action: string; comment?: string } | "gui-unavailable">((resolve) => {
-      const timeout = setTimeout(() => {
-        try { proc.kill("SIGTERM"); } catch {}
-        resolve("gui-unavailable");
-      }, GUI_TIMEOUT_MS);
-
-      const check = setInterval(() => {
-        try {
-          const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-          clearTimeout(timeout);
-          clearInterval(check);
-          resolve(data);
-        } catch {
-          // response 还没写完，继续等
-        }
-      }, 300);
-
-      proc.on("close", () => {
-        setTimeout(() => {
-          try {
-            const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-            clearTimeout(timeout);
-            clearInterval(check);
-            // 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭或未选择 → 视为 GUI 不可用，回退 TUI
-            if (data && (data.action === "allow" || data.action === "deny" || data.action === "reject-all")) {
-              resolve(data);
-            } else {
-              resolve("gui-unavailable");
-            }
-          } catch {
-            clearTimeout(timeout);
-            clearInterval(check);
-            resolve("gui-unavailable");
-          }
-        }, 100);
-      });
-
-      if (signal) {
-        const onAbort = () => {
-          clearTimeout(timeout);
-          clearInterval(check);
-          try { proc.kill("SIGTERM"); } catch {}
-          resolve("gui-unavailable");
-        };
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
-
-    return result;
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  // 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭或未选择 → 视为 GUI 不可用，回退 TUI
+  if (result.ok && result.data && (result.data.action === "allow" || result.data.action === "deny" || result.data.action === "reject-all")) {
+    return result.data;
   }
+  return "gui-unavailable";
 }
 
 /** 生成规则的 TUI 展示文本 */

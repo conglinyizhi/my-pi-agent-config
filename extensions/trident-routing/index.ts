@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
-import { spawn, execSync } from "node:child_process";
+import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { scanTodos, type TodoItem, type ScanState, type ScanTodosOptions } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -186,51 +186,19 @@ export default function (pi: ExtensionAPI) {
       const todos = todoState.items;
       if (todos.length === 0) { ctx.ui.notify("没有 TODO", "info"); return; }
 
-      // 找 electron
-      let electronBin: string | null = null;
-      try {
-        const bins = execSync("ls /usr/bin/electron* 2>/dev/null", { encoding: "utf-8" })
-          .trim().split("\n").filter(Boolean).sort().reverse();
-        electronBin = bins[0] || null;
-      } catch {}
-      if (!electronBin) { ctx.ui.notify("未找到 electron", "error"); return; }
+      // 启动 Wails GUI
+      if (!findGuiBinary()) { ctx.ui.notify("未找到 wails-gui，请先构建", "error"); return; }
 
-      const guiDir = join(os.homedir(), ".pi", "agent", "extensions", "trident-routing", "gui");
-      const appJs = join(guiDir, "app.mjs");
-      const distHtml = join(guiDir, "dist", "index.html");
-      if (!existsSync(appJs) || !existsSync(distHtml)) {
-        ctx.ui.notify("GUI 未构建。执行 pnpm build:gui-route", "error");
-        return;
-      }
+      const result = await runGuiWindow("routing", { todos, cwd: ctx.cwd }, { timeoutMs: 300_000 });
 
-      const tmpDir = mkdtempSync(join(os.tmpdir(), "todo-gui-"));
-      const reqFile = join(tmpDir, "request.json");
-      const resFile = join(tmpDir, "response.json");
-      writeFileSync(reqFile, JSON.stringify({ todos, cwd: ctx.cwd }));
+      if (!result.ok || result.data?.action === "cancel" || !result.data?.todos?.length) return;
 
-      const proc = spawn(electronBin, [appJs, reqFile, resFile], { stdio: "ignore", detached: true });
-
-      // 等 GUI 关闭
-      const result = await new Promise<any>((resolve) => {
-        const timer = setTimeout(() => resolve({ cancelled: true }), 300_000);
-        const check = setInterval(() => {
-          try {
-            const data = JSON.parse(readFileSync(resFile, "utf-8"));
-            clearTimeout(timer); clearInterval(check); resolve(data);
-          } catch {}
-        }, 200);
-      });
-
-      try { proc.kill("SIGTERM"); } catch {}
-
-      if (!result || result.action === "cancel" || !result.todos?.length) return;
-
-      const itemsBlock = result.todos.map((item: { file: string; line: number; text: string }) =>
+      const itemsBlock = result.data.todos.map((item: { file: string; line: number; text: string }) =>
         `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");
       let msg = `处理以下 TODO:\n\n${itemsBlock}`;
-      if (result.note) msg += `\n\n补充: ${result.note}`;
+      if (result.data.note) msg += `\n\n补充: ${result.data.note}`;
       pi.sendUserMessage(msg);
-      ctx.ui.notify(`已发送 ${result.todos.length} 个 TODO`, "info");
+      ctx.ui.notify(`已发送 ${result.data.todos.length} 个 TODO`, "info");
     },
   });
 
