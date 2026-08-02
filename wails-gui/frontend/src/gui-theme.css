@@ -1,7 +1,7 @@
 /* 全局 box-sizing：防止 width:100% + padding 溢出（WebKitGTK 下 textarea/input/select 常见坑） */
 *, *::before, *::after { box-sizing: border-box; }
 
-/* gui-theme.css — 所有 Electron GUI 共享样式
+/* gui-theme.css — 所有 Wails GUI 共享样式
    用法：在 rsbuild.config.ts 中 import 或直接 @import
 */
 

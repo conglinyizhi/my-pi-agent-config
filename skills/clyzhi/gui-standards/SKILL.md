@@ -1,90 +1,95 @@
 ---
 name: gui-standards
-description: pi 扩展 GUI 开发规范——gui-kit 骨架 + 目录结构 + 构建流水线
+description: pi 扩展 GUI 开发规范——Wails 单二进制 + windowName 路由 + 文件 JSON 协议（2026 迁移后）
 ---
 
-# GUI 开发规范
+# GUI 开发规范（Wails）
 
 ## 架构
 
-所有 Electron GUI 使用统一骨架：
+所有 GUI 窗口由**单一 Wails 二进制** `wails-gui` 提供（Go + WebKitGTK 4.1，Vue 3 前端）。
+2026 年已从 Electron 全量迁移（6 个窗口），旧 Electron 链（gui-kit.mjs / rsbuild / esbuild / build:gui-*）已删除。
 
-- `#lib/gui-kit.mjs` — 主进程模板代码
-- `renderer/App.vue` — 界面逻辑（Vue 3）
-- esbuild 编译 `app.ts` → `app.mjs`（**必须 .mjs**：输出是 ESM，Electron 43 对 `.js` 扩展名的 ESM 加载会静默崩溃）
-- rsbuild 编译 `renderer/` → `dist/`
+- `wails-gui/main.go` — 窗口配置表（windowName → 标题 / 尺寸）
+- `wails-gui/app.go` — Go 侧方法：`GetInitData`（按窗口分支）/ `GetWindowName` / `SaveResponse` / `MarkReady` / `OpenFile` / `LoadReasons` / `SaveReason`
+- `wails-gui/frontend/src/main.js` — 窗口路由壳（windowName → 视图）+ 全局错误兜底
+- `wails-gui/frontend/src/views/*.vue` — 6 个窗口视图
+- extension 侧用 `lib/gui-runner.ts` 启动窗口（替代 Electron spawn + 轮询）
 
 ## 目录结构
 
 ```
-extensions/<name>/gui/
-├── app.ts              ← createGuiApp() 配置
-├── renderer/
-│   ├── index.ts        ← Vue 入口
-│   └── App.vue         ← 主组件
-├── rsbuild.config.ts   ← 从已有 GUI 复制
-└── dist/               ← gitignore
+wails-gui/
+├── main.go                ← 窗口配置（windowName / 标题 / 尺寸）
+├── app.go                 ← GetInitData（按窗口分支）/ SaveResponse / MarkReady / OpenFile
+└── frontend/
+    ├── index.html         ← body 必须 margin:0（防 WebKitGTK 白边）
+    └── src/
+        ├── main.js        ← 窗口路由壳 + window error 兜底（防白板）
+        ├── gui-theme.css  ← 共享样式（顶部有全局 box-sizing:border-box）
+        └── views/         ← 6 个窗口视图
+lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + runGuiWindow）
 ```
 
-## app.ts 模板
+## 窗口名映射
+
+| windowName | 视图 | 调用方 |
+|---|---|---|
+| setup | SetupView | extensions/trident-queue（/gui:trident-setup）|
+| review | ReviewView | extensions/trident-queue（任务确认）|
+| manager | ManagerView | extensions/trident-queue（/gui:task-manager）|
+| routing | RoutingView | extensions/trident-routing |
+| gate | GateView | extensions/permission-gate |
+| editor | EditorView | extensions/editor-gui |
+
+## extension 侧调用
 
 ```typescript
-import { createGuiApp } from "#lib/gui-kit";
-createGuiApp({
-  name: "窗口标题",
-  inject: (request, { responseFile }) => ({ ...request, responseFile }),
-});
+import { findGuiBinary, runGuiWindow } from "../../lib/gui-runner";
+
+if (!findGuiBinary()) {
+  ctx.ui.notify("未找到 wails-gui，请先构建", "error");
+  return;
+}
+const result = await runGuiWindow("gate", { command, taskId, rules }, { timeoutMs: 120_000, signal });
+// result = { ok, data?, reason?: "timeout" | "aborted" | "exited" | "unavailable" }
+// ok=false 时按 reason 区分语义：aborted/unavailable → 回退 TUI；timeout/exited → 视为取消
 ```
-
-## 共享样式
-
-所有 GUI 在 `<script setup>` 开头引入：
-
-```typescript
-import "../../../../lib/gui-theme.css";
-```
-
-`lib/gui-theme.css` 定义了基础暗色主题变量和组件类：
-- `.btn` / `.btn-deny` / `.btn-warn` / `.btn-allow` / `.btn-cancel` — 按钮
-- `.overlay` — 覆盖层（弹层遮罩）
-- `.dialog` — 对话框容器
-- `.actions` / `.count` — 页脚操作栏
-- `.collapse-header` / `.collapse-body` — 折叠面板
-
-不要在每个 GUI 里重复定义这些基础样式。只需添加 GUI 特有的样式即可。
 
 ## 构建
 
 ```bash
-pnpm build:gui-<name>   # 一次完成 esbuild + rsbuild
+cd ~/.pi/agent/wails-gui
+wails build -tags webkit2_41
+# 必带 -tags webkit2_41：Arch 上 webkit2gtk-4.0 的 libjxl.so 依赖已断，4.1 匹配 libjxl 0.12
+# 产物：wails-gui/build/bin/wails-gui（约 8.8MB，启动 ~288ms）
 ```
 
-已有：
-- `build:gui-editor` — editor-gui
-- `build:gui-gate` — permission-gate
-- `build:gui-setup` — trident-queue
+## 测试
 
-## 通信
-
-- 主进程注入 `window.__INIT_DATA__`
-- Vue 组件读 `window.__INIT_DATA__`
-- 响应：`fs.writeFileSync(responseFile, JSON.stringify(...))` + `window.close()`
-
-## index.html 模板
-
-所有 GUI 共享 `lib/gui-index.html`。rsbuild 配置中通过 `html.template` 指向它：
-
-```typescript
-html: {
-  template: "../../../lib/gui-index.html",
-  title: "窗口标题",
-},
+```bash
+pnpm test:gui   # node scripts/gui-fasttest.ts —— 并行启动 6 窗口，等 .ready/.error sidecar 判定渲染就绪
 ```
 
-模板内容统一维护，包含 CSP 标签消除 Electron 安全警告。新 GUI 无需创建自己的 `index.html`。
+## 协议（文件 JSON，沿用 Electron 时代设计）
 
-## 注意事项
+1. extension 写 `request.json` 到临时目录
+2. `spawn(wails-gui, [windowName, requestFile, responseFile])`
+3. 前端 `GetInitData()` 读 request → 用户操作 → `SaveResponse()` 写 response
+4. extension 300ms 轮询 response 文件（helper 已封装）
 
-- 改 `renderer/` 或 `app.ts` 后需重新构建
-- 新 GUI 复制现有 `rsbuild.config.ts` 即可
-- `#lib/gui-kit.mjs` 不要直接修改——所有 GUI 共享
+## 新增窗口步骤
+
+1. `main.go` 窗口配置表加一行（windowName / 标题 / 尺寸）
+2. `frontend/src/views/` 新建视图 + `main.js` 的 views 对象注册
+3. `app.go` 的 `GetInitData()` 加窗口分支
+4. extension 用 `runGuiWindow(newName, req, opts)` 调用
+5. `scripts/gui-fasttest.ts` 加测试项
+
+## WebKitGTK 已知坑
+
+- 前端 `select` 需 `appearance:none` 才吃 CSS 背景
+- index.html body 必须 `margin:0`（防白边）
+- 全局 `box-sizing:border-box` 在 gui-theme.css 顶部
+- IME（fcitx5）需 `gtk_im_module=fcitx` 环境变量（已实测可用）
+- 启动首帧冷缓存 ~466ms，热缓存稳定 ~285ms

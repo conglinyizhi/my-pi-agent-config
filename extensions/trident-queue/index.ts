@@ -115,7 +115,7 @@ function generateId(title: string): string {
 }
 
 // ═══════════════════════════════════
-// GUI 确认（Electron）
+// GUI 确认（Wails）
 // ═══════════════════════════════════
 
 async function showTaskReviewGui(

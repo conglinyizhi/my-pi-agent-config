@@ -8,7 +8,7 @@
  * 审批流程：
  * 1. 安全白名单放行
  * 2. 自动拒绝规则直接拦（不弹窗）
- * 3. Electron GUI 审计面板（主要审批方式）
+ * 3. Wails GUI 审计面板（主要审批方式）
  * 4. GUI 不可用时回退到 TUI（含命中的规则详情）
  */
 
@@ -92,7 +92,7 @@ export default async function (pi: ExtensionAPI) {
 
     // ====== 审批流程 ======
 
-    // 1. 尝试 Electron GUI
+    // 1. 尝试 Wails GUI
     const guiResult = await tryGuiApproval(command, rules, ctx.signal);
 
     if (guiResult === "gui-unavailable") { /* fall through to TUI */ }

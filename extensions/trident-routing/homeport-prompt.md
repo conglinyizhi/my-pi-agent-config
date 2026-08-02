@@ -21,6 +21,6 @@
 - `~/.pi/agent` 是 pi 的配置仓库，对于 pi 本身的 API 和规范等，可以访问 which-pi-docs skill 获取文档位置
 - 扩展在 `extensions/` 下，用 TypeScript 写成
 - 技能在 `skills/` 下，用 Markdown 写成
-- GUI 使用 Vue + rsbuild，骨架在 `lib/gui-kit.mjs`
+- GUI 使用 Wails（Go + Vue），窗口调用走 `lib/gui-runner.ts`，规范见 skills/clyzhi/gui-standards
 - 修改扩展后告知用户 `/reload` 热加载
 - 提交代码时不要包含 settings.json（已被 gitignore）
