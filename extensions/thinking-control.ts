@@ -3,8 +3,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export default function (pi: ExtensionAPI) {
-  pi.registerCommand("think", {
-    description: "切换思考深度",
+  pi.registerCommand("change-think-effort", {
+    description: "切换思考强度",
     handler: async (_args, ctx) => {
       const current = pi.getThinkingLevel();
       const choice = await ctx.ui.select(
