@@ -6,6 +6,14 @@ export function GetInitData() {
   return window['go']['main']['App']['GetInitData']();
 }
 
+export function GetWindowName() {
+  return window['go']['main']['App']['GetWindowName']();
+}
+
+export function MarkReady() {
+  return window['go']['main']['App']['MarkReady']();
+}
+
 export function SaveResponse(arg1) {
   return window['go']['main']['App']['SaveResponse'](arg1);
 }

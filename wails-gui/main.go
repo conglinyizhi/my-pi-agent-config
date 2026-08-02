@@ -12,9 +12,24 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// windowConfig 对应 gui-kit 各 app.ts 的 createGuiApp 配置
+type windowConfig struct {
+	title  string
+	width  int
+	height int
+}
+
+var windowConfigs = map[string]windowConfig{
+	"editor":  {"提示词输入 · pi", 800, 450},
+	"gate":    {"权限闸门 · 危险命令审计", 800, 520},
+	"setup":   {"三叉戟 · 模型路由配置", 960, 600},
+	"review":  {"任务确认 · 三叉戟", 600, 680},
+	"manager": {"舰队事项 · 三叉戟", 800, 600},
+	"routing": {"TODO 调度 · 三叉戟", 900, 640},
+}
+
 func main() {
 	// CLI: pi-gui <window-name> <request.json> <response.json>
-	// （对齐 gui-kit 的 spawn 参数模型）
 	args := os.Args[1:]
 	windowName := "setup"
 	requestFile := ""
@@ -24,19 +39,19 @@ func main() {
 		requestFile = args[1]
 		responseFile = args[2]
 	}
-	_ = windowName
 
-	app := NewApp(requestFile, responseFile)
+	cfg, ok := windowConfigs[windowName]
+	if !ok {
+		println("unknown window:", windowName)
+		os.Exit(1)
+	}
 
-	// 窗口配置按 windowName 分支（对齐 app.ts 的 createGuiApp 配置）
-	title := "三叉戟 · 模型路由配置"
-	width := 960
-	height := 600
+	app := NewApp(windowName, requestFile, responseFile)
 
 	err := wails.Run(&options.App{
-		Title:  title,
-		Width:  width,
-		Height: height,
+		Title:  cfg.title,
+		Width:  cfg.width,
+		Height: cfg.height,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

@@ -43,7 +43,7 @@
 </template>
 
 <script setup>
-import "./gui-theme.css";
+import "../gui-theme.css";
 import { ref, computed, onMounted } from "vue";
 
 const ready = ref(false);
@@ -118,6 +118,7 @@ onMounted(async () => {
   initialRoles.value = data.roles || {};
   selected.value = { ...initialRoles.value };
   ready.value = true;
+  await window.go.main.App.MarkReady();
 });
 </script>
 
