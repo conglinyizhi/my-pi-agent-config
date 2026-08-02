@@ -187,3 +187,27 @@ export function isCommandSafe(cmd: string): boolean {
   }
   return true;
 }
+
+/** 检测 bash 动态构造：命中则不应自动裁决，降级为人工确认 */
+export function hasDynamicConstructs(cmd: string): boolean {
+  return splitCommands(cmd).some((tokens) => {
+    const i = findCommandIndex(tokens);
+    const cmdToken = tokens[i];
+    if (!cmdToken) return false;
+    // 1. 命令名是变量/替换/ANSI-C 引号/含转义（r\m、$VAR、$'...'）
+    if (cmdToken.startsWith("$") || /\\[A-Za-z0-9_]/.test(cmdToken)) return true;
+    // 2. 显式执行字符串：eval xxx、bash/sh -c 'xxx'
+    if (cmdToken === "eval") return true;
+    if (
+      (cmdToken === "bash" || cmdToken === "sh" || cmdToken === "zsh" || cmdToken === "dash") &&
+      tokens.slice(i + 1).includes("-c")
+    ) {
+      return true;
+    }
+    // 3. 别名/函数定义：alias xxx=...、f() {...}
+    if (cmdToken === "alias" || cmdToken === "function" || tokens.some((t) => t.endsWith("()"))) return true;
+    // 4. 命令替换/进程替换出现在任意位置
+    if (tokens.some((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("))) return true;
+    return false;
+  });
+}

@@ -6,7 +6,7 @@
  * 规则用「命令名 + 子命令 + flag/参数精确匹配」结构化判断。
  */
 import assert from "node:assert";
-import { splitCommands, matchDangerous, isAutoReject, isCommandSafe } from "./rule-engine";
+import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs } from "./rule-engine";
 
 let pass = 0;
 let fail = 0;
@@ -135,6 +135,34 @@ check("D8 matchDangerous 返回规则名", () => {
 check("D9 matchDangerous 空命令无规则", () => {
   assert.deepStrictEqual(matchDangerous("echo hi"), []);
 });
+
+// ═══════════════════════════════════════════════════
+// E. 动态构造检测（命中应降级为人工确认）
+// ═══════════════════════════════════════════════════
+const dyn = (name: string, cmd: string, expect: boolean) =>
+  check(name, () => {
+    assert.strictEqual(hasDynamicConstructs(cmd), expect, `期望 hasDynamicConstructs=${expect}: ${cmd}`);
+  });
+
+dyn("E1 字面量命令非动态", "rm -rf /tmp", false);
+dyn("E2 命令替换", "$(rm -rf /tmp)", true);
+dyn("E3 命令替换任意位置", "echo $(date)", true);
+dyn("E4 反引号替换", "`rm -rf /tmp`", true);
+dyn("E5 eval 字符串执行", "eval \"rm -rf /tmp\"", true);
+dyn("E6 bash -c 字符串执行", "bash -c 'rm -rf /tmp'", true);
+dyn("E7 sh -c 字符串执行", "sh -c 'echo hi'", true);
+dyn("E8 反斜杠拼接命令名", "r\\m -rf /tmp", true);
+dyn("E9 变量作命令名", "$C -rf /tmp", true);
+dyn("E10 ANSI-C 引号命令名", "$'\\x72m' -rf /tmp", true);
+dyn("E11 别名定义", "alias rm='rm -rf'", true);
+dyn("E12 函数定义", "f() { rm -rf x; }", true);
+dyn("E13 进程替换", "diff <(rm -rf x) y", true);
+dyn("E14 正常 uv 命令非动态", "uv pip install requests", false);
+dyn("E15 正常复合命令非动态", "cd /tmp && uv pip install x -q", false);
+dyn("E16 bash 执行脚本非动态", "bash script.sh", false);
+dyn("E17 参数变量展开非动态", "ls $HOME", false);
+dyn("E18 引号内转义非动态", "echo \"a\\nb\"", false);
+dyn("E19 env 前缀非动态", "FOO=1 cmd", false);
 
 // ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
