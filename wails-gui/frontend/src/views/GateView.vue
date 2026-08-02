@@ -91,7 +91,22 @@ const highlights = computed(() => {
       }
     }
   }
-  return r.sort((a, b) => a.s - b.s);
+  r.sort((a, b) => a.s - b.s);
+  // 合并相邻危险块：仅被空白分隔（或重叠）的区间并为一个红框，
+  // 让「rm -rf」「pip install」「chmod 777」显示为整体而非碎片；
+  // 中间隔了其他命令词的（如 uv ... --system）保持独立
+  const merged = [];
+  for (const g of r) {
+    const last = merged[merged.length - 1];
+    if (last && g.s <= last.e) {
+      last.e = Math.max(last.e, g.e);
+    } else if (last && /^\s*$/.test(cmd.value.slice(last.e, g.s))) {
+      last.e = g.e;
+    } else {
+      merged.push({ ...g });
+    }
+  }
+  return merged;
 });
 
 const commandHtml = computed(() => {

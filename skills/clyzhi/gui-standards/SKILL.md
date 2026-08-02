@@ -62,6 +62,9 @@ const result = await runGuiWindow("gate", { command, taskId, rules }, { timeoutM
 cd ~/.pi/agent/wails-gui
 wails build -tags webkit2_41
 # 必带 -tags webkit2_41：Arch 上 webkit2gtk-4.0 的 libjxl.so 依赖已断，4.1 匹配 libjxl 0.12
+# 漏了 -tags 会链接失败，报错特征：libwebkit2gtk-4.0.so undefined reference to Jxl*（JXL_0 符号）
+# 修改 frontend/src/** 后必须重新 wails build（二进制内嵌前端资源，不重建则跑旧 UI）；
+# 只改 extension 侧（lib/gui-runner.ts 等）无需重建
 # 产物：wails-gui/build/bin/wails-gui（约 8.8MB，启动 ~288ms）
 ```
 
