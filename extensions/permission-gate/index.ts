@@ -18,7 +18,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { isCommandSafe, matchDangerous, hasDynamicConstructs, type TokenRule } from "./rule-engine";
+import { isCommandSafe, matchDangerous, hasDynamicConstructs, dynamicConstructTokens, type TokenRule } from "./rule-engine";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -78,7 +78,7 @@ export default async function (pi: ExtensionAPI) {
     const rules = matchDangerous(command);
     const dynamic = hasDynamicConstructs(command);
     if (safe && !dynamic) return undefined;
-    if (dynamic && rules.length === 0) rules.push(DYNAMIC_RULE);
+    if (dynamic && rules.length === 0) rules.push({ ...DYNAMIC_RULE, matched: dynamicConstructTokens(command) });
 
     // 未被白名单覆盖且全部命中规则都是 autoReject → 直接拦（白名单覆盖时降级确认而非静默拦）
     if (!safe && rules.every(r => r.autoReject)) {

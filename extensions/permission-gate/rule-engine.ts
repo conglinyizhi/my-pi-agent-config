@@ -202,26 +202,40 @@ export function isCommandSafe(cmd: string): boolean {
   return true;
 }
 
-/** 检测 bash 动态构造：命中则不应自动裁决，降级为人工确认 */
-export function hasDynamicConstructs(cmd: string): boolean {
-  return splitCommands(cmd).some((tokens) => {
+/** 检测 bash 动态构造，返回命中的特性 token（空数组 = 无动态构造） */
+export function dynamicConstructTokens(cmd: string): string[] {
+  const hits: string[] = [];
+  const pushHit = (t: string) => {
+    if (!hits.includes(t)) hits.push(t);
+  };
+  for (const tokens of splitCommands(cmd)) {
     const i = findCommandIndex(tokens);
     const cmdToken = tokens[i];
-    if (!cmdToken) return false;
+    if (!cmdToken) continue;
     // 1. 命令名是变量/替换/ANSI-C 引号/含转义（r\m、$VAR、$'...'）
-    if (cmdToken.startsWith("$") || /\\[A-Za-z0-9_]/.test(cmdToken)) return true;
+    if (cmdToken.startsWith("$") || /\\[A-Za-z0-9_]/.test(cmdToken)) pushHit(cmdToken);
     // 2. 显式执行字符串：eval xxx、bash/sh -c 'xxx'
-    if (cmdToken === "eval") return true;
+    if (cmdToken === "eval") pushHit("eval");
     if (
       (cmdToken === "bash" || cmdToken === "sh" || cmdToken === "zsh" || cmdToken === "dash") &&
       tokens.slice(i + 1).includes("-c")
     ) {
-      return true;
+      pushHit(cmdToken);
+      pushHit("-c");
     }
     // 3. 别名/函数定义：alias xxx=...、f() {...}
-    if (cmdToken === "alias" || cmdToken === "function" || tokens.some((t) => t.endsWith("()"))) return true;
+    if (cmdToken === "alias") pushHit("alias");
+    if (cmdToken === "function") pushHit("function");
+    const fnDef = tokens.find((t) => t.endsWith("()"));
+    if (fnDef) pushHit(fnDef);
     // 4. 命令替换/进程替换出现在任意位置
-    if (tokens.some((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("))) return true;
-    return false;
-  });
+    const subst = tokens.find((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("));
+    if (subst) pushHit(subst);
+  }
+  return hits;
+}
+
+/** 是否存在动态构造（dynamicConstructTokens 的便捷布尔形式） */
+export function hasDynamicConstructs(cmd: string): boolean {
+  return dynamicConstructTokens(cmd).length > 0;
 }

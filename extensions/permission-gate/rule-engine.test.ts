@@ -6,7 +6,7 @@
  * 规则用「命令名 + 子命令 + flag/参数精确匹配」结构化判断。
  */
 import assert from "node:assert";
-import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs } from "./rule-engine";
+import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens } from "./rule-engine";
 
 let pass = 0;
 let fail = 0;
@@ -192,6 +192,31 @@ check("F7 matched 不含无关参数", () => {
 check("F8 放行命令 matched 为空", () => {
   assert.deepStrictEqual(matchDangerous("uv pip install x"), []);
 });
+
+// ═══════════════════════════════════════════════════
+// G. 动态构造 token（GUI 高亮动态点）
+// ═══════════════════════════════════════════════════
+const dynTokens = (name: string, cmd: string, expect: string[]) =>
+  check(name, () => {
+    assert.deepStrictEqual(dynamicConstructTokens(cmd), expect, `期望 ${JSON.stringify(expect)}，实际 ${JSON.stringify(dynamicConstructTokens(cmd))}`);
+  });
+
+dynTokens("G1 命令替换 token", "echo $(date)", ["$(date)"]);
+dynTokens("G2 命令替换作命令", "$(rm -rf /tmp)", ["$(rm"]);
+dynTokens("G3 eval token", "eval \"rm -rf x\"", ["eval"]);
+dynTokens("G4 bash -c tokens", "bash -c 'x'", ["bash", "-c"]);
+dynTokens("G5 反斜杠拼接 token", "r\\m -rf /tmp", ["r\\m"]);
+dynTokens("G6 变量作命令 token", "$C -rf /tmp", ["$C"]);
+dynTokens("G7 别名定义 token", "alias rm='rm -rf'", ["alias"]);
+dynTokens("G8 函数定义 token", "f() { rm -rf x; }", ["f()"]);
+dynTokens("G9 进程替换 token", "diff <(rm -rf x) y", ["<(rm"]);
+dynTokens("G10 参数变量非动态", "ls $HOME", []);
+dynTokens("G11 引号内转义非动态", "echo \"a\\nb\"", []);
+dynTokens("G12 bash 无 -c 非动态", "bash script.sh", []);
+dynTokens("G13 正常 uv 非动态", "uv pip install requests", []);
+dynTokens("G14 重复特性去重", "eval a && eval b", ["eval"]);
+dynTokens("G15 字面量非动态", "rm -rf /tmp", []);
+dynTokens("G16 多特性同段", "eval \"$(x)\"", ["eval", "$(x)"]);
 
 // ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
