@@ -19,19 +19,20 @@ export default function (pi: ExtensionAPI) {
       }
       pi.setThinkingLevel(current);
 
-      if (available.length === 0) {
-        ctx.ui.notify("当前模型不支持调整思考深度", "warning");
-        return;
-      }
-
       const choice = await ctx.ui.select(
         `当前: ${current}`,
-        available.map((l) => (l === current ? `${l} ←` : l)),
+        ALL_LEVELS.map((l) => {
+          const forced = !available.includes(l);
+          const cur = l === current ? " ←" : "";
+          return `${l}${forced ? "（强制）" : ""}${cur}`;
+        }),
       );
 
       if (choice) {
-        const level = choice.replace(" ←", "");
-        pi.setThinkingLevel(level as Parameters<typeof pi.setThinkingLevel>[0]);
+        const level = choice
+          .replace(" ←", "")
+          .replace("（强制）", "") as Parameters<typeof pi.setThinkingLevel>[0];
+        pi.setThinkingLevel(level);
         const applied = pi.getThinkingLevel();
         ctx.ui.notify(
           applied !== level
