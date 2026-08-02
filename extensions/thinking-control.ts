@@ -18,10 +18,11 @@ export default function (pi: ExtensionAPI) {
       }
       pi.setThinkingLevel(current);
 
+      const hasUnstable = unsupported.length > 0;
       const choice = await ctx.ui.select(
-        `当前: ${current}（带 * 的是不稳定选项）`,
+        hasUnstable ? `当前: ${current}（带 * 的是不稳定选项）` : `当前: ${current}`,
         ALL_LEVELS.map((l) => {
-          const star = unsupported.includes(l) ? "*" : "";
+          const star = hasUnstable && unsupported.includes(l) ? "*" : "";
           const cur = l === current ? " ←" : "";
           return `${star}${l}${cur}`;
         }),
