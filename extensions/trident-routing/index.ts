@@ -5,8 +5,9 @@
 // 
 // /homeport 指令可临时解除限制，用于开发调试。
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { EntryRenderer, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +69,18 @@ async function enterHomeport(pi: ExtensionAPI, ctx: any) {
 export default function (pi: ExtensionAPI) {
   // 子进程内不限制工具，worker 需要 MCP 编辑能力
   if (process.env.PI_SUBAGENT) return;
+
+  // 开场白渲染：仅显示在 TUI，不进入 LLM 上下文。
+  // 用 appendEntry（CustomEntry，不参与上下文）替代 sendMessage（CustomMessage，会被转成 user 消息发给 API）。
+  const greetingRenderer: EntryRenderer<{ content?: string }> = (entry, _options, theme) => {
+    const content = entry.data?.content;
+    if (!content) return undefined;
+    const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+    box.addChild(new Text(theme.fg("customMessageText", content), 0, 0));
+    return box;
+  };
+  pi.registerEntryRenderer("trident-greeting", greetingRenderer);
+
   pi.on("session_start", async (event, ctx) => {
     // 状态栏
     ctx.ui.setStatus("trident", ctx.ui.theme.fg("accent", "林汐"));
@@ -111,14 +124,10 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length !== active.length) pi.setActiveTools(filtered);
     }
 
-    // 新会话时注入开场白（母港模式跳过）
+    // 新会话时注入开场白（母港模式跳过）—— 仅显示在 TUI，不进入 LLM 上下文
     if ((event.reason === "new" || event.reason === "startup") && !isHomeport) {
       const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-      pi.sendMessage({
-        customType: "trident-greeting",
-        content: greeting,
-        display: true,
-      });
+      pi.appendEntry("trident-greeting", { content: greeting });
     }
   });
 
