@@ -10,8 +10,20 @@ export function GetWindowName() {
   return window['go']['main']['App']['GetWindowName']();
 }
 
+export function LoadReasons() {
+  return window['go']['main']['App']['LoadReasons']();
+}
+
 export function MarkReady() {
   return window['go']['main']['App']['MarkReady']();
+}
+
+export function OpenFile(arg1, arg2) {
+  return window['go']['main']['App']['OpenFile'](arg1, arg2);
+}
+
+export function SaveReason(arg1) {
+  return window['go']['main']['App']['SaveReason'](arg1);
 }
 
 export function SaveResponse(arg1) {
