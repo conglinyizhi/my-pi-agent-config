@@ -32,13 +32,16 @@ export default function (pi: ExtensionAPI) {
         const level = choice
           .replace(" ←", "")
           .replace("（强制）", "") as Parameters<typeof pi.setThinkingLevel>[0];
+        const forced = !available.includes(level);
         pi.setThinkingLevel(level);
         const applied = pi.getThinkingLevel();
         ctx.ui.notify(
           applied !== level
-            ? `${level} 不支持，已设为 ${applied}`
+            ? forced
+              ? `${level} 未生效（当前 ${applied}）`
+              : `${level} 不支持，已设为 ${applied}`
             : `已切换: ${applied}`,
-          applied !== level ? "warning" : "info",
+          applied !== level ? (forced ? "info" : "warning") : "info",
         );
       }
     },
