@@ -115,3 +115,9 @@ TODO:DONE 将 ask_question 改成 GUI :)
 本来想参考 kimi code 设计一个同步等待几个 sub agent 完成的，但是我发现主 agent 我还用来其他的调查和交流，不做这个
 task_create 始终异步发射，不提供 await 选项。OC agent 还需用于AI驱动的角色扮演，
 同步等待会阻塞对话流。任务完成后自动回写状态到队列，通过 task_list / /task-manager 查看。
+
+# 20260802-copy-code-block 插件
+
+需要复制大模型输出中的代码块包裹内容（``` 围栏）去填写 issue 模板，因此需要单独复制代码块内容；直接 /copy 复制整段回复内容太多，因此创建了 extensions/copy-code-block 插件。
+
+/copy-code-block 交互选择（TUI）或 /copy-code-block <编号> 直接复制。代码块按距最近用户发言的回合数排序，离用户最近的排最前；临时工程，后续再细修（当前 item 单行、预览不足）。
