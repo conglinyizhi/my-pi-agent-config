@@ -35,3 +35,6 @@ permission-gate-reasons.csv
 **/gui-manager/app.js
 **/gui-manager/app.mjs
 permission-gate-reasons.json
+
+# git worktrees
+.worktrees/
