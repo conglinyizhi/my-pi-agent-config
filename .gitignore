@@ -38,3 +38,6 @@ permission-gate-reasons.json
 
 # git worktrees
 .worktrees/
+
+# SDD workspace
+.superpowers/
