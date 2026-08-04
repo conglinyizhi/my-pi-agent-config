@@ -12,6 +12,21 @@
  * - 管道/&& 分段后上下文天然隔离，无需 [^;]* 兜底
  */
 
+import {
+  splitWithSeparators,
+  findInnerSubst,
+  maskShellBlindZones,
+  pythonDangerous,
+} from "./scanner";
+import type { SegWithSep, MaskedCommand } from "./scanner";
+// re-export：测试与外部调用从 rule-engine 导入的路径保持不变
+export {
+  splitWithSeparators,
+  maskShellBlindZones,
+  pythonDangerous,
+} from "./scanner";
+export type { SegWithSep, MaskedCommand } from "./scanner";
+
 /** 命中规则对外形态 */
 export interface TokenRule {
   name: string;
@@ -240,37 +255,9 @@ export function hasDynamicConstructs(cmd: string): boolean {
   return dynamicConstructTokens(cmd).length > 0;
 }
 
-// ═══════════════════════════════════════════════════
-// 管道执行器检测（跨段组合，RULES 表达不了）
-// ═══════════════════════════════════════════════════
-
-/** 分段并保留分隔符（&& | || ; 换行），供管道右侧检测 */
-export interface SegWithSep {
-  seg: string;
-  sep: "&&" | "||" | ";" | "|" | "\n" | null;
-}
-
-export function splitWithSeparators(cmd: string): SegWithSep[] {
-  const result: SegWithSep[] = [];
-  const re = /&&|\|\||;|\||\n/;
-  let rest = cmd;
-  while (rest.length > 0) {
-    const m = re.exec(rest);
-    if (!m) {
-      if (rest.trim().length > 0) result.push({ seg: rest.trim(), sep: null });
-      break;
-    }
-    const seg = rest.slice(0, m.index);
-    if (seg.trim().length > 0) result.push({ seg: seg.trim(), sep: m[0] as SegWithSep["sep"] });
-    rest = rest.slice(m.index + m[0].length);
-  }
-  return result;
-}
-
-/** 管道右侧执行器命令（执行任意代码/提权） */
+// 管道右侧执行器命令（执行任意代码/提权）
 const PIPE_EXECUTORS = ["sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "sudo"];
 
-/** 检测管道右侧是否执行器命令，返回命中的执行器名（去重） */
 export function findPipeExec(cmd: string): string[] {
   const hits: string[] = [];
   const segs = splitWithSeparators(cmd);
@@ -286,140 +273,9 @@ export function findPipeExec(cmd: string): string[] {
 }
 
 // ═══════════════════════════════════════════════════
-// 盲区屏蔽（单引号 / 引号定界 heredoc 是字面量，shell 不解析）
-// ═══════════════════════════════════════════════════
-
-export interface MaskedCommand {
-  /** 盲区替换为等长空格后的命令（长度不变，供后续检测） */
-  masked: string;
-  /** python 消费的代码段原文（-c 参数与 heredoc 内容），供 Python 段检测 */
-  pySegments: string[];
-}
-
-export function maskShellBlindZones(cmd: string): MaskedCommand {
-  const chars = cmd.split("");
-  const pySegments: string[] = [];
-
-  // 1. 单引号区域 → 内容遮为空格（bash 单引号无转义，硬边界配对）
-  //    heredoc 定界符引号（<<'EOF'）是语法不是盲区，跳过不遮
-  let i = 0;
-  while (i < chars.length) {
-    if (chars[i] === "'") {
-      const end = cmd.indexOf("'", i + 1);
-      if (end === -1) break; // 未闭合，剩余按字面
-      const before = cmd.slice(Math.max(0, i - 20), i);
-      if (/<<-?\s*$/.test(before)) {
-        i = end + 1;
-        continue;
-      }
-      for (let j = i + 1; j < end; j++) chars[j] = " ";
-      i = end + 1;
-    } else i++;
-  }
-
-  // 2. 带引号定界符 heredoc → 内容遮为空格（裸定界符 shell 会展开，不遮）
-  const hdRe = /<<-?\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\1/g;
-  let m: RegExpExecArray | null;
-  while ((m = hdRe.exec(cmd)) !== null) {
-    const delim = m[2];
-    const nl = cmd.indexOf("\n", m.index);
-    if (nl === -1) continue;
-    const endRe = new RegExp(`^\\s*${delim}\\s*$`, "m");
-    const em = endRe.exec(cmd.slice(nl + 1));
-    if (!em) continue;
-    const contentEnd = nl + 1 + em.index;
-    // 内容区不含定界符行前的换行（\n 保留，只遮内容行）
-    const maskEnd = contentEnd > nl + 1 && cmd[contentEnd - 1] === "\n" ? contentEnd - 1 : contentEnd;
-    for (let j = nl + 1; j < maskEnd; j++) chars[j] = " ";
-    hdRe.lastIndex = contentEnd;
-  }
-
-  // 3. python 代码段收集（在原始 cmd 上，不依赖 mask）
-  const pyPrefix = "(?:^|[;&|(]|\\s)(?:python|python3)";
-  const sqRe = new RegExp(pyPrefix + `\\s+-c\\s+'([^']*)'`, "g");
-  let sm: RegExpExecArray | null;
-  while ((sm = sqRe.exec(cmd)) !== null) pySegments.push(sm[1]);
-  const dqRe = new RegExp(pyPrefix + `\\s+-c\\s+"([^"]*)"`, "g");
-  let dm: RegExpExecArray | null;
-  while ((dm = dqRe.exec(cmd)) !== null) pySegments.push(dm[1]);
-  const hdPyRe = new RegExp(pyPrefix + `(?:\\s+-)?\\s*<<-?\\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\\1`, "g");
-  let hm: RegExpExecArray | null;
-  while ((hm = hdPyRe.exec(cmd)) !== null) {
-    const delim = hm[2];
-    const nl = cmd.indexOf("\n", hm.index);
-    if (nl === -1) continue;
-    const endRe = new RegExp(`^\\s*${delim}\\s*$`, "m");
-    const em = endRe.exec(cmd.slice(nl + 1));
-    if (!em) continue;
-    const segEnd = em.index > 0 && cmd[nl + 1 + em.index - 1] === "\n" ? em.index - 1 : em.index;
-    pySegments.push(cmd.slice(nl + 1, nl + 1 + segEnd));
-    hdPyRe.lastIndex = nl + 1 + em.index;
-  }
-
-  return { masked: chars.join(""), pySegments };
-}
-
-// ═══════════════════════════════════════════════════
-// Python 段轻量检测（子串级，不解析语法）
-// ═══════════════════════════════════════════════════
-
-/** dd 的三种常见形态：os.system("dd if=...") / subprocess.run(["dd", ...]) / 字符串含 "dd " */
-const PY_DANGEROUS_SUBSTRINGS = [
-  "os.system", "subprocess", "Popen", "eval(", "exec(",
-  "shutil.rmtree", "os.remove", "os.unlink", "os.chmod", "os.chown",
-  "dd ", '"dd"', "'dd'",
-];
-
-/** 对 python 代码段做危险调用子串检测，返回命中子串（去重） */
-export function pythonDangerous(segments: string[]): string[] {
-  const hits: string[] = [];
-  for (const seg of segments) {
-    for (const s of PY_DANGEROUS_SUBSTRINGS) {
-      if (seg.includes(s) && !hits.includes(s)) hits.push(s);
-    }
-  }
-  return hits;
-}
-
-// ═══════════════════════════════════════════════════
 // 剥洋葱：命令替换内部审核
 // ═══════════════════════════════════════════════════
 
-/** 最内层替换扫描（状态机，逐字符）：$() / 反引号 / <() / >()，返回最内层可剥的替换 */
-function findInnerSubst(cmd: string): { start: number; end: number; inner: string } | null {
-  type Frame = { kind: "plain" | "subst"; start: number; subKind: "$" | "<" | ">" | "`" };
-  const stack: Frame[] = [];
-  let i = 0;
-  while (i < cmd.length) {
-    const ch = cmd[i];
-    const next = cmd[i + 1];
-    if (ch === "$" && next === "(") { stack.push({ kind: "subst", start: i, subKind: "$" }); i += 2; }
-    else if (ch === "<" && next === "(") { stack.push({ kind: "subst", start: i, subKind: "<" }); i += 2; }
-    else if (ch === ">" && next === "(") { stack.push({ kind: "subst", start: i, subKind: ">" }); i += 2; }
-    else if (ch === "`") {
-      const top = stack[stack.length - 1];
-      if (top && top.kind === "subst" && top.subKind === "`") {
-        stack.pop();
-        return { start: top.start, end: i, inner: cmd.slice(top.start + 1, i) };
-      }
-      stack.push({ kind: "subst", start: i, subKind: "`" });
-      i++;
-    }
-    else if (ch === "(") { stack.push({ kind: "plain", start: i }); i++; }
-    else if (ch === ")") {
-      const top = stack.pop();
-      if (top && top.kind === "subst") {
-        const offset = top.subKind === "`" ? 1 : 2;
-        return { start: top.start, end: i, inner: cmd.slice(top.start + offset, i) };
-      }
-      i++;
-    }
-    else { i++; }
-  }
-  return null;
-}
-
-/** 安全替换的占位符（不在任何规则命令/flag/参数集合中） */
 const SUBST_PLACEHOLDER = "__pi_subst__";
 
 export interface SubstitutionAudit {
