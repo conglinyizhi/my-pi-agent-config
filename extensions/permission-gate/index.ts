@@ -27,14 +27,14 @@ const DYNAMIC_RULE: TokenRule = {
   autoReject: false,
 };
 
-const GUI_TIMEOUT_MS = 120_000; // 2 分钟
+const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死；窗口内不再自动超时，用户可任意时长审批）
 
 /** 通过 GUI 审批（Wails 版，替代 Electron） */
 async function tryGuiApproval(
   command: string,
   rules: TokenRule[],
   signal: AbortSignal | undefined,
-): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string } | "gui-unavailable"> {
+): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string; flagged?: number[] } | "gui-unavailable"> {
   if (!findGuiBinary()) return "gui-unavailable";
 
   const result = await runGuiWindow("gate", {
@@ -62,6 +62,28 @@ function formatRulesForTui(rules: TokenRule[]): string {
     `  · ${r.autoReject ? "[自动拒绝] " : ""}${r.name}${r.matched?.length ? ` (${r.matched.join(" ")})` : ""} → ${r.tip}`
   );
   return `\n命中规则：\n${lines.join("\n")}`;
+}
+
+/** 构建给大模型的拒绝原因：带命令、命中规则与用户标记/理由，避免只有一句裸评论让模型猜上下文 */
+function buildRejectReason(
+  command: string,
+  rules: TokenRule[],
+  comment?: string,
+  prefix = "已阻止",
+  flagged?: number[],
+): string {
+  const preview = command.length > 160 ? command.slice(0, 160) + "…" : command;
+  const ruleNames = rules.map(r => r.name).join("、");
+  // flagged 是用户勾选的规则索引（GateView 对话框），映射回规则名；越界/缺失防御性跳过
+  const flaggedNames = flagged?.length
+    ? flagged.map(i => rules[i]?.name).filter(Boolean).join("、")
+    : "";
+  const cleanComment = comment?.replace(/\s+/g, " ").trim();
+  const parts = [`命令：${preview}`];
+  if (ruleNames) parts.push(`命中规则：${ruleNames}`);
+  if (flaggedNames) parts.push(`用户标记：${flaggedNames}`);
+  if (cleanComment) parts.push(`用户理由：${cleanComment}`);
+  return `${prefix}（${parts.join("；")}）`;
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -120,9 +142,7 @@ export default async function (pi: ExtensionAPI) {
           fs.writeFileSync(reasonsFile, JSON.stringify(reasons, null, 2));
         } catch {}
       }
-      const reason = guiResult.comment
-        ? `GUI 审批拒绝：${guiResult.comment}`
-        : "GUI 审批拒绝";
+      const reason = buildRejectReason(command, rules, guiResult.comment, "GUI 审批拒绝", guiResult.flagged);
       return { block: true, reason };
     }
 
@@ -138,13 +158,22 @@ export default async function (pi: ExtensionAPI) {
     );
 
     if (choice?.includes("GUI")) {
-      // 递归重试 GUI
+      // 递归重试 GUI（注意：tryGuiApproval 的 allow 是对象 { action: "allow" }，不是字符串）
       const retry = await tryGuiApproval(command, rules, ctx.signal);
-      if (retry === "allow") return undefined;
-      return { block: true, reason: "GUI 审批拒绝" };
+      if (retry !== "gui-unavailable" && retry.action === "allow") return undefined;
+      if (retry === "gui-unavailable") {
+        // GUI 再次未响应：回 TUI 兜底，不再递归，别把「窗口没打开」伪装成「用户拒绝」
+        const retryChoice = await ctx.ui.select(
+          `⚠️ GUI 未返回结果，命令仍待确认：\n\n  ${commandPreview}\n${ruleInfo}\n\n如何操作？`,
+          ["✅ 允许执行", "❌ 拒绝"]
+        );
+        if (retryChoice?.includes("允许")) return undefined;
+        return { block: true, reason: buildRejectReason(command, rules, undefined, "已被用户阻止") };
+      }
+      return { block: true, reason: buildRejectReason(command, rules, retry.comment, "GUI 审批拒绝", retry.flagged) };
     }
 
     if (choice?.includes("允许")) return undefined;
-    return { block: true, reason: "已被用户阻止" };
+    return { block: true, reason: buildRejectReason(command, rules, undefined, "已被用户阻止") };
   });
 }

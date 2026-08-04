@@ -173,7 +173,7 @@ onMounted(async () => {
   reasons.value = await window.go.main.App.LoadReasons();
   ready.value = true;
   await window.go.main.App.MarkReady();
-  setTimeout(() => respond("timeout"), 120000);
+  // 不设自动超时：用户考虑多久都行；扩展侧有 1 小时兑底，关窗口（X）也会让扩展回退 TUI
 });
 </script>
 

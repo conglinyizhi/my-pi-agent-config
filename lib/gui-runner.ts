@@ -52,6 +52,7 @@ export async function runGuiWindow(
   if (!bin) return { ok: false, reason: "unavailable" };
 
   const timeoutMs = opts.timeoutMs ?? 300_000;
+  // timeoutMs <= 0 表示不设超时（依赖窗口退出/响应兜底），0 是明确语义而非立即超时
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-${windowName}-`));
   const requestFile = path.join(tmpDir, "request.json");
   const responseFile = path.join(tmpDir, "response.json");
@@ -73,15 +74,17 @@ export async function runGuiWindow(
         }
       };
 
-      const timeout = setTimeout(() => {
-        try { proc.kill("SIGTERM"); } catch {}
-        finish({ ok: false, reason: "timeout" });
-      }, timeoutMs);
+      const timeout = timeoutMs > 0
+        ? setTimeout(() => {
+            try { proc.kill("SIGTERM"); } catch {}
+            finish({ ok: false, reason: "timeout" });
+          }, timeoutMs)
+        : null; // 不设超时：一直等到响应或进程退出
 
       const check = setInterval(() => {
         try {
           const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-          clearTimeout(timeout);
+          clearTimeout(timeout ?? undefined);
           clearInterval(check);
           finish({ ok: true, data });
         } catch {
@@ -92,7 +95,7 @@ export async function runGuiWindow(
       proc.on("close", () => {
         // 进程退出：兜底读一次（窗口可能已写响应并退出）
         setTimeout(() => {
-          clearTimeout(timeout);
+          clearTimeout(timeout ?? undefined);
           clearInterval(check);
           try {
             const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
@@ -105,7 +108,7 @@ export async function runGuiWindow(
 
       if (opts.signal) {
         const onAbort = () => {
-          clearTimeout(timeout);
+          clearTimeout(timeout ?? undefined);
           clearInterval(check);
           try { proc.kill("SIGTERM"); } catch {}
           finish({ ok: false, reason: "aborted" });
