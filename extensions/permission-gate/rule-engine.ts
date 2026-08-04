@@ -38,8 +38,8 @@ export interface TokenRule {
 
 interface RuleDef {
   name: string;
-  /** 命令名（段内第一个非 env 前缀 token）精确匹配 */
-  cmd: string | string[];
+  /** 命令名（段内第一个非 env 前缀 token）精确匹配；省略 = 任意命令 */
+  cmd?: string | string[];
   /** 命令名之后必须依次匹配的子命令 token */
   subcmd?: string[];
   /** 段内至少出现一个（精确 token 匹配） */
@@ -89,6 +89,23 @@ const RULES: RuleDef[] = [
     tip: "请使用 uv 代替 python -m pip。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
     autoReject: true,
   },
+  {
+    name: "find-delete",
+    cmd: "find",
+    anyFlags: ["-delete", "-exec", "-ok"],
+    tip: "find 配合 -delete/-exec/-ok 会删除或执行任意匹配文件，请改为显式确认后的操作",
+  },
+  {
+    name: "write-redirect",
+    // cmd 省略 = 任意命令：输出重定向写入（> 覆盖、>> 追加）可能改动系统文件
+    anyArgs: [">", ">>"],
+    tip: "命令输出重定向写入文件，可能覆盖系统或项目文件，请确认目标路径",
+  },
+  {
+    name: "dd",
+    cmd: "dd",
+    tip: "dd 可直写块设备（of= 指向磁盘/分区），请确认输入输出路径",
+  },
 ];
 
 // ═══════════════════════════════════════════════════
@@ -128,9 +145,12 @@ function findCommandIndex(tokens: string[]): number {
 /** 匹配规则：命中返回命中的 token 列表（供 GUI 高亮），否则 null */
 function matchRule(tokens: string[], rule: RuleDef): string[] | null {
   const cmdIdx = findCommandIndex(tokens);
-  const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
-  if (!cmds.includes(tokens[cmdIdx])) return null;
-  const matched: string[] = [tokens[cmdIdx]];
+  const matched: string[] = [];
+  if (rule.cmd) {
+    const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
+    if (!cmds.includes(tokens[cmdIdx])) return null;
+    matched.push(tokens[cmdIdx]);
+  }
   if (rule.subcmd) {
     for (let i = 0; i < rule.subcmd.length; i++) {
       if (tokens[cmdIdx + 1 + i] !== rule.subcmd[i]) return null;

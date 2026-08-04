@@ -382,5 +382,19 @@ check("H3-11 外层危险不被掩盖", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H4. RULES 补充（find-delete / write-redirect / dd）
+// ═══════════════════════════════════════════════════
+blocked("H4-1 find -delete", "find / -delete");
+blocked("H4-2 find -exec", "find . -exec rm {} \\;");
+blocked("H4-3 find -ok", "find . -ok rm {} \\;");
+safe("H4-4 find 普通放行", "find / -name '*.log'");
+blocked("H4-5 重定向 >", "echo a > /etc/passwd");
+blocked("H4-6 重定向 >>", "echo a >> /etc/passwd");
+safe("H4-7 2>&1 不误伤", "uv pip install x 2>&1 | tail -1");
+blocked("H4-8 dd 设备写入", "dd if=/dev/zero of=/dev/sda bs=1M");
+blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
+safe("H4-10 普通 echo 放行", "echo hello");
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
