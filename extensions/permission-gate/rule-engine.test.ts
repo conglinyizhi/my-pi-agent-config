@@ -300,5 +300,34 @@ check("H1-11 双引号内容不遮但收集", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H2. pythonDangerous（Python 段轻量检测）
+// ═══════════════════════════════════════════════════
+import { pythonDangerous } from "./rule-engine";
+check("H2-1 os.system 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["import os; os.system('rm -rf /')"]), ["os.system"]);
+});
+check("H2-2 subprocess 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["subprocess.run('ls')"]), ["subprocess"]);
+});
+check("H2-3 普通文件操作放行", () => {
+  assert.deepStrictEqual(pythonDangerous(["open('f').read()", "json.load(x)"]), []);
+});
+check("H2-4 os.remove 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["import os; os.remove('x')"]), ["os.remove"]);
+});
+check("H2-5 dd 字符串命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["os.system('dd if=/dev/zero of=/dev/sda')"]), ["os.system", "dd "]);
+});
+check("H2-6 dd 数组形态命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["subprocess.run(['dd', 'if=/dev/sda'])"]) , ["subprocess", "'dd'"]);
+});
+check("H2-7 空段列表", () => {
+  assert.deepStrictEqual(pythonDangerous([]), []);
+});
+check("H2-8 无害代码", () => {
+  assert.deepStrictEqual(pythonDangerous(["print('hello')"]), []);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

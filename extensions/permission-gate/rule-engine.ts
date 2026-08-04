@@ -358,3 +358,25 @@ export function maskShellBlindZones(cmd: string): MaskedCommand {
 
   return { masked: chars.join(""), pySegments };
 }
+
+// ═══════════════════════════════════════════════════
+// Python 段轻量检测（子串级，不解析语法）
+// ═══════════════════════════════════════════════════
+
+/** dd 的三种常见形态：os.system("dd if=...") / subprocess.run(["dd", ...]) / 字符串含 "dd " */
+const PY_DANGEROUS_SUBSTRINGS = [
+  "os.system", "subprocess", "Popen", "eval(", "exec(",
+  "shutil.rmtree", "os.remove", "os.unlink", "os.chmod", "os.chown",
+  "dd ", '"dd"', "'dd'",
+];
+
+/** 对 python 代码段做危险调用子串检测，返回命中子串（去重） */
+export function pythonDangerous(segments: string[]): string[] {
+  const hits: string[] = [];
+  for (const seg of segments) {
+    for (const s of PY_DANGEROUS_SUBSTRINGS) {
+      if (seg.includes(s) && !hits.includes(s)) hits.push(s);
+    }
+  }
+  return hits;
+}
