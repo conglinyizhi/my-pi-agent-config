@@ -8,8 +8,21 @@ permission-gate 的动态构造检测（`hasDynamicConstructs`）对命令替换
 
 实际代价：
 
-1. **只读替换误报**：大模型常用 `PKG=$(ls -d node_modules/...)` 定位路径。`$(ls -d ...)` 是只读命令，但被无差别弹窗。8/2 实测被弹两次、用户直接拒绝，并明令「避免使用动态构造指令」——弹窗把模型调教到不敢用正常手段。
-2. **字面量区域误触**：单引号内容（shell 不解析）与带引号定界符 heredoc（`<<'EOF'`，不展开）里的 `$(`、反引号、`>` 只是 Python 代码/字符串字面量，却会被 token 子串检查命中。大模型常在命令末尾写 `python3 - <<'EOF'` 小工具（sessions 里已有大批真实案例），内容里一旦出现 `$(...)` 或反引号即误报。
+1. **误报是日常频率，不是偶发**：8/1–8/4 四天 sessions 里共 **87 条**含命令替换的 bash 调用，绝大多数是正常工作命令——按当前引擎全部命中动态构造、必然弹窗：
+
+   | 类别 | 真实命令形态 | 频次 |
+   |---|---|---|
+   | 包路径定位 | `PKG=$(ls -d node_modules/.pnpm/@earendil-works+pi-coding-agent@*/...)`、`PI_PKG_DIR=$(ls -d ~/.local/share/pnpm/global/5/.pnpm/...@0.83.0*/...)` | 高（每天多条） |
+   | 文件定位 | `f=$(find ... -name wire.jsonl \| head -1)`、`for f in $(find . -name ...)`、`P=$(find /tmp/hf_home -path ...)` | 高 |
+   | 时间计算 | `DUE=$(date -d '1 minute ago' +%Y-%m-%dT%H:%M:%S%:z)` | 中 |
+   | 进程查找 | `PID=$(pgrep -f ...)`、`AID=$(pgrep -x air \| head -1)` | 中 |
+   | 抓取解析 | `CSS=$(curl -s localhost:8080/ \| grep -o 'assets/index-[^\"]*')`、`code=$(curl -s -m 5 -o /dev/null -w ...)` | 中 |
+   | 循环变量 | `for d in ~/.cache/yay/*/; do p=$(basename $d)` | 中 |
+   | 可执行定位 | `PI_BIN=$(which pi)`、`PI_BIN=$(command -v pi)` | 低 |
+   | 键值生成 | `KEY=$(python3 -c 'import secrets; ...')` | 低 |
+
+2. **弹窗把模型调教坏**：8/2 用户被弹烦后直接下令「避免使用动态构造指令」，模型被迫改用通配符静态路径；8/4 又出现「全程静态路径，不会再弹窗」「别让我看到更多的安全弹窗就行」——模型不敢用正常手段，用户被迫逐条放行正常工作指令。
+3. **字面量区域误触**：单引号内容（shell 不解析）与带引号定界符 heredoc（`<<'EOF'`，不展开）里的 `$(`、反引号、`>` 只是 Python 代码/字符串字面量，却会被 token 子串检查命中。大模型常在命令末尾写 `python3 - <<'EOF'` 小工具（sessions 里已有大批真实案例），内容里一旦出现 `$(...)` 或反引号即误报。
 
 目标：**动态构造分级审核**——内部内容无副作用则放行（tool 结果留备注），内部命中危险规则或危险调用才弹窗。
 
@@ -161,6 +174,11 @@ tool_result（新增 handler）:
 | H17 | `python3 - <<EOF` 裸定界符含 `$(ls)` | ✅ 放行（展开执行的是只读命令） |
 | H18 | `echo 'os.system("rm -rf /")'` | ✅ 放行（字面量输出，非 python 执行段） |
 | H19 | `ls $(pwd) && echo ok` | ✅ 放行 |
+| H20 | `DUE=$(date -d '1 minute ago' +%Y-%m-%dT%H:%M:%S%:z)` | ✅ 放行（时间计算，真实案例） |
+| H21 | `for f in $(find . -name 'wire.jsonl' \| head -3); do echo $f; done` | ✅ 放行（find 只读循环，真实案例） |
+| H22 | `CSS=$(curl -s localhost:8080/ \| grep -o 'assets/index-[^\"]*')` | ✅ 放行（抓取+解析，管道右侧 grep 非执行器，真实案例） |
+| H23 | `KEY=$(python3 -c 'import secrets; print(secrets.token_hex(16))')` | ✅ 放行（python 段无危险调用，真实案例） |
+| H24 | `PI_BIN=$(which pi)` | ✅ 放行（which 定位，真实案例） |
 
 ### I 组：dd 与回归
 
@@ -190,7 +208,7 @@ tool_result（新增 handler）:
 
 ## 九、验收标准
 
-1. 96 旧用例 + H 组 19 条 + I 组 5 条全部通过
+1. 96 旧用例 + H 组 24 条 + I 组 5 条全部通过
 2. tsc 零报错（含扩展与 lib）
 3. H1/H2 真实案例命令不再弹窗，直接放行且 tool 结果带备注
 4. H8/H12-H16 危险形态仍弹窗，matched 高亮指向危险替换原文
