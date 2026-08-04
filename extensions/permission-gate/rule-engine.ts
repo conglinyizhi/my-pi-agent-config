@@ -380,3 +380,72 @@ export function pythonDangerous(segments: string[]): string[] {
   }
   return hits;
 }
+
+// ═══════════════════════════════════════════════════
+// 剥洋葱：命令替换内部审核
+// ═══════════════════════════════════════════════════
+
+/** 最内层替换扫描（状态机，逐字符）：$() / 反引号 / <() / >()，返回最内层可剥的替换 */
+function findInnerSubst(cmd: string): { start: number; end: number; inner: string } | null {
+  type Frame = { kind: "plain" | "subst"; start: number; subKind: "$" | "<" | ">" | "`" };
+  const stack: Frame[] = [];
+  let i = 0;
+  while (i < cmd.length) {
+    const ch = cmd[i];
+    const next = cmd[i + 1];
+    if (ch === "$" && next === "(") { stack.push({ kind: "subst", start: i, subKind: "$" }); i += 2; }
+    else if (ch === "<" && next === "(") { stack.push({ kind: "subst", start: i, subKind: "<" }); i += 2; }
+    else if (ch === ">" && next === "(") { stack.push({ kind: "subst", start: i, subKind: ">" }); i += 2; }
+    else if (ch === "`") {
+      const top = stack[stack.length - 1];
+      if (top && top.kind === "subst" && top.subKind === "`") {
+        stack.pop();
+        return { start: top.start, end: i, inner: cmd.slice(top.start + 1, i) };
+      }
+      stack.push({ kind: "subst", start: i, subKind: "`" });
+      i++;
+    }
+    else if (ch === "(") { stack.push({ kind: "plain", start: i }); i++; }
+    else if (ch === ")") {
+      const top = stack.pop();
+      if (top && top.kind === "subst") {
+        const offset = top.subKind === "`" ? 1 : 2;
+        return { start: top.start, end: i, inner: cmd.slice(top.start + offset, i) };
+      }
+      i++;
+    }
+    else { i++; }
+  }
+  return null;
+}
+
+/** 安全替换的占位符（不在任何规则命令/flag/参数集合中） */
+const SUBST_PLACEHOLDER = "__pi_subst__";
+
+export interface SubstitutionAudit {
+  /** 安全替换占位后的命令（危险层则保留原样截断） */
+  peeled: string;
+  /** 危险替换的原文列表（首个危险层停止） */
+  dangerous: string[];
+}
+
+/** 迭代剥洋葱：最内层替换内容跑与顶层相同的判定，安全则占位继续，危险则记录原文 */
+export function auditSubstitutions(cmd: string): SubstitutionAudit {
+  let peeled = cmd;
+  const dangerous: string[] = [];
+  let guard = 0;
+  while (guard++ < 100) {
+    const sub = findInnerSubst(peeled);
+    if (!sub) break;
+    const isSafeInner =
+      isCommandSafe(sub.inner) &&
+      !hasDynamicConstructs(sub.inner) &&
+      findPipeExec(sub.inner).length === 0;
+    if (!isSafeInner) {
+      dangerous.push(sub.inner);
+      break;
+    }
+    peeled = peeled.slice(0, sub.start) + SUBST_PLACEHOLDER + peeled.slice(sub.end + 1);
+  }
+  return { peeled, dangerous };
+}

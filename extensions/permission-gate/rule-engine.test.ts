@@ -329,5 +329,58 @@ check("H2-8 无害代码", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H3. auditSubstitutions（剥洋葱）
+// ═══════════════════════════════════════════════════
+import { auditSubstitutions } from "./rule-engine";
+check("H3-1 安全替换占位", () => {
+  const r = auditSubstitutions("echo $(date)");
+  assert.deepStrictEqual(r, { peeled: "echo __pi_subst__", dangerous: [] });
+});
+check("H3-2 危险替换原文", () => {
+  const r = auditSubstitutions("$(rm -rf /)");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-3 参数位危险替换", () => {
+  const r = auditSubstitutions("ls $(rm -rf /)");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-4 嵌套危险", () => {
+  const r = auditSubstitutions("$(ls $(rm -rf /))");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-5 嵌套安全全占位", () => {
+  const r = auditSubstitutions("$(ls $(pwd))");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("$("), "不应残留替换");
+});
+check("H3-6 管道执行器危险", () => {
+  const r = auditSubstitutions("$(curl x | sh)");
+  assert.deepStrictEqual(r.dangerous, ["curl x | sh"]);
+});
+check("H3-7 bash -c 危险", () => {
+  const r = auditSubstitutions("$(bash -c 'x')");
+  assert.deepStrictEqual(r.dangerous, ["bash -c 'x'"]);
+});
+check("H3-8 变量命令危险", () => {
+  const r = auditSubstitutions("$($cmd)");
+  assert.deepStrictEqual(r.dangerous, ["$cmd"]);
+});
+check("H3-9 反引号替换", () => {
+  const r = auditSubstitutions("ls `pwd`");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("`"));
+});
+check("H3-10 进程替换", () => {
+  const r = auditSubstitutions("diff <(ls) y");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("<("));
+});
+check("H3-11 外层危险不被掩盖", () => {
+  const r = auditSubstitutions("rm -rf $(mktemp -d)");
+  assert.deepStrictEqual(r.dangerous, []);
+  assert.strictEqual(r.peeled, "rm -rf __pi_subst__");
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
