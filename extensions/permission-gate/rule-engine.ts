@@ -239,3 +239,48 @@ export function dynamicConstructTokens(cmd: string): string[] {
 export function hasDynamicConstructs(cmd: string): boolean {
   return dynamicConstructTokens(cmd).length > 0;
 }
+
+// ═══════════════════════════════════════════════════
+// 管道执行器检测（跨段组合，RULES 表达不了）
+// ═══════════════════════════════════════════════════
+
+/** 分段并保留分隔符（&& | || ; 换行），供管道右侧检测 */
+export interface SegWithSep {
+  seg: string;
+  sep: "&&" | "||" | ";" | "|" | "\n" | null;
+}
+
+export function splitWithSeparators(cmd: string): SegWithSep[] {
+  const result: SegWithSep[] = [];
+  const re = /&&|\|\||;|\||\n/;
+  let rest = cmd;
+  while (rest.length > 0) {
+    const m = re.exec(rest);
+    if (!m) {
+      if (rest.trim().length > 0) result.push({ seg: rest.trim(), sep: null });
+      break;
+    }
+    const seg = rest.slice(0, m.index);
+    if (seg.trim().length > 0) result.push({ seg: seg.trim(), sep: m[0] as SegWithSep["sep"] });
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return result;
+}
+
+/** 管道右侧执行器命令（执行任意代码/提权） */
+const PIPE_EXECUTORS = ["sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "sudo"];
+
+/** 检测管道右侧是否执行器命令，返回命中的执行器名（去重） */
+export function findPipeExec(cmd: string): string[] {
+  const hits: string[] = [];
+  const segs = splitWithSeparators(cmd);
+  for (let i = 1; i < segs.length; i++) {
+    if (segs[i - 1].sep === "|") {
+      const tokens = tokenize(segs[i].seg);
+      const cmdIdx = findCommandIndex(tokens);
+      const cmdName = tokens[cmdIdx];
+      if (cmdName && PIPE_EXECUTORS.includes(cmdName) && !hits.includes(cmdName)) hits.push(cmdName);
+    }
+  }
+  return hits;
+}

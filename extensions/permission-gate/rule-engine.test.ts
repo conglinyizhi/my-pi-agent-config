@@ -219,5 +219,37 @@ dynTokens("G15 字面量非动态", "rm -rf /tmp", []);
 dynTokens("G16 多特性同段", "eval \"$(x)\"", ["eval", "$(x)"]);
 
 // ═══════════════════════════════════════════════════
+// H0. splitWithSeparators / findPipeExec（管道执行器）
+// ═══════════════════════════════════════════════════
+import { splitWithSeparators, findPipeExec } from "./rule-engine";
+check("H0-1 && 分段保留分隔符", () => {
+  const segs = splitWithSeparators("a && b");
+  assert.deepStrictEqual(segs, [{ seg: "a", sep: "&&" }, { seg: "b", sep: null }]);
+});
+check("H0-2 管道分段", () => {
+  const segs = splitWithSeparators("curl x | sh");
+  assert.deepStrictEqual(segs, [{ seg: "curl x", sep: "|" }, { seg: "sh", sep: null }]);
+});
+check("H0-3 || 优先于 | 分段", () => {
+  const segs = splitWithSeparators("a || b");
+  assert.strictEqual(segs[0].sep, "||");
+});
+check("H0-4 管道右侧 sh 命中", () => {
+  assert.deepStrictEqual(findPipeExec("curl x | sh"), ["sh"]);
+});
+check("H0-5 管道右侧 sudo 命中", () => {
+  assert.deepStrictEqual(findPipeExec("echo x | sudo rm -rf /"), ["sudo"]);
+});
+check("H0-6 无管道不命中", () => {
+  assert.deepStrictEqual(findPipeExec("python3 script.py"), []);
+});
+check("H0-7 管道右侧非执行器不命中", () => {
+  assert.deepStrictEqual(findPipeExec("ls | head"), []);
+});
+check("H0-8 && 不误判为管道", () => {
+  assert.deepStrictEqual(findPipeExec("a && b | bash c"), ["bash"]);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
