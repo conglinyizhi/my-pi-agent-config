@@ -396,5 +396,54 @@ blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
 safe("H4-10 普通 echo 放行", "echo hello");
 
 // ═══════════════════════════════════════════════════
+// H5. auditCommand 集成（H 组：盲区/剥洋葱 行为验收）
+// ═══════════════════════════════════════════════════
+import { auditCommand } from "./rule-engine";
+const auditAllow = (name: string, cmd: string) =>
+  check(name, () => {
+    const r = auditCommand(cmd);
+    assert.strictEqual(r.allow, true, `期望放行: ${cmd}\n${JSON.stringify(r, null, 2)}`);
+  });
+const auditBlock = (name: string, cmd: string) =>
+  check(name, () => {
+    const r = auditCommand(cmd);
+    assert.strictEqual(r.allow, false, `期望拦截: ${cmd}\n${JSON.stringify(r, null, 2)}`);
+  });
+
+// 真实案例（sessions 8/1-8/4 共 87 条，抽代表）
+auditAllow("H5-1 PKG=$(ls -d) 放行", "PKG=$(ls -d node_modules/.pnpm/@earendil-works+pi-coding-agent@*/node_modules/@earendil-works/pi-coding-agent 2>/dev/null | head -1) && echo $PKG");
+auditAllow("H5-2 AI=$(ls -d) 放行", "cd ~/.pi/agent && AI=$(ls -d node_modules/.pnpm/@earendil-works+pi-ai@*/node_modules/@earendil-works/pi-ai 2>/dev/null | head -1) && grep -rn 'x' \"$AI/dist\"");
+auditAllow("H5-3 python heredoc 脚本放行", "python3 - <<'EOF'\nimport re, html\nprint('ok')\nEOF");
+auditAllow("H5-4 date 时间计算放行", "DUE=$(date -d '1 minute ago' +%Y-%m-%dT%H:%M:%S%:z)");
+auditAllow("H5-5 find 只读循环放行", "for f in $(find . -name 'wire.jsonl' | head -3); do echo $f; done");
+auditAllow("H5-6 curl+grep 抓取放行", "CSS=$(curl -s localhost:8080/ | grep -o 'assets/index-[^\"]*')");
+auditAllow("H5-7 python 键值生成放行", "KEY=$(python3 -c 'import secrets; print(secrets.token_hex(16))')");
+auditAllow("H5-8 which 定位放行", "PI_BIN=$(which pi)");
+auditAllow("H5-9 单引号字面量放行", "echo '$(rm -rf /)'");
+auditAllow("H5-10 单引号 python 字面量放行", `python3 -c 'print("$(ls)")'`);
+auditAllow("H5-11 裸 heredoc 安全替换放行", "python3 - <<EOF\n$(ls)\nEOF");
+auditAllow("H5-12 非 python 字面量 os.system 放行", `echo 'os.system("rm -rf /")'`);
+auditAllow("H5-13 复合命令安全替换放行", "ls $(pwd) && echo ok");
+
+// 危险侧
+auditBlock("H5-14 参数位 rm 替换", "ls $(rm -rf /)");
+auditBlock("H5-15 嵌套 rm 替换", "$(ls $(rm -rf /))");
+auditBlock("H5-16 curl|sh 管道", "$(curl x | sh)");
+auditBlock("H5-17 find -delete 替换", "$(find / -delete)");
+auditBlock("H5-18 重定向替换", "$(echo a > /etc/passwd)");
+auditBlock("H5-19 bash -c 替换", "$(bash -c 'x')");
+auditBlock("H5-20 变量命令替换", "$($cmd)");
+auditBlock("H5-21 外层危险不被掩盖", "rm -rf $(mktemp -d)");
+auditBlock("H5-22 eval 仍在", "VAR='$(rm)'; eval $VAR");
+auditBlock("H5-23 bash -c 顶层仍弹", "bash -c 'rm -rf /'");
+auditBlock("H5-24 裸 heredoc 危险替换", "python3 - <<EOF\n$(rm -rf /)\nEOF");
+auditBlock("H5-25 heredoc 内 os.system", "python3 - <<'EOF'\nos.system('rm -rf /')\nEOF");
+auditBlock("H5-26 -c 内 os.system", `python3 -c 'import os; os.system("ls")'`);
+auditBlock("H5-27 dd 顶层", "dd if=/dev/zero of=/dev/sda bs=1M");
+auditBlock("H5-28 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
+auditBlock("H5-29 dd 替换", "$(dd if=/dev/zero of=/dev/sda)");
+auditBlock("H5-30 heredoc 内 dd", "python3 - <<'EOF'\nos.system('dd if=/dev/zero of=/dev/sda')\nEOF");
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

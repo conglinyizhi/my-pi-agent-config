@@ -325,3 +325,42 @@ export function auditSubstitutions(cmd: string): SubstitutionAudit {
   }
   return { peeled, dangerous };
 }
+
+// ═══════════════════════════════════════════════════
+// 分级审核统一入口
+// ═══════════════════════════════════════════════════
+
+export interface AuditResult {
+  /** 是否放行（无危险规则、无残余动态、无危险替换/Python/管道信号） */
+  allow: boolean;
+  /** 危险规则是否命中（含 venv 白名单覆盖前的原始判定） */
+  safe: boolean;
+  /** 命中的危险规则（含 autoReject 标志） */
+  rules: TokenRule[];
+  /** 剥完后仍有动态构造（eval/bash -c/变量命令等） */
+  dynamic: boolean;
+  dynamicTokens: string[];
+  /** 剥洋葱命中的危险替换原文 */
+  dangerous: string[];
+  /** Python 段命中的危险调用子串 */
+  pyDanger: string[];
+  /** 管道右侧执行器 */
+  pipeExec: string[];
+  /** mask 盲区后的命令（供放行备注判定） */
+  masked: string;
+}
+
+/** 分级审核入口：mask → 剥洋葱 → Python 段 → 管道 → 规则，合并判定 */
+export function auditCommand(cmd: string): AuditResult {
+  const { masked, pySegments } = maskShellBlindZones(cmd);
+  const pyDanger = pythonDangerous(pySegments);
+  const { peeled, dangerous } = auditSubstitutions(masked);
+  const pipeExec = findPipeExec(peeled);
+  const rules = matchDangerous(peeled);
+  const safe = isCommandSafe(peeled);
+  const dynamic = hasDynamicConstructs(peeled);
+  const dynamicTokens = dynamicConstructTokens(peeled);
+  const allow =
+    safe && !dynamic && dangerous.length === 0 && pyDanger.length === 0 && pipeExec.length === 0;
+  return { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked };
+}
