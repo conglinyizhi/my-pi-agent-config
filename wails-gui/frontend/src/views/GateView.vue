@@ -173,6 +173,8 @@ onMounted(async () => {
   reasons.value = await window.go.main.App.LoadReasons();
   ready.value = true;
   await window.go.main.App.MarkReady();
+  // 默认高亮第一个命中点，否则「下一个」会从第二个开始（第一个从未被选中）
+  scroll();
   // 不设自动超时：用户考虑多久都行；扩展侧有 1 小时兑底，关窗口（X）也会让扩展回退 TUI
 });
 </script>
