@@ -251,5 +251,54 @@ check("H0-8 && 不误判为管道", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H1. maskShellBlindZones（盲区屏蔽）
+// ═══════════════════════════════════════════════════
+import { maskShellBlindZones } from "./rule-engine";
+check("H1-1 单引号内容全遮", () => {
+  const r = maskShellBlindZones("echo '$(rm -rf /)'");
+  assert.strictEqual(r.masked, "echo '           '");
+});
+check("H1-2 mask 长度不变", () => {
+  const r = maskShellBlindZones("echo '$(rm)' && ls");
+  assert.strictEqual(r.masked.length, "echo '$(rm)' && ls".length);
+});
+check("H1-3 双引号不遮", () => {
+  const r = maskShellBlindZones('echo "$(ls)"');
+  assert.strictEqual(r.masked, 'echo "$(ls)"');
+});
+check("H1-4 引号定界 heredoc 内容遮", () => {
+  const r = maskShellBlindZones("cat <<'EOF'\n$(ls)\nEOF");
+  assert.strictEqual(r.masked, "cat <<'EOF'\n     \nEOF");
+});
+check("H1-5 裸定界 heredoc 不遮", () => {
+  const r = maskShellBlindZones("cat <<EOF\n$(ls)\nEOF");
+  assert.strictEqual(r.masked, "cat <<EOF\n$(ls)\nEOF");
+});
+check("H1-6 python -c 单引号参数收集", () => {
+  const r = maskShellBlindZones(`python3 -c 'import os; os.system("x")'`);
+  assert.deepStrictEqual(r.pySegments, [`import os; os.system("x")`]);
+});
+check("H1-7 python -c 双引号参数收集", () => {
+  const r = maskShellBlindZones(`python3 -c "import os; os.system('x')"`);
+  assert.deepStrictEqual(r.pySegments, [`import os; os.system('x')`]);
+});
+check("H1-8 python heredoc 内容收集", () => {
+  const r = maskShellBlindZones("python3 - <<'EOF'\nprint('hi')\nEOF");
+  assert.deepStrictEqual(r.pySegments, ["print('hi')"]);
+});
+check("H1-9 cat heredoc 不收集", () => {
+  const r = maskShellBlindZones("cat <<'EOF'\n$(ls)\nEOF");
+  assert.deepStrictEqual(r.pySegments, []);
+});
+check("H1-10 替换内 python -c 也收集", () => {
+  const r = maskShellBlindZones("KEY=$(python3 -c 'print(1)')");
+  assert.deepStrictEqual(r.pySegments, ["print(1)"]);
+});
+check("H1-11 双引号内容不遮但收集", () => {
+  const r = maskShellBlindZones('python3 -c "import os; os.system(\'x\')"');
+  assert.deepStrictEqual(r.pySegments, ["import os; os.system('x')"]);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

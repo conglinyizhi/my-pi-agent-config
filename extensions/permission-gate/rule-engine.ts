@@ -284,3 +284,77 @@ export function findPipeExec(cmd: string): string[] {
   }
   return hits;
 }
+
+// ═══════════════════════════════════════════════════
+// 盲区屏蔽（单引号 / 引号定界 heredoc 是字面量，shell 不解析）
+// ═══════════════════════════════════════════════════
+
+export interface MaskedCommand {
+  /** 盲区替换为等长空格后的命令（长度不变，供后续检测） */
+  masked: string;
+  /** python 消费的代码段原文（-c 参数与 heredoc 内容），供 Python 段检测 */
+  pySegments: string[];
+}
+
+export function maskShellBlindZones(cmd: string): MaskedCommand {
+  const chars = cmd.split("");
+  const pySegments: string[] = [];
+
+  // 1. 单引号区域 → 内容遮为空格（bash 单引号无转义，硬边界配对）
+  //    heredoc 定界符引号（<<'EOF'）是语法不是盲区，跳过不遮
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] === "'") {
+      const end = cmd.indexOf("'", i + 1);
+      if (end === -1) break; // 未闭合，剩余按字面
+      const before = cmd.slice(Math.max(0, i - 20), i);
+      if (/<<-?\s*$/.test(before)) {
+        i = end + 1;
+        continue;
+      }
+      for (let j = i + 1; j < end; j++) chars[j] = " ";
+      i = end + 1;
+    } else i++;
+  }
+
+  // 2. 带引号定界符 heredoc → 内容遮为空格（裸定界符 shell 会展开，不遮）
+  const hdRe = /<<-?\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\1/g;
+  let m: RegExpExecArray | null;
+  while ((m = hdRe.exec(cmd)) !== null) {
+    const delim = m[2];
+    const nl = cmd.indexOf("\n", m.index);
+    if (nl === -1) continue;
+    const endRe = new RegExp(`^\\s*${delim}\\s*$`, "m");
+    const em = endRe.exec(cmd.slice(nl + 1));
+    if (!em) continue;
+    const contentEnd = nl + 1 + em.index;
+    // 内容区不含定界符行前的换行（\n 保留，只遮内容行）
+    const maskEnd = contentEnd > nl + 1 && cmd[contentEnd - 1] === "\n" ? contentEnd - 1 : contentEnd;
+    for (let j = nl + 1; j < maskEnd; j++) chars[j] = " ";
+    hdRe.lastIndex = contentEnd;
+  }
+
+  // 3. python 代码段收集（在原始 cmd 上，不依赖 mask）
+  const pyPrefix = "(?:^|[;&|(]|\\s)(?:python|python3)";
+  const sqRe = new RegExp(pyPrefix + `\\s+-c\\s+'([^']*)'`, "g");
+  let sm: RegExpExecArray | null;
+  while ((sm = sqRe.exec(cmd)) !== null) pySegments.push(sm[1]);
+  const dqRe = new RegExp(pyPrefix + `\\s+-c\\s+"([^"]*)"`, "g");
+  let dm: RegExpExecArray | null;
+  while ((dm = dqRe.exec(cmd)) !== null) pySegments.push(dm[1]);
+  const hdPyRe = new RegExp(pyPrefix + `(?:\\s+-)?\\s*<<-?\\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\\1`, "g");
+  let hm: RegExpExecArray | null;
+  while ((hm = hdPyRe.exec(cmd)) !== null) {
+    const delim = hm[2];
+    const nl = cmd.indexOf("\n", hm.index);
+    if (nl === -1) continue;
+    const endRe = new RegExp(`^\\s*${delim}\\s*$`, "m");
+    const em = endRe.exec(cmd.slice(nl + 1));
+    if (!em) continue;
+    const segEnd = em.index > 0 && cmd[nl + 1 + em.index - 1] === "\n" ? em.index - 1 : em.index;
+    pySegments.push(cmd.slice(nl + 1, nl + 1 + segEnd));
+    hdPyRe.lastIndex = nl + 1 + em.index;
+  }
+
+  return { masked: chars.join(""), pySegments };
+}
