@@ -18,7 +18,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { isCommandSafe, matchDangerous, hasDynamicConstructs, dynamicConstructTokens, type TokenRule } from "./rule-engine";
+import { hasDynamicConstructs, auditCommand, type TokenRule } from "./rule-engine";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -28,6 +28,9 @@ const DYNAMIC_RULE: TokenRule = {
 };
 
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死；窗口内不再自动超时，用户可任意时长审批）
+
+/** 安全动态放行记录：tool_result 命中则在结果前插备注（模型有知情权） */
+const allowedDynamicCommands = new Set<string>();
 
 /** 通过 GUI 审批（Wails 版，替代 Electron） */
 async function tryGuiApproval(
@@ -95,12 +98,23 @@ export default async function (pi: ExtensionAPI) {
 
     const command: string = event.input.command as string;
 
-    // 安全判定：白名单覆盖（venv 保护）或无危险规则 → 字面量命令完全放行；含动态构造则降级人工确认
-    const safe = isCommandSafe(command);
-    const rules = matchDangerous(command);
-    const dynamic = hasDynamicConstructs(command);
-    if (safe && !dynamic) return undefined;
-    if (dynamic && rules.length === 0) rules.push({ ...DYNAMIC_RULE, matched: dynamicConstructTokens(command) });
+    // 分级审核：mask 盲区 → 剥洋葱内部审核 → Python 段检测 → 管道执行器 → 规则判定
+    const audit = auditCommand(command);
+    const { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked } = audit;
+
+    // 完全安全 → 放行；mask 后仍有动态（安全替换被审核放行）→ 记录，tool_result 插备注
+    if (allow) {
+      if (hasDynamicConstructs(masked)) allowedDynamicCommands.add(command);
+      return undefined;
+    }
+
+    // 危险信号合并进动态规则（matched 带原文供 GUI 高亮）
+    if (dynamic || dangerous.length > 0 || pyDanger.length > 0 || pipeExec.length > 0) {
+      rules.push({
+        ...DYNAMIC_RULE,
+        matched: [...dynamicTokens, ...dangerous, ...pyDanger, ...pipeExec],
+      });
+    }
 
     // 未被白名单覆盖且全部命中规则都是 autoReject → 直接拦（白名单覆盖时降级确认而非静默拦）
     if (!safe && rules.every(r => r.autoReject)) {
@@ -175,5 +189,19 @@ export default async function (pi: ExtensionAPI) {
 
     if (choice?.includes("允许")) return undefined;
     return { block: true, reason: buildRejectReason(command, rules, undefined, "已被用户阻止") };
+  });
+
+  pi.on("tool_result", async (event) => {
+    if (event.toolName !== "bash") return undefined;
+    const command = event.input?.command as string | undefined;
+    if (!command || !allowedDynamicCommands.has(command)) return undefined;
+    allowedDynamicCommands.delete(command);
+    // content 是 (TextContent | ImageContent)[]，返回新数组在结果前插备注
+    return {
+      content: [
+        { type: "text" as const, text: "[权限闸门] 命令含命令替换，内部指令已通过规则审核，放行" },
+        ...event.content,
+      ],
+    };
   });
 }
