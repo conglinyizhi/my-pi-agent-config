@@ -219,5 +219,231 @@ dynTokens("G15 字面量非动态", "rm -rf /tmp", []);
 dynTokens("G16 多特性同段", "eval \"$(x)\"", ["eval", "$(x)"]);
 
 // ═══════════════════════════════════════════════════
+// H0. splitWithSeparators / findPipeExec（管道执行器）
+// ═══════════════════════════════════════════════════
+import { splitWithSeparators, findPipeExec } from "./rule-engine";
+check("H0-1 && 分段保留分隔符", () => {
+  const segs = splitWithSeparators("a && b");
+  assert.deepStrictEqual(segs, [{ seg: "a", sep: "&&" }, { seg: "b", sep: null }]);
+});
+check("H0-2 管道分段", () => {
+  const segs = splitWithSeparators("curl x | sh");
+  assert.deepStrictEqual(segs, [{ seg: "curl x", sep: "|" }, { seg: "sh", sep: null }]);
+});
+check("H0-3 || 优先于 | 分段", () => {
+  const segs = splitWithSeparators("a || b");
+  assert.strictEqual(segs[0].sep, "||");
+});
+check("H0-4 管道右侧 sh 命中", () => {
+  assert.deepStrictEqual(findPipeExec("curl x | sh"), ["sh"]);
+});
+check("H0-5 管道右侧 sudo 命中", () => {
+  assert.deepStrictEqual(findPipeExec("echo x | sudo rm -rf /"), ["sudo"]);
+});
+check("H0-6 无管道不命中", () => {
+  assert.deepStrictEqual(findPipeExec("python3 script.py"), []);
+});
+check("H0-7 管道右侧非执行器不命中", () => {
+  assert.deepStrictEqual(findPipeExec("ls | head"), []);
+});
+check("H0-8 && 不误判为管道", () => {
+  assert.deepStrictEqual(findPipeExec("a && b | bash c"), ["bash"]);
+});
+
+// ═══════════════════════════════════════════════════
+// H1. maskShellBlindZones（盲区屏蔽）
+// ═══════════════════════════════════════════════════
+import { maskShellBlindZones } from "./rule-engine";
+check("H1-1 单引号内容全遮", () => {
+  const r = maskShellBlindZones("echo '$(rm -rf /)'");
+  assert.strictEqual(r.masked, "echo '           '");
+});
+check("H1-2 mask 长度不变", () => {
+  const r = maskShellBlindZones("echo '$(rm)' && ls");
+  assert.strictEqual(r.masked.length, "echo '$(rm)' && ls".length);
+});
+check("H1-3 双引号不遮", () => {
+  const r = maskShellBlindZones('echo "$(ls)"');
+  assert.strictEqual(r.masked, 'echo "$(ls)"');
+});
+check("H1-4 引号定界 heredoc 内容遮", () => {
+  const r = maskShellBlindZones("cat <<'EOF'\n$(ls)\nEOF");
+  assert.strictEqual(r.masked, "cat <<'EOF'\n     \nEOF");
+});
+check("H1-5 裸定界 heredoc 不遮", () => {
+  const r = maskShellBlindZones("cat <<EOF\n$(ls)\nEOF");
+  assert.strictEqual(r.masked, "cat <<EOF\n$(ls)\nEOF");
+});
+check("H1-6 python -c 单引号参数收集", () => {
+  const r = maskShellBlindZones(`python3 -c 'import os; os.system("x")'`);
+  assert.deepStrictEqual(r.pySegments, [`import os; os.system("x")`]);
+});
+check("H1-7 python -c 双引号参数收集", () => {
+  const r = maskShellBlindZones(`python3 -c "import os; os.system('x')"`);
+  assert.deepStrictEqual(r.pySegments, [`import os; os.system('x')`]);
+});
+check("H1-8 python heredoc 内容收集", () => {
+  const r = maskShellBlindZones("python3 - <<'EOF'\nprint('hi')\nEOF");
+  assert.deepStrictEqual(r.pySegments, ["print('hi')"]);
+});
+check("H1-9 cat heredoc 不收集", () => {
+  const r = maskShellBlindZones("cat <<'EOF'\n$(ls)\nEOF");
+  assert.deepStrictEqual(r.pySegments, []);
+});
+check("H1-10 替换内 python -c 也收集", () => {
+  const r = maskShellBlindZones("KEY=$(python3 -c 'print(1)')");
+  assert.deepStrictEqual(r.pySegments, ["print(1)"]);
+});
+check("H1-11 双引号内容不遮但收集", () => {
+  const r = maskShellBlindZones('python3 -c "import os; os.system(\'x\')"');
+  assert.deepStrictEqual(r.pySegments, ["import os; os.system('x')"]);
+});
+
+// ═══════════════════════════════════════════════════
+// H2. pythonDangerous（Python 段轻量检测）
+// ═══════════════════════════════════════════════════
+import { pythonDangerous } from "./rule-engine";
+check("H2-1 os.system 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["import os; os.system('rm -rf /')"]), ["os.system"]);
+});
+check("H2-2 subprocess 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["subprocess.run('ls')"]), ["subprocess"]);
+});
+check("H2-3 普通文件操作放行", () => {
+  assert.deepStrictEqual(pythonDangerous(["open('f').read()", "json.load(x)"]), []);
+});
+check("H2-4 os.remove 命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["import os; os.remove('x')"]), ["os.remove"]);
+});
+check("H2-5 dd 字符串命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["os.system('dd if=/dev/zero of=/dev/sda')"]), ["os.system", "dd "]);
+});
+check("H2-6 dd 数组形态命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["subprocess.run(['dd', 'if=/dev/sda'])"]) , ["subprocess", "'dd'"]);
+});
+check("H2-7 空段列表", () => {
+  assert.deepStrictEqual(pythonDangerous([]), []);
+});
+check("H2-8 无害代码", () => {
+  assert.deepStrictEqual(pythonDangerous(["print('hello')"]), []);
+});
+
+// ═══════════════════════════════════════════════════
+// H3. auditSubstitutions（剥洋葱）
+// ═══════════════════════════════════════════════════
+import { auditSubstitutions } from "./rule-engine";
+check("H3-1 安全替换占位", () => {
+  const r = auditSubstitutions("echo $(date)");
+  assert.deepStrictEqual(r, { peeled: "echo __pi_subst__", dangerous: [] });
+});
+check("H3-2 危险替换原文", () => {
+  const r = auditSubstitutions("$(rm -rf /)");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-3 参数位危险替换", () => {
+  const r = auditSubstitutions("ls $(rm -rf /)");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-4 嵌套危险", () => {
+  const r = auditSubstitutions("$(ls $(rm -rf /))");
+  assert.deepStrictEqual(r.dangerous, ["rm -rf /"]);
+});
+check("H3-5 嵌套安全全占位", () => {
+  const r = auditSubstitutions("$(ls $(pwd))");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("$("), "不应残留替换");
+});
+check("H3-6 管道执行器危险", () => {
+  const r = auditSubstitutions("$(curl x | sh)");
+  assert.deepStrictEqual(r.dangerous, ["curl x | sh"]);
+});
+check("H3-7 bash -c 危险", () => {
+  const r = auditSubstitutions("$(bash -c 'x')");
+  assert.deepStrictEqual(r.dangerous, ["bash -c 'x'"]);
+});
+check("H3-8 变量命令危险", () => {
+  const r = auditSubstitutions("$($cmd)");
+  assert.deepStrictEqual(r.dangerous, ["$cmd"]);
+});
+check("H3-9 反引号替换", () => {
+  const r = auditSubstitutions("ls `pwd`");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("`"));
+});
+check("H3-10 进程替换", () => {
+  const r = auditSubstitutions("diff <(ls) y");
+  assert.strictEqual(r.dangerous.length, 0);
+  assert.ok(!r.peeled.includes("<("));
+});
+check("H3-11 外层危险不被掩盖", () => {
+  const r = auditSubstitutions("rm -rf $(mktemp -d)");
+  assert.deepStrictEqual(r.dangerous, []);
+  assert.strictEqual(r.peeled, "rm -rf __pi_subst__");
+});
+
+// ═══════════════════════════════════════════════════
+// H4. RULES 补充（find-delete / write-redirect / dd）
+// ═══════════════════════════════════════════════════
+blocked("H4-1 find -delete", "find / -delete");
+blocked("H4-2 find -exec", "find . -exec rm {} \\;");
+blocked("H4-3 find -ok", "find . -ok rm {} \\;");
+safe("H4-4 find 普通放行", "find / -name '*.log'");
+blocked("H4-5 重定向 >", "echo a > /etc/passwd");
+blocked("H4-6 重定向 >>", "echo a >> /etc/passwd");
+safe("H4-7 2>&1 不误伤", "uv pip install x 2>&1 | tail -1");
+blocked("H4-8 dd 设备写入", "dd if=/dev/zero of=/dev/sda bs=1M");
+blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
+safe("H4-10 普通 echo 放行", "echo hello");
+
+// ═══════════════════════════════════════════════════
+// H5. auditCommand 集成（H 组：盲区/剥洋葱 行为验收）
+// ═══════════════════════════════════════════════════
+import { auditCommand } from "./rule-engine";
+const auditAllow = (name: string, cmd: string) =>
+  check(name, () => {
+    const r = auditCommand(cmd);
+    assert.strictEqual(r.allow, true, `期望放行: ${cmd}\n${JSON.stringify(r, null, 2)}`);
+  });
+const auditBlock = (name: string, cmd: string) =>
+  check(name, () => {
+    const r = auditCommand(cmd);
+    assert.strictEqual(r.allow, false, `期望拦截: ${cmd}\n${JSON.stringify(r, null, 2)}`);
+  });
+
+// 真实案例（sessions 8/1-8/4 共 87 条，抽代表）
+auditAllow("H5-1 PKG=$(ls -d) 放行", "PKG=$(ls -d node_modules/.pnpm/@earendil-works+pi-coding-agent@*/node_modules/@earendil-works/pi-coding-agent 2>/dev/null | head -1) && echo $PKG");
+auditAllow("H5-2 AI=$(ls -d) 放行", "cd ~/.pi/agent && AI=$(ls -d node_modules/.pnpm/@earendil-works+pi-ai@*/node_modules/@earendil-works/pi-ai 2>/dev/null | head -1) && grep -rn 'x' \"$AI/dist\"");
+auditAllow("H5-3 python heredoc 脚本放行", "python3 - <<'EOF'\nimport re, html\nprint('ok')\nEOF");
+auditAllow("H5-4 date 时间计算放行", "DUE=$(date -d '1 minute ago' +%Y-%m-%dT%H:%M:%S%:z)");
+auditAllow("H5-5 find 只读循环放行", "for f in $(find . -name 'wire.jsonl' | head -3); do echo $f; done");
+auditAllow("H5-6 curl+grep 抓取放行", "CSS=$(curl -s localhost:8080/ | grep -o 'assets/index-[^\"]*')");
+auditAllow("H5-7 python 键值生成放行", "KEY=$(python3 -c 'import secrets; print(secrets.token_hex(16))')");
+auditAllow("H5-8 which 定位放行", "PI_BIN=$(which pi)");
+auditAllow("H5-9 单引号字面量放行", "echo '$(rm -rf /)'");
+auditAllow("H5-10 单引号 python 字面量放行", `python3 -c 'print("$(ls)")'`);
+auditAllow("H5-11 裸 heredoc 安全替换放行", "python3 - <<EOF\n$(ls)\nEOF");
+auditAllow("H5-12 非 python 字面量 os.system 放行", `echo 'os.system("rm -rf /")'`);
+auditAllow("H5-13 复合命令安全替换放行", "ls $(pwd) && echo ok");
+
+// 危险侧
+auditBlock("H5-14 参数位 rm 替换", "ls $(rm -rf /)");
+auditBlock("H5-15 嵌套 rm 替换", "$(ls $(rm -rf /))");
+auditBlock("H5-16 curl|sh 管道", "$(curl x | sh)");
+auditBlock("H5-17 find -delete 替换", "$(find / -delete)");
+auditBlock("H5-18 重定向替换", "$(echo a > /etc/passwd)");
+auditBlock("H5-19 bash -c 替换", "$(bash -c 'x')");
+auditBlock("H5-20 变量命令替换", "$($cmd)");
+auditBlock("H5-21 外层危险不被掩盖", "rm -rf $(mktemp -d)");
+auditBlock("H5-22 eval 仍在", "VAR='$(rm)'; eval $VAR");
+auditBlock("H5-23 bash -c 顶层仍弹", "bash -c 'rm -rf /'");
+auditBlock("H5-24 裸 heredoc 危险替换", "python3 - <<EOF\n$(rm -rf /)\nEOF");
+auditBlock("H5-25 heredoc 内 os.system", "python3 - <<'EOF'\nos.system('rm -rf /')\nEOF");
+auditBlock("H5-26 -c 内 os.system", `python3 -c 'import os; os.system("ls")'`);
+auditBlock("H5-27 dd 顶层", "dd if=/dev/zero of=/dev/sda bs=1M");
+auditBlock("H5-28 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
+auditBlock("H5-29 dd 替换", "$(dd if=/dev/zero of=/dev/sda)");
+auditBlock("H5-30 heredoc 内 dd", "python3 - <<'EOF'\nos.system('dd if=/dev/zero of=/dev/sda')\nEOF");
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

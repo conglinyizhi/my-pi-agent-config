@@ -12,6 +12,21 @@
  * - 管道/&& 分段后上下文天然隔离，无需 [^;]* 兜底
  */
 
+import {
+  splitWithSeparators,
+  findInnerSubst,
+  maskShellBlindZones,
+  pythonDangerous,
+} from "./scanner";
+import type { SegWithSep, MaskedCommand } from "./scanner";
+// re-export：测试与外部调用从 rule-engine 导入的路径保持不变
+export {
+  splitWithSeparators,
+  maskShellBlindZones,
+  pythonDangerous,
+} from "./scanner";
+export type { SegWithSep, MaskedCommand } from "./scanner";
+
 /** 命中规则对外形态 */
 export interface TokenRule {
   name: string;
@@ -23,8 +38,8 @@ export interface TokenRule {
 
 interface RuleDef {
   name: string;
-  /** 命令名（段内第一个非 env 前缀 token）精确匹配 */
-  cmd: string | string[];
+  /** 命令名（段内第一个非 env 前缀 token）精确匹配；省略 = 任意命令 */
+  cmd?: string | string[];
   /** 命令名之后必须依次匹配的子命令 token */
   subcmd?: string[];
   /** 段内至少出现一个（精确 token 匹配） */
@@ -74,6 +89,23 @@ const RULES: RuleDef[] = [
     tip: "请使用 uv 代替 python -m pip。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
     autoReject: true,
   },
+  {
+    name: "find-delete",
+    cmd: "find",
+    anyFlags: ["-delete", "-exec", "-ok"],
+    tip: "find 配合 -delete/-exec/-ok 会删除或执行任意匹配文件，请改为显式确认后的操作",
+  },
+  {
+    name: "write-redirect",
+    // cmd 省略 = 任意命令：输出重定向写入（> 覆盖、>> 追加）可能改动系统文件
+    anyArgs: [">", ">>"],
+    tip: "命令输出重定向写入文件，可能覆盖系统或项目文件，请确认目标路径",
+  },
+  {
+    name: "dd",
+    cmd: "dd",
+    tip: "dd 可直写块设备（of= 指向磁盘/分区），请确认输入输出路径",
+  },
 ];
 
 // ═══════════════════════════════════════════════════
@@ -113,9 +145,12 @@ function findCommandIndex(tokens: string[]): number {
 /** 匹配规则：命中返回命中的 token 列表（供 GUI 高亮），否则 null */
 function matchRule(tokens: string[], rule: RuleDef): string[] | null {
   const cmdIdx = findCommandIndex(tokens);
-  const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
-  if (!cmds.includes(tokens[cmdIdx])) return null;
-  const matched: string[] = [tokens[cmdIdx]];
+  const matched: string[] = [];
+  if (rule.cmd) {
+    const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
+    if (!cmds.includes(tokens[cmdIdx])) return null;
+    matched.push(tokens[cmdIdx]);
+  }
   if (rule.subcmd) {
     for (let i = 0; i < rule.subcmd.length; i++) {
       if (tokens[cmdIdx + 1 + i] !== rule.subcmd[i]) return null;
@@ -238,4 +273,94 @@ export function dynamicConstructTokens(cmd: string): string[] {
 /** 是否存在动态构造（dynamicConstructTokens 的便捷布尔形式） */
 export function hasDynamicConstructs(cmd: string): boolean {
   return dynamicConstructTokens(cmd).length > 0;
+}
+
+// 管道右侧执行器命令（执行任意代码/提权）
+const PIPE_EXECUTORS = ["sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "sudo"];
+
+export function findPipeExec(cmd: string): string[] {
+  const hits: string[] = [];
+  const segs = splitWithSeparators(cmd);
+  for (let i = 1; i < segs.length; i++) {
+    if (segs[i - 1].sep === "|") {
+      const tokens = tokenize(segs[i].seg);
+      const cmdIdx = findCommandIndex(tokens);
+      const cmdName = tokens[cmdIdx];
+      if (cmdName && PIPE_EXECUTORS.includes(cmdName) && !hits.includes(cmdName)) hits.push(cmdName);
+    }
+  }
+  return hits;
+}
+
+// ═══════════════════════════════════════════════════
+// 剥洋葱：命令替换内部审核
+// ═══════════════════════════════════════════════════
+
+const SUBST_PLACEHOLDER = "__pi_subst__";
+
+export interface SubstitutionAudit {
+  /** 安全替换占位后的命令（危险层则保留原样截断） */
+  peeled: string;
+  /** 危险替换的原文列表（首个危险层停止） */
+  dangerous: string[];
+}
+
+/** 迭代剥洋葱：最内层替换内容跑与顶层相同的判定，安全则占位继续，危险则记录原文 */
+export function auditSubstitutions(cmd: string): SubstitutionAudit {
+  let peeled = cmd;
+  const dangerous: string[] = [];
+  let guard = 0;
+  while (guard++ < 100) {
+    const sub = findInnerSubst(peeled);
+    if (!sub) break;
+    const isSafeInner =
+      isCommandSafe(sub.inner) &&
+      !hasDynamicConstructs(sub.inner) &&
+      findPipeExec(sub.inner).length === 0;
+    if (!isSafeInner) {
+      dangerous.push(sub.inner);
+      break;
+    }
+    peeled = peeled.slice(0, sub.start) + SUBST_PLACEHOLDER + peeled.slice(sub.end + 1);
+  }
+  return { peeled, dangerous };
+}
+
+// ═══════════════════════════════════════════════════
+// 分级审核统一入口
+// ═══════════════════════════════════════════════════
+
+export interface AuditResult {
+  /** 是否放行（无危险规则、无残余动态、无危险替换/Python/管道信号） */
+  allow: boolean;
+  /** 危险规则是否命中（含 venv 白名单覆盖前的原始判定） */
+  safe: boolean;
+  /** 命中的危险规则（含 autoReject 标志） */
+  rules: TokenRule[];
+  /** 剥完后仍有动态构造（eval/bash -c/变量命令等） */
+  dynamic: boolean;
+  dynamicTokens: string[];
+  /** 剥洋葱命中的危险替换原文 */
+  dangerous: string[];
+  /** Python 段命中的危险调用子串 */
+  pyDanger: string[];
+  /** 管道右侧执行器 */
+  pipeExec: string[];
+  /** mask 盲区后的命令（供放行备注判定） */
+  masked: string;
+}
+
+/** 分级审核入口：mask → 剥洋葱 → Python 段 → 管道 → 规则，合并判定 */
+export function auditCommand(cmd: string): AuditResult {
+  const { masked, pySegments } = maskShellBlindZones(cmd);
+  const pyDanger = pythonDangerous(pySegments);
+  const { peeled, dangerous } = auditSubstitutions(masked);
+  const pipeExec = findPipeExec(peeled);
+  const rules = matchDangerous(peeled);
+  const safe = isCommandSafe(peeled);
+  const dynamic = hasDynamicConstructs(peeled);
+  const dynamicTokens = dynamicConstructTokens(peeled);
+  const allow =
+    safe && !dynamic && dangerous.length === 0 && pyDanger.length === 0 && pipeExec.length === 0;
+  return { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked };
 }
