@@ -1,5 +1,5 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import { parseCommaList } from "../../lib/string-utils";
+import { parseCommaList } from "../../lib/string-utils.ts";
 import type { CompatOverride, InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 
 /** @deprecated 请使用 lib/string-utils 中的 parseCommaList */

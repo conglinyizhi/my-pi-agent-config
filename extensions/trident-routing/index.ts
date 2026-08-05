@@ -1,7 +1,7 @@
 // trident-routing — 主Agent（林汐）工具权限控制
 //
 // 林汐保留完整能力：write、edit、bash、MCP 全系列。
-// 小活自己干，大活走 task_create 分发支线任务。
+// 小活自己干，大活走 subagent 分发支线任务。
 // 
 // /homeport 指令可进入母港（维修模式）：替换系统提示词、跳过开场白。
 
@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DISABLED_TOOLS = new Set<string>([
   // 林汐保留完整能力：write、edit、bash、MCP 全系列
-  // 小活自己干，大活走 task_create 分发支线任务
+  // 小活自己干，大活走 subagent 分发支线任务
 ]);
 
 // 开场白：说人话，先落点；在场不报到，环境点到为止。

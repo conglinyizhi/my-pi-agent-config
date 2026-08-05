@@ -27,7 +27,7 @@ wails-gui/
     └── src/
         ├── main.js        ← 窗口路由壳 + window error 兜底（防白板）
         ├── gui-theme.css  ← 共享样式（顶部有全局 box-sizing:border-box）
-        └── views/         ← 6 个窗口视图
+        └── views/         ← 5 个窗口视图
 lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + runGuiWindow）
 ```
 
@@ -35,9 +35,8 @@ lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + ru
 
 | windowName | 视图 | 调用方 |
 |---|---|---|
-| setup | SetupView | extensions/trident-queue（/gui:trident-setup）|
-| review | ReviewView | extensions/trident-queue（任务确认）|
-| manager | ManagerView | extensions/trident-queue（/gui:task-manager）|
+| setup | SetupView | extensions/trident-subagent（/gui:trident-setup）|
+| subagents | SubagentsView | extensions/trident-subagent（/gui:subagents）|
 | routing | RoutingView | extensions/trident-routing |
 | gate | GateView | extensions/permission-gate |
 | editor | EditorView | extensions/editor-gui |

@@ -42,3 +42,13 @@
 ## 远期
 
 - [ ] 独立进程集群架构
+
+## Phase 4 — 队列退役与同步 subagent（2026-08-05）
+
+- [x] 翻译层退役：`lib/translate.ts`、translator 角色、TRANSLATOR_SYSTEM_PROMPT 全部移除
+- [x] task_* 队列退役：task_create/list/update/delete、队列读写、任务通知、review/manager GUI、widget 全部移除
+- [x] 同步 subagent 工具：`subagent({ task: string | string[] })`，Promise.allSettled 等待全部 worker 返航
+- [x] subagent 详情 GUI：`/gui:subagents`（SubagentsView.vue）替代任务队列界面
+- [x] 反馈模式开关：`/subagent:feedback on|off|toggle`，仅限 worker 的 read/bash/be-* 白名单
+- [x] be-* 错误持久记录：`~/.pi/subagent-be-errors.jsonl`（仅追加，用户手动编辑）
+- [x] worker 隔离：`--no-extensions` + 显式 `--extension custom-providers`，保留工具与 thinking
