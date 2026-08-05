@@ -17,15 +17,15 @@ import {
   findInnerSubst,
   maskShellBlindZones,
   pythonDangerous,
-} from "./scanner";
-import type { SegWithSep, MaskedCommand } from "./scanner";
+} from "./scanner.ts";
+import type { SegWithSep, MaskedCommand } from "./scanner.ts";
 // re-export：测试与外部调用从 rule-engine 导入的路径保持不变
 export {
   splitWithSeparators,
   maskShellBlindZones,
   pythonDangerous,
-} from "./scanner";
-export type { SegWithSep, MaskedCommand } from "./scanner";
+} from "./scanner.ts";
+export type { SegWithSep, MaskedCommand } from "./scanner.ts";
 
 /** 命中规则对外形态 */
 export interface TokenRule {
@@ -48,6 +48,8 @@ interface RuleDef {
   anyArgs?: string[];
   /** 命中的 arg 后紧跟这些 token 时不视为命中（如 > /dev/null 只是丢弃输出） */
   exceptNextArgs?: string[];
+  /** 命中的 arg 后紧跟以这些前缀开头的 token 时不视为命中（如 > /tmp/x 写临时目录）；含 .. 路径段的前缀匹配除外（防穿越） */
+  exceptNextPrefixes?: string[];
   /** 命中 arg 且处于此上下文时不视为命中（如 > 是比较/移位运算符而非重定向） */
   skip?: (tokens: string[], idx: number) => boolean;
   tip: string;
@@ -105,6 +107,8 @@ const RULES: RuleDef[] = [
     anyArgs: [">", ">>", "&>", "&>>"],
     // 重定向到 /dev/null 只是丢弃输出，不写文件，不视为危险
     exceptNextArgs: ["/dev/null"],
+    // 重定向到 /tmp 临时目录：tmpfs 重启清空，不覆盖系统/项目文件，整体放行（与扩展名无关）
+    exceptNextPrefixes: ["/tmp/"],
     // 表达式上下文中的 > / >> 是比较/移位运算符，不是重定向：
     //   if (d.length > 0)   —— 前 token 以 ( 开头（表达式左边界）
     //   函数调用中的 x >> 1) —— 后 token 以 ) 结尾（表达式右边界）
@@ -184,12 +188,21 @@ function matchRule(tokens: string[], rule: RuleDef): string[] | null {
     matched.push(...hit);
   }
   if (rule.anyArgs) {
-    // 逐位置检查：全部出现都被 exceptNextArgs/skip 覆盖（如 > /dev/null、比较运算符）才算不命中
+    // 逐位置检查：全部出现都被 exceptNextArgs/exceptNextPrefixes/skip 覆盖才算不命中
     const hit = rule.anyArgs.filter((a) => {
       let idx = tokens.indexOf(a);
       while (idx !== -1) {
         if (!(rule.skip && rule.skip(tokens, idx))) {
-          if (!(rule.exceptNextArgs && rule.exceptNextArgs.includes(tokens[idx + 1]))) {
+          const next = tokens[idx + 1];
+          const exactExcept = rule.exceptNextArgs && rule.exceptNextArgs.includes(next);
+          // 前缀豁免：目标以允许前缀开头，且不含 .. 路径段（防 /tmp/../etc 穿越）
+          const prefixExcept =
+            !!next &&
+            !!rule.exceptNextPrefixes &&
+            rule.exceptNextPrefixes.some(
+              (p) => next.startsWith(p) && !next.split("/").includes(".."),
+            );
+          if (!exactExcept && !prefixExcept) {
             return true;
           }
         }

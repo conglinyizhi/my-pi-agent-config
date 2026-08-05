@@ -6,7 +6,7 @@
  * 规则用「命令名 + 子命令 + flag/参数精确匹配」结构化判断。
  */
 import assert from "node:assert";
-import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens } from "./rule-engine";
+import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens } from "./rule-engine.ts";
 
 let pass = 0;
 let fail = 0;
@@ -221,7 +221,7 @@ dynTokens("G16 多特性同段", "eval \"$(x)\"", ["eval", "$(x)"]);
 // ═══════════════════════════════════════════════════
 // H0. splitWithSeparators / findPipeExec（管道执行器）
 // ═══════════════════════════════════════════════════
-import { splitWithSeparators, findPipeExec } from "./rule-engine";
+import { splitWithSeparators, findPipeExec } from "./rule-engine.ts";
 check("H0-1 && 分段保留分隔符", () => {
   const segs = splitWithSeparators("a && b");
   assert.deepStrictEqual(segs, [{ seg: "a", sep: "&&" }, { seg: "b", sep: null }]);
@@ -253,7 +253,7 @@ check("H0-8 && 不误判为管道", () => {
 // ═══════════════════════════════════════════════════
 // H1. maskShellBlindZones（盲区屏蔽）
 // ═══════════════════════════════════════════════════
-import { maskShellBlindZones } from "./rule-engine";
+import { maskShellBlindZones } from "./rule-engine.ts";
 check("H1-1 单引号内容全遮", () => {
   const r = maskShellBlindZones("echo '$(rm -rf /)'");
   assert.strictEqual(r.masked, "echo '           '");
@@ -302,7 +302,7 @@ check("H1-11 双引号内容不遮但收集", () => {
 // ═══════════════════════════════════════════════════
 // H2. pythonDangerous（Python 段轻量检测）
 // ═══════════════════════════════════════════════════
-import { pythonDangerous } from "./rule-engine";
+import { pythonDangerous } from "./rule-engine.ts";
 check("H2-1 os.system 命中", () => {
   assert.deepStrictEqual(pythonDangerous(["import os; os.system('rm -rf /')"]), ["os.system"]);
 });
@@ -340,7 +340,7 @@ check("H2-8 无害代码", () => {
 // ═══════════════════════════════════════════════════
 // H3. auditSubstitutions（剥洋葱）
 // ═══════════════════════════════════════════════════
-import { auditSubstitutions } from "./rule-engine";
+import { auditSubstitutions } from "./rule-engine.ts";
 check("H3-1 安全替换占位", () => {
   const r = auditSubstitutions("echo $(date)");
   assert.deepStrictEqual(r, { peeled: "echo __pi_subst__", dangerous: [] });
@@ -420,6 +420,22 @@ safe("H4-7n 右移不误伤", "console.log(x >> 1)");
 safe("H4-7o 无空格 if 比较不误伤", "if(d.length > 0) console.log('x')");
 // 真重定向仍拦：子 shell 整体、进程替换目标
 blocked("H4-7p 子 shell 重定向照拦", "(echo hi) > log.txt");
+// 重定向到 /tmp 临时目录：整个 /tmp/ 前缀都安全（tmpfs 重启清空，不覆盖系统/项目文件），
+// 与扩展名无关（log/md/txt/无扩展名均在临时区）。但排除路径穿越（/tmp/../etc 实际写到系统区）。
+safe("H4-8a /tmp log 放行", "echo a > /tmp/x.log");
+safe("H4-8b /tmp md 放行", "echo a > /tmp/x.md");
+safe("H4-8c /tmp 其他扩展名放行", "echo a > /tmp/x.txt");
+safe("H4-8d /tmp 无扩展名放行", "echo a > /tmp/x");
+safe("H4-8e /tmp 追加放行", "echo a >> /tmp/x.log");
+safe("H4-8f /tmp 双流放行", "echo hi &> /tmp/out.log");
+safe("H4-8g /tmp 双流追加放行", "echo hi &>> /tmp/out.md");
+safe("H4-8h /tmp 混合 devnull 放行", "echo hi > /tmp/x > /dev/null");
+blocked("H4-8i /tmp 穿越到系统区拦截", "echo a > /tmp/../etc/passwd");
+blocked("H4-8j /tmp 多层穿越拦截", "echo a > /tmp/../../etc/hosts");
+blocked("H4-8k /tmp 结尾 .. 拦截", "echo a > /tmp/..");
+blocked("H4-8l /tmp 穿越加文件名拦截", "echo a > /tmp/../etc/x");
+blocked("H4-8m /etc 仍拦", "echo a > /etc/hosts");
+blocked("H4-8n 项目文件仍拦", "echo a > config.json");
 blocked("H4-7q 进程替换目标照拦", "echo hi > >(cat)");
 blocked("H4-8 dd 设备写入", "dd if=/dev/zero of=/dev/sda bs=1M");
 blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
@@ -428,7 +444,7 @@ safe("H4-10 普通 echo 放行", "echo hello");
 // ═══════════════════════════════════════════════════
 // H5. auditCommand 集成（H 组：盲区/剥洋葱 行为验收）
 // ═══════════════════════════════════════════════════
-import { auditCommand } from "./rule-engine";
+import { auditCommand } from "./rule-engine.ts";
 const auditAllow = (name: string, cmd: string) =>
   check(name, () => {
     const r = auditCommand(cmd);
