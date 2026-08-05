@@ -19,6 +19,8 @@ import {
   pythonDangerous,
 } from "./scanner.ts";
 import type { SegWithSep, MaskedCommand } from "./scanner.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 // re-export：测试与外部调用从 rule-engine 导入的路径保持不变
 export {
   splitWithSeparators,
@@ -235,6 +237,48 @@ export function matchDangerous(cmd: string): TokenRule[] {
 /** 是否存在自动拒绝规则命中 */
 export function isAutoReject(cmd: string): boolean {
   return matchDangerous(cmd).some((r) => r.autoReject);
+}
+
+/** 提取被 /tmp/ 前缀豁免的重定向目标（纯 token 分析，不碰文件系统） */
+export function extractTmpRedirectTargets(cmd: string): string[] {
+  const targets: string[] = [];
+  for (const seg of splitCommands(cmd)) {
+    for (let i = 0; i < seg.length; i++) {
+      const t = seg[i];
+      if (t !== ">" && t !== ">>" && t !== "&>" && t !== "&>>") continue;
+      const next = seg[i + 1];
+      if (!next) continue;
+      // 与被豁免的 exceptNextPrefixes 条件一致：/tmp/ 前缀 + 无 .. 路径段
+      if (next.startsWith("/tmp/") && !next.split("/").includes("..")) {
+        targets.push(next);
+      }
+    }
+  }
+  return targets;
+}
+
+/** 动态校验：重定向目标 realpath 后仍在 /tmp 内才算安全（防软链穿透） */
+export function isTmpRedirectTargetSafe(target: string): boolean {
+  const real = resolveExistingPath(target);
+  if (!real) return true; // 无法解析，保守放行（静态已确认 /tmp/ 前缀）
+  const tmpReal = fs.realpathSync("/tmp");
+  return real === tmpReal || real.startsWith(tmpReal + "/");
+}
+
+/** 找到路径链上最近的存在祖先并返回其 realpath；全链不存在返回 null */
+function resolveExistingPath(p: string): string | null {
+  let cur = p;
+  for (let i = 0; i < 64; i++) {
+    try {
+      return fs.realpathSync(cur);
+    } catch {
+      /* 不存在，向上 */
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════════════════

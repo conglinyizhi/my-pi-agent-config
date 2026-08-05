@@ -18,7 +18,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { hasDynamicConstructs, auditCommand, type TokenRule } from "./rule-engine";
+import { hasDynamicConstructs, auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -123,10 +123,16 @@ export default async function (pi: ExtensionAPI) {
     const audit = auditCommand(command);
     const { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked } = audit;
 
+    // /tmp 重定向目标动态校验：软链指向 /tmp 之外（如系统文件）视为危险，静态前缀豁免不覆盖
+    const tmpEscape = extractTmpRedirectTargets(command).filter((t) => !isTmpRedirectTargetSafe(t));
+
     // 完全安全 → 放行；mask 后仍有动态（安全替换被审核放行）→ 记录，tool_result 插备注
-    if (allow) {
+    if (allow && tmpEscape.length === 0) {
       if (hasDynamicConstructs(masked)) allowedDynamicCommands.add(command);
       return undefined;
+    }
+    if (tmpEscape.length > 0) {
+      rules.push({ name: "write-redirect-symlink", tip: "重定向目标符号链接指向 /tmp 之外（可能覆盖系统文件），请确认目标路径", matched: [...tmpEscape] });
     }
 
     // 危险信号各自成规则（matched 带原文供 GUI 高亮），

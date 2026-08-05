@@ -6,7 +6,10 @@
  * 规则用「命令名 + 子命令 + flag/参数精确匹配」结构化判断。
  */
 import assert from "node:assert";
-import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens } from "./rule-engine.ts";
+import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens, extractTmpRedirectTargets, isTmpRedirectTargetSafe } from "./rule-engine.ts";
+import { mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let pass = 0;
 let fail = 0;
@@ -492,6 +495,52 @@ auditBlock("H5-30 heredoc 内 dd", "python3 - <<'EOF'\nos.system('dd if=/dev/zer
 // 回归：python 代码段含 add 等英文词不误伤 dd 规则（子串 "dd " 误匹配）
 auditAllow("H5-31 -c 内 add 不误伤 dd", "python3 -c 's = s.replace(\"- [ ] remind them to add `--lang zh` in MCP args.\\n\", \"\")'");
 auditAllow("H5-32 heredoc 内 add 不误伤 dd", "python3 - <<'EOF'\ns = s.replace('- [ ] remind them to add `--lang zh` in MCP args.\\n', '')\nEOF");
+
+// ═══════════════════════════════════════════════════
+// H6. /tmp 重定向 symlink 穿透防护（动态 realpath 校验）
+// ═══════════════════════════════════════════════════
+// 规则引擎静态放行 /tmp/ 前缀后，动态校验重定向目标 realpath 是否仍在 /tmp 内：
+// /tmp/link 若是指向系统文件的软链，> /tmp/link 会绕过 .. 检查写到目标。
+check("H6-1 提取 /tmp 重定向目标", () => {
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > /tmp/x.log"), ["/tmp/x.log"]);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > /tmp/x > /dev/null"), ["/tmp/x"]);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo hi &> /tmp/o.log"), ["/tmp/o.log"]);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo hi &>> /tmp/o.md"), ["/tmp/o.md"]);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a >> /tmp/x"), ["/tmp/x"]);
+});
+check("H6-2 非 /tmp 目标不提取", () => {
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > /etc/x"), []);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > /dev/null"), []);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > config.json"), []);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a > /tmp/../etc/x"), []);
+  assert.deepStrictEqual(extractTmpRedirectTargets("echo a"), []);
+});
+check("H6-3 symlink 跳出 /tmp 拦截", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pg-redir-"));
+  try {
+    const link = join(dir, "evil");
+    symlinkSync("/etc/passwd", link);
+    assert.strictEqual(isTmpRedirectTargetSafe(link), false);
+    const f = join(dir, "ok.txt");
+    writeFileSync(f, "");
+    assert.strictEqual(isTmpRedirectTargetSafe(f), true);
+    assert.strictEqual(isTmpRedirectTargetSafe(join(dir, "new.txt")), true);
+    assert.strictEqual(isTmpRedirectTargetSafe(join(dir, "sub", "deep.txt")), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+check("H6-4 父目录 symlink 穿透拦截", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pg-redir2-"));
+  try {
+    const sub = join(dir, "sub");
+    symlinkSync("/etc", sub);
+    // /tmp/xxx/sub/deep.txt：父目录 sub 是软链指向 /etc，realpath 后跳出 /tmp
+    assert.strictEqual(isTmpRedirectTargetSafe(join(sub, "deep.txt")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
