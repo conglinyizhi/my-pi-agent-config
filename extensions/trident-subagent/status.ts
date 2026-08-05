@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SubagentUsage } from "../../lib/subagent-run";
+import type { SubagentUsage } from "../../lib/subagent-run.ts";
 
 export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout";
 

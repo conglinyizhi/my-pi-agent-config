@@ -10,11 +10,11 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
-import { getWorkerModel } from "../../lib/subagent-run";
-import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback";
-import { runBatch } from "./batch";
-import { beginBatch, getSnapshot, type WorkerRun } from "./status";
+import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
+import { getWorkerModel } from "../../lib/subagent-run.ts";
+import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback.ts";
+import { runBatch } from "./batch.ts";
+import { beginBatch, getSnapshot, type WorkerRun } from "./status.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const ROLES_PATH = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");

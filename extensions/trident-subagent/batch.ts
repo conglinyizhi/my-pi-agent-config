@@ -10,8 +10,8 @@ import {
   isFailedResult,
   type SubagentResult,
   type SubagentUsage,
-} from "../../lib/subagent-run";
-import { updateWorker } from "./status";
+} from "../../lib/subagent-run.ts";
+import { updateWorker } from "./status.ts";
 
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout";
 
