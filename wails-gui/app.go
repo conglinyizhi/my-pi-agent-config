@@ -56,10 +56,9 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 	case "setup":
 		base["models"] = req["models"]
 		base["roles"] = req["roles"]
-	case "review":
-		base["texts"] = req["texts"]
-	case "manager":
-		base["tasks"] = req["tasks"]
+	case "subagents":
+		base["feedback"] = req["feedback"]
+		base["workers"] = req["workers"]
 	case "routing":
 		base["todos"] = req["todos"]
 	case "gate":
@@ -70,6 +69,25 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["clipHistory"] = req["clipHistory"]
 	}
 	return base, nil
+}
+
+// GetSubagentStatus 读主进程写出的实时快照（不存在返回 "{}"）
+func (a *App) GetSubagentStatus() string {
+	home, _ := os.UserHomeDir()
+	p := filepath.Join(home, ".pi", "subagent-status.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+// SaveSubagentFeedback 由 GUI 开关调用，写反馈模式状态
+func (a *App) SaveSubagentFeedback(enabled bool) error {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".pi")
+	_ = os.MkdirAll(dir, 0755)
+	return os.WriteFile(filepath.Join(dir, "subagent-feedback.json"), []byte(fmt.Sprintf("{\"enabled\": %v}\n", enabled)), 0644)
 }
 
 // SaveResponse 写响应文件（对齐 fs.writeFileSync(responseFile, JSON.stringify(payload))）

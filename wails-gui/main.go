@@ -20,12 +20,11 @@ type windowConfig struct {
 }
 
 var windowConfigs = map[string]windowConfig{
-	"editor":  {"提示词输入 · pi", 800, 450},
-	"gate":    {"权限闸门 · 危险命令审计", 800, 520},
-	"setup":   {"三叉戟 · 模型路由配置", 960, 600},
-	"review":  {"任务确认 · 三叉戟", 600, 680},
-	"manager": {"舰队事项 · 三叉戟", 800, 600},
-	"routing": {"TODO 调度 · 三叉戟", 900, 640},
+	"editor":    {"提示词输入 · pi", 800, 450},
+	"gate":      {"权限闸门 · 危险命令审计", 800, 520},
+	"setup":     {"三叉戟 · 模型路由配置", 960, 600},
+	"subagents": {"Subagent 详情 · 三叉戟", 900, 640},
+	"routing":   {"TODO 调度 · 三叉戟", 900, 640},
 }
 
 func main() {

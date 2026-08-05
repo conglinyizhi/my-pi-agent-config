@@ -6,6 +6,10 @@ export function GetInitData() {
   return window['go']['main']['App']['GetInitData']();
 }
 
+export function GetSubagentStatus() {
+  return window['go']['main']['App']['GetSubagentStatus']();
+}
+
 export function GetWindowName() {
   return window['go']['main']['App']['GetWindowName']();
 }
@@ -28,4 +32,8 @@ export function SaveReason(arg1) {
 
 export function SaveResponse(arg1) {
   return window['go']['main']['App']['SaveResponse'](arg1);
+}
+
+export function SaveSubagentFeedback(arg1) {
+  return window['go']['main']['App']['SaveSubagentFeedback'](arg1);
 }

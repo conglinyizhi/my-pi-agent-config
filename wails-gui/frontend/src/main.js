@@ -1,7 +1,6 @@
 import { createApp } from "vue";
 import SetupView from "./views/SetupView.vue";
-import ReviewView from "./views/ReviewView.vue";
-import ManagerView from "./views/ManagerView.vue";
+import SubagentsView from "./views/SubagentsView.vue";
 import RoutingView from "./views/RoutingView.vue";
 import GateView from "./views/GateView.vue";
 import EditorView from "./views/EditorView.vue";
@@ -9,8 +8,7 @@ import EditorView from "./views/EditorView.vue";
 // 窗口路由壳 —— 按 windowName 选视图
 const views = {
   setup: SetupView,
-  review: ReviewView,
-  manager: ManagerView,
+  subagents: SubagentsView,
   routing: RoutingView,
   gate: GateView,
   editor: EditorView,

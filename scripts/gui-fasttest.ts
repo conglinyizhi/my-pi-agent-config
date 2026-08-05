@@ -22,25 +22,27 @@ if (!guiBin) {
 
 const tests: Array<{ name: string; windowName: string; request: unknown }> = [
   {
-    name: "review",
-    windowName: "review",
+    name: "subagents",
+    windowName: "subagents",
     request: {
-      texts: [
-        "**title**: 测试任务\n**goal**: 验证 GUI 确认流程\n**constraints**: 无\n**user_signals**: 未识别\n**context**: 这是一条测试发言",
-      ],
-    },
-  },
-  {
-    name: "manager",
-    windowName: "manager",
-    request: {
-      tasks: [
+      feedback: false,
+      workers: [
         {
-          id: "test-task",
-          title: "测试任务",
-          status: "executing",
-          created_at: "2025-07-29T12:00:00+08:00",
-          context: "## 已完成\n做了测试\n\n## 已修改文件\n- test.ts",
+          id: "w1",
+          task: "测试任务：扫描 src 目录",
+          model: "test/test-model",
+          status: "running",
+          startedAt: "2025-07-29T12:00:00+08:00",
+          pid: 1234,
+        },
+        {
+          id: "w2",
+          task: "测试任务：修复 be-* 错误",
+          model: "test/test-model",
+          status: "success",
+          startedAt: "2025-07-29T12:00:01+08:00",
+          finishedAt: "2025-07-29T12:00:10+08:00",
+          output: "修复完成",
         },
       ],
     },
@@ -50,7 +52,7 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
     windowName: "setup",
     request: {
       models: [{ value: "test/test-model", name: "Test Model" }],
-      roles: { oc: "test/test-model", translator: "test/test-model", worker: "test/test-model" },
+      roles: { oc: "test/test-model", worker: "test/test-model" },
     },
   },
   {
