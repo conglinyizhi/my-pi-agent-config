@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawnSync } from "node:child_process";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
 import { hasDynamicConstructs, auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
@@ -52,6 +53,26 @@ const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死�
 
 /** 安全动态放行记录：tool_result 命中则在结果前插备注（模型有知情权） */
 const allowedDynamicCommands = new Set<string>();
+
+/** pnpm 可用性（带缓存；startup 检测一次，tool_call 复用） */
+let pnpmChecked = false;
+let pnpmAvailable = false;
+
+/** 检测 pnpm 是否可用：spawnSync 跑 pnpm --version，ENOENT 视为未安装 */
+function detectPnpm(): boolean {
+  if (pnpmChecked) return pnpmAvailable;
+  pnpmChecked = true;
+  try {
+    const r = spawnSync("pnpm", ["--version"], { stdio: "ignore" });
+    pnpmAvailable = r.status === 0;
+  } catch {
+    pnpmAvailable = false;
+  }
+  return pnpmAvailable;
+}
+
+/** pnpm 未安装时的安装指导（供拦截 reason 与 startup 通知共用） */
+const PNPM_INSTALL_HINT = "pnpm 未安装，请先要求用户安装 pnpm（npm install -g pnpm 或 curl -fsSL https://get.pnpm.io/install.sh | sh -），安装完成后再继续项目";
 
 /** 通过 GUI 审批（Wails 版，替代 Electron） */
 async function tryGuiApproval(
@@ -114,6 +135,13 @@ export default async function (pi: ExtensionAPI) {
   const support = await checkNotificationSupport();
   const notificationReady = support.supported;
 
+  // startup 检测 pnpm：未安装时 TUI 通知用户（npm/npx 拦截 reason 也会附带安装指导）
+  pi.on("session_start", (_event, ctx) => {
+    if (!detectPnpm() && ctx.hasUI) {
+      ctx.ui.notify(`⚠️ ${PNPM_INSTALL_HINT}`, "warning");
+    }
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return undefined;
 
@@ -145,7 +173,11 @@ export default async function (pi: ExtensionAPI) {
     // 未被白名单覆盖且全部命中规则都是 autoReject → 直接拦（白名单覆盖时降级确认而非静默拦）
     if (!safe && rules.every(r => r.autoReject)) {
       const tipText = rules.map(r => r.tip).join("；");
-      return { block: true, reason: `自动拒绝：${tipText}` };
+      // npm/npx 被拦且 pnpm 缺失：reason 明确指导模型先要求用户安装 pnpm
+      const pnpmHint = rules.some(r => r.name === "npm-pnpm") && !detectPnpm()
+        ? `；${PNPM_INSTALL_HINT}`
+        : "";
+      return { block: true, reason: `自动拒绝：${tipText}${pnpmHint}` };
     }
 
     // 无 UI 则直接阻止

@@ -563,5 +563,25 @@ check("H7-4 非 /tmp 真文件仍拦", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H8. npm/npx 强制 pnpm（全量拦截，含未装 pnpm 时的 reason 指导）
+// ═══════════════════════════════════════════════════
+autoRejected("H8-1 npm install 强制 pnpm", "npm install express");
+autoRejected("H8-2 npm ci 强制 pnpm", "npm ci");
+autoRejected("H8-3 npm run 强制 pnpm", "npm run dev");
+autoRejected("H8-4 npm init 强制 pnpm", "npm init -y");
+autoRejected("H8-5 npx 强制 pnpm dlx", "npx tsc --init");
+autoRejected("H8-6 npm publish 强制 pnpm", "npm publish");
+check("H8-7 pnpm 本身放行", () => {
+  assert.strictEqual(isCommandSafe("pnpm install express"), true);
+  assert.strictEqual(isCommandSafe("pnpm dlx tsc --init"), true);
+  assert.strictEqual(isCommandSafe("pnpm run dev"), true);
+});
+check("H8-8 命中规则名正确", () => {
+  const rules = matchDangerous("npm install express");
+  assert(rules.some((r) => r.name === "npm-pnpm"));
+  assert(rules.some((r) => r.autoReject));
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

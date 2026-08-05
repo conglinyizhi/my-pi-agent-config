@@ -98,6 +98,12 @@ const RULES: RuleDef[] = [
     autoReject: true,
   },
   {
+    name: "npm-pnpm",
+    cmd: ["npm", "npx"],
+    tip: "请使用 pnpm 代替 npm/npx（npm install → pnpm install，npx xxx → pnpm dlx xxx）。统一使用 pnpm 管理依赖",
+    autoReject: true,
+  },
+  {
     name: "find-delete",
     cmd: "find",
     anyFlags: ["-delete", "-exec", "-ok"],
