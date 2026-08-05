@@ -1,14 +1,15 @@
 // subagent-run.ts — 隔离 pi 进程执行核心
 //
-// 提取自 extensions/subagent，供 task_new 内部调用。
+// 供 subagent 工具内部调用。worker 显式加载 custom-providers（providers.toml 动态模型），
+// 其余扩展发现关闭以保持隔离。支持 --tools 白名单（反馈模式）与额外显式扩展。
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { Message } from "@earendil-works/pi-ai";
-import { getFinalOutput } from "./message-utils";
-import { formatTokens } from "./format-utils";
+import { getFinalOutput } from "./message-utils.ts";
+import { formatTokens } from "./format-utils.ts";
 
 export interface SubagentUsage {
   input: number;
@@ -48,6 +49,53 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 ## 备注（如果有）
 
 主 agent 需要知道的事项。`;
+
+const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
+
+/** 构造 worker 子进程参数：隔离 + custom-providers 显式加载 + 可选工具白名单 */
+export function buildSubagentArgs(opts: {
+  task: string;
+  cwd: string;
+  model: string;
+  promptPath?: string;
+  tools?: string[];
+  extraExtensions?: string[];
+}): string[] {
+  const args = [
+    "--mode", "json",
+    "-p",
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+    "--model", opts.model,
+    "--mcp-config", path.join(AGENT_DIR, "mcp.json"),
+    "--extension", CUSTOM_PROVIDERS_EXT,
+  ];
+  for (const ext of opts.extraExtensions ?? []) args.push("--extension", ext);
+  if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
+  if (opts.promptPath) args.push("--append-system-prompt", opts.promptPath);
+  args.push(`任务：${opts.task}`);
+  return args;
+}
+
+/** 从 agent_end 事件的 messages 数组提取最终文本（兜底；失败返回空串） */
+export function extractAgentEndOutput(line: string): string {
+  try {
+    const event = JSON.parse(line) as { type?: string; messages?: Array<{ role: string; content: unknown }> };
+    if (event.type !== "agent_end" || !Array.isArray(event.messages)) return "";
+    return getFinalOutput(event.messages as Array<{ role: string; content: string | ContentPartLike[] }>) || "";
+  } catch {
+    return "";
+  }
+}
+
+interface ContentPartLike {
+  type: string;
+  text?: string;
+}
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
@@ -112,6 +160,8 @@ export interface RunSubagentOptions {
   timeout?: number;
   signal?: AbortSignal;
   taskId?: string; // 用于 permission-gate 关联
+  tools?: string[]; // 工具白名单（反馈模式：read/bash/be-*）
+  extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
   onUpdate?: (result: SubagentResult) => void;
   onSpawn?: (pid: number) => void; // 子进程 PID，用于外部 kill
 }
@@ -133,20 +183,18 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
 
   return new Promise(async (resolve, reject) => {
     try {
-      const args = [
-        "--mode", "json",
-        "-p",
-        "--no-session",
-        "--model", model,
-        "--mcp-config", path.join(os.homedir(), ".pi", "agent", "mcp.json"),
-      ];
-
-      // 写入系统提示词
+      // 写入系统提示词（buildSubagentArgs 会追加 --append-system-prompt 与任务注入）
       const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
       const promptPath = path.join(tmpDir, "prompt.md");
       await fs.promises.writeFile(promptPath, SUBAGENT_PROMPT, { encoding: "utf-8", mode: 0o600 });
-      args.push("--append-system-prompt", promptPath);
-      args.push(`任务：${task}`);
+      const args = buildSubagentArgs({
+        task,
+        cwd,
+        model,
+        promptPath,
+        tools: opts.tools,
+        extraExtensions: opts.extraExtensions,
+      });
 
       const invocation = getPiInvocation(args);
 
@@ -164,6 +212,7 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
       };
 
       let wasAborted = false;
+      let agentEndOutput = "";
 
       const exitCode = await new Promise<number>((resolveExit) => {
         const env: Record<string, string> = {
@@ -229,6 +278,9 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
               try { event = JSON.parse(line); } catch { continue; }
               if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
                 result.messages.push(event.message as Message);
+              } else if (event.type === "agent_end") {
+                const text = extractAgentEndOutput(line);
+                if (text) agentEndOutput = text;
               }
             }
           }
@@ -249,6 +301,10 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
       });
 
       result.exitCode = exitCode;
+      // agent_end 兜底：若 messages 里没有最终输出（如非标准退出路径），用 agent_end 的完整 messages
+      if (agentEndOutput && !getFinalOutput(result.messages)) {
+        result.messages.push({ role: "assistant", content: agentEndOutput } as unknown as Message);
+      }
       if (wasAborted) throw new Error("Subagent 已中止");
 
       try { fs.unlinkSync(promptPath); fs.rmdirSync(tmpDir); } catch { /* ignore */ }
