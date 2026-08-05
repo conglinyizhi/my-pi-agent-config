@@ -15,14 +15,15 @@ describe("buildSubagentArgs", () => {
   it("启用 custom-providers 扩展并禁用扩展发现", () => {
     const args = buildSubagentArgs(base);
     assert(args.includes("--no-extensions"));
-    const extIdx = args.indexOf("--extension");
-    assert(extIdx !== -1);
-    assert(args[extIdx + 1].includes("custom-providers"));
+    const extIdxs: number[] = [];
+    for (let i = 0; i < args.length; i++) if (args[i] === "--extension") extIdxs.push(i + 1);
+    assert(extIdxs.length >= 2);
+    assert(extIdxs.some((i) => args[i].includes("custom-providers")));
+    assert(extIdxs.some((i) => args[i].includes("pi-mcp-adapter")));
     assert(args.includes("--no-session"));
     assert(args.includes("--no-skills"));
     assert(args.includes("--no-prompt-templates"));
     assert(args.includes("--no-context-files"));
-    assert(args.includes("--mcp-config"));
   });
 
   it("tools 白名单拼成逗号分隔精确名单", () => {

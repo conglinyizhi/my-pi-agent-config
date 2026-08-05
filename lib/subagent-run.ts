@@ -52,6 +52,7 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
+const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
 
 /** 构造 worker 子进程参数：隔离 + custom-providers 显式加载 + 可选工具白名单 */
 export function buildSubagentArgs(opts: {
@@ -71,8 +72,8 @@ export function buildSubagentArgs(opts: {
     "--no-prompt-templates",
     "--no-context-files",
     "--model", opts.model,
-    "--mcp-config", path.join(AGENT_DIR, "mcp.json"),
     "--extension", CUSTOM_PROVIDERS_EXT,
+    "--extension", MCP_ADAPTER_EXT,
   ];
   for (const ext of opts.extraExtensions ?? []) args.push("--extension", ext);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
