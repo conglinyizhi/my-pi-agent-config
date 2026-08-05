@@ -316,7 +316,16 @@ check("H2-4 os.remove 命中", () => {
   assert.deepStrictEqual(pythonDangerous(["import os; os.remove('x')"]), ["os.remove"]);
 });
 check("H2-5 dd 字符串命中", () => {
-  assert.deepStrictEqual(pythonDangerous(["os.system('dd if=/dev/zero of=/dev/sda')"]), ["os.system", "dd "]);
+  assert.deepStrictEqual(pythonDangerous(["os.system('dd if=/dev/zero of=/dev/sda')"]), ["os.system", "dd if="]);
+});
+check("H2-5b dd of= 形态命中", () => {
+  assert.deepStrictEqual(pythonDangerous(["os.system('dd of=/dev/sda')"]), ["os.system", "dd of="]);
+});
+check("H2-5c 英文词 add 不误伤", () => {
+  assert.deepStrictEqual(
+    pythonDangerous(["s = s.replace('- [ ] remind them to add `--lang zh` in MCP args.\n', '')"]),
+    []
+  );
 });
 check("H2-6 dd 数组形态命中", () => {
   assert.deepStrictEqual(pythonDangerous(["subprocess.run(['dd', 'if=/dev/sda'])"]) , ["subprocess", "'dd'"]);
@@ -391,6 +400,27 @@ safe("H4-4 find 普通放行", "find / -name '*.log'");
 blocked("H4-5 重定向 >", "echo a > /etc/passwd");
 blocked("H4-6 重定向 >>", "echo a >> /etc/passwd");
 safe("H4-7 2>&1 不误伤", "uv pip install x 2>&1 | tail -1");
+// 重定向目标为 /dev/null 只是丢弃输出，不视为写文件
+safe("H4-7b 丢弃输出 > /dev/null 2>&1", "echo hi > /dev/null 2>&1");
+safe("H4-7c 丢弃输出 2>&1 > /dev/null", "echo hi 2>&1 > /dev/null");
+safe("H4-7d 丢弃输出 >> /dev/null", "echo hi >> /dev/null 2>&1");
+safe("H4-7e 丢弃输出 &> /dev/null", "echo hi &> /dev/null");
+safe("H4-7f 丢弃输出 &>> /dev/null", "echo hi &>> /dev/null");
+safe("H4-7g 纯 /dev/null 覆盖", "ls > /dev/null");
+// &> / &>> 双流重定向写文件（此前漏判），现在应拦截
+blocked("H4-7h &> 写文件拦截", "echo hi &> log.txt");
+blocked("H4-7i &>> 写文件拦截", "echo hi &>> log.txt");
+// 一处 /dev/null 一处真文件：仍拦截
+blocked("H4-7j /dev/null 与真文件混合", "echo hi > /dev/null > real.txt");
+// 表达式上下文中的 > / >> 是比较/移位运算符，不是重定向
+safe("H4-7k if 比较不误伤", "if (d.length > 0) console.log('x')");
+safe("H4-7l bash 算术比较不误伤", "(( x > 0 )) && echo ok");
+safe("H4-7m while 比较不误伤", "while (i > 0) do echo $i; done");
+safe("H4-7n 右移不误伤", "console.log(x >> 1)");
+safe("H4-7o 无空格 if 比较不误伤", "if(d.length > 0) console.log('x')");
+// 真重定向仍拦：子 shell 整体、进程替换目标
+blocked("H4-7p 子 shell 重定向照拦", "(echo hi) > log.txt");
+blocked("H4-7q 进程替换目标照拦", "echo hi > >(cat)");
 blocked("H4-8 dd 设备写入", "dd if=/dev/zero of=/dev/sda bs=1M");
 blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
 safe("H4-10 普通 echo 放行", "echo hello");
@@ -443,6 +473,9 @@ auditBlock("H5-27 dd 顶层", "dd if=/dev/zero of=/dev/sda bs=1M");
 auditBlock("H5-28 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
 auditBlock("H5-29 dd 替换", "$(dd if=/dev/zero of=/dev/sda)");
 auditBlock("H5-30 heredoc 内 dd", "python3 - <<'EOF'\nos.system('dd if=/dev/zero of=/dev/sda')\nEOF");
+// 回归：python 代码段含 add 等英文词不误伤 dd 规则（子串 "dd " 误匹配）
+auditAllow("H5-31 -c 内 add 不误伤 dd", "python3 -c 's = s.replace(\"- [ ] remind them to add `--lang zh` in MCP args.\\n\", \"\")'");
+auditAllow("H5-32 heredoc 内 add 不误伤 dd", "python3 - <<'EOF'\ns = s.replace('- [ ] remind them to add `--lang zh` in MCP args.\\n', '')\nEOF");
 
 // ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);

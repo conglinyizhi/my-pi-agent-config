@@ -46,6 +46,10 @@ interface RuleDef {
   anyFlags?: string[];
   /** 段内至少出现一个参数（精确 token 匹配） */
   anyArgs?: string[];
+  /** 命中的 arg 后紧跟这些 token 时不视为命中（如 > /dev/null 只是丢弃输出） */
+  exceptNextArgs?: string[];
+  /** 命中 arg 且处于此上下文时不视为命中（如 > 是比较/移位运算符而非重定向） */
+  skip?: (tokens: string[], idx: number) => boolean;
   tip: string;
   autoReject?: boolean;
 }
@@ -97,8 +101,25 @@ const RULES: RuleDef[] = [
   },
   {
     name: "write-redirect",
-    // cmd 省略 = 任意命令：输出重定向写入（> 覆盖、>> 追加）可能改动系统文件
-    anyArgs: [">", ">>"],
+    // cmd 省略 = 任意命令：输出重定向写入（> 覆盖、>> 追加、&> / &>> 双流）可能改动系统文件
+    anyArgs: [">", ">>", "&>", "&>>"],
+    // 重定向到 /dev/null 只是丢弃输出，不写文件，不视为危险
+    exceptNextArgs: ["/dev/null"],
+    // 表达式上下文中的 > / >> 是比较/移位运算符，不是重定向：
+    //   if (d.length > 0)   —— 前 token 以 ( 开头（表达式左边界）
+    //   函数调用中的 x >> 1) —— 后 token 以 ) 结尾（表达式右边界）
+    //   (( x > 0 )) && ...  —— 段内 (( 开头 + )) 结尾（bash 算术段）
+    // 排除真重定向：前 token 是完整括号 token（(cmd) > file）、后 token 是进程替换（> >(cat)）
+    skip: (tokens, idx) => {
+      const t = tokens[idx];
+      if (t !== ">" && t !== ">>") return false;
+      const prev = tokens[idx - 1];
+      const next = tokens[idx + 1];
+      if (prev && prev.startsWith("(") && !prev.endsWith(")")) return true;
+      if (next && next.endsWith(")") && !next.startsWith(">(")) return true;
+      if (tokens.some((x) => x.startsWith("((")) && tokens.some((x) => x.endsWith("))"))) return true;
+      return false;
+    },
     tip: "命令输出重定向写入文件，可能覆盖系统或项目文件，请确认目标路径",
   },
   {
@@ -163,7 +184,19 @@ function matchRule(tokens: string[], rule: RuleDef): string[] | null {
     matched.push(...hit);
   }
   if (rule.anyArgs) {
-    const hit = rule.anyArgs.filter((a) => tokens.includes(a));
+    // 逐位置检查：全部出现都被 exceptNextArgs/skip 覆盖（如 > /dev/null、比较运算符）才算不命中
+    const hit = rule.anyArgs.filter((a) => {
+      let idx = tokens.indexOf(a);
+      while (idx !== -1) {
+        if (!(rule.skip && rule.skip(tokens, idx))) {
+          if (!(rule.exceptNextArgs && rule.exceptNextArgs.includes(tokens[idx + 1]))) {
+            return true;
+          }
+        }
+        idx = tokens.indexOf(a, idx + 1);
+      }
+      return false;
+    });
     if (hit.length === 0) return null;
     matched.push(...hit);
   }
@@ -259,10 +292,11 @@ export function dynamicConstructTokens(cmd: string): string[] {
       pushHit("-c");
     }
     // 3. 别名/函数定义：alias xxx=...、f() {...}
+    // 函数定义形态是 `f() { ... }`——`f()` 在命令名位置；
+    // 不能扫全段 token（参数位如 grep -E "foo()"、python 代码 f() 都会误判）
     if (cmdToken === "alias") pushHit("alias");
     if (cmdToken === "function") pushHit("function");
-    const fnDef = tokens.find((t) => t.endsWith("()"));
-    if (fnDef) pushHit(fnDef);
+    if (tokens[i].endsWith("()")) pushHit(tokens[i]);
     // 4. 命令替换/进程替换出现在任意位置
     const subst = tokens.find((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("));
     if (subst) pushHit(subst);

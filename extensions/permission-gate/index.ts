@@ -27,6 +27,27 @@ const DYNAMIC_RULE: TokenRule = {
   autoReject: false,
 };
 
+/** 命令替换内部危险指令（剥洋葱审核捕获） */
+const SUBST_DANGER_RULE: TokenRule = {
+  name: "subst-danger",
+  tip: "命令替换内部含危险指令，请人工确认",
+  autoReject: false,
+};
+
+/** Python 代码段危险调用 */
+const PY_DANGER_RULE: TokenRule = {
+  name: "python-danger",
+  tip: "Python 代码段含危险调用（os.system/rm/dd 等），请人工确认",
+  autoReject: false,
+};
+
+/** 管道右侧执行器命令 */
+const PIPE_EXEC_RULE: TokenRule = {
+  name: "pipe-exec",
+  tip: "管道右侧为执行器命令（sh/bash/python 等），可能执行任意代码，请人工确认",
+  autoReject: false,
+};
+
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死；窗口内不再自动超时，用户可任意时长审批）
 
 /** 安全动态放行记录：tool_result 命中则在结果前插备注（模型有知情权） */
@@ -108,13 +129,12 @@ export default async function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    // 危险信号合并进动态规则（matched 带原文供 GUI 高亮）
-    if (dynamic || dangerous.length > 0 || pyDanger.length > 0 || pipeExec.length > 0) {
-      rules.push({
-        ...DYNAMIC_RULE,
-        matched: [...dynamicTokens, ...dangerous, ...pyDanger, ...pipeExec],
-      });
-    }
+    // 危险信号各自成规则（matched 带原文供 GUI 高亮），
+    // 不合并成一条：多类危险同时命中时，理由/高亮/勾选要能逐条对应
+    if (dynamic) rules.push({ ...DYNAMIC_RULE, matched: [...dynamicTokens] });
+    if (dangerous.length > 0) rules.push({ ...SUBST_DANGER_RULE, matched: [...dangerous] });
+    if (pyDanger.length > 0) rules.push({ ...PY_DANGER_RULE, matched: [...pyDanger] });
+    if (pipeExec.length > 0) rules.push({ ...PIPE_EXEC_RULE, matched: [...pipeExec] });
 
     // 未被白名单覆盖且全部命中规则都是 autoReject → 直接拦（白名单覆盖时降级确认而非静默拦）
     if (!safe && rules.every(r => r.autoReject)) {

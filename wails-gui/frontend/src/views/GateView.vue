@@ -86,22 +86,22 @@ const highlights = computed(() => {
       if (!token) continue;
       let idx = 0;
       while ((idx = cmd.value.indexOf(token, idx)) !== -1) {
-        r.push({ s: idx, e: idx + token.length, t: rule.tip });
+        r.push({ s: idx, e: idx + token.length, t: rule.tip, n: rule.name });
         idx += token.length;
       }
     }
   }
   r.sort((a, b) => a.s - b.s);
-  // 合并相邻危险块：仅被空白分隔（或重叠）的区间并为一个红框，
-  // 让「rm -rf」「pip install」「chmod 777」显示为整体而非碎片；
-  // 中间隔了其他命令词的（如 uv ... --system）保持独立
+  // 合并相邻危险块：仅同一规则的 token 在空白/重叠相邻时并为一个红框，
+  // 让「rm -rf」「pip install」显示为整体而非碎片；
+  // 不同规则即使相邻也保持独立（sudo rm -rf 是两个危险点，各自的理由要能分别 hover/导航）；
+  // 不同规则重叠时仍合并（避免嵌套 mark 渲染异常，重叠场景罕见）
   const merged = [];
   for (const g of r) {
     const last = merged[merged.length - 1];
-    if (last && g.s <= last.e) {
+    const sameRule = last && last.n === g.n;
+    if (last && (sameRule || g.s <= last.e) && (g.s <= last.e || /^\s*$/.test(cmd.value.slice(last.e, g.s)))) {
       last.e = Math.max(last.e, g.e);
-    } else if (last && /^\s*$/.test(cmd.value.slice(last.e, g.s))) {
-      last.e = g.e;
     } else {
       merged.push({ ...g });
     }

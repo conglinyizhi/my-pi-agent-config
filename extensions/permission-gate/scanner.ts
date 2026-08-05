@@ -341,7 +341,8 @@ export function maskShellBlindZones(cmd: string): MaskedCommand {
 export const PY_DANGEROUS_SUBSTRINGS = [
   "os.system", "subprocess", "Popen", "eval(", "exec(",
   "shutil.rmtree", "os.remove", "os.unlink", "os.chmod", "os.chown",
-  "dd ", '"dd"', "'dd'",
+  // dd 危险用法必有 if=/of= 参数；不能用裸 "dd "（会误伤 add/address 等英文词）
+  "dd if=", "dd of=", '"dd"', "'dd'",
 ];
 
 /** 对 python 代码段做危险调用子串检测，返回命中子串（去重） */

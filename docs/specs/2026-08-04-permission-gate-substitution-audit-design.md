@@ -43,7 +43,7 @@ permission-gate 的动态构造检测（`hasDynamicConstructs`）对命令替换
 - 不解析 Python 语法——子串级检测即可
 - 不检测 `python3 script.py` 的文件内容（模型写文件时内容已可见）
 - 不给 `go run` / `python3 xxx.py` 加执行类规则（与顶层行为一致，见"决策"）
-- 第一版不做 `> /dev/null` 例外（见"边界与已知权衡"）
+- ~~第一版不做 `> /dev/null` 例外~~ 已实现（见“边界与已知权衡”更新）
 
 ## 三、方案总览
 
@@ -192,7 +192,7 @@ tool_result（新增 handler）:
 
 ## 七、边界与已知权衡
 
-- `> /dev/null` 会命中 write-redirect（顶层 `ls > /dev/null` 同样拦）：第一版不做例外，误报率可控，若实测烦再优化
+- ~~`> /dev/null` 会命中 write-redirect~~ 已优化：write-redirect 命中 `>` / `>>` / `&>` / `&>>` 时，若下一 token 是 `/dev/null`（丢弃输出）不视为写文件；`cmd > /dev/null 2>&1` 等高频静默写法放行。真文件重定向（含混合场景 `> /dev/null > real.txt`）仍拦截。`&>` / `&>>` 双流重定向写文件此前漏判，一并补齐
 - 单引号内容被 mask 后不参与一切 shell 检测；`echo '$(rm -rf /)'` 放行是正确的（输出字符串，不执行）
 - 裸 heredoc（`<<EOF`）内容不 mask，但同样走剥洋葱审核：展开执行的内容按内容判定——`$(ls)` 放行、`$(rm -rf /)` 弹窗，与整体分级语义一致
 - 顶层 `python3 -c 'os.system(...)'` 也会弹窗（pySegments 检测对顶层 -c 同样生效）——比现状更安全，是预期的行为变化
