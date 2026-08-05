@@ -543,5 +543,25 @@ check("H6-4 父目录 symlink 穿透拦截", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H7. 综合 badcase：多 > 变体的真实命令整条放行
+// ═══════════════════════════════════════════════════
+// 2>/dev/null、2>&1 是整体 token 不匹配 >；> /tmp/x 被前缀豁免。
+// 整条含 4 个大于号的服务拉起命令必须直接放行，不弹确认。
+safe("H7-1 服务拉起整条放行", "pkill -f \"/tmp/ghh-serve\" 2>/dev/null; pkill -f \"agent/dist/server.js\" 2>/dev/null; sleep 1; rm -f /tmp/ghh-smoke.db* /tmp/ghh-cookie.txt; cd /home/clyzhi/disk/ai_workspace/go-human-handler && GHH_AGENT_TOKEN=smoke-token /tmp/ghh-serve serve -addr 127.0.0.1:18099 -db /tmp/ghh-smoke.db > /tmp/ghh-serve.log 2>&1 & sleep 4; grep -E \"ready|listening\" /tmp/ghh-serve.log");
+check("H7-2 单个 2>&1 放行", () => {
+  assert.strictEqual(isCommandSafe("cmd 2>&1"), true);
+  assert.strictEqual(isCommandSafe("cmd > /tmp/x.log 2>&1"), true);
+});
+check("H7-3 2> 各写法不误伤", () => {
+  assert.strictEqual(isCommandSafe("cmd 2>/dev/null"), true);
+  assert.strictEqual(isCommandSafe("cmd 2> /dev/null"), true);
+  assert.strictEqual(isCommandSafe("cmd 2 > /dev/null"), true);
+});
+check("H7-4 非 /tmp 真文件仍拦", () => {
+  assert.strictEqual(isCommandSafe("cmd > log.txt"), false);
+  assert.strictEqual(isCommandSafe("cmd > /tmp/../etc/passwd"), false);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
