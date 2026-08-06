@@ -104,6 +104,12 @@ const RULES: RuleDef[] = [
     autoReject: true,
   },
   {
+    name: "tsx-node",
+    cmd: "tsx",
+    tip: "请使用 node 代替 tsx（tsx script.ts → node script.ts，新版 Node 原生支持类型剥离，可直接运行 .ts 文件）。统一使用 node 运行 TS",
+    autoReject: true,
+  },
+  {
     name: "find-delete",
     cmd: "find",
     anyFlags: ["-delete", "-exec", "-ok"],
@@ -181,8 +187,12 @@ function matchRule(tokens: string[], rule: RuleDef): string[] | null {
   const matched: string[] = [];
   if (rule.cmd) {
     const cmds = Array.isArray(rule.cmd) ? rule.cmd : [rule.cmd];
-    if (!cmds.includes(tokens[cmdIdx])) return null;
-    matched.push(tokens[cmdIdx]);
+    const cmdToken = tokens[cmdIdx];
+    if (cmdToken === undefined) return null;
+    // 带路径命令（node_modules/.bin/tsx）取 basename 匹配，防路径调用绕过规则
+    const basename = cmdToken.includes("/") ? cmdToken.slice(cmdToken.lastIndexOf("/") + 1) : cmdToken;
+    if (!cmds.includes(cmdToken) && !cmds.includes(basename)) return null;
+    matched.push(cmdToken);
   }
   if (rule.subcmd) {
     for (let i = 0; i < rule.subcmd.length; i++) {

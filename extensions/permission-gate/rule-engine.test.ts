@@ -583,5 +583,27 @@ check("H8-8 命中规则名正确", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H9. tsx 强制 node 原生 TS（新版 Node 直接运行 .ts，无需 tsx）
+// ═══════════════════════════════════════════════════
+autoRejected("H9-1 tsx 跑脚本强制 node", "tsx script.ts");
+autoRejected("H9-2 tsx watch 强制 node", "tsx watch script.ts");
+autoRejected("H9-3 tsx 无参数也拦", "tsx");
+check("H9-4 node 直接跑 TS 放行", () => {
+  assert.strictEqual(isCommandSafe("node script.ts"), true);
+  assert.strictEqual(isCommandSafe("node --experimental-strip-types script.ts"), true);
+  assert.strictEqual(isCommandSafe("pnpm dlx tsc --init"), true);
+});
+check("H9-5 命中规则名正确", () => {
+  const rules = matchDangerous("tsx script.ts");
+  assert(rules.some((r) => r.name === "tsx-node"));
+  assert(rules.some((r) => r.autoReject));
+});
+check("H9-6 带路径 tsx 命令也拦", () => {
+  // 命令名 token 是完整路径，basename 为 tsx 时同样拦截（防 node_modules/.bin/tsx 绕过）
+  assert.strictEqual(isCommandSafe("node_modules/.bin/tsx script.ts"), false);
+  assert.strictEqual(isCommandSafe("./node_modules/.bin/tsx script.ts"), false);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

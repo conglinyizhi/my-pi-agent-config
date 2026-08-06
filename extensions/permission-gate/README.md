@@ -8,11 +8,11 @@
 permission-gate/
 ├── index.ts             # 主入口：审批流程（放行 / 自动拒绝 / GUI / TUI 降级）
 ├── rule-engine.ts       # token 化规则引擎：分段、规则匹配、venv 白名单、动态构造检测
-├── rule-engine.test.ts  # 行为测试（96 用例）
+├── rule-engine.test.ts  # 行为测试（当前 230 用例）
 └── README.md
 ```
 
-运行测试：`npx tsx extensions/permission-gate/rule-engine.test.ts`
+运行测试：`node --experimental-strip-types extensions/permission-gate/rule-engine.test.ts`
 
 ## 判定流程
 
@@ -51,7 +51,7 @@ bash 命令
 }
 ```
 
-内置规则：`sudo` / `rm` 递归 / `chmod|chown 777` / `uv --system` / 裸 `pip install` / `python -m pip install`。命中时返回 `matched`（命中的 token 列表），供 GUI 高亮危险点。
+内置规则：`sudo` / `rm` 递归 / `chmod|chown 777` / `uv --system` / 裸 `pip install` / `python -m pip install` / `npm|npx`（强制 pnpm）/ `tsx`（强制 node 原生跑 TS，含带路径调用）。命中时返回 `matched`（命中的 token 列表），供 GUI 高亮危险点。
 
 ## venv 白名单
 
