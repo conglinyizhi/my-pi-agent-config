@@ -605,5 +605,24 @@ check("H9-6 带路径 tsx 命令也拦", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H10. 裸 print() 不应误判为 shell 函数定义
+// ═══════════════════════════════════════════════════
+check("H10-1 裸 print() 动态指令放行", () => {
+  const r = auditCommand("print()");
+  assert.strictEqual(r.allow, true, JSON.stringify(r));
+  assert.deepStrictEqual(r.dynamicTokens, []);
+});
+check("H10-2 print() 命令替换放行", () => {
+  const r = auditCommand("echo $(print())");
+  assert.strictEqual(r.allow, true, JSON.stringify(r));
+  assert.deepStrictEqual(r.dangerous, []);
+});
+check("H10-3 真实 shell 函数定义仍拦截", () => {
+  const r = auditCommand("f() { echo hi; }");
+  assert.strictEqual(r.allow, false, JSON.stringify(r));
+  assert.deepStrictEqual(r.dynamicTokens, ["f()"]);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

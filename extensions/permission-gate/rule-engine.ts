@@ -369,7 +369,7 @@ export function dynamicConstructTokens(cmd: string): string[] {
     // 不能扫全段 token（参数位如 grep -E "foo()"、python 代码 f() 都会误判）
     if (cmdToken === "alias") pushHit("alias");
     if (cmdToken === "function") pushHit("function");
-    if (tokens[i].endsWith("()")) pushHit(tokens[i]);
+    if (tokens[i].endsWith("()") && tokens.slice(i + 1).includes("{")) pushHit(tokens[i]);
     // 4. 命令替换/进程替换出现在任意位置
     const subst = tokens.find((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("));
     if (subst) pushHit(subst);
