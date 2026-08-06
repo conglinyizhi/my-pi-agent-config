@@ -66,14 +66,16 @@ export async function deepseekWebSearch(query: string, key: string, model = DEFA
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
-    name: "web_search",
-    label: "Web Search",
-    description: "通过 DeepSeek 服务端联网搜索获取最新信息。搜索在服务端执行，返回带来源的搜索结果文本。用于需要实时信息、新闻、文档、代码示例的场景。",
-    promptSnippet: "Search the web for current information",
+    name: "web_search_agent",
+    label: "Web Search Agent",
+    description:
+      "代理式联网搜索：由 DeepSeek 服务端模型自主决定搜索词、多次搜索并打开页面，综合多个来源后返回整理好的结论（含引用来源）。返回的是总结不是原始搜索结果列表。用于需要实时信息、新闻、最新文档的场景。",
+    promptSnippet: "Search the web and summarize current information",
     promptGuidelines: [
-      "web_search 用于获取模型知识截止之后的信息：新闻、实时状态、最新文档、他人公开代码。",
+      "web_search_agent 是代理式搜索：DeepSeek 服务端模型会自主决定搜几次、打开哪些页面，并返回综合总结。不是纯搜索结果列表。",
+      "用于获取模型知识截止之后的信息：新闻、实时状态、最新文档、他人公开代码。",
       "提问要具体：把搜索意图写清楚（如「DeepSeek Responses API web_search 工具用法」而不是「DeepSeek」）。",
-      "搜索结果是服务端实时抓取的，可能包含来源链接与摘要；引用时注意甄别时效性。",
+      "返回的总结可能含引用来源；引用时注意甄别时效性。需要核对原始出处时，可要求模型列出具体 URL。",
       "需要多个独立主题时，可以多次调用，每次一个 query。",
     ],
     parameters: Type.Object({
