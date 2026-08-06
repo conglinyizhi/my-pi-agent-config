@@ -101,3 +101,10 @@ link_targets = [
   "skills/writing-plans",
   "skills/writing-skills",
 ]
+
+[[skills]]
+name = "creating-aur-packages"
+source = "https://github.com/conglinyizhi/creating-aur-packages"
+description = "手动创建/更新/重建 AUR 包 — makepkg 手工流程，上游校验与安全审计（供应链不信任场景）"
+tags = ["arch", "aur", "security"]
+trigger = "手动创建/更新/重建 AUR 包、makepkg 手工构建、AUR 投毒后不信任维护者、需要审计 PKGBUILD 或安装脚本"
