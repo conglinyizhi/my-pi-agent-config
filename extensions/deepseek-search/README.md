@@ -10,6 +10,13 @@
 - 内部调 `https://api.deepseek.com/responses`（Responses API），声明 `tools: [{ "type": "web_search" }]`
 - DeepSeek 服务端执行代理式搜索（search + open_page 多次循环），结果经 `web_search_call` 事件回传
 - 提取 `message` 的 `output_text`（服务端模型整理好的总结）作为结果返回给模型
+- 提取 `open_page` 轨迹（模型实际访问的 URL + 状态）追加到结果尾部，格式：
+
+```
+引用来源：
+- https://pnpm.io/blog/releases/11.20 (已访问)
+- https://www.npmjs.com/package/pnpm (访问失败)
+```
 
 ## 已知边界
 

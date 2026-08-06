@@ -29,6 +29,22 @@ export function getDeepSeekKey(): string {
 export interface SearchResult {
   text: string;
   webSearchCalls: number;
+  sources: SearchSource[];
+}
+
+export interface SearchSource {
+  url: string;
+  status: "completed" | "failed";
+}
+
+/** 把来源列表格式化为文本段（供返回 content 追加） */
+export function formatSources(sources: SearchSource[]): string {
+  if (sources.length === 0) return "";
+  const lines = sources.map((s) => {
+    const state = s.status === "completed" ? "已访问" : "访问失败";
+    return `- ${s.url} (${state})`;
+  });
+  return `\n\n引用来源：\n${lines.join("\n")}`;
 }
 
 /** 调 DeepSeek Responses API + web_search，返回搜索后回答文本 */
@@ -50,9 +66,26 @@ export async function deepseekWebSearch(query: string, key: string, model = DEFA
     const errText = await resp.text();
     throw new Error(`DeepSeek search API ${resp.status}: ${errText.slice(0, 300)}`);
   }
-  const data = (await resp.json()) as { output?: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
+  const data = (await resp.json()) as {
+    output?: Array<{
+      type: string;
+      status?: string;
+      action?: { type?: string; url?: string; queries?: string[] };
+      content?: Array<{ type: string; text?: string }>;
+    }>;
+  };
   const outputs = data.output ?? [];
   const webSearchCalls = outputs.filter((o) => o.type === "web_search_call").length;
+  // open_page 轨迹 = 模型实际访问过的来源（去 #ws_call_id= 后缀）
+  const sources: SearchSource[] = [];
+  for (const o of outputs) {
+    if (o.type === "web_search_call" && o.action?.type === "open_page" && o.action.url) {
+      sources.push({
+        url: o.action.url.split("#")[0],
+        status: o.status === "completed" ? "completed" : "failed",
+      });
+    }
+  }
   const texts: string[] = [];
   for (const o of outputs) {
     if (o.type === "message") {
@@ -61,7 +94,7 @@ export async function deepseekWebSearch(query: string, key: string, model = DEFA
       }
     }
   }
-  return { text: texts.join("\n\n"), webSearchCalls };
+  return { text: texts.join("\n\n"), webSearchCalls, sources };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -90,16 +123,16 @@ export default function (pi: ExtensionAPI) {
         };
       }
       try {
-        const { text, webSearchCalls } = await deepseekWebSearch(params.query, key);
-        if (!text) {
+        const { text, webSearchCalls, sources } = await deepseekWebSearch(params.query, key);
+        if (!text && sources.length === 0) {
           return {
-            content: [{ type: "text", text: "搜索完成但没有返回文本结果（服务端可能未找到相关结果）。" }],
+            content: [{ type: "text", text: "搜索完成但没有返回结果（服务端可能未找到相关结果）。" }],
             details: { webSearchCalls },
           };
         }
         return {
-          content: [{ type: "text", text }],
-          details: { webSearchCalls },
+          content: [{ type: "text", text: `${text}${formatSources(sources)}` }],
+          details: { webSearchCalls, sources },
         };
       } catch (err) {
         return {

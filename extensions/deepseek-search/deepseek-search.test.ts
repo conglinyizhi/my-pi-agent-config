@@ -7,7 +7,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { getDeepSeekKey, deepseekWebSearch, type SearchResult } from "./index.ts";
+import { getDeepSeekKey, deepseekWebSearch, formatSources, type SearchResult } from "./index.ts";
 
 // mock fetch：拦截 deepseekWebSearch 里的 fetch 调用
 function mockFetchOnce(data: unknown, ok = true, status = 200) {
@@ -54,6 +54,52 @@ describe("deepseek-search", () => {
     } finally {
       restore();
     }
+  });
+
+  it("提取 open_page 轨迹作为引用来源", async () => {
+    const restore = mockFetchOnce({
+      output: [
+        { type: "web_search_call", status: "completed", action: { type: "search", queries: ["pnpm latest"] } },
+        { type: "web_search_call", status: "completed", action: { type: "open_page", url: "https://pnpm.io/blog/releases/11.20#ws_call_id=call_01" } },
+        { type: "web_search_call", status: "failed", action: { type: "open_page", url: "https://github.com/pnpm/pnpm/releases#ws_call_id=call_02" } },
+        { type: "message", content: [{ type: "output_text", text: "pnpm 11.20 已发布。" }] },
+      ],
+    });
+    try {
+      const r = await deepseekWebSearch("pnpm 最新版本", "test-key");
+      assert.strictEqual(r.text, "pnpm 11.20 已发布。");
+      assert.deepStrictEqual(r.sources, [
+        { url: "https://pnpm.io/blog/releases/11.20", status: "completed" },
+        { url: "https://github.com/pnpm/pnpm/releases", status: "failed" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("无 open_page 时来源为空", async () => {
+    const restore = mockFetchOnce({
+      output: [
+        { type: "web_search_call", status: "completed", action: { type: "search", queries: ["x"] } },
+        { type: "message", content: [{ type: "output_text", text: "结果" }] },
+      ],
+    });
+    try {
+      const r = await deepseekWebSearch("x", "test-key");
+      assert.deepStrictEqual(r.sources, []);
+    } finally {
+      restore();
+    }
+  });
+
+  it("formatSources 生成来源清单文本", () => {
+    const t = formatSources([
+      { url: "https://pnpm.io/blog/releases/11.20", status: "completed" },
+      { url: "https://github.com/pnpm/pnpm/releases", status: "failed" },
+    ]);
+    assert(t.includes("引用来源"));
+    assert(t.includes("https://pnpm.io/blog/releases/11.20 (已访问)"));
+    assert(t.includes("https://github.com/pnpm/pnpm/releases (访问失败)"));
   });
 
   it("API 非 2xx 抛错带状态码", async () => {
