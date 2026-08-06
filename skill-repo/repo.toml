@@ -103,7 +103,7 @@ link_targets = [
 ]
 
 [[skills]]
-name = "creating-aur-packages"
+name = "creating-aur-packages-skill"
 source = "https://github.com/conglinyizhi/creating-aur-packages-skill"
 description = "手动创建/更新/重建 AUR 包 — makepkg 手工流程，上游校验与安全审计（供应链不信任场景）"
 tags = ["arch", "aur", "security"]
