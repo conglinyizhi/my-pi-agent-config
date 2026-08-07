@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
  */
 describe("task-notification extension", () => {
   const source = readFileSync(
-    fileURLToPath(new URL("./task-notification.ts", import.meta.url)),
+    fileURLToPath(new URL("./task-notification/index.ts", import.meta.url)),
     "utf-8",
   );
 
@@ -46,7 +46,7 @@ describe("task-notification extension", () => {
     const agentEnd = handlers.find((h) => h.eventName === "agent_end");
     assert(agentEnd, "expected an agent_end handler");
     assert(
-      agentEnd.body.includes("notifyTaskComplete") || agentEnd.body.includes("notify("),
+      agentEnd.body.includes("sendNotification") || agentEnd.body.includes("notifyTaskComplete") || agentEnd.body.includes("notify("),
       "agent_end handler should send a notification",
     );
   });
