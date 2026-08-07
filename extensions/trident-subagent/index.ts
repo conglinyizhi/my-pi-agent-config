@@ -3,14 +3,14 @@
 // subagent({ task: string | string[] })：主 agent 整理好完整任务说明后调用，
 // 同步等待全部 worker 返航（success/failed/aborted/timeout 逐项汇报）。
 // /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
-// /gui:subagents：实时查看本批 worker 详情（Wails 窗口轮询状态文件）。
+// /gui:subagents：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
+import { runGuiWindow, launchGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
 import { getWorkerModel } from "../../lib/subagent-run.ts";
 import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback.ts";
 import { runBatch } from "./batch.ts";
@@ -159,36 +159,23 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ═══════════════════════════
-  // /gui:subagents — 实时详情窗口
+  // /gui:subagents — 异步启动实时监视窗口
   // ═══════════════════════════
 
   pi.registerCommand("gui:subagents", {
-    description: "GUI：查看当前批次 subagent 运行详情",
+    description: "GUI：异步启动实时监视窗口（不阻塞命令；反馈开关由窗口内直接持久化）",
     handler: async (_args, ctx) => {
-      if (!findGuiBinary()) {
-        ctx.ui.notify("未找到 wails-gui，请先构建", "error");
-        return;
-      }
+      // 非阻塞拉起：不等待 response / 窗口关闭，反馈开关由 GUI 内 SaveSubagentFeedback 持久化
+      const result = launchGuiWindow("subagents", {
+        feedback: readFeedbackState(),
+        workers: getSnapshot(),
+      });
 
-      const result = await runGuiWindow(
-        "subagents",
-        { feedback: readFeedbackState(), workers: getSnapshot() },
-        { timeoutMs: 600_000 },
-      );
-
-      if (result.ok && result.data?.feedback !== undefined && typeof result.data.feedback === "boolean") {
-        const prev = readFeedbackState();
-        if (result.data.feedback !== prev) {
-          if (result.data.feedback && !buildToolsFromNames(pi.getActiveTools()).tools) {
-            ctx.ui.notify("反馈模式拒绝开启：未检测到 be-* 工具。", "error");
-          } else {
-            writeFeedbackState(result.data.feedback);
-            ctx.ui.notify(
-              `subagent 反馈模式已${result.data.feedback ? "开启" : "关闭"}（GUI）。`,
-              result.data.feedback ? "warning" : "info",
-            );
-          }
-        }
+      if (!result.ok) {
+        ctx.ui.notify(
+          result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
+          "error",
+        );
       }
     },
   });
