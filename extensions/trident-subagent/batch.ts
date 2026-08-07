@@ -8,12 +8,48 @@ import {
   runSubagent,
   getResultOutput,
   isFailedResult,
+  SubagentError,
   type SubagentResult,
   type SubagentUsage,
+  type TimelineEvent,
 } from "../../lib/subagent-run.ts";
 import { updateWorker } from "./status.ts";
 
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout";
+
+/**
+ * 把 runSubagent 抛出的错误分类为可识别终态（timeout | aborted）。
+ *
+ * 依赖 SubagentError.status（结构化字段）而非错误消息文本：超时（内部超时控制器）
+ * 映射为 timeout，外部 signal 中止映射为 aborted，其余未知错误兜底为 aborted
+ * （保持原有 catch 语义：只有明确超时才标 timeout）。
+ */
+export function classifyTerminalError(err: unknown): {
+  status: "timeout" | "aborted";
+  timeline?: TimelineEvent[];
+} {
+  if (err instanceof SubagentError) {
+    return { status: err.status, timeline: err.timeline };
+  }
+  return { status: "aborted" };
+}
+
+export interface TerminalPatch {
+  status: BatchItemStatus;
+  finishedAt: string;
+  timeline?: TimelineEvent[];
+}
+
+/**
+ * 构造终态 updateWorker 补丁。timeline 只在错误明确携带时写入：
+ * undefined 绝不覆盖已有实时 timeline（catch 里保留最终轨迹，不抹掉实时快照）。
+ */
+export function buildTerminalPatch(err: unknown, finishedAt: string): TerminalPatch {
+  const { status, timeline } = classifyTerminalError(err);
+  const patch: TerminalPatch = { status, finishedAt };
+  if (timeline) patch.timeline = timeline;
+  return patch;
+}
 
 export interface BatchItemResult {
   index: number;
@@ -52,7 +88,12 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
           timeout: opts.timeout ?? 600,
           onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
-          onUpdate: (r) => updateWorker(id, { usage: r.usage, stderr: r.stderr.slice(-4000) }),
+          onUpdate: (r) => updateWorker(id, {
+            usage: r.usage,
+            stderr: r.stderr.slice(-4000),
+            // 每次实时解析更新都传 timeline 快照（复制，避免共享同一数组引用）
+            timeline: [...r.timeline],
+          }),
         });
 
         const failed = isFailedResult(result);
@@ -63,6 +104,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           usage: result.usage,
           stderr: result.stderr.slice(-4000),
           output: getResultOutput(result).slice(-8000),
+          // 终态更新保留最终 timeline
+          timeline: [...result.timeline],
         });
         return {
           index,
@@ -74,11 +117,10 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           usage: result.usage,
         };
       } catch (err) {
-        const msg = String(err);
-        const timedOut = /超时/.test(msg);
-        const status: BatchItemStatus = timedOut ? "timeout" : "aborted";
-        updateWorker(id, { status, finishedAt: new Date().toISOString() });
-        return { index, status, output: "", stderr: msg };
+        // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判
+        const patch = buildTerminalPatch(err, new Date().toISOString());
+        updateWorker(id, patch);
+        return { index, status: patch.status, output: "", stderr: String(err) };
       }
     }),
   );
