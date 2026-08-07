@@ -48,6 +48,27 @@ export interface SubagentResult {
   timeline: TimelineEvent[];
 }
 
+/**
+ * runSubagent 中止/超时路径抛出的结构化终态错误。
+ *
+ * 携带可识别终态 status（timeout | aborted）与最终 timeline，供 batch 等调用方
+ * 按类型而非错误消息文本（如 /超时/ 正则）分类，保证 timeout 与外部 abort 在
+ * WorkerStatus / BatchItemResult.status / lifecycle 三处状态一致。
+ */
+export class SubagentError extends Error {
+  /** 终态：timeout（内部超时控制器触发）或 aborted（外部 signal 中止） */
+  readonly status: "timeout" | "aborted";
+  /** 最终 timeline：超时/中止时也把最终轨迹带给调用方（catch 保留） */
+  readonly timeline?: TimelineEvent[];
+
+  constructor(status: "timeout" | "aborted", message: string, timeline?: TimelineEvent[]) {
+    super(message);
+    this.name = "SubagentError";
+    this.status = status;
+    this.timeline = timeline;
+  }
+}
+
 export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent。你在隔离的上下文窗口中处理委派任务，避免污染主对话。
 
 请自主完成分配给你的任务，并按需使用所有可用工具。
@@ -326,12 +347,13 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
 
       result.exitCode = exitCode;
       // 终态 lifecycle：success/failed/aborted/timeout（timeout 依据内部超时控制器判断）
-      timeline.addLifecycle(resolveTerminalState({
+      const terminal = resolveTerminalState({
         aborted: wasAborted,
         timedOut: timeoutController.signal.aborted,
         exitCode: result.exitCode,
         stopReason: result.stopReason,
-      }));
+      });
+      timeline.addLifecycle(terminal);
       // 终态同步一次：尾缓冲里的 telemetry 已并入 timeline，随终态 lifecycle 一起
       // 通过 onUpdate 送达调用方（与下方 resolve/throw 路径的 result.timeline 一致）
       emitUpdate();
@@ -339,13 +361,19 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
       if (agentEndOutput && !getFinalOutput(result.messages)) {
         result.messages.push({ role: "assistant", content: agentEndOutput } as unknown as Message);
       }
-      if (wasAborted) {
-        const err = new Error("Subagent 已中止") as Error & { timeline?: TimelineEvent[] };
-        err.timeline = result.timeline; // 超时/中止时也把最终 timeline 带给调用方
-        throw err;
-      }
 
       try { fs.unlinkSync(promptPath); fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+
+      if (wasAborted) {
+        // 结构化终态错误：batch 依赖 status（timeout/aborted）而非消息文本识别；
+        // 最终 timeline 随错误带给调用方（catch 保留，undefined 不覆盖实时轨迹）
+        const status: "timeout" | "aborted" = terminal === "timeout" ? "timeout" : "aborted";
+        throw new SubagentError(
+          status,
+          status === "timeout" ? `Subagent 超时（${opts.timeout ?? 600}s）` : "Subagent 已中止",
+          result.timeline,
+        );
+      }
 
       resolve(result);
     } catch (err) {

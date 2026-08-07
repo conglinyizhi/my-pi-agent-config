@@ -13,8 +13,8 @@ import * as os from "node:os";
 import { runGuiWindow, launchGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
 import { getWorkerModel } from "../../lib/subagent-run.ts";
 import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback.ts";
-import { runBatch } from "./batch.ts";
-import { beginBatch, getSnapshot, type WorkerRun } from "./status.ts";
+import { runBatch, type BatchItemResult } from "./batch.ts";
+import { beginBatch, flushStatusFile, getSnapshot, type WorkerRun } from "./status.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const ROLES_PATH = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
@@ -92,14 +92,20 @@ export default function (pi: ExtensionAPI) {
         details: { phase: "running" },
       });
 
-      const results = await runBatch(tasks, {
-        cwd: ctx.cwd,
-        model: workerModel,
-        signal,
-        tools: toolCfg.tools,
-        extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
-        taskId: batchTaskId,
-      });
+      let results: BatchItemResult[];
+      try {
+        results = await runBatch(tasks, {
+          cwd: ctx.cwd,
+          model: workerModel,
+          signal,
+          tools: toolCfg.tools,
+          extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
+          taskId: batchTaskId,
+        });
+      } finally {
+        // 挂起合并写显式落盘（终态已立即写，此处兜底，确保进程结束前不丢状态）
+        flushStatusFile();
+      }
 
       const lines = results.map((r) => {
         const head = `#${r.index + 1} ${r.status.toUpperCase()}`;

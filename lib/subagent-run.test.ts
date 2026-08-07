@@ -13,9 +13,11 @@ import {
   extractAgentEndOutput,
   TimelineBuilder,
   resolveTerminalState,
+  SubagentError,
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
+  type TimelineEvent,
 } from "./subagent-run.ts";
 
 describe("buildSubagentArgs", () => {
@@ -79,6 +81,30 @@ describe("extractAgentEndOutput", () => {
   it("无有效输出返回空串", () => {
     assert.strictEqual(extractAgentEndOutput(JSON.stringify({ type: "agent_end", messages: [] })), "");
     assert.strictEqual(extractAgentEndOutput("not json"), "");
+  });
+});
+
+describe("SubagentError 结构化终态", () => {
+  it("携带 status（timeout/aborted）与最终 timeline", () => {
+    const tl: TimelineEvent[] = [{ id: "l1", type: "lifecycle", ts: "t", state: "starting" }];
+    const t = new SubagentError("timeout", "Subagent 超时（600s）", tl);
+    assert(t instanceof Error);
+    assert.strictEqual(t.name, "SubagentError");
+    assert.strictEqual(t.status, "timeout");
+    assert.strictEqual(t.message, "Subagent 超时（600s）");
+    assert.strictEqual(t.timeline, tl);
+
+    const a = new SubagentError("aborted", "Subagent 已中止");
+    assert.strictEqual(a.status, "aborted");
+    assert.strictEqual(a.timeline, undefined);
+  });
+
+  it("status 只有 timeout | aborted 两种可识别终态", () => {
+    const t = new SubagentError("timeout", "Subagent 超时（1s）");
+    const a = new SubagentError("aborted", "Subagent 已中止");
+    // 类型上即收窄为两种取值；运行期断言保证分类面不漂移
+    assert(["timeout", "aborted"].includes(t.status));
+    assert(["timeout", "aborted"].includes(a.status));
   });
 });
 
