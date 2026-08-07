@@ -10,6 +10,7 @@ import {
   isFailedResult,
   type SubagentResult,
   type SubagentUsage,
+  type TimelineEvent,
 } from "../../lib/subagent-run.ts";
 import { updateWorker } from "./status.ts";
 
@@ -52,7 +53,12 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
           timeout: opts.timeout ?? 600,
           onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
-          onUpdate: (r) => updateWorker(id, { usage: r.usage, stderr: r.stderr.slice(-4000) }),
+          onUpdate: (r) => updateWorker(id, {
+            usage: r.usage,
+            stderr: r.stderr.slice(-4000),
+            // 每次实时解析更新都传 timeline 快照（复制，避免共享同一数组引用）
+            timeline: [...r.timeline],
+          }),
         });
 
         const failed = isFailedResult(result);
@@ -63,6 +69,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           usage: result.usage,
           stderr: result.stderr.slice(-4000),
           output: getResultOutput(result).slice(-8000),
+          // 终态更新保留最终 timeline
+          timeline: [...result.timeline],
         });
         return {
           index,
@@ -77,7 +85,12 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
         const msg = String(err);
         const timedOut = /超时/.test(msg);
         const status: BatchItemStatus = timedOut ? "timeout" : "aborted";
-        updateWorker(id, { status, finishedAt: new Date().toISOString() });
+        updateWorker(id, {
+          status,
+          finishedAt: new Date().toISOString(),
+          // runSubagent 在超时/中止路径把最终 timeline 挂到错误上，一并保留
+          timeline: (err as Error & { timeline?: TimelineEvent[] })?.timeline,
+        });
         return { index, status, output: "", stderr: msg };
       }
     }),

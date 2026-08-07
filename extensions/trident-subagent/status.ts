@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SubagentUsage } from "../../lib/subagent-run.ts";
+import type { SubagentUsage, TimelineEvent } from "../../lib/subagent-run.ts";
 
 export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout";
 
@@ -21,6 +21,8 @@ export interface WorkerRun {
   usage?: SubagentUsage;
   output?: string;
   stderr?: string;
+  /** 有界 per-worker 执行轨迹（实时更新；终态保留最终 timeline） */
+  timeline?: TimelineEvent[];
 }
 
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");

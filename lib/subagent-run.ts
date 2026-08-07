@@ -10,6 +10,20 @@ import * as os from "node:os";
 import type { Message } from "@earendil-works/pi-ai";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
+import { TimelineBuilder, resolveTerminalState } from "./timeline.ts";
+// timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
+export {
+  TimelineBuilder,
+  resolveTerminalState,
+  TIMELINE_MAX_ENTRIES,
+  TIMELINE_MAX_TEXT,
+  TIMELINE_MAX_FIELD,
+} from "./timeline.ts";
+export type {
+  TimelineEvent,
+  TimelineEventType,
+  TimelineBuilderOptions,
+} from "./timeline.ts";
 
 export interface SubagentUsage {
   input: number;
@@ -30,6 +44,8 @@ export interface SubagentResult {
   model?: string;
   stopReason?: string;
   errorMessage?: string;
+  /** 有界 per-worker 执行轨迹（实时变化；终态保留最终 timeline） */
+  timeline: TimelineEvent[];
 }
 
 export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent。你在隔离的上下文窗口中处理委派任务，避免污染主对话。
@@ -199,6 +215,10 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
 
       const invocation = getPiInvocation(args);
 
+      // worker 启动 lifecycle；timeline 数组引用直接挂到 result，实时快照随事件推进
+      const timeline = new TimelineBuilder();
+      timeline.addLifecycle("starting", "worker 启动");
+
       const result: SubagentResult = {
         task,
         exitCode: 0,
@@ -206,6 +226,7 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
         stderr: "",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         model,
+        timeline: timeline.events,
       };
 
       const emitUpdate = () => {
@@ -239,6 +260,7 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
           buffer = lines.pop() || "";
           for (const line of lines) {
             if (!line.trim()) continue;
+            if (timeline.handleLine(line)) emitUpdate();
             let event: { type?: string; message?: unknown };
             try { event = JSON.parse(line); } catch { continue; }
 
@@ -275,6 +297,7 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
           if (buffer.trim()) {
             for (const line of buffer.split("\n")) {
               if (!line.trim()) continue;
+              timeline.handleLine(line);
               let event: { type?: string; message?: unknown };
               try { event = JSON.parse(line); } catch { continue; }
               if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
@@ -302,11 +325,25 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
       });
 
       result.exitCode = exitCode;
+      // 终态 lifecycle：success/failed/aborted/timeout（timeout 依据内部超时控制器判断）
+      timeline.addLifecycle(resolveTerminalState({
+        aborted: wasAborted,
+        timedOut: timeoutController.signal.aborted,
+        exitCode: result.exitCode,
+        stopReason: result.stopReason,
+      }));
+      // 终态同步一次：尾缓冲里的 telemetry 已并入 timeline，随终态 lifecycle 一起
+      // 通过 onUpdate 送达调用方（与下方 resolve/throw 路径的 result.timeline 一致）
+      emitUpdate();
       // agent_end 兜底：若 messages 里没有最终输出（如非标准退出路径），用 agent_end 的完整 messages
       if (agentEndOutput && !getFinalOutput(result.messages)) {
         result.messages.push({ role: "assistant", content: agentEndOutput } as unknown as Message);
       }
-      if (wasAborted) throw new Error("Subagent 已中止");
+      if (wasAborted) {
+        const err = new Error("Subagent 已中止") as Error & { timeline?: TimelineEvent[] };
+        err.timeline = result.timeline; // 超时/中止时也把最终 timeline 带给调用方
+        throw err;
+      }
 
       try { fs.unlinkSync(promptPath); fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
