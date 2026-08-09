@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
 import { hasDynamicConstructs, auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
+import { buildInlineScriptRejection, extractInlineScript, saveInlineScript } from "./inline-script";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -146,6 +147,21 @@ export default async function (pi: ExtensionAPI) {
     if (event.toolName !== "bash") return undefined;
 
     const command: string = event.input.command as string;
+
+    // Preserve a common model shortcut without executing it. Extraction is
+    // intentionally strict: anything more complex follows the normal audit path.
+    const inlineScript = extractInlineScript(command);
+    if (inlineScript) {
+      try {
+        const saved = saveInlineScript(inlineScript);
+        return { block: true, reason: buildInlineScriptRejection(saved) };
+      } catch (error) {
+        return {
+          block: true,
+          reason: `安全闸门拒绝了内联 ${inlineScript.runtime === "python" ? "Python" : "Node.js"} 代码，且无法安全保存脚本：${(error as Error).message}`,
+        };
+      }
+    }
 
     // 分级审核：mask 盲区 → 剥洋葱内部审核 → Python 段检测 → 管道执行器 → 规则判定
     const audit = auditCommand(command);
