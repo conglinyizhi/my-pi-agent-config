@@ -3,7 +3,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /**
  * /put-http-proxy <data> —— prompt 语法糖
  *
- * 替你向模型发一条消息，告知可用 HTTP 代理。
+ * 把「可用 HTTP 代理」写成一条用户消息草稿/排队项，不立刻触发回合：
+ * - 空闲：写入编辑器，由提督确认后发送
+ * - 忙碌：followUp 排队，当前回合结束后再发
  *
  *   /put-http-proxy 7890                → 127.0.0.1:7890
  *   /put-http-proxy proxy.example.com:80 → 远程代理
@@ -51,7 +53,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerCommand("put-http-proxy", {
-    description: "语法糖：告知模型可用 HTTP 代理。<端口> 或 <host[:port]>，缺端口时追问",
+    description: "语法糖：把可用 HTTP 代理排成用户消息草稿。<端口> 或 <host[:port]>，缺端口时追问",
     handler: async (args, ctx) => {
       const raw = (args ?? "").trim();
       if (!raw) {
@@ -79,8 +81,21 @@ export default function (pi: ExtensionAPI) {
 
       const host = parsed.host.includes(":") ? `[${parsed.host}]` : parsed.host;
       const url = `http://${host}:${port}`;
+      const message =
+        `可以尝试代理（ ${url} ）访问部分超时/403站点，用 curl 内置的 -x 参数走代理，当情况相反你也可以不使用代理尝试`;
 
-      pi.sendUserMessage(`可以尝试代理（ ${url} ）访问部分超时/403站点，用 curl 内置的 -x 参数走代理，当情况相反你也可以不使用代理尝试`);
+      // 不立刻开一轮：空闲时写入编辑器当用户草稿；忙碌时进 followUp 队列，回合结束后再发
+      if (ctx.isIdle()) {
+        const existing = ctx.ui.getEditorText();
+        const next = existing.trim()
+          ? `${existing.replace(/\s+$/, "")}\n${message}`
+          : message;
+        ctx.ui.setEditorText(next);
+        ctx.ui.notify("代理提示已填入编辑器，确认后发送", "info");
+      } else {
+        pi.sendUserMessage(message, { deliverAs: "followUp" });
+        ctx.ui.notify("代理提示已排队，当前回合结束后发送", "info");
+      }
     },
   });
 }
