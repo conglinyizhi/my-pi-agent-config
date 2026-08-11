@@ -12,7 +12,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { SubagentError, type TimelineEvent } from "../../lib/subagent-run.ts";
-import { classifyTerminalError, buildTerminalPatch } from "./batch.ts";
+import { classifyTerminalError, buildTerminalPatch, formatCatchOutput } from "./batch.ts";
 
 describe("classifyTerminalError / buildTerminalPatch", () => {
   const tl: TimelineEvent[] = [
@@ -55,5 +55,19 @@ describe("classifyTerminalError / buildTerminalPatch", () => {
     assert.strictEqual(classifyTerminalError(new SubagentError("aborted", "任意消息", tl)).status, "aborted");
     // 而纯文本错误（即使含"超时"字样）不误标为 timeout
     assert.strictEqual(classifyTerminalError(new Error("Subagent 超时（600s）")).status, "aborted");
+  });
+
+  it("SubagentError 携带 investigationPath 时 catch 输出附读档指引（结果层保留）", () => {
+    const err = new SubagentError("timeout", "Subagent 超时（600s）", tl, "/tmp/inv.md");
+    assert.strictEqual(err.investigationPath, "/tmp/inv.md");
+    const out = formatCatchOutput(err, "timeout");
+    assert(out.includes("/tmp/inv.md"), "输出含调查文件路径");
+    assert(out.includes("读档"), "输出含读档指引");
+    assert(out.includes("FAILED final=timeout"));
+  });
+
+  it("无 investigationPath 的错误：formatCatchOutput 回退空串，由调用方兜底 String(err)", () => {
+    assert.strictEqual(formatCatchOutput(new Error("boom"), "aborted"), "");
+    assert.strictEqual(formatCatchOutput(new SubagentError("aborted", "Subagent 已中止"), "aborted"), "");
   });
 });

@@ -51,6 +51,17 @@ export function buildTerminalPatch(err: unknown, finishedAt: string): TerminalPa
   return patch;
 }
 
+/**
+ * catch 路径的失败输出：SubagentError 携带 investigationPath 时，输出中附调查文件
+ * 路径与读档指引（供主 agent 直接 read 调查文件恢复现场）；否则返回空字符串，
+ * 由调用方回退为 String(err)。
+ */
+export function formatCatchOutput(err: unknown, status: BatchItemStatus): string {
+  const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+  if (!investigationPath) return "";
+  return `FAILED final=${status}\n  investigation: ${investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」\n  ${String(err)}`;
+}
+
 export interface BatchItemResult {
   index: number;
   status: BatchItemStatus;
@@ -59,6 +70,10 @@ export interface BatchItemResult {
   stderr: string;
   errorMessage?: string;
   usage?: SubagentUsage;
+  /** 重试彻底失败后写出的调查文件绝对路径（timeout/aborted/failed 时可能携带） */
+  investigationPath?: string;
+  /** 实际尝试次数（含首次；仅成功/失败结果携带，超时/中止时调查文件内有计数） */
+  attempts?: number;
 }
 
 export interface RunBatchOptions {
@@ -111,16 +126,25 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           index,
           status,
           exitCode: result.exitCode,
-          output: getResultOutput(result),
+          output: result.inlineSummary ?? getResultOutput(result),
           stderr: result.stderr,
           errorMessage: result.errorMessage,
           usage: result.usage,
+          investigationPath: result.investigationPath,
+          attempts: result.attempts,
         };
       } catch (err) {
         // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判
         const patch = buildTerminalPatch(err, new Date().toISOString());
         updateWorker(id, patch);
-        return { index, status: patch.status, output: "", stderr: String(err) };
+        const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+        return {
+          index,
+          status: patch.status,
+          output: formatCatchOutput(err, patch.status) || String(err),
+          stderr: String(err),
+          investigationPath,
+        };
       }
     }),
   );

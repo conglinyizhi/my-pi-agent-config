@@ -57,6 +57,7 @@ export default function (pi: ExtensionAPI) {
       "工具会同步阻塞直到所有 worker 结束：一个失败不终止其他 worker，逐个在结果里汇报。",
       "运行期间可用 /gui:subagents 查看每个 worker 的实时详情。",
       "反馈模式开启时 worker 只能用 read/bash/be-* 工具（/subagent:feedback 查看状态）。",
+      "失败项若带 investigation 路径：先 read 该文件的「读档指引」与「最终结论」，以磁盘现状为准，勿假设 worker 无副作用；勿整文件灌回上下文。",
     ],
     parameters: Type.Object({
       task: Type.Union([
@@ -112,7 +113,11 @@ export default function (pi: ExtensionAPI) {
         const meta = r.exitCode !== undefined ? ` exit=${r.exitCode}` : "";
         const err = r.errorMessage ? ` error=${r.errorMessage.slice(0, 300)}` : "";
         const stderr = r.stderr.trim() ? `\n  stderr: ${r.stderr.trim().slice(0, 500)}` : "";
-        return `${head}${meta}${err}${stderr}\n  ${r.output.slice(0, 800)}`;
+        // inlineSummary 通常已含 investigation 路径；未含才补，避免重复
+        const inv = r.investigationPath && !r.output.includes(r.investigationPath)
+          ? `\n  investigation: ${r.investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」`
+          : "";
+        return `${head}${meta}${err}${stderr}${inv}\n  ${r.output.slice(0, 800)}`;
       });
 
       const failedCount = results.filter((r) => r.status !== "success").length;
