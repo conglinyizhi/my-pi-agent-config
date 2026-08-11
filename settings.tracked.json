@@ -8,5 +8,10 @@
   "packages": [
     "npm:pi-mcp-adapter"
   ],
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  },
   "theme": "dark"
 }
