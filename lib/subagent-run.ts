@@ -11,6 +11,9 @@ import type { Message } from "@earendil-works/pi-ai";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
 import { TimelineBuilder, resolveTerminalState } from "./timeline.ts";
+import type { TimelineEvent } from "./timeline.ts";
+import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
+import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
 export {
   TimelineBuilder,
@@ -46,6 +49,12 @@ export interface SubagentResult {
   errorMessage?: string;
   /** 有界 per-worker 执行轨迹（实时变化；终态保留最终 timeline） */
   timeline: TimelineEvent[];
+  /** 重试彻底失败后写出的调查文件绝对路径（成功/未重试时为 undefined） */
+  investigationPath?: string;
+  /** 实际尝试次数（含首次） */
+  attempts?: number;
+  /** 最终失败的内联摘要（成功时为 undefined） */
+  inlineSummary?: string;
 }
 
 /**
@@ -60,12 +69,15 @@ export class SubagentError extends Error {
   readonly status: "timeout" | "aborted";
   /** 最终 timeline：超时/中止时也把最终轨迹带给调用方（catch 保留） */
   readonly timeline?: TimelineEvent[];
+  /** 重试彻底失败后写出的调查文件绝对路径（可选） */
+  readonly investigationPath?: string;
 
-  constructor(status: "timeout" | "aborted", message: string, timeline?: TimelineEvent[]) {
+  constructor(status: "timeout" | "aborted", message: string, timeline?: TimelineEvent[], investigationPath?: string) {
     super(message);
     this.name = "SubagentError";
     this.status = status;
     this.timeline = timeline;
+    this.investigationPath = investigationPath;
   }
 }
 
@@ -191,6 +203,9 @@ export function getResultOutput(result: SubagentResult): string {
   return getFinalOutput(result.messages) || "（无输出）";
 }
 
+/** 单次执行函数（默认 defaultRunOnce；重试循环测试注入用） */
+export type RunOnceFn = (opts: RunSubagentOptions) => Promise<SubagentResult>;
+
 export interface RunSubagentOptions {
   task: string;
   cwd: string;
@@ -202,9 +217,17 @@ export interface RunSubagentOptions {
   extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
   onUpdate?: (result: SubagentResult) => void;
   onSpawn?: (pid: number) => void; // 子进程 PID，用于外部 kill
+  /** 测试注入：替换单次执行实现（仅重试循环内部使用） */
+  runOnce?: RunOnceFn;
+  /** 测试注入：替换退避等待实现 */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
-export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
+/**
+ * 默认单次执行：spawn 隔离 pi 进程并收集结果（原 runSubagent 本体）。
+ * 重试循环的每次 attempt 调用它；每次调用自带全新 timeline 与超时控制器。
+ */
+export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult> {
   const task = opts.task;
   const cwd = opts.cwd;
   const timeout = (opts.timeout ?? 600) * 1000;
@@ -383,4 +406,174 @@ export function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
       clearTimeout(timeoutId);
     }
   });
+}
+
+/** 可中止退避等待：signal 中止时以 SubagentError("aborted") 拒绝（默认 sleep 实现） */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!ms) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new SubagentError("aborted", "Subagent 已中止"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new SubagentError("aborted", "Subagent 已中止"));
+    };
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** 从失败结果构造 attempt 快照（timeline 复制，避免与实时轨迹共享引用） */
+function snapshotFromResult(
+  attempt: number,
+  result: SubagentResult,
+  status: AttemptSnapshot["status"],
+  startedAt: string,
+): AttemptSnapshot {
+  return {
+    attempt,
+    status,
+    exitCode: result.exitCode,
+    stopReason: result.stopReason,
+    errorMessage: result.errorMessage,
+    stderr: result.stderr,
+    timeline: [...result.timeline],
+    usage: result.usage,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+  };
+}
+
+/** 从抛出的错误（SubagentError 超时/中止、未知异常）构造 attempt 快照 */
+function snapshotFromError(
+  attempt: number,
+  err: unknown,
+  status: AttemptSnapshot["status"],
+  timeline: TimelineEvent[] | undefined,
+  startedAt: string,
+): AttemptSnapshot {
+  const msg = err instanceof Error ? err.message : String(err);
+  return {
+    attempt,
+    status,
+    errorMessage: msg,
+    stderr: "",
+    timeline: timeline ? [...timeline] : [],
+    startedAt,
+    finishedAt: new Date().toISOString(),
+  };
+}
+
+/** 依据最终错误/结果推导调查 finalStatus */
+function deriveFinalStatus(
+  lastError: unknown,
+  lastResult: SubagentResult | undefined,
+  attempts: AttemptSnapshot[],
+): "failed" | "aborted" | "timeout" {
+  if (lastError instanceof SubagentError) return lastError.status;
+  if (attempts.length > 0) {
+    const last = attempts[attempts.length - 1];
+    if (last.status === "aborted" || last.status === "timeout") return last.status;
+  }
+  if (lastResult?.stopReason === "aborted") return "aborted";
+  return "failed";
+}
+
+/**
+ * 公共入口：单次执行 + 最多 SUBAGENT_MAX_ATTEMPTS 次基础设施重试。
+ *
+ * - 成功：直接返回（带 attempts 计数），不写调查文件。
+ * - 最终失败（exit/error）：返回 failed SubagentResult，附 investigationPath / attempts / inlineSummary。
+ * - 超时/中止：写调查文件后抛 SubagentError（携带 investigationPath）。
+ *
+ * 每次 attempt 调用 defaultRunOnce（或注入的 runOnce），各自带全新 timeline 与超时控制器。
+ */
+export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentResult> {
+  const max = SUBAGENT_MAX_ATTEMPTS;
+  const runOnce = opts.runOnce ?? defaultRunOnce;
+  const sleep = opts.sleep ?? abortableSleep;
+  const attempts: AttemptSnapshot[] = [];
+  const batchStarted = new Date().toISOString();
+  let lastResult: SubagentResult | undefined;
+  let lastError: unknown;
+
+  for (let i = 1; i <= max; i++) {
+    if (opts.signal?.aborted) {
+      lastError = new SubagentError("aborted", "Subagent 已中止");
+      break;
+    }
+    const startedAt = new Date().toISOString();
+    try {
+      const result = await runOnce({ ...opts, runOnce: undefined, sleep: undefined });
+      lastResult = result;
+      if (!isFailedResult(result) && result.stopReason !== "error") {
+        // 干净成功：返回（带 attempts 供观测），不写调查文件
+        result.attempts = i;
+        return result;
+      }
+      // 失败结果（可重试或不可重试）
+      const status: AttemptSnapshot["status"] = result.stopReason === "aborted" ? "aborted" : "failed";
+      attempts.push(snapshotFromResult(i, result, status, startedAt));
+      lastError = null;
+      if (!isRetryableFailure(result) || i === max) break;
+      await sleep(backoffDelayMs(i), opts.signal);
+    } catch (err) {
+      lastError = err;
+      const status: AttemptSnapshot["status"] = err instanceof SubagentError ? err.status : "aborted";
+      const timeline = err instanceof SubagentError ? err.timeline : undefined;
+      attempts.push(snapshotFromError(i, err, status, timeline, startedAt));
+      if (!isRetryableFailure(err) || i === max) break;
+      try {
+        await sleep(backoffDelayMs(i), opts.signal);
+      } catch (sleepErr) {
+        // 退避期间被外部中止
+        lastError = sleepErr;
+        break;
+      }
+    }
+  }
+
+  const finishedAt = new Date().toISOString();
+  const finalStatus = deriveFinalStatus(lastError, lastResult, attempts);
+  const invInput = {
+    task: opts.task,
+    taskId: opts.taskId,
+    model: opts.model,
+    cwd: opts.cwd,
+    attempts,
+    finalStatus,
+    maxAttempts: max,
+    startedAt: batchStarted,
+    finishedAt,
+  };
+
+  let investigationPath: string | undefined;
+  try {
+    investigationPath = writeInvestigationFile(invInput);
+  } catch {
+    investigationPath = undefined; // 写文件失败不掩盖原始失败
+  }
+  const inlineSummary = buildInlineSummary(invInput, investigationPath);
+
+  if (lastError instanceof SubagentError) {
+    throw new SubagentError(lastError.status, lastError.message, lastError.timeline, investigationPath);
+  }
+  if (lastError) {
+    throw new SubagentError("aborted", String(lastError), undefined, investigationPath);
+  }
+  // 最终失败（exit/error）路径：返回 failed 结果并附调查信息
+  const failed: SubagentResult = lastResult ?? {
+    task: opts.task,
+    exitCode: 1,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    timeline: [],
+  };
+  failed.investigationPath = investigationPath;
+  failed.attempts = attempts.length || 1;
+  failed.inlineSummary = inlineSummary;
+  return failed;
 }

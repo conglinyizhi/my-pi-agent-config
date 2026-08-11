@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import {
   buildSubagentArgs,
   extractAgentEndOutput,
+  runSubagent,
   TimelineBuilder,
   resolveTerminalState,
   SubagentError,
@@ -105,6 +106,102 @@ describe("SubagentError 结构化终态", () => {
     // 类型上即收窄为两种取值；运行期断言保证分类面不漂移
     assert(["timeout", "aborted"].includes(t.status));
     assert(["timeout", "aborted"].includes(a.status));
+  });
+});
+
+describe("SubagentError investigationPath", () => {
+  it("可选携带 investigationPath", () => {
+    const e = new SubagentError("timeout", "t", undefined, "/tmp/x.md");
+    assert.strictEqual(e.investigationPath, "/tmp/x.md");
+  });
+});
+
+describe("runSubagent retry loop (injected runOnce)", () => {
+  it("fail then success → 2 runs, no investigationPath", async () => {
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        if (n === 1) {
+          return {
+            task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
+            errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            timeline: [],
+          };
+        }
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [],
+        };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 2);
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.investigationPath, undefined);
+    assert.strictEqual(result.attempts, 2);
+  });
+
+  it("6 failures → investigationPath set, attempts=6", async () => {
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        return {
+          task: "t", exitCode: 1, messages: [], stderr: "e", stopReason: "error",
+          errorMessage: "down", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [{ id: "l", type: "lifecycle", ts: "t", state: "failed" }],
+        };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 6);
+    assert.ok(result.investigationPath);
+    assert.strictEqual(result.attempts, 6);
+    assert.ok(result.inlineSummary?.includes("investigation:"));
+  });
+
+  it("abort → 1 run, investigationPath set, no further attempts", async () => {
+    let n = 0;
+    await assert.rejects(
+      () => runSubagent({
+        task: "t", cwd: "/tmp",
+        runOnce: async () => {
+          n++;
+          throw new SubagentError("aborted", "Subagent 已中止", [{ id: "l", type: "lifecycle", ts: "t", state: "aborted" }]);
+        },
+        sleep: async () => {},
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SubagentError);
+        assert.strictEqual(err.status, "aborted");
+        assert.ok(err.investigationPath);
+        return true;
+      },
+    );
+    assert.strictEqual(n, 1);
+  });
+
+  it("timeout retries until success", async () => {
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        if (n < 3) throw new SubagentError("timeout", "Subagent 超时（600s）");
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [],
+        };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 3);
+    assert.strictEqual(result.exitCode, 0);
   });
 });
 
