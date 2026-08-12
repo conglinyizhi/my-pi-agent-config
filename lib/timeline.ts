@@ -22,13 +22,16 @@
 //
 // 角色过滤：message_start / message_end 仅对 role === "assistant" 的消息建/完成
 // assistant 轨迹；worker 的用户输入与 toolResult 消息（role user/tool）绝不写入
-// 轨迹（GUI 不暴露原始提示词与工具输出）。
+// 轨迹（GUI 不暴露原始提示词与工具输出）。唯一例外是 supplement：bridge 通过
+// pi.sendUserMessage(deliverAs: "steer") 塞回的补充指令（wire 标记 + JSON 载荷），
+// 在 message_start 时 decode 成功才建一条 supplement 事件，作为「补充指令已投递」
+// 的证据；普通 user / malformed prefix 依旧不可见。
 //
 // 变化报告：handleLine 返回是否有可观察的轨迹变化——不只看条数（原地修改如 tool
 // update/end、assistant delta/finalize 不改变条数），由各处理函数置 dirty 标记。
 // runSubagent 据此决定是否触发 onUpdate 实时刷新。
 
-export type TimelineEventType = "assistant" | "tool" | "lifecycle";
+export type TimelineEventType = "assistant" | "tool" | "lifecycle" | "supplement";
 
 export interface TimelineEvent {
   /** 稳定 id：assistant=消息 id（缺失则合成），tool=toolCallId，lifecycle=合成 */
@@ -56,7 +59,11 @@ export interface TimelineEvent {
   message?: string;
   /** lifecycle：truncated 标记（丢弃最旧记录时置位） */
   truncated?: boolean;
+  /** supplement：wire 里的 entry id（trace 回补充队列） */
+  supplementId?: string;
 }
+
+import { decodeSupplementMessage } from "./subagent-supplement.ts";
 
 /** 每 worker 轨迹条数上限（含截断标记，超限丢弃最旧并置 truncated） */
 export const TIMELINE_MAX_ENTRIES = 500;
@@ -144,17 +151,32 @@ export class TimelineBuilder {
 
   private onMessageStart(ev: Record<string, unknown>): void {
     const msg = (ev.message ?? {}) as Record<string, unknown>;
-    if (msg.role !== "assistant") return; // 只建 assistant 轨迹；user/toolResult 消息不进轨迹
-    const id = typeof msg.id === "string" && msg.id ? msg.id : `assistant-${this.nextSeq()}`;
-    const rec: TimelineEvent = {
-      id,
-      type: "assistant",
-      ts: this.now(),
-      text: truncate(extractVisibleText(msg.content), TIMELINE_MAX_TEXT),
-      final: false,
-    };
-    this.activeAssistant = rec;
-    this.push(rec);
+    if (msg.role === "assistant") {
+      const id = typeof msg.id === "string" && msg.id ? msg.id : `assistant-${this.nextSeq()}`;
+      const rec: TimelineEvent = {
+        id,
+        type: "assistant",
+        ts: this.now(),
+        text: truncate(extractVisibleText(msg.content), TIMELINE_MAX_TEXT),
+        final: false,
+      };
+      this.activeAssistant = rec;
+      this.push(rec);
+      return;
+    }
+    if (msg.role === "user") {
+      // 仅 bridge 补充指令（decode 成功）进轨迹；普通 user 输入 / malformed prefix 不可见
+      const decoded = decodeSupplementMessage(extractVisibleText(msg.content));
+      if (!decoded) return;
+      this.push({
+        id: `supplement-${decoded.id}-${this.nextSeq()}`,
+        type: "supplement",
+        ts: this.now(),
+        text: truncate(decoded.text, TIMELINE_MAX_TEXT),
+        supplementId: decoded.id,
+      });
+    }
+    // role tool / 其他：不进轨迹
   }
 
   private onMessageUpdate(ev: Record<string, unknown>): void {

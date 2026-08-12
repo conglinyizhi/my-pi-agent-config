@@ -21,6 +21,47 @@ export const SUPPLEMENT_LOCK_TIMEOUT_MS = 5000;
 /** 锁目录 mtime 超过该阈值视为 stale，可被回收。 */
 export const SUPPLEMENT_LOCK_STALE_MS = 10_000;
 
+// ── supplement wire 标记（Task 2）──
+//
+// bridge 把 claim 到的 entry 编码成 user 消息塞回 worker（pi.sendUserMessage +
+// deliverAs: "steer"），TimelineBuilder 需要从 worker JSON 的 user message_start 里
+// 判别出这条补充指令并留下 supplement 轨迹，同时保证普通 worker user 输入
+// （初始任务提示词等）绝不被误判。标记放在 lib 层（Task 1 的底层协议）以便
+// bridge（extension）与 timeline（lib）共享，timeline 不反向依赖 extension 路径。
+
+/** wire 前缀：普通 worker user 输入几乎不可能以它开头。 */
+export const SUPPLEMENT_MESSAGE_PREFIX = "⟦pi-supplement:v1⟧";
+
+/** decode 成功后的载荷：entry id + 补充正文。 */
+export interface DecodedSupplementMessage {
+  id: string;
+  text: string;
+}
+
+/** 编码一条补充消息（前缀 + JSON 载荷）。 */
+export function encodeSupplementMessage(id: string, text: string): string {
+  return SUPPLEMENT_MESSAGE_PREFIX + JSON.stringify({ id, text });
+}
+
+/**
+ * 解码补充消息。tolerate malformed：无前缀 / 载荷非 JSON / 字段缺失或类型不对
+ * 一律返回 null，绝不抛出，也绝不把残缺内容暴露给调用方。
+ */
+export function decodeSupplementMessage(text: string): DecodedSupplementMessage | null {
+  if (typeof text !== "string" || !text.startsWith(SUPPLEMENT_MESSAGE_PREFIX)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(SUPPLEMENT_MESSAGE_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const p = parsed as { id?: unknown; text?: unknown };
+  if (typeof p.id !== "string" || !p.id) return null;
+  if (typeof p.text !== "string") return null;
+  return { id: p.id, text: p.text };
+}
+
 /** 默认队列根目录：~/.pi/subagent-supplements */
 export const INBOX_ROOT = path.join(os.homedir(), ".pi", "subagent-supplements");
 

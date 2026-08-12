@@ -13,6 +13,7 @@ import {
   INBOX_ROOT,
   MAX_SUPPLEMENT_TEXT,
   MAX_SUPPLEMENT_ENTRIES,
+  SUPPLEMENT_MESSAGE_PREFIX,
   createInbox,
   readInbox,
   enqueueSupplement,
@@ -20,6 +21,8 @@ import {
   withdrawSupplement,
   mergePendingSupplements,
   isValidInboxId,
+  encodeSupplementMessage,
+  decodeSupplementMessage,
 } from "./subagent-supplement.ts";
 
 /** 每个测试一个独立临时根目录，结束后清理。 */
@@ -85,6 +88,41 @@ describe("constants and id validation", () => {
     await assert.rejects(claimNextSupplement("..", { root }), /inboxId/i);
     await assert.rejects(withdrawSupplement("..", "e1", { root }), /inboxId/i);
     await assert.rejects(mergePendingSupplements("a b", { root }), /inboxId/i);
+  });
+});
+
+describe("supplement wire message (encode/decode)", () => {
+  it("encode → decode round trips entry id and text", () => {
+    const encoded = encodeSupplementMessage("e-42", "补充内容 abc");
+    assert.ok(encoded.startsWith(SUPPLEMENT_MESSAGE_PREFIX));
+    const decoded = decodeSupplementMessage(encoded);
+    assert.deepStrictEqual(decoded, { id: "e-42", text: "补充内容 abc" });
+  });
+
+  it("decode returns null for ordinary user input (no prefix)", () => {
+    assert.strictEqual(decodeSupplementMessage("任务：普通提示词"), null);
+    assert.strictEqual(decodeSupplementMessage(""), null);
+    assert.strictEqual(decodeSupplementMessage(null as unknown as string), null);
+  });
+
+  it("decode tolerates malformed prefix payload and returns null", () => {
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + "not json"), null);
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + '{"id":"e1"}'), null); // 缺 text
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + '{"text":"x"}'), null); // 缺 id
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + '{"id":1,"text":"x"}'), null); // id 类型错
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + '{"id":"e1","text":5}'), null); // text 类型错
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + "[1,2]"), null); // 数组
+    assert.strictEqual(decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX), null); // 只有前缀
+  });
+
+  it("decode never exposes malformed content", () => {
+    const bad = SUPPLEMENT_MESSAGE_PREFIX + "garbage{{{";
+    assert.strictEqual(decodeSupplementMessage(bad), null);
+    // 前缀加合法 JSON 但多余字符仍算 malformed（整体必须是单对象）
+    assert.strictEqual(
+      decodeSupplementMessage(SUPPLEMENT_MESSAGE_PREFIX + '{"id":"e1","text":"x"} trailing'),
+      null,
+    );
   });
 });
 

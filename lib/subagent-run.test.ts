@@ -20,6 +20,10 @@ import {
   TIMELINE_MAX_FIELD,
   type TimelineEvent,
 } from "./subagent-run.ts";
+import {
+  SUPPLEMENT_MESSAGE_PREFIX,
+  encodeSupplementMessage,
+} from "./subagent-supplement.ts";
 
 describe("buildSubagentArgs", () => {
   const base = { task: "t", cwd: "/tmp", model: "m" };
@@ -202,6 +206,62 @@ describe("runSubagent retry loop (injected runOnce)", () => {
     });
     assert.strictEqual(n, 3);
     assert.strictEqual(result.exitCode, 0);
+  });
+});
+
+describe("TimelineBuilder supplement（bridge steer 消息）归一化", () => {
+  it("仅 decode 成功的 bridge 用户消息生成 supplement 事件（start 建、end 不重复）", () => {
+    const tl = new TimelineBuilder({ now: () => "2026-08-12T00:00:00.000Z" });
+    const wire = encodeSupplementMessage("e1", "补充：改用 bash");
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "user", content: wire, id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "user", content: wire, id: "u1" } }));
+    assert.strictEqual(tl.events.length, 1);
+    const ev = tl.events[0];
+    assert.strictEqual(ev.type, "supplement");
+    assert.strictEqual(ev.supplementId, "e1");
+    assert.strictEqual(ev.text, "补充：改用 bash");
+    assert.ok(ev.id.startsWith("supplement-e1-"));
+    assert.strictEqual(ev.ts, "2026-08-12T00:00:00.000Z");
+    assert(!JSON.stringify(tl.events).includes(SUPPLEMENT_MESSAGE_PREFIX)); // wire 前缀不进轨迹
+  });
+
+  it("普通 user 输入与 tool 消息仍不可见（无 supplement 事件）", () => {
+    const tl = new TimelineBuilder();
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "user", content: "任务：写一个文件", id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "user", content: "任务：写一个文件", id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "tool", content: [{ type: "toolResult", toolCallId: "c1", content: "out" }], id: "tr1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "tool", content: [{ type: "toolResult", toolCallId: "c1", content: "out" }], id: "tr1" } }));
+    assert.strictEqual(tl.events.length, 0);
+    assert.strictEqual(tl.events.filter((e) => e.type === "supplement").length, 0);
+  });
+
+  it("malformed prefix 的用户消息不可见（decode 容错且不暴露）", () => {
+    const tl = new TimelineBuilder();
+    const bad = SUPPLEMENT_MESSAGE_PREFIX + "not-json";
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "user", content: bad, id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "user", content: bad, id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "user", content: SUPPLEMENT_MESSAGE_PREFIX + '{"id":"e9"}', id: "u2" } }));
+    assert.strictEqual(tl.events.length, 0);
+    assert(!JSON.stringify(tl.events).includes(SUPPLEMENT_MESSAGE_PREFIX));
+    assert(!JSON.stringify(tl.events).includes("not-json"));
+  });
+
+  it("user 补充消息不打断进行中的 assistant 流", () => {
+    const tl = new TimelineBuilder();
+    const wire = encodeSupplementMessage("e2", "插入指令");
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "assistant", content: [], id: "a1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "前半" } }));
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "user", content: wire, id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "user", content: wire, id: "u1" } }));
+    tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "后半" } }));
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "前半后半" }], id: "a1" } }));
+    assert.strictEqual(tl.events.length, 2);
+    const assistant = tl.events.find((e) => e.type === "assistant")!;
+    assert.strictEqual(assistant.text, "前半后半");
+    assert.strictEqual(assistant.final, true);
+    const supplement = tl.events.find((e) => e.type === "supplement")!;
+    assert.strictEqual(supplement.supplementId, "e2");
+    assert.strictEqual(supplement.text, "插入指令");
   });
 });
 
