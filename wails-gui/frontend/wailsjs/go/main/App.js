@@ -22,8 +22,16 @@ export function MarkReady() {
   return window['go']['main']['App']['MarkReady']();
 }
 
+export function MergeSubagentSupplements(arg1) {
+  return window['go']['main']['App']['MergeSubagentSupplements'](arg1);
+}
+
 export function OpenFile(arg1, arg2) {
   return window['go']['main']['App']['OpenFile'](arg1, arg2);
+}
+
+export function QueueSubagentSupplement(arg1, arg2) {
+  return window['go']['main']['App']['QueueSubagentSupplement'](arg1, arg2);
 }
 
 export function SaveReason(arg1) {
@@ -36,4 +44,8 @@ export function SaveResponse(arg1) {
 
 export function SaveSubagentFeedback(arg1) {
   return window['go']['main']['App']['SaveSubagentFeedback'](arg1);
+}
+
+export function WithdrawSubagentSupplement(arg1, arg2) {
+  return window['go']['main']['App']['WithdrawSubagentSupplement'](arg1, arg2);
 }
