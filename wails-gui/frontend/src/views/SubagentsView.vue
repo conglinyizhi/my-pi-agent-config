@@ -139,6 +139,7 @@
 import "../gui-theme.css";
 import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
 import { readerEvents, eventIndex, adjacentEventId } from "../subagent-reader.js";
+import { reconcileNavigation, shouldFollowTimeline } from "../subagent-navigation.js";
 
 // 虚拟滚动常量：固定行高是行距数学的唯一基准
 const ROW_H = 40; // 每行固定高度（px）
@@ -379,46 +380,56 @@ function detailTitle(ev) {
 }
 
 // ── 轮询 ──
+// selection 归一化与 timeline 自动跟随判定均来自纯模块 subagent-navigation.js；
+// 这里只保留 DOM 相关副作用（unbind / restore scroll / follow / measure）。
 async function poll() {
   try {
     const raw = await window.go.main.App.GetSubagentStatus();
     const data = JSON.parse(raw);
     if (!Array.isArray(data.workers)) return;
+
+    // 刷新前捕获：follow 判定必须取 worker 替换前的真实底部位置，避免被
+    // replacement 后的 measure（ResizeObserver / scroll 回调）意外改写。
+    const fromLevel = viewLevel.value;
+    const prevAtBottom = atBottom;
+
     workers.value = data.workers;
 
-    const workerAlive = !!selectedId.value && workers.value.some((w) => w.id === selectedId.value);
-    const eventAlive = !!selectedEventId.value && events.value.some((e) => e.id === selectedEventId.value);
+    const next = reconcileNavigation(
+      { viewLevel: viewLevel.value, selectedId: selectedId.value, selectedEventId: selectedEventId.value },
+      workers.value
+    );
 
-    // 当前层 selection 失效 → 回到最近有效父层
-    if (viewLevel.value === "event") {
-      if (!workerAlive) {
-        selectedId.value = null;
-        selectedEventId.value = null;
-        viewLevel.value = "agents";
-      } else if (!eventAlive) {
-        // worker 还在、事件消失：回 timeline，恢复原阅读位置
-        selectedEventId.value = null;
-        viewLevel.value = "timeline";
-        restoreTimelineScroll();
-      }
-    } else if (viewLevel.value === "timeline") {
-      if (!workerAlive) {
-        selectedId.value = null;
-        selectedEventId.value = null;
-        unbindTimelineViewport(); // worker 消失回 agents，timeline 视口随之卸载
-        viewLevel.value = "agents";
-      } else {
+    // 先用“旧 level -> 新 level”的 transition 判断是否离开 timeline，再覆盖
+    // viewLevel；若先覆盖，timeline 视口会在卸载前漏解绑 ResizeObserver。
+    if (fromLevel === "timeline" && next.viewLevel !== "timeline") {
+      unbindTimelineViewport();
+    }
+    viewLevel.value = next.viewLevel;
+    selectedId.value = next.selectedId;
+    selectedEventId.value = next.selectedEventId;
+
+    if (next.viewLevel === "timeline" && next.selectedId != null) {
+      if (fromLevel === "event") {
+        // worker 留存、事件消失：reconcile 已归一化回 timeline，等 DOM 渲染出
+        // viewport 后恢复原阅读位置（不触发新的 bottom-follow）。
         await nextTick();
-        // 仅当读取者原本在底部时才自动跟随；上滚过则冻结原位
-        if (atBottom) scrollToBottom();
-        else measure();
-      }
-    } else if (viewLevel.value === "agents") {
-      // 仅 agents 层清理失效 selection：selectedId 非空且对应 worker 已不存在时
-      // 清 selectedId 与 selectedEventId。不离开 agents 层，也不影响仍有效的 selection。
-      if (selectedId.value && !workerAlive) {
-        selectedId.value = null;
-        selectedEventId.value = null;
+        restoreTimelineScroll();
+      } else if (fromLevel === "timeline") {
+        await nextTick();
+        // 仅当读取者原本在底部时才自动跟随；上滚过则冻结原位（measure 保持位置）
+        if (
+          shouldFollowTimeline({
+            viewLevel: next.viewLevel,
+            selectedId: next.selectedId,
+            workers: workers.value,
+            atBottom: prevAtBottom,
+          })
+        ) {
+          scrollToBottom();
+        } else {
+          measure();
+        }
       }
     }
   } catch {
