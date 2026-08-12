@@ -12,8 +12,8 @@
 
 import assert from "node:assert";
 import { after, describe, it } from "node:test";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync, writeFileSync, rmSync, mkdtempSync, readdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   beginBatch,
@@ -204,6 +204,30 @@ describe("status coalesced writes (I-2 热路径 I/O)", () => {
     assert.strictEqual(w.status, "timeout");
     assert.strictEqual(w.timeline, tl); // 已有实时 timeline 未被 undefined 抹掉
     assert.strictEqual(w.timeline!.length, 1);
+  });
+});
+
+describe("默认写入器原子落盘（临时文件 + rename，无半截文件）", () => {
+  it("写入完整 JSON、覆盖旧内容、不残留临时文件", () => {
+    const dir = mkdtempSync(join(tmpdir(), "status-atomic-"));
+    const path = join(dir, "subagent-status.json");
+    try {
+      // 只注入 path，writeFile 缺省 → 走默认原子写入器
+      configureStatusFile({ path, now: () => "2026-08-12T00:00:00.000Z" });
+      beginBatch([makeRun("w1")]);
+      const first = JSON.parse(readFileSync(path, "utf-8"));
+      assert.strictEqual(first.workers[0].id, "w1");
+
+      updateWorker("w1", { status: "success", finishedAt: "t2" }); // 终态立即落盘（同一路径二次 rename 覆盖）
+      const second = JSON.parse(readFileSync(path, "utf-8"));
+      assert.strictEqual(second.workers[0].status, "success");
+
+      const leftovers = readdirSync(dir).filter((f) => f.includes(".tmp-"));
+      assert.deepStrictEqual(leftovers, []); // rename 后不残留临时文件
+    } finally {
+      resetStatusFile();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

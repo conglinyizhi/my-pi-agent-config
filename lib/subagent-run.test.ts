@@ -297,6 +297,42 @@ describe("runSubagent retry loop (injected runOnce)", () => {
     assert.strictEqual(n, 3);
     assert.strictEqual(result.exitCode, 0);
   });
+
+  it("重试跨 attempt 累积 timeline（seedTimeline 续接 + attempt 递增，不塌缩）", async () => {
+    const seenSeed: Array<number> = [];
+    const seenAttempt: Array<number | undefined> = [];
+    let n = 0;
+    await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async (opts) => {
+        n++;
+        seenSeed.push(opts.seedTimeline?.length ?? 0);
+        seenAttempt.push(opts.attempt);
+        // 模拟本轮在 seed 基础上继续产出轨迹（第 n 轮共 n 条）
+        const timeline = [
+          ...(opts.seedTimeline ?? []),
+          { id: `a${n}`, type: "lifecycle" as const, ts: "t", state: n < 3 ? "failed" : "success" },
+        ];
+        if (n < 3) {
+          return {
+            task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
+            errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            timeline,
+          };
+        }
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline,
+        };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 3);
+    // 首轮无 seed，其后每轮以上一轮累积轨迹为 seed（不塌缩回 0）
+    assert.deepStrictEqual(seenSeed, [0, 1, 2]);
+    assert.deepStrictEqual(seenAttempt, [1, 2, 3]);
+  });
 });
 
 describe("TimelineBuilder supplement（bridge steer 消息）归一化", () => {
@@ -626,6 +662,20 @@ describe("TimelineBuilder lifecycle 与终态", () => {
     assert.strictEqual(tl.events[1].state, "success");
     assert.strictEqual(tl.events[1].message, "执行完成");
     assert.strictEqual(tl.events[1].ts, "2026-08-07T00:00:00.000Z");
+  });
+
+  it("seed 事件接续 + attempt 命名空间隔离合成 id（跨重试不撞号）", () => {
+    const a1 = new TimelineBuilder({ now: () => "t", attempt: 1 });
+    a1.addLifecycle("starting");
+    const seed = a1.events;
+    // 第 2 轮：以上轮事件为 seed，新事件追加而非塌缩
+    const a2 = new TimelineBuilder({ now: () => "t", attempt: 2, seedEvents: seed });
+    a2.addLifecycle("starting");
+    assert.strictEqual(a2.events.length, 2); // seed 1 条 + 本轮 1 条
+    // 两轮合成 lifecycle id 不撞号（a1 vs a2 命名空间）
+    assert.notStrictEqual(a2.events[0].id, a2.events[1].id);
+    assert.ok(a2.events[0].id.includes("-a1-"));
+    assert.ok(a2.events[1].id.includes("-a2-"));
   });
 
   it("终态推导：success/failed/aborted/timeout", () => {

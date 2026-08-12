@@ -10,6 +10,8 @@
 //     COALESCE_DELAY_MS（250ms）——GUI 1s 轮询周期内必定可见；期间连发更新只写
 //     最新 snapshot，不丢最终状态；终态立即写会取消挂起合并定时器（已含最新快照）。
 //   - 任何挂起合并写可在会话/进程结束前用 flushStatusFile() 显式落盘。
+//   - 默认写入器走同目录临时文件 + rename 原子落盘：GUI 轮询读方永远看到
+//     完整 JSON，不会撞上截断后未写完的半截文件。
 //   - 写失败静默（GUI 不可用不影响调度）。
 //
 // 测试注入：configureStatusFile / resetStatusFile 替换写入器与合并调度器，使
@@ -53,6 +55,30 @@ const IMMEDIATE_STATUSES: ReadonlySet<WorkerStatus> = new Set([
 
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
 
+let tmpSeq = 0;
+
+/**
+ * 同目录临时文件 + fsync + rename 原子写（owner-only）：替代直接 writeFileSync
+ * 的“截断再写”，避免 GUI 轮询读到半截 JSON。rename 失败时清理临时文件再抛出
+ * （由调用方的静默 catch 处理）。
+ */
+function atomicWriteFileSync(path: string, data: string): void {
+  const tmp = `${path}.tmp-${process.pid}-${tmpSeq++}`;
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, data, "utf-8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, path);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
 /** 状态文件 IO 与合并调度器（默认真实实现；测试可注入） */
 interface StatusFileIO {
   path: string;
@@ -65,7 +91,7 @@ interface StatusFileIO {
 function defaultIO(): StatusFileIO {
   return {
     path: STATUS_PATH,
-    writeFile: (p, d) => fs.writeFileSync(p, d, { encoding: "utf-8", mode: 0o600 }),
+    writeFile: atomicWriteFileSync,
     now: () => new Date().toISOString(),
     // unref：挂起合并写不阻止进程退出；会话结束前由 flushStatusFile 显式落盘
     schedule: (fn, ms) => {
@@ -150,7 +176,7 @@ export interface StatusFileConfig {
 export function configureStatusFile(cfg: StatusFileConfig): void {
   io = {
     path: cfg.path ?? STATUS_PATH,
-    writeFile: cfg.writeFile ?? ((p, d) => fs.writeFileSync(p, d, { encoding: "utf-8", mode: 0o600 })),
+    writeFile: cfg.writeFile ?? atomicWriteFileSync,
     now: cfg.now ?? (() => new Date().toISOString()),
     schedule: cfg.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
     cancel: cfg.cancel ?? ((h) => clearTimeout(h as NodeJS.Timeout)),

@@ -77,6 +77,16 @@ export interface TimelineBuilderOptions {
   now?: () => string;
   /** 条数上限（测试注入；默认 TIMELINE_MAX_ENTRIES） */
   maxEntries?: number;
+  /**
+   * 上一轮 attempt 累积的历史事件：重试时以此为种子续接，避免 timeline 塌缩回 1 条。
+   * seed 已由上一轮 trim 到有界，构造时原样接入（元素只读，新事件继续 append）。
+   */
+  seedEvents?: TimelineEvent[];
+  /**
+   * 本次 attempt 编号（1-based，默认 1）：合成 id 以 a{attempt} 命名空间隔离，
+   * 防止跨 attempt 的 seq 复位撞号（如两轮都产出 lifecycle-1 导致 GUI keyed diff 顶替）。
+   */
+  attempt?: number;
 }
 
 export class TimelineBuilder {
@@ -91,14 +101,27 @@ export class TimelineBuilder {
   private seq = 0;
   private readonly now: () => string;
   private readonly maxEntries: number;
+  /** attempt 编号：合成 id 的命名空间，避免跨重试 seq 复位撞号 */
+  private readonly attempt: number;
 
   constructor(opts: TimelineBuilderOptions = {}) {
     this.now = opts.now ?? (() => new Date().toISOString());
     this.maxEntries = opts.maxEntries ?? TIMELINE_MAX_ENTRIES;
+    this.attempt = opts.attempt ?? 1;
+    // 种子历史：直接接入上轮 accumulated events（已有界）；不进 active 追踪，
+    // 新 attempt 的流式事件从头解析新进程输出，历史事件均已完结不再变异。
+    if (opts.seedEvents) {
+      for (const e of opts.seedEvents) this.events.push(e);
+    }
   }
 
   private nextSeq(): number {
     return ++this.seq;
+  }
+
+  /** 合成 id：统一带 attempt 命名空间（a{attempt}）+ 递增 seq，跨重试不撞号 */
+  private synId(base: string): string {
+    return `${base}-a${this.attempt}-${this.nextSeq()}`;
   }
 
   /**
@@ -127,7 +150,7 @@ export class TimelineBuilder {
   /** 添加 lifecycle 记录（worker 启动/终止/截断等） */
   addLifecycle(state: string, message?: string): void {
     this.push({
-      id: `lifecycle-${this.nextSeq()}`,
+      id: this.synId("lifecycle"),
       type: "lifecycle",
       ts: this.now(),
       state,
@@ -152,7 +175,7 @@ export class TimelineBuilder {
   private onMessageStart(ev: Record<string, unknown>): void {
     const msg = (ev.message ?? {}) as Record<string, unknown>;
     if (msg.role === "assistant") {
-      const id = typeof msg.id === "string" && msg.id ? msg.id : `assistant-${this.nextSeq()}`;
+      const id = typeof msg.id === "string" && msg.id ? msg.id : this.synId("assistant");
       const rec: TimelineEvent = {
         id,
         type: "assistant",
@@ -169,7 +192,7 @@ export class TimelineBuilder {
       const decoded = decodeSupplementMessage(extractVisibleText(msg.content));
       if (!decoded) return;
       this.push({
-        id: `supplement-${decoded.id}-${this.nextSeq()}`,
+        id: this.synId(`supplement-${decoded.id}`),
         type: "supplement",
         ts: this.now(),
         text: truncate(decoded.text, TIMELINE_MAX_TEXT),
@@ -187,7 +210,7 @@ export class TimelineBuilder {
     if (ame.type !== "text_delta" || typeof ame.delta !== "string") return;
     let rec = this.currentAssistant();
     if (!rec) {
-      rec = { id: `assistant-${this.nextSeq()}`, type: "assistant", ts: this.now(), text: "", final: false };
+      rec = { id: this.synId("assistant"), type: "assistant", ts: this.now(), text: "", final: false };
       this.activeAssistant = rec;
       this.push(rec);
     }
@@ -200,7 +223,7 @@ export class TimelineBuilder {
     let rec = this.currentAssistant();
     if (!rec) {
       // end 先于 start 到达（防御）：补建记录
-      rec = { id: `assistant-${this.nextSeq()}`, type: "assistant", ts: this.now(), text: "", final: false };
+      rec = { id: this.synId("assistant"), type: "assistant", ts: this.now(), text: "", final: false };
       this.activeAssistant = rec;
       this.push(rec);
     }
@@ -232,7 +255,7 @@ export class TimelineBuilder {
   private onToolStart(ev: Record<string, unknown>): void {
     const callId = typeof ev.toolCallId === "string" && ev.toolCallId
       ? ev.toolCallId
-      : `tool-${this.nextSeq()}`;
+      : this.synId("tool");
     const rec: TimelineEvent = {
       id: callId,
       type: "tool",
@@ -299,7 +322,7 @@ export class TimelineBuilder {
 
   private makeTruncMarker(dropped: number): TimelineEvent {
     return {
-      id: `lifecycle-truncated-${this.nextSeq()}`,
+      id: this.synId("lifecycle-truncated"),
       type: "lifecycle",
       ts: this.now(),
       state: "truncated",

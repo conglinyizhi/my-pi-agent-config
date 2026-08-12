@@ -258,6 +258,10 @@ export interface RunSubagentOptions {
   runOnce?: RunOnceFn;
   /** 测试注入：替换退避等待实现 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** 重试循环注入：上一轮累积的最终轨迹，作为本轮 timeline 的种子（续接而非重置） */
+  seedTimeline?: TimelineEvent[];
+  /** 重试循环注入：本次 attempt 编号（1-based），用于 timeline 合成 id 命名空间去撞号 */
+  attempt?: number;
 }
 
 /**
@@ -297,9 +301,14 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       const invocation = getPiInvocation(args);
 
-      // worker 启动 lifecycle；timeline 数组引用直接挂到 result，实时快照随事件推进
-      const timeline = new TimelineBuilder();
-      timeline.addLifecycle("starting", "worker 启动");
+      // worker 启动 lifecycle；timeline 数组引用直接挂到 result，实时快照随事件推进。
+      // 重试时以上轮累积轨迹为 seed，并用 attempt 命名空间隔离合成 id，避免 GUI 轨迹塌缩/撞号。
+      const attempt = opts.attempt ?? 1;
+      const timeline = new TimelineBuilder({ seedEvents: opts.seedTimeline, attempt });
+      timeline.addLifecycle(
+        "starting",
+        attempt > 1 ? `worker 重试（第 ${attempt} 次尝试）` : "worker 启动",
+      );
 
       const result: SubagentResult = {
         task,
@@ -533,6 +542,8 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   const batchStarted = new Date().toISOString();
   let lastResult: SubagentResult | undefined;
   let lastError: unknown;
+  // 跨 attempt 累积的轨迹：上轮结果作为下轮种子，让 GUI 实时轨迹重试时续接而非塌缩回 1 条。
+  let accumulated: TimelineEvent[] | undefined;
 
   for (let i = 1; i <= max; i++) {
     if (opts.signal?.aborted) {
@@ -541,8 +552,9 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     }
     const startedAt = new Date().toISOString();
     try {
-      const result = await runOnce({ ...opts, runOnce: undefined, sleep: undefined });
+      const result = await runOnce({ ...opts, runOnce: undefined, sleep: undefined, seedTimeline: accumulated, attempt: i });
       lastResult = result;
+      accumulated = result.timeline; // 本轮结束后的完整累积，供下轮重试续接
       if (!isFailedResult(result) && result.stopReason !== "error") {
         // 干净成功：返回（带 attempts 供观测），不写调查文件
         result.attempts = i;
@@ -558,6 +570,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       lastError = err;
       const status: AttemptSnapshot["status"] = err instanceof SubagentError ? err.status : "aborted";
       const timeline = err instanceof SubagentError ? err.timeline : undefined;
+      if (timeline) accumulated = timeline; // 超时/中止也携最终轨迹，重试前续接
       attempts.push(snapshotFromError(i, err, status, timeline, startedAt));
       if (!isRetryableFailure(err) || i === max) break;
       try {
