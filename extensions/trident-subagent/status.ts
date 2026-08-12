@@ -24,6 +24,8 @@ export type WorkerStatus = "starting" | "running" | "success" | "failed" | "abor
 
 export interface WorkerRun {
   id: string;
+  /** 本批分配的安全 inbox id（补充指令队列用；仅 [A-Za-z0-9_-]，绝不暴露队列文件路径） */
+  inboxId: string;
   task: string;
   model: string;
   status: WorkerStatus;

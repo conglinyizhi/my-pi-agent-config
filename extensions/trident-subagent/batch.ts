@@ -13,6 +13,7 @@ import {
   type SubagentUsage,
   type TimelineEvent,
 } from "../../lib/subagent-run.ts";
+import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { updateWorker } from "./status.ts";
 
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout";
@@ -84,12 +85,59 @@ export interface RunBatchOptions {
   extraExtensions?: string[];
   taskId?: string;
   timeout?: number;
+  /**
+   * 与 tasks 一一对应的 batch-scoped inbox ids（每个 worker 一个）。
+   * 在 spawn 之前统一校验并预创建 inbox；同一 batch 内每个 worker 只 create 一次。
+   */
+  workerInboxIds: string[];
+}
+
+/**
+ * 前置校验：workerInboxIds 必须与 tasks 长度一致且每个都是合法 inbox id。
+ * 校验失败在 create/spawn 之前抛错——绝不产生半启动的 batch。
+ */
+export function validateWorkerInboxIds(tasks: string[], inboxIds: string[]): void {
+  if (!Array.isArray(inboxIds) || inboxIds.length !== tasks.length) {
+    throw new Error(
+      `workerInboxIds length ${Array.isArray(inboxIds) ? inboxIds.length : "missing"} does not match tasks length ${tasks.length}`,
+    );
+  }
+  for (const id of inboxIds) {
+    if (!isValidInboxId(id)) {
+      throw new Error(
+        `invalid worker inboxId ${JSON.stringify(id)}: must be 1-128 chars of [A-Za-z0-9_-]`,
+      );
+    }
+  }
+}
+
+/** inbox 预创建函数（测试注入；默认真实 createInbox）。 */
+export type CreateInboxFn = (inboxId: string) => Promise<unknown>;
+
+/**
+ * 在 spawn 之前按序为每个 worker 预创建 inbox（每 id 恰好一次）。
+ * 任一 create 失败立即整体拒绝：runBatch 不会带着半批 inbox 继续 spawn。
+ */
+export async function prepareInboxes(
+  inboxIds: string[],
+  create: CreateInboxFn = (id) => createInbox(id),
+): Promise<void> {
+  for (const id of inboxIds) {
+    await create(id);
+  }
 }
 
 export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<BatchItemResult[]> {
+  // 前置：校验 + 全部 inbox 预创建完成，之后才进入 Promise.all 并行 spawn。
+  // 任一 create 失败都在子进程启动前整体拒绝（不留半批）；
+  // 调用方（index submit tool）据此把整批标记为失败并给出可观测 UI 响应。
+  validateWorkerInboxIds(tasks, opts.workerInboxIds);
+  await prepareInboxes(opts.workerInboxIds);
+
   return Promise.all(
     tasks.map(async (task, index) => {
       const id = `w${index + 1}`;
+      const inboxId = opts.workerInboxIds[index];
       updateWorker(id, { status: "starting" });
 
       try {
@@ -101,6 +149,7 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           tools: opts.tools,
           extraExtensions: opts.extraExtensions,
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
+          inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
           timeout: opts.timeout ?? 600,
           onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
           onUpdate: (r) => updateWorker(id, {

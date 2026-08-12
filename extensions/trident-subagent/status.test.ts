@@ -25,14 +25,21 @@ import {
   COALESCE_DELAY_MS,
   type WorkerRun,
 } from "./status.ts";
+// batch.ts 新增的 inbox 前置准备助手（validateWorkerInboxIds / prepareInboxes）在此覆盖：
+// batch.test.ts 不在 Task 3 允许修改的文件清单内，测试集中在允许的 status.test.ts 中。
+import { validateWorkerInboxIds, prepareInboxes } from "./batch.ts";
 import type { TimelineEvent } from "../../lib/subagent-run.ts";
 
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
 let orig = "";
 try { orig = readFileSync(STATUS_PATH, "utf-8"); } catch { /* 文件可能不存在 */ }
 
-function makeRun(id: string): WorkerRun {
-  return { id, task: "t", model: "m", status: "starting", startedAt: new Date().toISOString() };
+function makeRun(id: string, inboxId?: string): WorkerRun {
+  return {
+    id,
+    inboxId: inboxId ?? `batch-1-abc-${id}`,
+    task: "t", model: "m", status: "starting", startedAt: new Date().toISOString(),
+  };
 }
 
 /** 注入 IO：内存写入器 + 可手动推进的假调度器（确定性，不等真实 250ms） */
@@ -110,6 +117,18 @@ describe("status snapshot", () => {
     updateWorker("nope", { status: "failed" });
     assert.strictEqual(getSnapshot().length, 0);
   });
+
+  it("inboxId 随快照与状态文件保留（仅安全 id，不暴露队列文件路径）", () => {
+    const io = setupInjected([makeRun("w1", "batch-abc123-w1")]);
+    updateWorker("w1", { status: "running", pid: 9 });
+    updateWorker("w1", { status: "success", finishedAt: "t" });
+    const w = getSnapshot()[0];
+    assert.strictEqual(w.inboxId, "batch-abc123-w1");
+    assert.strictEqual(w.status, "success");
+    const json = io.lastJson();
+    assert.strictEqual(json.workers[0].inboxId, "batch-abc123-w1");
+    assert(!JSON.stringify(json).includes("subagent-supplements"), "快照不暴露队列文件路径");
+  });
 });
 
 describe("status coalesced writes (I-2 热路径 I/O)", () => {
@@ -185,6 +204,40 @@ describe("status coalesced writes (I-2 热路径 I/O)", () => {
     assert.strictEqual(w.status, "timeout");
     assert.strictEqual(w.timeline, tl); // 已有实时 timeline 未被 undefined 抹掉
     assert.strictEqual(w.timeline!.length, 1);
+  });
+});
+
+describe("batch inbox 前置准备（validateWorkerInboxIds / prepareInboxes）", () => {
+  it("validateWorkerInboxIds：长度必须与 tasks 一致（缺失/多余都拒绝）", () => {
+    assert.throws(() => validateWorkerInboxIds(["a", "b"], ["only-one"]), /length/);
+    assert.throws(() => validateWorkerInboxIds(["a"], []), /length/);
+    assert.doesNotThrow(() => validateWorkerInboxIds(["a", "b"], ["batch-1-w1", "batch-1-w2"]));
+  });
+
+  it("validateWorkerInboxIds：非法 id 拒绝（路径穿越 / 空 / 超长）", () => {
+    assert.throws(() => validateWorkerInboxIds(["a"], ["../evil"]), /invalid worker inboxId/);
+    assert.throws(() => validateWorkerInboxIds(["a"], [""]), /invalid worker inboxId/);
+    assert.throws(() => validateWorkerInboxIds(["a"], ["x".repeat(129)]), /invalid worker inboxId/);
+  });
+
+  it("prepareInboxes：按序对每个 inboxId 恰好 create 一次（spawn 前完成，无并发重复）", async () => {
+    const created: string[] = [];
+    await prepareInboxes(["batch-1-w1", "batch-1-w2", "batch-1-w3"], async (id) => {
+      created.push(id);
+    });
+    assert.deepStrictEqual(created, ["batch-1-w1", "batch-1-w2", "batch-1-w3"]);
+  });
+
+  it("prepareInboxes：任一 create 失败即整体拒绝，后续 inbox 不再创建（不留半批）", async () => {
+    const created: string[] = [];
+    await assert.rejects(
+      () => prepareInboxes(["batch-1-w1", "batch-1-w2", "batch-1-w3"], async (id) => {
+        created.push(id);
+        if (id === "batch-1-w2") throw new Error("create failed");
+      }),
+      /create failed/,
+    );
+    assert.deepStrictEqual(created, ["batch-1-w1", "batch-1-w2"]); // 失败即停：w3 未创建
   });
 });
 

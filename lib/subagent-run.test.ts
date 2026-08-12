@@ -8,8 +8,12 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   buildSubagentArgs,
+  buildSubagentEnv,
+  buildWorkerExtraExtensions,
   extractAgentEndOutput,
   runSubagent,
   TimelineBuilder,
@@ -68,6 +72,64 @@ describe("buildSubagentArgs", () => {
     const idx = args.indexOf("--append-system-prompt");
     assert.strictEqual(args[idx + 1], "/tmp/prompt.md");
     assert(args.some((a) => a === "任务：t"));
+  });
+});
+
+describe("buildSubagentEnv（inbox → PI_SUBAGENT_INBOX 只进子进程 env）", () => {
+  it("合法 inboxId 时注入 PI_SUBAGENT_INBOX 且不改传入 base（不污染 process.env）", () => {
+    const base: NodeJS.ProcessEnv = { PATH: "/bin" };
+    const env = buildSubagentEnv(base, { inboxId: "batch-abc123-w1" });
+    assert.strictEqual(env.PI_SUBAGENT_INBOX, "batch-abc123-w1");
+    assert.strictEqual(env.PI_SUBAGENT, "1");
+    assert.strictEqual(env.PATH, "/bin");
+    assert.strictEqual(base.PI_SUBAGENT_INBOX, undefined); // 原对象未被改写
+  });
+
+  it("taskId 注入 PI_TASK_ID；无 taskId 不注入", () => {
+    const env = buildSubagentEnv({}, { taskId: "batch-t1" });
+    assert.strictEqual(env.PI_TASK_ID, "batch-t1");
+    assert.strictEqual(buildSubagentEnv({}, {}).PI_TASK_ID, undefined);
+  });
+
+  it("无效/缺失 inboxId 不注入 PI_SUBAGENT_INBOX（基础注入不受影响）", () => {
+    assert.strictEqual(buildSubagentEnv({}, { inboxId: "../evil" }).PI_SUBAGENT_INBOX, undefined);
+    assert.strictEqual(buildSubagentEnv({}, { inboxId: "" }).PI_SUBAGENT_INBOX, undefined);
+    const env = buildSubagentEnv({}, {});
+    assert.strictEqual(env.PI_SUBAGENT_INBOX, undefined);
+    assert.strictEqual(env.PI_SUBAGENT, "1");
+  });
+});
+
+describe("buildWorkerExtraExtensions（仅有效 inbox 追加 supplement bridge）", () => {
+  const bridge = path.join(os.homedir(), ".pi", "agent", "extensions", "subagent-supplement-bridge", "index.ts");
+
+  it("合法 inboxId 时追加 bridge 绝对路径（AGENT_DIR 派生，非硬编码 cwd）", () => {
+    const exts = buildWorkerExtraExtensions(undefined, "batch-abc123-w1");
+    assert.ok(path.isAbsolute(bridge));
+    assert.ok(exts.includes(bridge));
+  });
+
+  it("与既有反馈扩展合并且不重复 bridge 路径", () => {
+    const exts = buildWorkerExtraExtensions(["/ext/be-error-recorder/index.ts", bridge], "batch-abc123-w1");
+    assert.strictEqual(exts.filter((e) => e === bridge).length, 1);
+    assert.ok(exts.includes("/ext/be-error-recorder/index.ts"));
+  });
+
+  it("无效/缺失 inboxId 不追加 bridge，既有 extras 原样保留", () => {
+    assert.deepStrictEqual(buildWorkerExtraExtensions(["/ext/a.ts"], undefined), ["/ext/a.ts"]);
+    assert.deepStrictEqual(buildWorkerExtraExtensions(["/ext/a.ts"], "../evil"), ["/ext/a.ts"]);
+    assert.deepStrictEqual(buildWorkerExtraExtensions(undefined, undefined), []);
+  });
+
+  it("合并结果经 buildSubagentArgs 透传为显式 --extension（bridge 进入 worker 参数）", () => {
+    const args = buildSubagentArgs({
+      task: "t", cwd: "/tmp", model: "m",
+      extraExtensions: buildWorkerExtraExtensions(["/ext/be.ts"], "batch-1"),
+    });
+    const extIdxs: number[] = [];
+    for (let i = 0; i < args.length; i++) if (args[i] === "--extension") extIdxs.push(i + 1);
+    assert.ok(extIdxs.some((i) => args[i].includes("subagent-supplement-bridge")), "bridge 扩展出现在 worker 参数中");
+    assert.ok(extIdxs.some((i) => args[i].includes("be.ts")), "既有反馈扩展保留");
   });
 });
 
@@ -187,6 +249,34 @@ describe("runSubagent retry loop (injected runOnce)", () => {
       },
     );
     assert.strictEqual(n, 1);
+  });
+
+  it("重试时每次 attempt 复用同一 inboxId（不重建/不复位）", async () => {
+    const seen: Array<string | undefined> = [];
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp", inboxId: "batch-abc123-w1",
+      runOnce: async (opts) => {
+        n++;
+        seen.push(opts.inboxId);
+        if (n < 3) {
+          return {
+            task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
+            errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            timeline: [],
+          };
+        }
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [],
+        };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 3);
+    assert.strictEqual(result.exitCode, 0);
+    assert.deepStrictEqual(seen, ["batch-abc123-w1", "batch-abc123-w1", "batch-abc123-w1"]);
   });
 
   it("timeout retries until success", async () => {

@@ -14,6 +14,7 @@ import { TimelineBuilder, resolveTerminalState } from "./timeline.ts";
 import type { TimelineEvent } from "./timeline.ts";
 import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
+import { isValidInboxId } from "./subagent-supplement.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
 export {
   TimelineBuilder,
@@ -102,6 +103,40 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
 const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
+const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
+
+/**
+ * 构造 worker 子进程 env（纯函数，不改 process.env）：
+ * 仅当 inboxId 合法时才注入 PI_SUBAGENT_INBOX；taskId 存在时注入 PI_TASK_ID。
+ * PI_SUBAGENT 恒为 "1"（子进程内禁用递归派发）。
+ */
+export function buildSubagentEnv(
+  base: NodeJS.ProcessEnv,
+  opts: { inboxId?: string; taskId?: string },
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, PI_SUBAGENT: "1" };
+  if (opts.taskId) env.PI_TASK_ID = opts.taskId;
+  if (opts.inboxId && isValidInboxId(opts.inboxId)) {
+    env.PI_SUBAGENT_INBOX = opts.inboxId;
+  }
+  return env;
+}
+
+/**
+ * 合并 worker 额外显式扩展（纯函数）：保留既有 extras（反馈模式等），
+ * 仅当 inboxId 合法时追加 supplement bridge 扩展绝对路径（AGENT_DIR 派生，
+ * 非硬编码 cwd），且去重——绝不在同一 worker 上重复加载 bridge。
+ */
+export function buildWorkerExtraExtensions(
+  extras: string[] | undefined,
+  inboxId: string | undefined,
+): string[] {
+  const list = [...(extras ?? [])];
+  if (inboxId && isValidInboxId(inboxId)) {
+    if (!list.includes(SUPPLEMENT_BRIDGE_EXT)) list.push(SUPPLEMENT_BRIDGE_EXT);
+  }
+  return list;
+}
 
 /** 构造 worker 子进程参数：隔离 + custom-providers 显式加载 + 可选工具白名单 */
 export function buildSubagentArgs(opts: {
@@ -215,6 +250,8 @@ export interface RunSubagentOptions {
   taskId?: string; // 用于 permission-gate 关联
   tools?: string[]; // 工具白名单（反馈模式：read/bash/be-*）
   extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
+  /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
+  inboxId?: string;
   onUpdate?: (result: SubagentResult) => void;
   onSpawn?: (pid: number) => void; // 子进程 PID，用于外部 kill
   /** 测试注入：替换单次执行实现（仅重试循环内部使用） */
@@ -254,7 +291,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         model,
         promptPath,
         tools: opts.tools,
-        extraExtensions: opts.extraExtensions,
+        // 既有反馈扩展 + 有效 inbox 才追加的 supplement bridge（去重合并）
+        extraExtensions: buildWorkerExtraExtensions(opts.extraExtensions, opts.inboxId),
       });
 
       const invocation = getPiInvocation(args);
@@ -281,11 +319,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       let agentEndOutput = "";
 
       const exitCode = await new Promise<number>((resolveExit) => {
-        const env: Record<string, string> = {
-          ...process.env,
-          PI_SUBAGENT: "1",
-        };
-        if (opts.taskId) env.PI_TASK_ID = opts.taskId;
+        // 子进程 env 独立构造：不污染 process.env；有效 inbox 才注入 PI_SUBAGENT_INBOX
+        const env = buildSubagentEnv(process.env, { inboxId: opts.inboxId, taskId: opts.taskId });
 
         const proc = spawn(invocation.command, invocation.args, {
           cwd,

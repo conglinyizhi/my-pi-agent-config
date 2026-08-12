@@ -10,11 +10,12 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { randomUUID } from "node:crypto";
 import { runGuiWindow, launchGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
 import { getWorkerModel } from "../../lib/subagent-run.ts";
 import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
-import { beginBatch, flushStatusFile, getSnapshot, type WorkerRun } from "./status.ts";
+import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const ROLES_PATH = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
@@ -75,8 +76,14 @@ export default function (pi: ExtensionAPI) {
       const feedbackOn = readFeedbackState();
       const toolCfg = feedbackOn ? buildToolsFromNames(pi.getActiveTools()) : {};
 
+      // batch-scoped inbox id：`batch-${base36 timestamp}-${compact randomUUID}-w${i+1}`
+      // 只含 [A-Za-z0-9_-]（base36 小写 + 32 位 hex + 分隔符），长度 ~50 << 128；
+      // 同一 id 同时交给 runBatch（不得按任务位置重算）。randomUUID 去连字符防歧义。
+      const batchStamp = Date.now().toString(36);
+      const batchNonce = randomUUID().replace(/-/g, "");
       const runs: WorkerRun[] = tasks.map((task, i) => ({
         id: `w${i + 1}`,
+        inboxId: `batch-${batchStamp}-${batchNonce}-w${i + 1}`,
         task,
         model: workerModel,
         status: "starting",
@@ -102,7 +109,24 @@ export default function (pi: ExtensionAPI) {
           tools: toolCfg.tools,
           extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
           taskId: batchTaskId,
+          // 与 runs 一一对应：每个 worker 拿到本批分配的唯一 inbox id
+          workerInboxIds: runs.map((r) => r.inboxId),
         });
+      } catch (err) {
+        // 批量前置失败（workerInboxIds 非法 / inbox 预创建失败）：无任何 worker 被 spawn。
+        // 把整批标记为 failed 终态，避免 GUI 显示半途悬挂；落盘后以错误文本返回（不抛）。
+        const msg = err instanceof Error ? err.message : String(err);
+        const finishedAt = new Date().toISOString();
+        for (const run of runs) updateWorker(run.id, { status: "failed", finishedAt });
+        flushStatusFile();
+        onUpdate?.({
+          content: [{ type: "text", text: `subagent 批量启动失败：${msg}` }],
+          details: { phase: "done", error: msg },
+        });
+        return {
+          content: [{ type: "text", text: `subagent 批量启动失败：${msg}` }],
+          details: { error: msg },
+        };
       } finally {
         // 挂起合并写显式落盘（终态已立即写，此处兜底，确保进程结束前不丢状态）
         flushStatusFile();
