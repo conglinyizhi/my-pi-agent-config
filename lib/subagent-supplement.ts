@@ -103,6 +103,39 @@ function queueFilePath(root: string, inboxId: string): string {
   return path.join(root, `${inboxId}.json`);
 }
 
+/**
+ * 确保根目录存在且 owner 权限不宽于 0o700：
+ *   - 自建时 mkdir mode 受 umask 放宽，创建后显式 chmod 收紧到 0o700；
+ *   - 已存在时只清除 0o700 之外的多余位，绝不放宽已有更严权限
+ *     （0o700 是可用目录的最严权限，`existing & 0o700` 恒不增加位）。
+ * 平台不支持 chmod 时静默忽略（Windows 等），由调用方按需跳过断言。
+ */
+function ensureRootDir(root: string): void {
+  let existingMode: number | null = null;
+  try {
+    existingMode = fs.statSync(root).mode & 0o777;
+  } catch {
+    // 不存在，稍后创建
+  }
+  if (existingMode === null) {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(root, 0o700);
+    } catch {
+      // 平台不支持时忽略
+    }
+    return;
+  }
+  const tightened = existingMode & 0o700;
+  if (tightened !== existingMode) {
+    try {
+      fs.chmodSync(root, tightened);
+    } catch {
+      // 平台不支持时忽略
+    }
+  }
+}
+
 function lockDirPath(queueFile: string): string {
   return `${queueFile}.lock`;
 }
@@ -250,7 +283,7 @@ export async function createInbox(
 ): Promise<SupplementInbox> {
   assertInboxId(inboxId);
   const o = resolveOptions(options);
-  fs.mkdirSync(o.root, { recursive: true });
+  ensureRootDir(o.root);
   const file = queueFilePath(o.root, inboxId);
   const now = o.now();
   return withLock(lockDirPath(file), o, () => {

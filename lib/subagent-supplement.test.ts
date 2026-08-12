@@ -115,6 +115,40 @@ describe("createInbox", () => {
     const root = tmpRoot(t);
     await assert.rejects(readInbox("missing", { root }), /not found/i);
   });
+
+  it("createInbox tightens a umask-loosened root dir to 0o700", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("mode bits are not reliably honored on Windows");
+      return;
+    }
+    // 根目录由 createInbox 自建：mkdir 默认 mode 会受 umask 放宽（如 0o755）
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "supp-root-"));
+    t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+    const root = path.join(parent, "inbox-root");
+    const oldUmask = process.umask(0o022);
+    t.after(() => process.umask(oldUmask));
+    await createInbox("worker-1", { root });
+    assert.strictEqual(fs.statSync(root).mode & 0o777, 0o700);
+    // 队列文件本身仍为 owner-only
+    assert.strictEqual(
+      fs.statSync(path.join(root, "worker-1.json")).mode & 0o777,
+      0o600,
+    );
+  });
+
+  it("createInbox keeps an already-tight root at 0o700 (never widens)", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("mode bits are not reliably honored on Windows");
+      return;
+    }
+    // 根目录已收紧为 0o700（0o700 是可用的最严目录权限）：createInbox 不得放宽
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "supp-root-"));
+    t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+    const root = path.join(parent, "inbox-root");
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    await createInbox("worker-2", { root });
+    assert.strictEqual(fs.statSync(root).mode & 0o777, 0o700);
+  });
 });
 
 describe("FIFO enqueue / claim", () => {
