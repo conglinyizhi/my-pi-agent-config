@@ -171,6 +171,24 @@ const detailViewport = ref(null);
 let timer = null;
 let ro = null;
 
+// ── timeline viewport 的 ResizeObserver 生命周期 ──
+// viewport ref 只在 timeline 层挂载；初始 agents 层为 null，onMounted 时无法绑定。
+// 每次 timeline 视口挂载后观察并先 measure 一次；离开 timeline / unmount 时断开，
+// 防止窗口尺寸变化后 viewportH 过期、虚拟列表渲染错误行数或空白。
+function bindTimelineViewport(el) {
+  if (typeof ResizeObserver === "undefined" || !el) return;
+  if (ro) ro.disconnect(); // 不在过期元素上重复 observer
+  ro = new ResizeObserver(() => measure());
+  ro.observe(el);
+  measure(); // 挂载即先量一次，建立初始 viewportH
+}
+function unbindTimelineViewport() {
+  if (ro) {
+    ro.disconnect();
+    ro = null;
+  }
+}
+
 function measure() {
   const el = viewport.value;
   if (!el) return;
@@ -242,6 +260,7 @@ function restoreTimelineScroll() {
   nextTick(() => {
     const el = viewport.value;
     if (!el) return;
+    bindTimelineViewport(el);
     const stored = selectedId.value != null ? scrollMap[selectedId.value] : undefined;
     if (typeof stored === "number") {
       const max = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -264,6 +283,7 @@ function select(id) {
 // timeline -> event：记录当前流位置后进入详情
 function openEvent(id) {
   captureTimelineScroll();
+  unbindTimelineViewport(); // 离开 timeline：断开视口观察
   selectedEventId.value = id;
   viewLevel.value = "event";
   nextTick(() => {
@@ -282,6 +302,7 @@ function backToTimeline() {
 // timeline -> agents：保留 selected worker，供稳定重入
 function backToAgents() {
   captureTimelineScroll();
+  unbindTimelineViewport(); // 离开 timeline：断开视口观察
   viewLevel.value = "agents";
 }
 
@@ -384,6 +405,7 @@ async function poll() {
       if (!workerAlive) {
         selectedId.value = null;
         selectedEventId.value = null;
+        unbindTimelineViewport(); // worker 消失回 agents，timeline 视口随之卸载
         viewLevel.value = "agents";
       } else {
         await nextTick();
@@ -391,8 +413,14 @@ async function poll() {
         if (atBottom) scrollToBottom();
         else measure();
       }
+    } else if (viewLevel.value === "agents") {
+      // 仅 agents 层清理失效 selection：selectedId 非空且对应 worker 已不存在时
+      // 清 selectedId 与 selectedEventId。不离开 agents 层，也不影响仍有效的 selection。
+      if (selectedId.value && !workerAlive) {
+        selectedId.value = null;
+        selectedEventId.value = null;
+      }
     }
-    // agents 层：selection 变化不影响层级
   } catch {
     // 轮询/解析失败：保留最后有效数据与滚动位置
   }
@@ -415,15 +443,14 @@ onMounted(async () => {
   ready.value = true;
   await window.go.main.App.MarkReady();
   await nextTick();
-  if (typeof ResizeObserver !== "undefined" && viewport.value) {
-    ro = new ResizeObserver(() => measure());
-    ro.observe(viewport.value);
-  }
+  // 初始为 agents 层时 viewport 为 null（bind 内为空操作）；防御性绑定，保证
+  // 若初始即 timeline 也正确挂载观察。
+  bindTimelineViewport(viewport.value);
   timer = setInterval(poll, 1000);
 });
 onUnmounted(() => {
   clearInterval(timer);
-  if (ro) ro.disconnect();
+  unbindTimelineViewport();
 });
 </script>
 
