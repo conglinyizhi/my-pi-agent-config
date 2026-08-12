@@ -1,10 +1,10 @@
 <template>
   <div v-if="ready" class="app">
-    <!-- 左侧 worker 列表 -->
-    <aside class="sidebar">
-      <header class="sidebar-header">
-        <div class="sidebar-title-row">
-          <h1>🚀 Subagent 批次</h1>
+    <!-- 层级 1：Agent 列表（全窗口） -->
+    <section v-if="viewLevel === 'agents'" data-name="agent-list" class="agents-view">
+      <header class="agents-header">
+        <div class="agents-title-row">
+          <h1>Subagent 批次</h1>
           <span class="count-badge">{{ workers.length }}</span>
         </div>
         <label class="feedback-toggle" data-name="feedback-toggle-wrap">
@@ -18,8 +18,8 @@
         <div
           v-for="w in workers"
           :key="w.id"
-          data-name="worker-item"
-          :class="['worker-item', { active: selectedId === w.id }]"
+          data-name="agent-item"
+          :class="['agent-item', { active: selectedId === w.id }]"
           @click="select(w.id)"
         >
           <span class="status-icon">{{ statusIcon(w.status) }}</span>
@@ -27,128 +27,120 @@
             <div class="worker-title">{{ w.task.slice(0, 40) }}</div>
             <div class="worker-id">{{ w.id }} · {{ statusLabel(w.status) }}</div>
           </div>
+          <span class="row-chevron">›</span>
         </div>
         <div v-if="workers.length === 0" class="empty-list">暂无运行中的批次</div>
       </div>
-    </aside>
+    </section>
 
-    <!-- 右侧详情 -->
-    <main class="detail">
-      <template v-if="selected">
-        <header class="detail-header">
-          <div>
-            <h2>{{ selected.id }} · {{ statusLabel(selected.status) }}</h2>
-            <div class="detail-meta">{{ selected.model }} · 开始 {{ fmt(selected.startedAt) }}{{ selected.finishedAt ? " · 结束 " + fmt(selected.finishedAt) : "" }}</div>
+    <!-- 层级 2：选中 worker 的全宽时间线 -->
+    <section v-else-if="viewLevel === 'timeline'" data-name="event-list" class="timeline-view">
+      <header class="top-bar">
+        <button class="back-btn" data-name="timeline-back" title="返回批次列表" @click="backToAgents">‹</button>
+        <div class="top-info">
+          <h2>{{ selected?.id || "-" }} · {{ statusLabel(selected?.status) }}</h2>
+          <div class="top-meta">
+            <span class="crumb">Agent 列表 / {{ selected?.id || "-" }}</span>
+            <span>{{ selected?.model || "-" }}{{ selected?.pid ? " · PID " + selected.pid : "" }}</span>
+            <span>{{ events.length }} 条事件{{ selected?.usage ? " · " + usageText(selected.usage) : "" }}</span>
           </div>
-          <div class="detail-actions">
-            <span v-if="selected.pid" class="pid">PID {{ selected.pid }}</span>
-          </div>
-        </header>
-
-        <div class="detail-body">
-          <section class="detail-section task-section">
-            <h3>任务说明</h3>
-            <pre class="box task-box" data-name="worker-detail-task">{{ selected.task }}</pre>
-          </section>
-
-          <section class="summary-strip">
-            <span class="status-dot" :style="{ background: statusColor(selected.status) }"></span>
-            <span class="status-text" :style="{ color: statusColor(selected.status) }">{{ statusLabel(selected.status) }}</span>
-            <span v-if="selected.usage" class="usage">{{ usageText(selected.usage) }}</span>
-          </section>
-
-          <!-- 实时执行时间线：固定行高虚拟滚动 -->
-          <section class="timeline-section">
-            <div class="timeline-title-row">
-              <h3>执行时间线</h3>
-              <span class="timeline-count">{{ events.length }} 条</span>
-              <span class="timeline-follow" :class="{ off: !atBottom }">{{ atBottom ? "跟随最新" : "已冻结" }}</span>
-            </div>
-            <div class="timeline-wrap">
-              <div ref="viewport" class="timeline-viewport" data-name="timeline-viewport" @scroll="onScroll">
-                <div class="tl-spacer" :style="{ height: topPad + 'px' }"></div>
-                <div
-                  v-for="ev in visibleEvents"
-                  :key="ev.id"
-                  data-name="timeline-row"
-                  class="timeline-row"
-                  :class="['tl-' + ev.type, { expanded: isExpanded(ev.id) }]"
-                  :style="{ borderLeftColor: eventColor(ev) }"
-                  @click="toggleExpand(ev)"
-                >
-                  <span class="tl-icon" :style="{ color: eventColor(ev) }">{{ eventIcon(ev) }}</span>
-                  <span class="tl-title">{{ eventTitle(ev) }}</span>
-                  <span class="tl-ts">{{ shortTs(ev) }}</span>
-                </div>
-                <div class="tl-spacer" :style="{ height: bottomPad + 'px' }"></div>
-                <div v-if="events.length === 0" class="tl-empty">暂无轨迹事件</div>
-              </div>
-
-              <!-- 受控详情区：展开内容不参与虚拟行高计算 -->
-              <div v-if="expandedEvents.length" class="timeline-detail" data-name="timeline-detail">
-                <div v-for="ev in expandedEvents" :key="ev.id" class="tl-detail-card">
-                  <div class="tl-detail-head">
-                    <span class="tl-detail-title">{{ detailTitle(ev) }}</span>
-                    <span class="tl-detail-ts">{{ fmt(ev.ts) }}</span>
-                    <button class="tl-detail-close" @click.stop="toggleExpand(ev)">收起</button>
-                  </div>
-                  <div class="tl-detail-body">
-                    <template v-if="ev.type === 'tool'">
-                      <div v-if="ev.args !== undefined" class="tl-field">
-                        <label>参数</label>
-                        <pre>{{ ev.args }}</pre>
-                      </div>
-                      <div v-if="ev.preview !== undefined" class="tl-field">
-                        <label>增量输出</label>
-                        <pre>{{ ev.preview }}</pre>
-                      </div>
-                      <div v-if="ev.result !== undefined" class="tl-field">
-                        <label>最终结果</label>
-                        <pre :class="{ err: ev.ok === false }">{{ ev.result }}</pre>
-                      </div>
-                      <div v-if="ev.ok !== undefined" class="tl-field inline">
-                        <label>状态</label>
-                        <span :class="ev.ok ? 'ok' : 'err'">{{ ev.ok ? "成功" : "失败" }}</span>
-                      </div>
-                    </template>
-                    <template v-else-if="ev.type === 'assistant'">
-                      <div class="tl-field">
-                        <label>回复{{ ev.final ? "（已结束）" : "（流式中）" }}</label>
-                        <pre>{{ ev.text || "（空）" }}</pre>
-                      </div>
-                    </template>
-                    <template v-else>
-                      <div class="tl-field">
-                        <label>生命周期</label>
-                        <pre>{{ ev.state }} {{ ev.message || "" }}</pre>
-                      </div>
-                    </template>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="terminal-section">
-            <h3>最终输出</h3>
-            <pre class="box compact" data-name="worker-detail-output">{{ selected.output || "（尚未完成）" }}</pre>
-          </section>
-          <section class="terminal-section">
-            <h3>stderr</h3>
-            <pre class="box compact err" data-name="worker-detail-stderr">{{ selected.stderr || "（空）" }}</pre>
-          </section>
         </div>
-      </template>
-      <div v-else class="empty-detail">选择左侧 worker 查看详情</div>
-    </main>
+        <span class="follow-hint" :class="{ off: !atBottom }">{{ atBottom ? "跟随最新" : "已冻结" }}</span>
+      </header>
+
+      <div ref="viewport" class="timeline-viewport" data-name="timeline-viewport" @scroll="onScroll">
+        <div class="tl-spacer" :style="{ height: topPad + 'px' }"></div>
+        <div
+          v-for="ev in visibleEvents"
+          :key="ev.id"
+          data-name="timeline-row"
+          class="timeline-row"
+          :class="['tl-' + ev.type]"
+          :style="{ borderLeftColor: eventColor(ev) }"
+          @click="openEvent(ev.id)"
+        >
+          <span class="tl-icon" :style="{ color: eventColor(ev) }">{{ eventIcon(ev) }}</span>
+          <span class="tl-title">{{ eventTitle(ev) }}</span>
+          <span class="tl-ts">{{ shortTs(ev) }}</span>
+        </div>
+        <div class="tl-spacer" :style="{ height: bottomPad + 'px' }"></div>
+        <div v-if="events.length === 0" class="tl-empty">暂无轨迹事件</div>
+      </div>
+    </section>
+
+    <!-- 层级 3：单条事件详情（底部固定 previous/next 栏） -->
+    <section v-else data-name="event-detail" class="event-view">
+      <header class="top-bar">
+        <button class="back-btn" data-name="event-back" title="返回时间线" @click="backToTimeline">‹</button>
+        <div class="top-info">
+          <h2>{{ currentEvent ? detailTitle(currentEvent) : "-" }}</h2>
+          <div class="top-meta">
+            <span class="crumb">Agent 列表 / {{ selected?.id || "-" }} / {{ currentEvent ? detailTitle(currentEvent) : "-" }}</span>
+            <span>{{ currentEvent ? fmt(currentEvent.ts) : "-" }}</span>
+          </div>
+        </div>
+      </header>
+
+      <div ref="detailViewport" class="detail-body">
+        <template v-if="currentEvent">
+          <template v-if="currentEvent.type === 'tool'">
+            <div v-if="currentEvent.args !== undefined" class="detail-field">
+              <label>参数</label>
+              <pre>{{ currentEvent.args }}</pre>
+            </div>
+            <div v-if="currentEvent.preview !== undefined" class="detail-field">
+              <label>增量输出</label>
+              <pre>{{ currentEvent.preview }}</pre>
+            </div>
+            <div v-if="currentEvent.result !== undefined" class="detail-field">
+              <label>最终结果</label>
+              <pre :class="{ err: currentEvent.ok === false }">{{ currentEvent.result }}</pre>
+            </div>
+            <div v-if="currentEvent.ok !== undefined" class="detail-field inline">
+              <label>状态</label>
+              <span :class="currentEvent.ok ? 'ok' : 'err'">{{ currentEvent.ok ? "成功" : "失败" }}</span>
+            </div>
+          </template>
+
+          <template v-else-if="currentEvent.type === 'assistant'">
+            <div class="detail-field">
+              <label>助手回复{{ currentEvent.final ? "（已结束）" : "（流式中）" }}</label>
+              <pre class="assistant-text">{{ currentEvent.text || "（空）" }}</pre>
+            </div>
+          </template>
+
+          <template v-else-if="currentEvent.type === 'terminal'">
+            <div class="detail-field">
+              <label>{{ currentEvent.stream === "stderr" ? "stderr 原文" : "终端输出原文" }}</label>
+              <pre :class="{ err: currentEvent.stream === 'stderr' }">{{ currentEvent.text || "（空）" }}</pre>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="detail-field">
+              <label>生命周期</label>
+              <pre>{{ currentEvent.state }} {{ currentEvent.message || "" }}</pre>
+            </div>
+          </template>
+        </template>
+        <div v-else class="empty-detail">该事件已不存在</div>
+      </div>
+
+      <footer class="detail-bar">
+        <button class="nav-btn" data-name="previous-event" :disabled="!prevId" title="上一条" @click="goPrevious">‹ 上一条</button>
+        <span data-name="event-position" class="event-position">{{ eventPosition }}</span>
+        <button class="nav-btn" data-name="next-event" :disabled="!nextId" title="下一条" @click="goNext">下一条 ›</button>
+      </footer>
+    </section>
   </div>
 </template>
 
 <script setup>
 import "../gui-theme.css";
 import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { readerEvents, eventIndex, adjacentEventId } from "../subagent-reader.js";
 
-// 虚拟滚动常量：固定行高是行距数学的唯一基准，展开内容不改变它
+// 虚拟滚动常量：固定行高是行距数学的唯一基准
 const ROW_H = 40; // 每行固定高度（px）
 const OVERSCAN = 5; // 视口外预渲染行数，减少滚动闪白
 
@@ -156,32 +148,35 @@ const ready = ref(false);
 const workers = ref([]);
 const feedback = ref(false);
 const feedbackNote = ref("");
-const selectedId = ref(null);
-const selected = computed(() => workers.value.find((w) => w.id === selectedId.value) || null);
-const events = computed(() => selected.value?.timeline || []);
 
-// ── 虚拟滚动状态 ──
+// ── 三级页面栈状态 ──
+const viewLevel = ref("agents"); // "agents" | "timeline" | "event"
+const selectedId = ref(null);
+const selectedEventId = ref(null);
+const scrollMap = {}; // workerId -> timeline scrollTop（跨层级保留）
+
+const selected = computed(() => workers.value.find((w) => w.id === selectedId.value) || null);
+const events = computed(() => (selected.value ? readerEvents(selected.value) : []));
+const currentEvent = computed(() => events.value.find((e) => e.id === selectedEventId.value) || null);
+
+// ── 虚拟滚动状态（层级 2） ──
 const viewport = ref(null);
 const scrollTop = ref(0);
 const viewportH = ref(0);
 let atBottom = true; // 轮询刷新前用户是否停留在底部（决定是否自动跟随）
-const expandedKeys = ref(new Set()); // "workerId::eventId" 集合：跨轮询保留展开状态
+
+// ── 详情视口（层级 3，previous/next 时重置滚动） ──
+const detailViewport = ref(null);
 
 let timer = null;
 let ro = null;
-
-function expandedKey(id) {
-  return selectedId.value + "::" + id;
-}
-function isExpanded(id) {
-  return expandedKeys.value.has(expandedKey(id));
-}
 
 function measure() {
   const el = viewport.value;
   if (!el) return;
   scrollTop.value = el.scrollTop;
   viewportH.value = el.clientHeight;
+  atBottom = isAtBottom();
 }
 function isAtBottom() {
   const el = viewport.value;
@@ -190,7 +185,6 @@ function isAtBottom() {
 }
 function onScroll() {
   measure();
-  atBottom = isAtBottom();
 }
 function scrollToBottom() {
   const el = viewport.value;
@@ -215,7 +209,81 @@ const endIndex = computed(() => {
 const visibleEvents = computed(() => events.value.slice(startIndex.value, endIndex.value));
 const topPad = computed(() => startIndex.value * ROW_H);
 const bottomPad = computed(() => (events.value.length - endIndex.value) * ROW_H);
-const expandedEvents = computed(() => events.value.filter((ev) => isExpanded(ev.id)));
+
+// ── 详情导航（层级 3） ──
+const prevId = computed(() => adjacentEventId(events.value, selectedEventId.value, -1));
+const nextId = computed(() => adjacentEventId(events.value, selectedEventId.value, 1));
+const eventPosition = computed(() => {
+  const idx = eventIndex(events.value, selectedEventId.value);
+  return idx >= 0 ? `${idx + 1} / ${events.value.length}` : "-";
+});
+
+function selectEvent(id) {
+  selectedEventId.value = id;
+  nextTick(() => {
+    const el = detailViewport.value;
+    if (el) el.scrollTop = 0;
+  });
+}
+function goPrevious() {
+  if (prevId.value) selectEvent(prevId.value);
+}
+function goNext() {
+  if (nextId.value) selectEvent(nextId.value);
+}
+
+// ── 层级跳转 ──
+function captureTimelineScroll() {
+  const el = viewport.value;
+  if (el && selectedId.value != null) scrollMap[selectedId.value] = el.scrollTop;
+}
+// 恢复存储的 scrollTop；无记录则跟随底部。绝不主动触发新的 bottom-follow。
+function restoreTimelineScroll() {
+  nextTick(() => {
+    const el = viewport.value;
+    if (!el) return;
+    const stored = selectedId.value != null ? scrollMap[selectedId.value] : undefined;
+    if (typeof stored === "number") {
+      const max = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.max(0, Math.min(stored, max));
+      measure();
+    } else {
+      scrollToBottom();
+    }
+  });
+}
+
+// agents -> timeline：新 worker 跟随底部；重入同一 worker 恢复其阅读位置
+function select(id) {
+  selectedId.value = id;
+  selectedEventId.value = null;
+  viewLevel.value = "timeline";
+  restoreTimelineScroll();
+}
+
+// timeline -> event：记录当前流位置后进入详情
+function openEvent(id) {
+  captureTimelineScroll();
+  selectedEventId.value = id;
+  viewLevel.value = "event";
+  nextTick(() => {
+    const el = detailViewport.value;
+    if (el) el.scrollTop = 0;
+  });
+}
+
+// event -> timeline：恢复进入详情前的流位置，不强制 bottom follow
+function backToTimeline() {
+  selectedEventId.value = null;
+  viewLevel.value = "timeline";
+  restoreTimelineScroll();
+}
+
+// timeline -> agents：保留 selected worker，供稳定重入
+function backToAgents() {
+  captureTimelineScroll();
+  viewLevel.value = "agents";
+}
 
 // ── 展示辅助 ──
 function statusIcon(s) {
@@ -223,10 +291,6 @@ function statusIcon(s) {
 }
 function statusLabel(s) {
   return { starting: "启动中", running: "执行中", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
-}
-function statusColor(s) {
-  const m = { starting: "#7aa2f7", running: "#9ece6a", success: "#565f89", failed: "#f7768e", aborted: "#e0af68", timeout: "#e0af68" };
-  return m[s] || "#565f89";
 }
 function fmt(iso) {
   if (!iso) return "-";
@@ -259,12 +323,14 @@ function eventIcon(ev) {
     if (ev.ok === true) return "✓";
     return "▶";
   }
+  if (ev.type === "terminal") return ev.stream === "stderr" ? "✗" : "▸";
   const m = { starting: "●", running: "●", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", truncated: "…" };
   return m[ev.state] || "●";
 }
 function eventColor(ev) {
   if (ev.type === "assistant") return "#7aa2f7";
   if (ev.type === "tool") return ev.ok === false ? "#f7768e" : ev.ok === true ? "#9ece6a" : "#e0af68";
+  if (ev.type === "terminal") return ev.stream === "stderr" ? "#f7768e" : "#a9b1d6";
   const m = { starting: "#7aa2f7", running: "#9ece6a", success: "#9ece6a", failed: "#f7768e", aborted: "#e0af68", timeout: "#e0af68", truncated: "#565f89" };
   return m[ev.state] || "#565f89";
 }
@@ -277,44 +343,56 @@ function eventTitle(ev) {
     const t = (ev.text || "").replace(/\s+/g, " ").trim();
     return t ? t : ev.final ? "（空回复）" : "（回复中…）";
   }
+  if (ev.type === "terminal") {
+    const t = (ev.text || "").replace(/\s+/g, " ").trim();
+    const label = ev.stream === "stderr" ? "stderr" : "终端输出";
+    return t ? `${label} · ${t.slice(0, 48)}` : label;
+  }
   return lifecycleLabel(ev.state) + (ev.message ? " · " + ev.message : "");
 }
 function detailTitle(ev) {
   if (ev.type === "tool") return `工具 ${ev.tool}`;
   if (ev.type === "assistant") return "助手回复";
+  if (ev.type === "terminal") return ev.stream === "stderr" ? "stderr" : "终端输出";
   return `生命周期 · ${lifecycleLabel(ev.state)}`;
 }
 
-// ── 交互 ──
-function select(id) {
-  selectedId.value = id;
-  // 切换 worker：回到底部跟随最新；展开集合按 workerId::eventId 隔离保留
-  nextTick(() => {
-    measure();
-    scrollToBottom();
-  });
-}
-function toggleExpand(ev) {
-  const k = expandedKey(ev.id);
-  const s = new Set(expandedKeys.value);
-  if (s.has(k)) s.delete(k);
-  else s.add(k);
-  expandedKeys.value = s;
-  nextTick(() => measure()); // 详情区出现/收起会改变视口高度
-}
-
+// ── 轮询 ──
 async function poll() {
   try {
     const raw = await window.go.main.App.GetSubagentStatus();
     const data = JSON.parse(raw);
-    if (Array.isArray(data.workers)) {
-      workers.value = data.workers;
-      if (selectedId.value && !workers.value.find((w) => w.id === selectedId.value)) selectedId.value = null;
-      await nextTick();
-      // 新事件到达：刷新前在底部则跟随到底；用户上滚过则冻结，不强制跳转
-      if (atBottom) scrollToBottom();
-      else measure();
+    if (!Array.isArray(data.workers)) return;
+    workers.value = data.workers;
+
+    const workerAlive = !!selectedId.value && workers.value.some((w) => w.id === selectedId.value);
+    const eventAlive = !!selectedEventId.value && events.value.some((e) => e.id === selectedEventId.value);
+
+    // 当前层 selection 失效 → 回到最近有效父层
+    if (viewLevel.value === "event") {
+      if (!workerAlive) {
+        selectedId.value = null;
+        selectedEventId.value = null;
+        viewLevel.value = "agents";
+      } else if (!eventAlive) {
+        // worker 还在、事件消失：回 timeline，恢复原阅读位置
+        selectedEventId.value = null;
+        viewLevel.value = "timeline";
+        restoreTimelineScroll();
+      }
+    } else if (viewLevel.value === "timeline") {
+      if (!workerAlive) {
+        selectedId.value = null;
+        selectedEventId.value = null;
+        viewLevel.value = "agents";
+      } else {
+        await nextTick();
+        // 仅当读取者原本在底部时才自动跟随；上滚过则冻结原位
+        if (atBottom) scrollToBottom();
+        else measure();
+      }
     }
+    // agents 层：selection 变化不影响层级
   } catch {
     // 轮询/解析失败：保留最后有效数据与滚动位置
   }
@@ -337,8 +415,6 @@ onMounted(async () => {
   ready.value = true;
   await window.go.main.App.MarkReady();
   await nextTick();
-  measure();
-  scrollToBottom();
   if (typeof ResizeObserver !== "undefined" && viewport.value) {
     ro = new ResizeObserver(() => measure());
     ro.observe(viewport.value);
@@ -353,84 +429,69 @@ onUnmounted(() => {
 
 <style scoped>
 /* ── 布局（对齐 ManagerView 配色骨架） ── */
-.app { display: flex; height: 100vh; background: #1a1a2e; color: #e0e0e0; }
+.app { height: 100vh; background: #1a1a2e; color: #e0e0e0; display: flex; flex-direction: column; }
+section { min-height: 0; }
 
-/* ── 侧栏 ── */
-.sidebar { width: 300px; border-right: 1px solid #2a2a4a; display: flex; flex-direction: column; overflow: hidden; }
-.sidebar-header { padding: 10px 14px; border-bottom: 1px solid #2a2a4a; }
-.sidebar-title-row { display: flex; justify-content: space-between; align-items: center; }
-.sidebar-title-row h1 { font-size: 14px; color: #7aa2f7; margin: 0; }
+/* ── 层级 1：Agent 列表 ── */
+.agents-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.agents-header { padding: 10px 14px; border-bottom: 1px solid #2a2a4a; }
+.agents-title-row { display: flex; justify-content: space-between; align-items: center; }
+.agents-title-row h1 { font-size: 14px; color: #7aa2f7; margin: 0; }
 .count-badge { font-size: 11px; color: #565f89; }
 .feedback-toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: #a9b1d6; cursor: pointer; }
 .feedback-toggle input { accent-color: #e0af68; cursor: pointer; }
 .note { font-size: 10px; color: #565f89; margin: 6px 0 0; line-height: 1.4; }
 
-/* ── worker 列表 ── */
 .worker-list { flex: 1; overflow-y: auto; }
-.worker-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #1a1a3e; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
-.worker-item.active { background: #1a2a4a; border-left-color: #7aa2f7; }
+.agent-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #1a1a3e; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
+.agent-item:hover { background: #16213e; }
+.agent-item.active { background: #1a2a4a; border-left-color: #7aa2f7; }
 .status-icon { font-size: 14px; flex-shrink: 0; }
 .worker-info { flex: 1; min-width: 0; }
 .worker-title { font-size: 12px; font-weight: 500; line-height: 1.3; word-break: break-word; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worker-id { font-size: 10px; color: #565f89; }
+.row-chevron { color: #565f89; font-size: 14px; flex-shrink: 0; }
 .empty-list { padding: 20px; text-align: center; color: #565f89; font-size: 13px; }
 
-/* ── 详情 ── */
-.detail { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.detail-header { padding: 10px 16px; border-bottom: 1px solid #2a2a4a; display: flex; justify-content: space-between; align-items: center; }
-.detail-header h2 { font-size: 15px; color: #c0caf5; margin: 0; }
-.detail-meta { font-size: 11px; color: #565f89; margin-top: 2px; }
-.detail-actions { display: flex; gap: 8px; align-items: center; }
-.pid { font-size: 11px; color: #565f89; font-family: monospace; }
+/* ── 顶部栏（层级 2 / 3 共用） ── */
+.top-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #2a2a4a; flex-shrink: 0; }
+.back-btn { width: 28px; height: 28px; flex-shrink: 0; border: 1px solid #2a2a4a; border-radius: 4px; background: transparent; color: #a9b1d6; font-size: 20px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.back-btn:hover { background: #16213e; color: #c0caf5; }
+.top-info { flex: 1; min-width: 0; }
+.top-info h2 { font-size: 14px; color: #c0caf5; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-meta { font-size: 11px; color: #565f89; margin-top: 2px; display: flex; gap: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-meta .crumb { color: #565f89; }
+.follow-hint { flex-shrink: 0; font-size: 10px; color: #9ece6a; }
+.follow-hint.off { color: #e0af68; }
 
-.detail-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
-.detail-section { margin-bottom: 12px; }
-.detail-section h3 { font-size: 11px; color: #565f89; text-transform: uppercase; margin: 0 0 4px; }
-.task-box { max-height: 90px; overflow-y: auto; margin: 0; }
-.summary-strip { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-.status-text { font-weight: 600; margin: 0; }
-.usage { color: #a9b1d6; }
-
-/* ── 时间线（固定行高虚拟滚动） ── */
-.timeline-section { height: 42vh; min-height: 240px; display: flex; flex-direction: column; margin-bottom: 12px; }
-.timeline-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.timeline-title-row h3 { font-size: 11px; color: #565f89; text-transform: uppercase; margin: 0; }
-.timeline-count { font-size: 10px; color: #565f89; }
-.timeline-follow { font-size: 10px; color: #565f89; margin-left: auto; }
-.timeline-follow.off { color: #e0af68; }
-.timeline-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; border: 1px solid #2a2a4a; border-radius: 6px; background: #0d0d1a; }
+/* ── 层级 2：时间线（固定行高虚拟滚动，全宽） ── */
+.timeline-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .timeline-viewport { flex: 1; overflow-y: auto; min-height: 0; }
-.timeline-row { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid #16162a; font-size: 12px; user-select: none; }
+.timeline-row { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid #16162a; font-size: 12px; user-select: none; }
 .timeline-row:hover { background: #16213e; }
-.timeline-row.expanded { background: #1a2a4a; }
 .tl-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 12px; }
 .tl-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c0caf5; }
 .tl-ts { flex-shrink: 0; font-size: 10px; color: #565f89; font-family: monospace; }
 .tl-spacer { flex-shrink: 0; }
 .tl-empty { padding: 20px; text-align: center; color: #565f89; font-size: 12px; }
 
-/* 受控详情区：展开内容在此区滚动，不参与虚拟行高计算 */
-.timeline-detail { flex: 0 1 auto; max-height: 45%; overflow-y: auto; border-top: 1px solid #2a2a4a; }
-.tl-detail-card { border-bottom: 1px solid #16162a; padding: 8px 10px; }
-.tl-detail-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.tl-detail-title { color: #c0caf5; font-weight: 600; }
-.tl-detail-ts { font-size: 10px; color: #565f89; font-family: monospace; }
-.tl-detail-close { margin-left: auto; background: none; border: 1px solid #2a2a4a; color: #a9b1d6; font-size: 10px; border-radius: 3px; padding: 1px 8px; cursor: pointer; }
-.tl-detail-close:hover { background: #16213e; }
-.tl-detail-body { margin-top: 6px; }
-.tl-field { margin-bottom: 6px; }
-.tl-field label { display: block; font-size: 10px; color: #565f89; text-transform: uppercase; margin-bottom: 2px; }
-.tl-field pre { margin: 0; background: #0d0d1a; border: 1px solid #16162a; border-radius: 4px; padding: 6px 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow-y: auto; color: #c0caf5; }
-.tl-field pre.err { color: #f7768e; }
-.tl-field .ok { color: #9ece6a; font-size: 12px; }
-.tl-field .err { color: #f7768e; font-size: 12px; }
+/* ── 层级 3：事件详情 ── */
+.event-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.detail-body { flex: 1; overflow-y: auto; min-height: 0; padding: 14px 16px 72px; }
+.detail-field { margin-bottom: 14px; }
+.detail-field label { display: block; font-size: 10px; color: #565f89; text-transform: uppercase; margin-bottom: 4px; }
+.detail-field pre { margin: 0; background: #0d0d1a; border: 1px solid #16162a; border-radius: 4px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #c0caf5; }
+.detail-field pre.err { color: #f7768e; }
+.detail-field .ok { color: #9ece6a; font-size: 12px; }
+.detail-field .err { color: #f7768e; font-size: 12px; }
+.assistant-text { max-height: none; }
 
-/* ── 终端结果（紧凑，保留最终输出/stderr） ── */
-.terminal-section h3 { font-size: 11px; color: #565f89; text-transform: uppercase; margin: 0 0 4px; }
-.box { background: #0d0d1a; padding: 14px; border-radius: 6px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; margin: 0; }
-.box.compact { max-height: 110px; overflow-y: auto; padding: 8px 10px; font-size: 12px; margin-bottom: 12px; }
-.box.err { color: #f7768e; }
+/* 固定底栏：flex 兄弟节点，detail-body 滚动时保持原位 */
+.detail-bar { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-top: 1px solid #2a2a4a; background: #1a1a2e; }
+.nav-btn { border: 1px solid #2a2a4a; background: transparent; color: #a9b1d6; font-size: 12px; border-radius: 4px; padding: 5px 12px; cursor: pointer; }
+.nav-btn:hover:not(:disabled) { background: #16213e; color: #c0caf5; }
+.nav-btn:disabled { opacity: 0.4; cursor: default; }
+.event-position { font-size: 11px; color: #565f89; font-family: monospace; }
 
-.empty-detail { flex: 1; display: flex; align-items: center; justify-content: center; color: #565f89; font-size: 14px; }
+.empty-detail { padding: 20px; text-align: center; color: #565f89; font-size: 13px; }
 </style>
