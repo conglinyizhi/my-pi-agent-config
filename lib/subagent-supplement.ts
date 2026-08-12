@@ -104,6 +104,11 @@ export interface WithdrawResult {
   withdrawn: boolean;
 }
 
+export interface ReleaseResult {
+  inbox: SupplementInbox;
+  released: boolean;
+}
+
 export interface MergeResult {
   inbox: SupplementInbox;
   merged: boolean;
@@ -447,8 +452,36 @@ export async function withdrawSupplement(
 }
 
 /**
- * 把所有 pending 按原顺序合并为一条，新条目位于第一个 pending 的位置；
- * handoff 条目原样保留。少于 2 条 pending 返回 merged false 且不写盘。
+ * 把一条 handoff 原位恢复为 pending（bridge 投递失败时回滚用）。
+ * 只允许 handoff：pending 条目本就未投递、未知 id 一律返回 released false 且不写盘。
+ * 恢复是「原位」的——条目在 entries 中的位置不变，删除 handedOffAt，更新 updatedAt。
+ */
+export async function releaseSupplement(
+  inboxId: string,
+  entryId: string,
+  options?: SupplementInboxOptions,
+): Promise<ReleaseResult> {
+  assertInboxId(inboxId);
+  const o = resolveOptions(options);
+  const file = queueFilePath(o.root, inboxId);
+  return withLock(lockDirPath(file), o, () => {
+    const inbox = readQueueFile(file);
+    const index = inbox.entries.findIndex((e) => e.id === entryId);
+    if (index === -1 || inbox.entries[index].state !== "handoff") {
+      return { inbox: freezeSnapshot(inbox), released: false };
+    }
+    const entry = inbox.entries[index];
+    entry.state = "pending";
+    delete entry.handedOffAt;
+    inbox.updatedAt = o.now();
+    atomicWriteJson(file, inbox);
+    return { inbox: freezeSnapshot(inbox), released: true };
+  });
+}
+
+/**
+ * 把所有 pending 按原顺序合并为一条，新条目位于第一个 pending 的**原全局位置**；
+ * 所有 handoff（前/中/后）原样保留相对顺序。少于 2 条 pending 返回 merged false 且不写盘。
  * 正文按 `--- Supplement N ---`（N 从 2 起，作为独立段落以空行分隔）连接。
  */
 export async function mergePendingSupplements(
@@ -478,9 +511,20 @@ export async function mergePendingSupplements(
       state: "pending",
       createdAt: o.now(),
     };
-    const rest = inbox.entries.filter((e) => e.state !== "pending");
-    rest.splice(firstPendingIndex, 0, merged);
-    inbox.entries = rest;
+    // 按原全局顺序重建：merged 占据最早 pending 的原位置（该处插入一次），
+    // 所有 handoff（包括位于最早 pending 之前/中间/之后的）原样保留相对顺序，
+    // 其余 pending 被 merged 取代（跳过）。
+    const next: SupplementEntry[] = [];
+    for (let i = 0; i < inbox.entries.length; i++) {
+      const entry = inbox.entries[i];
+      if (i === firstPendingIndex) {
+        next.push(merged);
+      } else if (entry.state === "handoff") {
+        next.push(entry);
+      }
+      // 其余 pending：已并入 merged，不保留
+    }
+    inbox.entries = next;
     inbox.updatedAt = o.now();
     atomicWriteJson(file, inbox);
     return { inbox: freezeSnapshot(inbox), merged: true };

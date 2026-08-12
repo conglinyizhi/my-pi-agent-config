@@ -19,6 +19,7 @@ import {
   enqueueSupplement,
   claimNextSupplement,
   withdrawSupplement,
+  releaseSupplement,
   mergePendingSupplements,
   isValidInboxId,
   encodeSupplementMessage,
@@ -87,6 +88,7 @@ describe("constants and id validation", () => {
     await assert.rejects(enqueueSupplement("x/y", "text", { root }), /inboxId/i);
     await assert.rejects(claimNextSupplement("..", { root }), /inboxId/i);
     await assert.rejects(withdrawSupplement("..", "e1", { root }), /inboxId/i);
+    await assert.rejects(releaseSupplement("..", "e1", { root }), /inboxId/i);
     await assert.rejects(mergePendingSupplements("a b", { root }), /inboxId/i);
   });
 });
@@ -361,6 +363,111 @@ describe("withdrawSupplement", () => {
   });
 });
 
+describe("releaseSupplement", () => {
+  it("restores a handoff entry to pending in place, clears handedOffAt, bumps updatedAt", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    await enqueueSupplement("q", "a", o);
+    await enqueueSupplement("q", "b", o);
+    await enqueueSupplement("q", "c", o);
+    const c = await claimNextSupplement("q", o); // a -> handoff
+    assert.strictEqual(c.claimed?.text, "a");
+    const before = await readInbox("q", o);
+
+    const res = await releaseSupplement("q", c.claimed!.id, o);
+    assert.strictEqual(res.released, true);
+    // 原位恢复：位置不变、状态 pending、handedOffAt 删除
+    assert.deepStrictEqual(
+      res.inbox.entries.map((e) => [e.text, e.state, e.handedOffAt]),
+      [
+        ["a", "pending", undefined],
+        ["b", "pending", undefined],
+        ["c", "pending", undefined],
+      ],
+    );
+    // updatedAt 前进
+    assert.notStrictEqual(res.inbox.updatedAt, before.updatedAt);
+    // 落盘可见
+    const disk = await readInbox("q", o);
+    assert.strictEqual(disk.entries[0].state, "pending");
+    assert.strictEqual(disk.entries[0].handedOffAt, undefined);
+    // FIFO 语义恢复：claim 又可以拿到它
+    const c2 = await claimNextSupplement("q", o);
+    assert.strictEqual(c2.claimed?.text, "a");
+  });
+
+  it("refuses to release a pending entry and does not write", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    await enqueueSupplement("q", "a", o);
+    await enqueueSupplement("q", "b", o);
+    await claimNextSupplement("q", o); // a -> handoff；e2(b) 仍是 pending
+    const before = await readInbox("q", o);
+    const rawBefore = fs.readFileSync(path.join(root, "q.json"), "utf8");
+
+    const res = await releaseSupplement("q", "e2", o);
+    assert.strictEqual(res.released, false);
+    const after = await readInbox("q", o);
+    assert.deepStrictEqual(after, before); // 完全不变
+    assert.strictEqual(fs.readFileSync(path.join(root, "q.json"), "utf8"), rawBefore); // 未写盘
+  });
+
+  it("returns released false for an unknown entry id and does not write", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    await enqueueSupplement("q", "a", o);
+    await claimNextSupplement("q", o); // a -> handoff
+    const rawBefore = fs.readFileSync(path.join(root, "q.json"), "utf8");
+
+    const res = await releaseSupplement("q", "does-not-exist", o);
+    assert.strictEqual(res.released, false);
+    assert.strictEqual(fs.readFileSync(path.join(root, "q.json"), "utf8"), rawBefore);
+    assert.strictEqual((await readInbox("q", o)).entries[0].state, "handoff");
+  });
+
+  it("releases in place: entry keeps its index, surrounding entries untouched", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    for (const text of ["a", "b", "c", "d", "e"]) {
+      await enqueueSupplement("q", text, o);
+    }
+    for (let i = 0; i < 5; i++) await claimNextSupplement("q", o); // 全部 handoff
+    const relB = await releaseSupplement("q", "e2", o); // b 原位恢复
+    const relD = await releaseSupplement("q", "e4", o); // d 原位恢复
+    assert.strictEqual(relB.released, true);
+    assert.strictEqual(relD.released, true);
+    assert.deepStrictEqual(
+      relD.inbox.entries.map((e) => [e.text, e.state]),
+      [
+        ["a", "handoff"],
+        ["b", "pending"],
+        ["c", "handoff"],
+        ["d", "pending"],
+        ["e", "handoff"],
+      ],
+    );
+  });
+
+  it("release returns a frozen snapshot not mutated by later operations", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    await enqueueSupplement("q", "a", o);
+    const c = await claimNextSupplement("q", o);
+    const res = await releaseSupplement("q", c.claimed!.id, o);
+    assert.ok(Object.isFrozen(res.inbox));
+    assert.ok(Object.isFrozen(res.inbox.entries));
+    assert.ok(Object.isFrozen(res.inbox.entries[0]));
+    const before = JSON.stringify(res.inbox);
+    await claimNextSupplement("q", o); // 之后的操作不得变异已返回的 snapshot
+    assert.strictEqual(JSON.stringify(res.inbox), before);
+  });
+});
+
 describe("mergePendingSupplements", () => {
   it("merges all pending in order with the deterministic delimiter; handoff entries stay put", async (t) => {
     const root = tmpRoot(t);
@@ -420,6 +527,46 @@ describe("mergePendingSupplements", () => {
         ["h1", "handoff"],
         ["h2", "handoff"],
         ["p1\n\n--- Supplement 2 ---\n\np2\n\n--- Supplement 3 ---\n\np3", "pending"],
+      ],
+    );
+  });
+
+  it("merges interleaved pending/handoff created via claim+release into the earliest pending slot", async (t) => {
+    const root = tmpRoot(t);
+    const o = opts(root);
+    await createInbox("q", o);
+    for (const text of ["a", "b", "c", "d", "e"]) {
+      await enqueueSupplement("q", text, o);
+    }
+    // [P a, P b, P c, P d, P e] -> claim 4 条 -> [H a, H b, H c, H d, P e]
+    for (let i = 0; i < 4; i++) await claimNextSupplement("q", o);
+    // 原位 release a 与 c -> [P a, H b, P c, H d, P e]（claim/release 造出的交错状态）
+    assert.strictEqual((await releaseSupplement("q", "e1", o)).released, true);
+    assert.strictEqual((await releaseSupplement("q", "e3", o)).released, true);
+    const interleaved = await readInbox("q", o);
+    assert.deepStrictEqual(
+      interleaved.entries.map((e) => [e.text, e.state]),
+      [
+        ["a", "pending"],
+        ["b", "handoff"],
+        ["c", "pending"],
+        ["d", "handoff"],
+        ["e", "pending"],
+      ],
+    );
+
+    const m = await mergePendingSupplements("q", o);
+    assert.strictEqual(m.merged, true);
+    // merged 位于最早 pending（a）的原全局位置；handoff b/d 保持原相对顺序
+    assert.deepStrictEqual(
+      m.inbox.entries.map((e) => [e.text, e.state]),
+      [
+        [
+          "a\n\n--- Supplement 2 ---\n\nc\n\n--- Supplement 3 ---\n\ne",
+          "pending",
+        ],
+        ["b", "handoff"],
+        ["d", "handoff"],
       ],
     );
   });

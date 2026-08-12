@@ -21,6 +21,7 @@ import {
   claimNextSupplement,
   encodeSupplementMessage,
   isValidInboxId,
+  releaseSupplement,
 } from "../../lib/subagent-supplement.ts";
 
 /**
@@ -40,16 +41,20 @@ export interface SupplementClaimResult {
   claimed: { id: string; text: string } | null;
 }
 
-/** 工厂依赖：inboxId + claim + send 全部可注入。 */
+/** 工厂依赖：inboxId + claim + release + send 全部可注入。 */
 export interface SupplementBridgeDeps {
   inboxId: string;
   claim: (inboxId: string) => Promise<SupplementClaimResult>;
+  release: (inboxId: string, entryId: string) => Promise<{ released: boolean }>;
   send: (encoded: string, options: { deliverAs: "steer" }) => void;
 }
 
 /**
  * 返回 tool_execution_end handler：不看 isError，成功/失败完成都 claim 一条；
  * claimed null 不发；claimed 存在则编码后以 steer 投递。
+ * send 同步抛错（Pi 未接受入队）时：尽力原位 release 回滚该条为 pending，
+ * 然后 rethrow 原始错误让 Pi 能报告 bridge 故障——绝不宣布 delivery。
+ * send 正常返回即代表 Pi 接受入队，条目保持 handoff，不调用 release。
  */
 export function createSupplementToolEndHandler(
   deps: SupplementBridgeDeps,
@@ -57,14 +62,26 @@ export function createSupplementToolEndHandler(
   return async (_event: ToolEndEventShape): Promise<void> => {
     const { claimed } = await deps.claim(deps.inboxId);
     if (!claimed) return;
-    deps.send(encodeSupplementMessage(claimed.id, claimed.text), { deliverAs: "steer" });
+    try {
+      deps.send(encodeSupplementMessage(claimed.id, claimed.text), { deliverAs: "steer" });
+    } catch (err) {
+      // send 是同步 void：只有同步抛错才进这里。回滚为 best-effort——
+      // release 自身失败也不吞掉原始错误，仍抛 err。
+      try {
+        await deps.release(deps.inboxId, claimed.id);
+      } catch {
+        // 尽力回滚失败：保留原始 send 错误
+      }
+      throw err;
+    }
   };
 }
 
-/** 注册选项：可覆盖 inboxId / claim / send（测试注入；默认用真实实现）。 */
+/** 注册选项：可覆盖 inboxId / claim / release / send（测试注入；默认用真实实现）。 */
 export interface SupplementBridgeOptions {
   inboxId?: string;
   claim?: (inboxId: string) => Promise<SupplementClaimResult>;
+  release?: (inboxId: string, entryId: string) => Promise<{ released: boolean }>;
   send?: (encoded: string, options: { deliverAs: "steer" }) => void;
 }
 
@@ -79,8 +96,10 @@ export function registerSupplementBridge(
   const inboxId = opts.inboxId ?? process.env.PI_SUBAGENT_INBOX ?? "";
   if (!isValidInboxId(inboxId)) return false; // 无有效 inbox：静默禁用
   const claim = opts.claim ?? ((id: string) => claimNextSupplement(id));
+  const release =
+    opts.release ?? ((id: string, entryId: string) => releaseSupplement(id, entryId));
   const send = opts.send ?? ((encoded: string) => pi.sendUserMessage(encoded, { deliverAs: "steer" }));
-  pi.on("tool_execution_end", createSupplementToolEndHandler({ inboxId, claim, send }));
+  pi.on("tool_execution_end", createSupplementToolEndHandler({ inboxId, claim, release, send }));
   return true;
 }
 
