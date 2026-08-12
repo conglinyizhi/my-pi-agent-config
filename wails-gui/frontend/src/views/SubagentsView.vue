@@ -116,6 +116,13 @@
             </div>
           </template>
 
+          <template v-else-if="currentEvent.type === 'supplement'">
+            <div class="detail-field">
+              <label>Supplement sent to worker</label>
+              <pre class="supplement-text">{{ currentEvent.text || "（空）" }}</pre>
+            </div>
+          </template>
+
           <template v-else>
             <div class="detail-field">
               <label>生命周期</label>
@@ -125,6 +132,70 @@
         </template>
         <div v-else class="empty-detail">该事件已不存在</div>
       </div>
+
+      <!-- 补充指令 composer：active（蓝）/ terminal（灰）两种模式，队列行在下方 -->
+      <section v-if="selected && selected.inboxId" class="supplement-composer" data-name="supplement-composer">
+        <template v-if="selectedWorkerActive">
+          <div class="comp-row">
+            <textarea
+              v-model="supplementDrafts[selected.id]"
+              class="comp-textarea"
+              rows="2"
+              data-name="supplement-draft"
+              placeholder="补充指令——将进入 FIFO 队列，由 worker 领取执行…"
+            ></textarea>
+          </div>
+          <div class="comp-actions">
+            <button
+              class="comp-btn comp-btn-blue"
+              data-name="queue-supplement"
+              :disabled="!draftNonBlank"
+              @click="queueSupplement"
+            >Queue supplement</button>
+            <span v-if="queueFeedback" class="comp-feedback" :class="'comp-feedback-' + queueFeedbackKind">{{ queueFeedback }}</span>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="comp-row">
+            <textarea
+              v-model="supplementDrafts[selected.id]"
+              class="comp-textarea"
+              rows="2"
+              data-name="supplement-draft"
+              placeholder="草稿——worker 生命周期已结束，复制给主 agent 使用…"
+            ></textarea>
+          </div>
+          <div class="comp-actions">
+            <button
+              class="comp-btn comp-btn-gray"
+              data-name="copy-supplement"
+              :disabled="!copyTextNonBlank"
+              @click="copyForMainAgent"
+            >Copy for main agent</button>
+            <span v-if="copyFeedback" class="comp-feedback" :class="'comp-feedback-' + copyFeedbackKind">{{ copyFeedback }}</span>
+          </div>
+          <p class="comp-terminal-note">Worker lifecycle has ended. It cannot receive further supplements. Copy the draft to the main agent instead.</p>
+        </template>
+
+        <div v-if="supplements.length" class="comp-queue" data-name="supplement-queue">
+          <div
+            v-for="(entry, i) in supplements"
+            :key="entry.id"
+            class="comp-entry"
+            :class="entry.state === 'pending' ? 'comp-entry-pending' : 'comp-entry-handoff'"
+          >
+            <span class="comp-entry-idx">{{ i + 1 }}</span>
+            <span class="comp-entry-text">{{ entry.text }}</span>
+            <span v-if="entry.state === 'handoff'" class="comp-entry-state">Handed to Pi steering queue</span>
+            <button v-else class="comp-btn comp-btn-amber comp-btn-mini" data-name="withdraw-supplement" @click="withdrawEntry(entry)">Withdraw</button>
+          </div>
+        </div>
+        <div v-if="pendingSupplements.length >= 2" class="comp-actions comp-merge-row">
+          <button class="comp-btn comp-btn-amber-outline" data-name="merge-supplements" @click="mergePending">Merge pending</button>
+          <span class="comp-merge-count">{{ pendingSupplements.length }} 条待合并</span>
+        </div>
+      </section>
 
       <footer class="detail-bar">
         <button class="nav-btn" data-name="previous-event" :disabled="!prevId" title="上一条" @click="goPrevious">‹ 上一条</button>
@@ -137,9 +208,10 @@
 
 <script setup>
 import "../gui-theme.css";
-import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { readerEvents, eventIndex, adjacentEventId } from "../subagent-reader.js";
 import { reconcileNavigation, shouldFollowTimeline } from "../subagent-navigation.js";
+import { ClipboardSetText } from "../../wailsjs/runtime/runtime.js";
 
 // 虚拟滚动常量：固定行高是行距数学的唯一基准
 const ROW_H = 40; // 每行固定高度（px）
@@ -168,6 +240,136 @@ let atBottom = true; // 轮询刷新前用户是否停留在底部（决定是�
 
 // ── 详情视口（层级 3，previous/next 时重置滚动） ──
 const detailViewport = ref(null);
+
+// ── 补充指令 composer ──
+// 草稿按 worker id 本地保存：跨事件导航 / 跨 worker 切换不丢字。
+const supplementDrafts = reactive({});
+const queueFeedback = ref("");
+const queueFeedbackKind = ref("ok");
+const copyFeedback = ref("");
+const copyFeedbackKind = ref("ok");
+let feedbackTimer = null;
+
+function isActiveStatus(s) {
+  return s === "starting" || s === "running";
+}
+
+// worker active：生命周期 active 且带有效 inboxId 才可 enqueue。
+const selectedWorkerActive = computed(() => {
+  const w = selected.value;
+  return !!w && !!w.inboxId && isActiveStatus(w.status);
+});
+
+// 队列条目来自轮询富化后的 selected.supplements（缺失/损坏已由 Go 降级为 []）。
+const supplements = computed(() => {
+  const w = selected.value;
+  return w && Array.isArray(w.supplements) ? w.supplements : [];
+});
+const pendingSupplements = computed(() => supplements.value.filter((e) => e && e.state === "pending"));
+
+const draftNonBlank = computed(() => {
+  const w = selected.value;
+  return !!w && (supplementDrafts[w.id] || "").trim() !== "";
+});
+const copyTextNonBlank = computed(() => {
+  const w = selected.value;
+  if (!w) return false;
+  if ((supplementDrafts[w.id] || "").trim() !== "") return true;
+  return pendingSupplements.value.some((e) => e.text && e.text.trim() !== "");
+});
+
+// 切换 worker 时确保草稿槽存在（v-model 需要响应式键已初始化）。
+watch(selectedId, (id) => {
+  if (id != null && !(id in supplementDrafts)) supplementDrafts[id] = "";
+});
+
+function flashQueue(kind, msg) {
+  queueFeedbackKind.value = kind;
+  queueFeedback.value = msg;
+  clearTimeout(feedbackTimer);
+  feedbackTimer = setTimeout(() => {
+    queueFeedback.value = "";
+    copyFeedback.value = "";
+  }, 4000);
+}
+function flashCopy(kind, msg) {
+  copyFeedbackKind.value = kind;
+  copyFeedback.value = msg;
+  clearTimeout(feedbackTimer);
+  feedbackTimer = setTimeout(() => {
+    copyFeedback.value = "";
+    queueFeedback.value = "";
+  }, 4000);
+}
+
+// active：入队。结果由下一次轮询拉取；草稿仅在成功 await 后本地清空。
+async function queueSupplement() {
+  const w = selected.value;
+  if (!w || !w.inboxId) return;
+  const text = (supplementDrafts[w.id] || "").trim();
+  if (!text) {
+    flashQueue("err", "草稿为空，未入队");
+    return;
+  }
+  try {
+    await window.go.main.App.QueueSubagentSupplement(w.inboxId, text);
+    supplementDrafts[w.id] = "";
+    flashQueue("ok", "已入队，等待 worker 领取");
+  } catch (e) {
+    flashQueue("err", String((e && e.message) || e));
+  }
+}
+
+// 撤回单条 pending；handoff 行无此按钮。terminal 同样允许。
+async function withdrawEntry(entry) {
+  const w = selected.value;
+  if (!w || !w.inboxId) return;
+  try {
+    await window.go.main.App.WithdrawSubagentSupplement(w.inboxId, entry.id);
+    flashQueue("ok", "已撤回");
+  } catch (e) {
+    flashQueue("err", String((e && e.message) || e));
+  }
+}
+
+// 合并全部 pending（>=2 才显示按钮）。
+async function mergePending() {
+  const w = selected.value;
+  if (!w || !w.inboxId || pendingSupplements.value.length < 2) return;
+  try {
+    await window.go.main.App.MergeSubagentSupplements(w.inboxId);
+    flashQueue("ok", "已合并全部 pending");
+  } catch (e) {
+    flashQueue("err", String((e && e.message) || e));
+  }
+}
+
+// terminal：草稿 + 全部 pending（FIFO，排除 handoff）拼成剪贴板文本。
+function buildCopyText() {
+  const w = selected.value;
+  if (!w) return "";
+  const parts = [];
+  const draft = (supplementDrafts[w.id] || "").trim();
+  if (draft) parts.push(draft);
+  pendingSupplements.value.forEach((e, i) => {
+    if (i > 0) parts.push(`--- Supplement ${i + 1} ---`);
+    parts.push(e.text);
+  });
+  return parts.join("\n\n");
+}
+async function copyForMainAgent() {
+  const text = buildCopyText();
+  if (!text.trim()) {
+    flashCopy("err", "草稿与队列均为空");
+    return;
+  }
+  try {
+    const ok = await ClipboardSetText(text);
+    flashCopy(ok === false ? "err" : "ok", ok === false ? "复制失败" : "已复制到剪贴板");
+  } catch (e) {
+    flashCopy("err", "复制失败：" + String((e && e.message) || e));
+  }
+}
 
 let timer = null;
 let ro = null;
@@ -346,6 +548,7 @@ function eventIcon(ev) {
     return "▶";
   }
   if (ev.type === "terminal") return ev.stream === "stderr" ? "✗" : "▸";
+  if (ev.type === "supplement") return "✉";
   const m = { starting: "●", running: "●", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", truncated: "…" };
   return m[ev.state] || "●";
 }
@@ -353,6 +556,7 @@ function eventColor(ev) {
   if (ev.type === "assistant") return "#7aa2f7";
   if (ev.type === "tool") return ev.ok === false ? "#f7768e" : ev.ok === true ? "#9ece6a" : "#e0af68";
   if (ev.type === "terminal") return ev.stream === "stderr" ? "#f7768e" : "#a9b1d6";
+  if (ev.type === "supplement") return "#7dcfff";
   const m = { starting: "#7aa2f7", running: "#9ece6a", success: "#9ece6a", failed: "#f7768e", aborted: "#e0af68", timeout: "#e0af68", truncated: "#565f89" };
   return m[ev.state] || "#565f89";
 }
@@ -370,12 +574,17 @@ function eventTitle(ev) {
     const label = ev.stream === "stderr" ? "stderr" : "终端输出";
     return t ? `${label} · ${t.slice(0, 48)}` : label;
   }
+  if (ev.type === "supplement") {
+    const t = (ev.text || "").replace(/\s+/g, " ").trim();
+    return t ? `补充 · ${t.slice(0, 48)}` : "补充指令";
+  }
   return lifecycleLabel(ev.state) + (ev.message ? " · " + ev.message : "");
 }
 function detailTitle(ev) {
   if (ev.type === "tool") return `工具 ${ev.tool}`;
   if (ev.type === "assistant") return "助手回复";
   if (ev.type === "terminal") return ev.stream === "stderr" ? "stderr" : "终端输出";
+  if (ev.type === "supplement") return "补充指令";
   return `生命周期 · ${lifecycleLabel(ev.state)}`;
 }
 
@@ -532,4 +741,38 @@ section { min-height: 0; }
 .event-position { font-size: 11px; color: #565f89; font-family: monospace; }
 
 .empty-detail { padding: 20px; text-align: center; color: #565f89; font-size: 13px; }
+
+/* ── 补充指令 composer（层级 3，detail-body 与 detail-bar 之间） ──
+   颜色语义：蓝=active 动作、琥珀=queued/pending、灰=terminal/copy；无卡片嵌套。 */
+.supplement-composer { flex-shrink: 0; border-top: 1px solid #2a2a4a; background: #16162e; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; max-height: 42%; overflow-y: auto; }
+.comp-row { display: flex; }
+.comp-textarea { flex: 1; width: 100%; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 4px; color: #c0caf5; font-size: 12px; font-family: inherit; line-height: 1.5; padding: 6px 8px; resize: vertical; min-height: 44px; }
+.comp-textarea:focus { outline: none; border-color: #3b82f6; }
+.comp-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.comp-btn { border: 1px solid transparent; border-radius: 4px; font-size: 12px; padding: 5px 12px; cursor: pointer; }
+.comp-btn:disabled { opacity: 0.45; cursor: default; }
+.comp-btn-blue { background: #2563eb; color: #fff; }
+.comp-btn-blue:hover:not(:disabled) { background: #3b82f6; }
+.comp-btn-amber { background: transparent; border-color: #e0af68; color: #e0af68; }
+.comp-btn-amber:hover:not(:disabled) { background: #e0af6822; }
+.comp-btn-amber-outline { background: transparent; border-color: #e0af68; color: #e0af68; }
+.comp-btn-amber-outline:hover:not(:disabled) { background: #e0af6822; }
+.comp-btn-gray { background: #4b5563; color: #e5e7eb; }
+.comp-btn-gray:hover:not(:disabled) { background: #6b7280; }
+.comp-btn-mini { padding: 2px 8px; font-size: 11px; flex-shrink: 0; }
+.comp-feedback { font-size: 11px; }
+.comp-feedback-ok { color: #9ece6a; }
+.comp-feedback-err { color: #f7768e; }
+.comp-terminal-note { font-size: 11px; color: #565f89; margin: 0; line-height: 1.5; }
+.comp-queue { display: flex; flex-direction: column; gap: 4px; }
+.comp-entry { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; border-left: 3px solid transparent; font-size: 12px; }
+.comp-entry-pending { border-left-color: #e0af68; background: #1a1a2e; }
+.comp-entry-handoff { border-left-color: #565f89; background: transparent; }
+.comp-entry-idx { flex-shrink: 0; font-size: 10px; color: #565f89; font-family: monospace; width: 14px; text-align: right; }
+.comp-entry-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c0caf5; }
+.comp-entry-handoff .comp-entry-text { color: #888; }
+.comp-entry-state { flex-shrink: 0; font-size: 10px; color: #565f89; }
+.comp-merge-row { justify-content: flex-end; }
+.comp-merge-count { font-size: 10px; color: #565f89; }
+.supplement-text { color: #7dcfff; }
 </style>

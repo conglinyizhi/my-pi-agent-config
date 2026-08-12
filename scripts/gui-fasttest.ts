@@ -32,6 +32,22 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
           task: "重构 lib/scheduler.ts：把调度循环与状态持久化拆成两个模块，保持现有 6 个测试全部通过且零回归，并处理并发 tick 的竞态",
           model: "test/test-model",
           status: "running",
+          inboxId: "batch-gui-w1",
+          supplements: [
+            {
+              id: "sup-gui-1",
+              text: "补充：重构前先跑一遍现有测试，确认基线全绿。",
+              state: "pending",
+              createdAt: "2025-07-29T12:00:12+08:00",
+            },
+            {
+              id: "sup-gui-2",
+              text: "补充：把 store.commit 的事件通知改成监听式，避免 poll 读旧快照。",
+              state: "handoff",
+              createdAt: "2025-07-29T12:00:13+08:00",
+              handedOffAt: "2025-07-29T12:00:14+08:00",
+            },
+          ],
           startedAt: "2025-07-29T12:00:00+08:00",
           pid: 1234,
           timeline: [
@@ -82,6 +98,12 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
               ok: true,
             },
             {
+              id: "supplement-1",
+              type: "supplement",
+              ts: "2025-07-29T12:00:09+08:00",
+              text: "补充：重构前先跑一遍现有测试，确认基线全绿。",
+            },
+            {
               id: "assistant-mid-1",
               type: "assistant",
               ts: "2025-07-29T12:00:10+08:00",
@@ -95,6 +117,21 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
           task: "为 subagents 三级浏览补全 readerEvents 边界测试，覆盖 output/stderr 合成记录并输出长摘要",
           model: "test/test-model",
           status: "success",
+          inboxId: "batch-gui-w2",
+          supplements: [
+            {
+              id: "sup-w2-1",
+              text: "补充：覆盖率报告需要包含 functions 与 branches 两列。",
+              state: "pending",
+              createdAt: "2025-07-29T12:00:03+08:00",
+            },
+            {
+              id: "sup-w2-2",
+              text: "补充：把长摘要 fixture 的断言也补进 README。",
+              state: "pending",
+              createdAt: "2025-07-29T12:00:04+08:00",
+            },
+          ],
           startedAt: "2025-07-29T12:00:01+08:00",
           finishedAt: "2025-07-29T12:00:10+08:00",
           output: "✓ 边界测试通过（node --test src/subagent-reader.test.js）\n  测试 9 个 / 通过 9 个\n  - readerEvents 保留 timeline 顺序并在末尾追加合成 terminal 记录\n  - output 与 stderr 生成互不碰撞的 synthetic-terminal-* ID\n  - 空字符串与纯空白不生成记录；非字符串值一律跳过\n  - 入参数组不被变异，对象引用保持不变\n  - adjacentEventId 越界/未知 ID/非法方向均返回 null\n✓ 覆盖率：statements 100%, functions 100%, branches 100%, lines 100%\n✓ 无回归：全量单测 42/42 通过",

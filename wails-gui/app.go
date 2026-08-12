@@ -19,6 +19,10 @@ type App struct {
 	windowName   string
 	requestFile  string
 	responseFile string
+	// supplementRoot 补充队列根目录；空 -> ~/.pi/subagent-supplements（测试注入）。
+	supplementRoot string
+	// statusPath subagent 状态快照路径；空 -> ~/.pi/subagent-status.json（测试注入）。
+	statusPath string
 }
 
 func NewApp(windowName, requestFile, responseFile string) *App {
@@ -71,15 +75,54 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 	return base, nil
 }
 
-// GetSubagentStatus 读主进程写出的实时快照（不存在返回 "{}"）
+// GetSubagentStatus 读主进程写出的实时快照（不存在返回 "{}"），并对每个带有效
+// inboxId 的 worker 富化 supplements 数组（来自其补充队列文件）。
+// 队列缺失/损坏时 supplements 降级为 []，绝不把整个 status 吞成 {}。
 func (a *App) GetSubagentStatus() string {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".pi", "subagent-status.json")
-	data, err := os.ReadFile(p)
+	data, err := os.ReadFile(a.statusSnapshotPath())
 	if err != nil {
 		return "{}"
 	}
-	return string(data)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return string(data) // 损坏的 status：原样透传（与旧行为一致，GUI 自行容错）
+	}
+	rawWorkers, ok := doc["workers"]
+	if !ok {
+		return string(data)
+	}
+	var workers []map[string]json.RawMessage
+	if err := json.Unmarshal(rawWorkers, &workers); err != nil {
+		return string(data)
+	}
+	for i := range workers {
+		var inboxID string
+		if raw, ok := workers[i]["inboxId"]; ok {
+			_ = json.Unmarshal(raw, &inboxID)
+		}
+		if !isValidInboxID(inboxID) {
+			continue // 无有效 inboxId 的 worker 不加 supplements 键，UI 照常工作
+		}
+		supplements := []SupplementEntry{}
+		if inbox, err := supplementReadInbox(a.supplementRootDir(), inboxID); err == nil {
+			supplements = inbox.Entries
+		}
+		enc, err := json.Marshal(supplements)
+		if err != nil {
+			continue
+		}
+		workers[i]["supplements"] = enc
+	}
+	encWorkers, err := json.Marshal(workers)
+	if err != nil {
+		return string(data)
+	}
+	doc["workers"] = encWorkers
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return string(data)
+	}
+	return string(out)
 }
 
 // SaveSubagentFeedback 由 GUI 开关调用，写反馈模式状态
