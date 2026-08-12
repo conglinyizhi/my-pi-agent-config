@@ -134,7 +134,7 @@
       </div>
 
       <!-- 补充指令 composer：active（蓝）/ terminal（灰）两种模式，队列行在下方 -->
-      <section v-if="selected && selected.inboxId" class="supplement-composer" data-name="supplement-composer">
+      <section v-if="selected && (selected.inboxId || selectedWorkerTerminal)" class="supplement-composer" data-name="supplement-composer">
         <template v-if="selectedWorkerActive">
           <div class="comp-row">
             <textarea
@@ -253,6 +253,11 @@ let feedbackTimer = null;
 function isActiveStatus(s) {
   return s === "starting" || s === "running";
 }
+
+const selectedWorkerTerminal = computed(() => {
+  const w = selected.value;
+  return !!w && !isActiveStatus(w.status);
+});
 
 // worker active：生命周期 active 且带有效 inboxId 才可 enqueue。
 const selectedWorkerActive = computed(() => {
