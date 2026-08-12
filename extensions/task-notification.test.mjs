@@ -50,4 +50,27 @@ describe("task-notification extension", () => {
       "agent_end handler should send a notification",
     );
   });
+
+  it("suppresses notifications for messages starting with Error:", () => {
+    assert(
+      source.includes('startsWith("Error:")'),
+      "expected an Error: prefix check for error suppression",
+    );
+    // 正常完成路径：notifyTaskComplete 之前必须经过 isErrorText 过滤
+    const sendNotificationBlock = source.split("async function sendNotification")[1]?.split("// 监听 agent_start")[0] ?? "";
+    const taskCompleteCall = sendNotificationBlock.indexOf("notifyTaskComplete");
+    const errorCheckInSend = sendNotificationBlock.indexOf("isErrorText");
+    assert(
+      errorCheckInSend !== -1 && errorCheckInSend < taskCompleteCall,
+      "sendNotification must filter Error: summaries before notifyTaskComplete",
+    );
+    // 延迟通知路径：notifyBrief 前同样过滤
+    const briefCall = source.indexOf("notifyBrief(deferredSummary)");
+    assert(briefCall !== -1, "expected a deferred notifyBrief call");
+    const errorCheckInBrief = source.lastIndexOf("isErrorText(deferredSummary)");
+    assert(
+      errorCheckInBrief !== -1 && errorCheckInBrief < briefCall,
+      "deferred notifyBrief must filter Error: summaries",
+    );
+  });
 });

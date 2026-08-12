@@ -7,6 +7,14 @@ import { isRetryableError } from "../../lib/error-utils";
 import { findLastAssistant, summarizeLastAssistantMessage } from "../../lib/message-utils";
 import { checkNotificationSupport, notifyBrief, notifyTaskComplete, testNotificationSound } from "../../lib/notify-send";
 
+/**
+ * 错误文本不通知：消息以 `Error:` 开头时视为错误，不弹桌面通知。
+ * 先去除前导空白再判断，避免摘要前带空格时漏判。
+ */
+function isErrorText(text: string): boolean {
+  return text.trimStart().startsWith("Error:");
+}
+
 export default async function taskNotification(pi: ExtensionAPI) {
   // 初始化时检查通知指令是否可用，不满足时提示用户如何安装
   const support = await checkNotificationSupport();
@@ -39,6 +47,8 @@ export default async function taskNotification(pi: ExtensionAPI) {
     if (!notificationReady) return;
     try {
       const summary = summarizeLastAssistantMessage(messages);
+      // 消息以 Error: 开头视为错误，不提示
+      if (isErrorText(summary)) return;
       await notifyTaskComplete(summary);
     } catch {
       // 通知发送失败不影响主流程
@@ -91,7 +101,7 @@ export default async function taskNotification(pi: ExtensionAPI) {
           deferredSummary = "";
           return;
         }
-        if (deferredSummary) {
+        if (deferredSummary && !isErrorText(deferredSummary)) {
           try {
             await notifyBrief(deferredSummary);
           } catch {
