@@ -41,3 +41,6 @@ permission-gate-reasons.json
 
 # SDD workspace
 .superpowers/
+# 独立工程（不属于 pi 配置，剥离）
+dsh-notify/
+minicpm5-deploy/
