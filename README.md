@@ -82,13 +82,13 @@ pi
 
 自己写的 skill（全部手动注入）：
 
-**data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。
+**data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。已移至 `~/.agents/skills/data-name`（跨 agent 通用位置）。
 
 **lazycat-dev** — 懒猫微服那套开发流程，打包、部署、认证全涵盖。
 
 **which-pi-docs** — pi 自身的文档导航。问 pi 本身的问题时会自动翻。
 
-**git-commit** — 分析 Git 差异并生成符合约定式提交规范的中文 commit message。
+**git-commit** — 分析 Git 差异并生成符合约定式提交规范的中文 commit message。已移至 `~/.agents/skills/git-commit`（跨 agent 通用位置，含 pre-commit-check.ts 等辅助文件）。
 
 **skill-kit** — 技能工具箱，导入外部技能仓库、从零创建新技能。
 

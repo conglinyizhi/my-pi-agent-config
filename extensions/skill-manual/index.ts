@@ -14,11 +14,14 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, existsSync, readdirSync, type Dirent } from "node:fs";
-import { join, dirname, relative } from "node:path";
+import { join, dirname, relative, basename } from "node:path";
+import { homedir } from "node:os";
 import { parse as parseToml } from "smol-toml";
 
 const AGENT_DIR = getAgentDir();
 const SKILLS_DIR = join(AGENT_DIR, "skills");
+/** 跨 agent 通用技能位置（git-commit/data-name 等已移入） */
+const AGENTS_SKILLS_DIR = join(homedir(), ".agents", "skills");
 const REPO_TOML_PATH = join(AGENT_DIR, "skill-repo", "repo.toml");
 
 // ---------------------------------------------------------------------------
@@ -58,11 +61,11 @@ export interface ManualSkill {
 	manualOnly: boolean;
 }
 
-/** 递归扫描 skills/ 下所有 SKILL.md（含软链接；自写技能在 skills/clyzhi/<name>/ 二级目录） */
+/** 递归扫描 skills/ 与 ~/.agents/skills/ 下所有 SKILL.md（含软链接；自写技能在二级目录） */
 function scanSkillDirs(): ManualSkill[] {
 	const out: ManualSkill[] = [];
-	if (!existsSync(SKILLS_DIR)) return out;
 	const walk = (dir: string, depth: number): void => {
+		if (!existsSync(dir)) return;
 		let entries: Dirent[];
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
@@ -92,6 +95,7 @@ function scanSkillDirs(): ManualSkill[] {
 		}
 	};
 	walk(SKILLS_DIR, 0);
+	walk(AGENTS_SKILLS_DIR, 0);
 	return out;
 }
 
@@ -125,15 +129,16 @@ export function buildManualSkillList(): ManualSkill[] {
 	}));
 }
 
-/** 按名字（或路径/别名子串）找技能 */
+/** 按名字（或路径子串）找技能；子串命中时优先最短名（更贴近用户意图） */
 export function findSkill(list: ManualSkill[], name: string): ManualSkill | undefined {
 	const target = name.trim().toLowerCase();
-	return (
-		list.find((s) => s.name === target) ??
-		list.find((s) => s.name.toLowerCase() === target) ??
-		list.find((s) => s.name.toLowerCase().includes(target)) ??
-		list.find((s) => s.path.toLowerCase().includes(target))
-	);
+	const exact = list.find((s) => s.name.toLowerCase() === target) ?? list.find((s) => s.name === target);
+	if (exact) return exact;
+	const bySubstring = list
+		.filter((s) => s.name.toLowerCase().includes(target))
+		.sort((a, b) => a.name.length - b.name.length)[0];
+	if (bySubstring) return bySubstring;
+	return list.find((s) => s.path.toLowerCase().includes(target));
 }
 
 /** 读取 SKILL.md 正文（frontmatter 剥离），附加说明头 */
