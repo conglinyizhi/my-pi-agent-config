@@ -10,7 +10,7 @@ cd ~/.pi/agent && pnpm install
 pi
 ```
 
-第一次启动，`skill-kit` 会自动把第三方 skill 全拉下来，不用你操心。
+第一次启动，`skill-boot` 会自动把第三方 skill 全拉下来（clone 进 skill-repo，软链接到 skill-vault），不用你操心。
 
 ## 里面有什么
 
@@ -18,7 +18,7 @@ pi
 
 **for-grok-4-5** — 「强大、实惠、但疯跑的孩子」。grok-4.5 两大顽疾补丁：①空正文自动续跑 ②连续 bash true 空转识别为正常收工。续跑提示还会引导 grok 用 `echo job done already` 主动报完成。
 
-**skill-kit** — 技能管理一体化工具箱。启动时自动同步技能仓库（clone + 软链接），/skill-manager 开关技能，同时负责系统提示词过滤和技能预检唤醒。换机器的底气全靠它。
+**skill-boot** — 技能引导与管理（skill-kit + skill-manual 合并）。启动时同步技能仓库（clone → skill-vault 软链接，pi 不扫描、启动更快）；`/skill-boot <名>` 引导注入指定 SKILL.md、`/skill-boot:list` TUI 列表选择、`/skill-manager` 交互式开关；同时负责系统提示词过滤。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 
@@ -56,15 +56,13 @@ pi
 
 **editor-margin** — 调编辑器边距，虽然小但舒服。
 
-**prompt-sections** — DSH 风格的有序段系统提示词组装（A/B 测试，对照 v0.1.0 tag）。`/prompt-sections on|off|status` 开关，`/prompt-sections-preview` 预览装配结果。plan-mode / skill-kit / tool-checker / trident-routing 母港已迁移为段（order 约定：-100 身份 / 0 默认 / 50 策略 / 100-199 工具指导）。详见 `extensions/prompt-sections/README.md`。
+**prompt-sections** — DSH 风格的有序段系统提示词组装（A/B 测试，对照 v0.1.0 tag）。`/prompt-sections on|off|status` 开关，`/prompt-sections-preview` 预览装配结果。plan-mode / skill-boot(原 skill-kit) / tool-checker / trident-routing 母港已迁移为段（order 约定：-100 身份 / 0 默认 / 50 策略 / 100-199 工具指导）。详见 `extensions/prompt-sections/README.md`。
 
 **dsh-tools** — DSH 工具移植第一批：`todo_write`（全量快照任务列表，appendEntry 持久化，`/dsh-todos` 查看）与 `str_replace_editor`（view/create/str_replace/insert 四命令行号编辑工作流）。开关 `dshTodo` / `dshStrReplaceEditor`。
 
 **dsh-goal** — DSH 事件溯源持久化目标 + 自动续行：`get_goal / create_goal / update_goal` 工具 + `/dsh-goal` 命令，会话日志折叠恢复，激活位进程本地不持久化。开关 `dshGoal`（默认关，与旧 `/goal` 扩展 A/B 共存）。
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
-
-**skill-manual** — 手动注入技能：TUI 常驻一行提示；`/skill-read:list` 弹出全屏技能列表（输入过滤 + ↑↓/jk 滚动，Enter 注入）；`/skill-read <名>` 直接注入；配合下方 Skill 手动注入策略。
 
 ### 暂时停用插件
 
@@ -81,7 +79,7 @@ pi
 > 需要时主动注入：`/skill:name`（pi 内建，加载并执行）或 `/skill-read <名>`
 > （把 SKILL.md 全文注入会话上下文）。TUI 常驻一行提示当前手动候选数。
 
-自己写的 skill（全部手动注入）：
+自己写的 skill（除 which-pi-docs 外全部在 `skill-vault/clyzhi/`，手动引导注入）：
 
 **data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。已移至 `~/.agents/skills/data-name`（跨 agent 通用位置）。
 
