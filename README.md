@@ -80,7 +80,8 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - `settings.tracked.json` → `"shellPath": "~/.pi/agent/scripts/sandbox-shell.mjs"`（启用；删除即关闭）
 - `"sandboxExempt": ["git push", "npm publish"]` —— 前缀命中的命令**完全权限开放**（不沙箱，用户显式信任）
 - 环境变量 `LANDLOCK_RUN` 可覆盖 landlock-run 路径；缺失时 **fail-closed**（拒绝执行，绝不裸跑）
-- 仅 Linux（Landlock 内核机制）；macOS/Windows 不适用
+- `PI_SANDBOX_DISABLE=1` 强制透传（临时关闭沙箱/测试的逃生门）
+- **仅 Linux**：Go 源码带 `//go:build linux`，非 Linux 平台编译产出 stub（运行报错 exit 125，不静默降级）；wrapper 在非 Linux 平台直接透传 bash（沙箱"不适用"而非"不可用"，不会挂掉 pi 的 bash）；macOS/Windows 如需沙箱是另一套机制（Seatbelt/ACL），不在本实现范围
 
 ### Skill
 

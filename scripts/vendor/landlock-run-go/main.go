@@ -1,3 +1,5 @@
+//go:build linux
+
 // landlock-run — Go 版 Landlock 沙箱启动器（self-restrict-then-exec）
 //
 // 语义逐行对照 deepseek-harness 的 C 版

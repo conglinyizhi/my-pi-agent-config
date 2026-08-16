@@ -56,13 +56,20 @@ if (args[0] !== "-c" || args.length < 2) {
 }
 const command = args.slice(1).join(" ");
 
-// 1. 豁免：settings.sandboxExempt 前缀命中 → 完全权限开放（用户显式配置，信任该命令）
+// 1. 平台守卫：Landlock 仅 Linux（内核机制）。非 Linux → 直接透传 bash——
+//    沙箱在此平台"不适用"而非"不可用"，绝不能 fail-closed 挂掉 pi 的所有 bash。
+//    逃生门：PI_SANDBOX_DISABLE=1 强制透传（临时关闭沙箱 / 测试）。
+if (process.platform !== "linux" || process.env.PI_SANDBOX_DISABLE === "1") {
+  execBash(command);
+}
+
+// 2. 豁免：settings.sandboxExempt 前缀命中 → 完全权限开放（用户显式配置，信任该命令）
 const exempt = readSettings().sandboxExempt;
 if (Array.isArray(exempt) && exempt.some((prefix) => command.trimStart().startsWith(prefix))) {
   execBash(command);
 }
 
-// 2. fail-closed：landlock-run 必须存在
+// 3. fail-closed：landlock-run 必须存在
 const launcher = process.env.LANDLOCK_RUN || VENDORED_LANDLOCK;
 if (!existsSync(launcher)) {
   console.error(
@@ -71,5 +78,5 @@ if (!existsSync(launcher)) {
   process.exit(FAIL_EXIT);
 }
 
-// 3. 沙箱执行
+// 4. 沙箱执行
 execSandboxed(command, launcher);
