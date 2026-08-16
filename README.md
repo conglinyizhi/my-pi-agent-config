@@ -56,6 +56,14 @@ pi
 
 **editor-margin** — 调编辑器边距，虽然小但舒服。
 
+**prompt-sections** — DSH 风格的有序段系统提示词组装（A/B 测试，对照 v0.1.0 tag）。`/prompt-sections on|off|status` 开关，`/prompt-sections-preview` 预览装配结果。plan-mode / skill-kit / tool-checker / trident-routing 母港已迁移为段（order 约定：-100 身份 / 0 默认 / 50 策略 / 100-199 工具指导）。详见 `extensions/prompt-sections/README.md`。
+
+**dsh-tools** — DSH 工具移植第一批：`todo_write`（全量快照任务列表，appendEntry 持久化，`/dsh-todos` 查看）与 `str_replace_editor`（view/create/str_replace/insert 四命令行号编辑工作流）。开关 `dshTodo` / `dshStrReplaceEditor`。
+
+**dsh-goal** — DSH 事件溯源持久化目标 + 自动续行：`get_goal / create_goal / update_goal` 工具 + `/dsh-goal` 命令，会话日志折叠恢复，激活位进程本地不持久化。开关 `dshGoal`（默认关，与旧 `/goal` 扩展 A/B 共存）。
+
+**dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
+
 ### 暂时停用插件
 
 **opencode-models** — `/model-more` 切换到从 opencode 导入的模型列表。
