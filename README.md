@@ -48,6 +48,8 @@ pi
 
 **sysinfo** — `/sysinfo` 一键收集系统信息发给 LLM。
 
+**sandbox-guard** — 敏感路径黑名单防护（恶意 skill 防护）：初始化/reload 时读取 `sandbox-blacklist.json`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截 read/write/edit/bash 触碰黑名单路径。新增黑名单模式直接编辑该文件，`/reload` 生效。
+
 **talk-sleep** — `/talk-sleep [备注]` 暂存当前对话，换台电脑 `pi --resume` 继续聊。
 
 **todo-scanner** — 扫描项目中的 TODO 注释，`/todos` 或 Ctrl+Shift+T 查看。
