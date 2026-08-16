@@ -24,6 +24,15 @@
 
 **什么时候用**：部署新版本后用户仍看到旧页面、需要无感热更新
 
+### 热更新后门：本机编译 → 推送运行中容器
+
+> 部署一次后，本机 `go build` → POST `/api/_dev/update` 推送二进制 + 前端到运行中容器 → 自动重启。
+> 用 **Go build tag 条件编译**（`-tags devupdate`）隔离后门：调试包有、release 构建自动剔除，无需改代码。
+
+- **完整方案 + 代码 + 踩坑**：[hot-update-backdoor.md](./hot-update-backdoor.md)（devupdate.go / stub / run.sh supervisor / Dockerfile.dev / manifest public_path / hot-update.sh 一键脚本）
+
+**什么时候用**：迭代频繁、`project deploy` 云端 build-pack 太慢（分钟级）；想要"部署一次、之后纯本机编译"的节奏；前端后端一起热推
+
 ---
 
 ## 调试

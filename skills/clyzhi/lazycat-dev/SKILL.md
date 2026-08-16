@@ -42,3 +42,6 @@ curl -s https://developer.lazycat.cloud/lzc-cli.md
 ## 一些历史项目的经验
 
 考虑到这部分内容比较多，而且并非每次调用都会用的到，就将这部分内容拆分出来了，如需阅读请参阅技能包下 archive/index.md
+
+> 热更新后门（本机编译 → 推送运行中容器，build tag 条件编译）详见 archive/hot-update-backdoor.md，
+> 当用户提到"热更新"、"不想云端编译"、"迭代太慢"时优先参考。
