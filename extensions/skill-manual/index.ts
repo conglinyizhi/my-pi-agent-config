@@ -212,14 +212,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		refresh();
-		// TUI 常驻区域：已安装但不可自动注入的候选（手动注入清单）
+		// TUI 常驻区域：一行提示（完整清单按需查询：/skill-read 无参数 或 /skill-manual-status）
 		const manual = list.filter((s) => s.manualOnly);
 		if (manual.length === 0) {
 			ctx.ui.setWidget("skill-manual", undefined);
 			return;
 		}
-		const lines = manual.map((s) => `${s.name}${s.description ? ` — ${s.description.slice(0, 60)}` : ""}`);
-		ctx.ui.setWidget("skill-manual", ["🧩 手动注入技能（/skill-read <名> 注入）", ...lines]);
+		ctx.ui.setWidget("skill-manual", [`🧩 ${manual.length} 个技能待手动注入 · /skill-read <名>`]);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
