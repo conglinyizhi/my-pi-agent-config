@@ -14,7 +14,7 @@
     "maxRetries": 10,
     "baseDelayMs": 1000
   },
-  "theme": "dark",
+  "sandboxExempt": [],
   "shellPath": "~/.pi/agent/scripts/sandbox-shell.mjs",
-  "sandboxExempt": []
+  "theme": "dark"
 }

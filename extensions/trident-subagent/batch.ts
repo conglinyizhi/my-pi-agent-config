@@ -90,6 +90,10 @@ export interface RunBatchOptions {
    * 在 spawn 之前统一校验并预创建 inbox；同一 batch 内每个 worker 只 create 一次。
    */
   workerInboxIds: string[];
+  /** 沙箱可写根（限制 worker 只写该目录，工程其余只读） */
+  sandboxDir?: string;
+  /** 沙箱只读模式（不写 workspace） */
+  readonly?: boolean;
 }
 
 /**
@@ -149,6 +153,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           tools: opts.tools,
           extraExtensions: opts.extraExtensions,
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
+          sandboxDir: opts.sandboxDir,
+          readonly: opts.readonly,
           inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
           timeout: opts.timeout ?? 600,
           onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),

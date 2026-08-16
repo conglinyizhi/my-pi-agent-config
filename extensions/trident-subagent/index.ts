@@ -65,6 +65,17 @@ export default function (pi: ExtensionAPI) {
         Type.String({ description: "单个完整任务说明" }),
         Type.Array(Type.String(), { description: "多个完整任务说明，并行执行" }),
       ]),
+      sandbox_dir: Type.Optional(
+        Type.String({
+          description:
+            "沙箱限制：worker 只能写该绝对路径（及其子目录），工程其余部分只读。用于 worktree/隔离目录场景——例如只允许 worker 改动某个子目录，防止碰其他文件。",
+        }),
+      ),
+      readonly: Type.Optional(
+        Type.Boolean({
+          description: "沙箱只读模式：worker 不写任何 workspace（仅 /tmp 可写临时文件）。",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const tasks: string[] = Array.isArray(params.task) ? params.task : [params.task];
@@ -104,6 +115,8 @@ export default function (pi: ExtensionAPI) {
       try {
         results = await runBatch(tasks, {
           cwd: ctx.cwd,
+          sandboxDir: params.sandbox_dir,
+          readonly: params.readonly,
           model: workerModel,
           signal,
           tools: toolCfg.tools,

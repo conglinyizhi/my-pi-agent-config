@@ -28,7 +28,7 @@ pi
 
 **session-browse** — 跨 workdir 浏览与恢复历史 session。`/sessions` 命令列出所有对话，选中即切过去。
 
-**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel / chain 三种模式。
+**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel / chain 三种模式。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
 
 **permission-gate** 和 **confirm-destructive** — 一个拦危险命令（rm -rf 之类），一个在切换/分叉 session 前提醒，防手滑。
 

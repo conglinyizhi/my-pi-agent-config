@@ -112,13 +112,23 @@ const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-suppl
  */
 export function buildSubagentEnv(
   base: NodeJS.ProcessEnv,
-  opts: { inboxId?: string; taskId?: string },
+  opts: {
+    inboxId?: string;
+    taskId?: string;
+    /** 沙箱可写根（限制 worker 只能写指定目录，工程其余只读；透传 PI_SANDBOX_RW） */
+    sandboxDir?: string;
+    /** 沙箱只读模式（不写 workspace；透传 PI_SANDBOX_READONLY） */
+    readonly?: boolean;
+  },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, PI_SUBAGENT: "1" };
   if (opts.taskId) env.PI_TASK_ID = opts.taskId;
   if (opts.inboxId && isValidInboxId(opts.inboxId)) {
     env.PI_SUBAGENT_INBOX = opts.inboxId;
   }
+  // 沙箱细粒度限制（wrapper sandbox-shell.mjs 消费；仅 Linux/darwin 沙箱平台生效）
+  if (opts.sandboxDir) env.PI_SANDBOX_RW = opts.sandboxDir;
+  if (opts.readonly) env.PI_SANDBOX_READONLY = "1";
   return env;
 }
 
@@ -252,6 +262,10 @@ export interface RunSubagentOptions {
   extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
   /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
   inboxId?: string;
+  /** 沙箱可写根（限制本 worker 只写该目录，其余只读） */
+  sandboxDir?: string;
+  /** 沙箱只读模式 */
+  readonly?: boolean;
   onUpdate?: (result: SubagentResult) => void;
   onSpawn?: (pid: number) => void; // 子进程 PID，用于外部 kill
   /** 测试注入：替换单次执行实现（仅重试循环内部使用） */
@@ -329,7 +343,12 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       const exitCode = await new Promise<number>((resolveExit) => {
         // 子进程 env 独立构造：不污染 process.env；有效 inbox 才注入 PI_SUBAGENT_INBOX
-        const env = buildSubagentEnv(process.env, { inboxId: opts.inboxId, taskId: opts.taskId });
+        const env = buildSubagentEnv(process.env, {
+          inboxId: opts.inboxId,
+          taskId: opts.taskId,
+          sandboxDir: opts.sandboxDir,
+          readonly: opts.readonly,
+        });
 
         const proc = spawn(invocation.command, invocation.args, {
           cwd,
