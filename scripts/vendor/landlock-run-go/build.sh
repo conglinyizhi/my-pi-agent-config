@@ -17,4 +17,7 @@ CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
   -trimpath -ldflags="-s -w" -o "$TARGET" .
 
 echo "==> done: $(ls -lh "$TARGET" | awk '{print $5, $9}')"
-"$TARGET" --probe
+# probe 只在产物平台 == 本机平台时可运行（交叉编译产物不能在本机跑）
+if [ "$GOOS" = "$(go env GOOS)" ]; then
+  "$TARGET" --probe
+fi

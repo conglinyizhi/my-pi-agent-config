@@ -59,7 +59,7 @@ const command = args.slice(1).join(" ");
 // 1. 平台守卫：Landlock 仅 Linux（内核机制）。非 Linux → 直接透传 bash——
 //    沙箱在此平台"不适用"而非"不可用"，绝不能 fail-closed 挂掉 pi 的所有 bash。
 //    逃生门：PI_SANDBOX_DISABLE=1 强制透传（临时关闭沙箱 / 测试）。
-if (process.platform !== "linux" || process.env.PI_SANDBOX_DISABLE === "1") {
+if ((process.platform !== "linux" && process.platform !== "darwin") || process.env.PI_SANDBOX_DISABLE === "1") {
   execBash(command);
 }
 
