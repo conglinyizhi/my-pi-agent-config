@@ -70,6 +70,17 @@ pi
 
 停用原因：因为不再使用 opencode，也没有 opencode go 套餐，唤醒 opencode 的流程已经不再必要
 
+### 沙箱（bash 内核隔离）
+
+**landlock-shell** — pi 的 bash 工具默认经 `scripts/sandbox-shell.mjs` 包装进
+Landlock 内核文件系统沙箱（vendored `scripts/vendor/landlock-run`）：全系统只读 +
+工作区/`/tmp` 可写，写工作区外由内核 EROFS 拒绝，无需逐条审批。配置：
+
+- `settings.tracked.json` → `"shellPath": "~/.pi/agent/scripts/sandbox-shell.mjs"`（启用；删除即关闭）
+- `"sandboxExempt": ["git push", "npm publish"]` —— 前缀命中的命令**完全权限开放**（不沙箱，用户显式信任）
+- 环境变量 `LANDLOCK_RUN` 可覆盖 landlock-run 路径；缺失时 **fail-closed**（拒绝执行，绝不裸跑）
+- 仅 Linux（Landlock 内核机制）；macOS/Windows 不适用
+
 ### Skill
 
 > **手动注入策略（2026-08-16）**：除 `data-name` / `git-commit` / `which-pi-docs`
