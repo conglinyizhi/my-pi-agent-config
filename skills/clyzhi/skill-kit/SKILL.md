@@ -1,6 +1,7 @@
 ---
 name: skill-kit
 description: 技能工具箱。当需要新建技能、从外部导入技能、或管理技能仓库时调用。
+disable-model-invocation: true
 ---
 
 # 技能工具箱

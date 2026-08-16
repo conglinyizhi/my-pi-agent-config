@@ -1,6 +1,7 @@
 ---
 name: gui-standards
 description: pi 扩展 GUI 开发规范——Wails 单二进制 + windowName 路由 + 文件 JSON 协议（2026 迁移后）
+disable-model-invocation: true
 ---
 
 # GUI 开发规范（Wails）

@@ -28,6 +28,7 @@ description = "以道驭术 — 信任代替恐惧，内在动力代替 PUA"
 tags = ["huaxia", "mindset"]
 trigger = "连续失败2次以上、想放弃、推锅给环境、在同一个思路上反复微调参数、凭记忆猜而不搜索验证、修完就停等指示——任何被动/逃避/敷衍信号"
 
+disable_model_invocation = true
 [[skills]]
 name = "tiangong"
 source = "https://github.com/wuji-labs/tiangong"
@@ -35,6 +36,7 @@ description = "天工开物 — 东方审美与工艺"
 tags = ["huaxia", "design"]
 trigger = "做UI/UX/界面/海报/品牌视觉设计、纠结配色排版、设计评审、或抱怨某个设计「没灵魂」「不好看」「差点意思」"
 
+disable_model_invocation = true
 [[skills]]
 name = "bibuzaohua"
 source = "https://github.com/wuji-labs/bibuzaohua"
@@ -42,6 +44,7 @@ description = "笔补造化 — 诗经楚辞，文学灵魂"
 tags = ["huaxia", "writing"]
 trigger = "写有文学审美要求的中文文本——诗词歌赋对联、有意境有文采的文案/标题/命名、或觉得现有文字「太干」「太直白」「没味道」想润色"
 
+disable_model_invocation = true
 [[skills]]
 name = "paoding-jieniu"
 source = "https://github.com/wuji-labs/paoding-jieniu"
@@ -49,6 +52,7 @@ description = "庖丁解牛 — 庄子，顺纹理拆解复杂系统"
 tags = ["huaxia", "decomposition"]
 trigger = "面对庞大复杂的代码库/系统需要拆解、重构、梳理模块边界、定位深层bug——说「太复杂」「无从下手」「代码太乱」「看不懂」「从哪开始」"
 
+disable_model_invocation = true
 [[skills]]
 name = "moonbit-skills"
 source = "git@github.com:moonbitlang/skills.git"
@@ -67,18 +71,21 @@ link_targets = [
   "skills/ocaml2moonbit-migration",
 ]
 
+disable_model_invocation = true
 [[skills]]
 name = "fount-char"
 source = "https://github.com/conglinyizhi/fount-char-skill"
 description = "fount 角色卡创建助手 — 模板、工具范例与交互式角色创建向导"
 tags = ["fount", "character"]
 
+disable_model_invocation = true
 [[skills]]
 name = "clyzhi-moonwell-spring"
 source = "https://github.com/conglinyizhi/clyzhi-moonwell-spring"
 description = "MoonBit官方技能热修复层·月井之春。必须与官方 moonbit-*技能同时加载"
 tags = ["moonbit", "hotfix"]
 
+disable_model_invocation = true
 [[skills]]
 name = "superpowers"
 source = "https://github.com/obra/superpowers.git"
@@ -102,9 +109,12 @@ link_targets = [
   "skills/writing-skills",
 ]
 
+disable_model_invocation = true
 [[skills]]
 name = "creating-aur-packages-skill"
 source = "https://github.com/conglinyizhi/creating-aur-packages-skill"
 description = "手动创建/更新/重建 AUR 包 — makepkg 手工流程，上游校验与安全审计（供应链不信任场景）"
 tags = ["arch", "aur", "security"]
 trigger = "手动创建/更新/重建 AUR 包、makepkg 手工构建、AUR 投毒后不信任维护者、需要审计 PKGBUILD 或安装脚本"
+
+disable_model_invocation = true

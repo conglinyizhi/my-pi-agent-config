@@ -64,6 +64,8 @@ pi
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
 
+**skill-manual** — 手动注入技能：TUI 常驻区域展示「已安装但不可自动注入」的技能清单，`/skill-read <名>` 把 SKILL.md 全文注入会话上下文（配合下方 Skill 手动注入策略）。
+
 ### 暂时停用插件
 
 **opencode-models** — `/model-more` 切换到从 opencode 导入的模型列表。
@@ -72,7 +74,13 @@ pi
 
 ### Skill
 
-自己写的五个 skill：
+> **手动注入策略（2026-08-16）**：所有技能已标记 `disable-model-invocation: true`
+> （自写 skill 在 SKILL.md frontmatter；第三方在 skill-repo/repo.toml 的
+> `disable_model_invocation`），不再出现在系统提示词的 `<available_skills>` 目录，
+> 模型不会自动读取。需要时主动注入：`/skill:name`（pi 内建，加载并执行）或
+> `/skill-read <名>`（把 SKILL.md 全文注入会话上下文）。TUI 常驻区域会列出候选清单。
+
+自己写的 skill（全部手动注入）：
 
 **data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。
 

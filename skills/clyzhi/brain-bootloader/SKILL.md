@@ -1,6 +1,7 @@
 ---
 name: brain-bootloader
 description: 动手前思维预检——重定义目标、扫假设、补信息差、替代方案、对抗复核；两难时先点名在争什么，两边推到头并标转折点。复杂/模糊任务用，简单任务跳过。不替代 brainstorming。
+disable-model-invocation: true
 ---
 
 # Brain Bootloader — 思维预检

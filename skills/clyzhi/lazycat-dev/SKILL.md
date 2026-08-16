@@ -1,6 +1,7 @@
 ---
 name: lazycat-dev
 description: 懒猫微服开发技能，这个技能不用自己启动，用户会在需要的时候唤醒这个技能在上下文中
+disable-model-invocation: true
 ---
 
 懒猫开发者文档以静态 Markdown 文件形式托管在官网，可通过 curl 直接获取。

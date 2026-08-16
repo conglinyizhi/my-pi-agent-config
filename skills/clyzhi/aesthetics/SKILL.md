@@ -1,6 +1,7 @@
 ---
 name: aesthetics
 description: 界面与空间美学薄入口——配色排版/设计评审看整体气质与层次；画面太平太满、流程缺纵深时补空间与留白。本地合并 tiangong 用法 + zhichi 空间核；完整典源可读上游 tiangong。
+disable-model-invocation: true
 ---
 
 # Aesthetics — 界面与空间

@@ -1,6 +1,7 @@
 ---
 name: trident
 description: 三叉戟多Agent集群——OC Agent 人格与任务路由
+disable-model-invocation: true
 ---
 
 # 三叉戟 · OC Agent

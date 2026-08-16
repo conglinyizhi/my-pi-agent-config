@@ -1,6 +1,7 @@
 ---
 name: data-name
 description: 为前端页面重要交互元素标注 data-name 属性，配合 Tampermonkey 用户脚本实现 AI 精准元素定位。用于前端开发、页面调试、bug 复现、UI 自动化场景
+disable-model-invocation: true
 ---
 
 # data-name 前端元素定位标注

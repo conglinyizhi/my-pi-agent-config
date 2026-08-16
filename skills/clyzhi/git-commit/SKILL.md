@@ -1,6 +1,7 @@
 ---
 name: git-commit
 description: 分析 Git 差异并生成符合《约定式提交》规范的中文 commit message，然后发起提交。当用户说“提交”、“commit”、“帮我提交”时使用。
+disable-model-invocation: true
 ---
 
 ## 触发条件
