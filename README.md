@@ -64,7 +64,7 @@ pi
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
 
-**skill-manual** — 手动注入技能：TUI 常驻一行提示（`/skill-read <名>` 注入 SKILL.md 全文，`/skill-read` 无参数列出全部技能，配合下方 Skill 手动注入策略）。
+**skill-manual** — 手动注入技能：TUI 常驻一行提示；`/skill-read:list` 弹出全屏技能列表（输入过滤 + ↑↓/jk 滚动，Enter 注入）；`/skill-read <名>` 直接注入；配合下方 Skill 手动注入策略。
 
 ### 暂时停用插件
 

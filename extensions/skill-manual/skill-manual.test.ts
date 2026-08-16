@@ -49,15 +49,18 @@ describe("frontmatter 解析（间接经 readSkillBody）", () => {
 });
 
 describe("清单构建", () => {
-	it("当前仓库：全部技能为手动注入候选（无自动可见）", () => {
+	it("当前仓库：除三个保留技能外均为手动注入候选", () => {
 		const list = buildManualSkillList();
 		assert.ok(list.length >= 30, `技能总数应 >= 30，实际 ${list.length}`);
 		const auto = list.filter((s) => !s.manualOnly);
-		assert.equal(auto.length, 0, `不应有自动可见技能，实际: ${auto.map((s) => s.name).join(", ")}`);
+		// data-name / git-commit / which-pi-docs 保留自动注入
+		assert.deepEqual(
+			auto.map((s) => s.name).sort(),
+			["data-name", "git-commit", "which-pi-docs"],
+			`自动可见技能应为 3 个，实际: ${auto.map((s) => s.name).join(", ")}`,
+		);
 		// 关键技能在清单里
 		const names = list.map((s) => s.name);
-		assert.ok(names.includes("git-commit"));
-		assert.ok(names.includes("data-name"));
 		assert.ok(names.includes("moonbit-agent-guide"));
 		assert.ok(names.includes("brainstorming")); // superpowers 子技能
 	});

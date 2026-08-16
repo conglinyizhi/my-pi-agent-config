@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { readFileSync, existsSync, readdirSync, type Dirent } from "node:fs";
 import { join, dirname, relative, basename } from "node:path";
 import { homedir } from "node:os";
@@ -199,6 +200,28 @@ export function readSkillBody(skill: ManualSkill): string {
 	return `[手动注入 skill: ${skill.name}]\n技能目录（相对引用/脚本以此为准）: ${AGENT_DIR}/${rel}\n\n${body.trim()}`;
 }
 
+/** 注入技能：读 SKILL.md 全文 → sendMessage 进会话上下文（/skill-read 与 /skill-read:list 共用） */
+function injectSkill(pi: ExtensionAPI, skill: ManualSkill, ctx: ExtensionCommandContext): void {
+	try {
+		const body = readSkillBody(skill);
+		pi.sendMessage(
+			{
+				customType: "dsh-skill-read",
+				content: body,
+				display: false,
+				details: { skill: skill.name, manualOnly: skill.manualOnly },
+			},
+			{ triggerTurn: true },
+		);
+		ctx.ui.notify(
+			`已注入技能 ${skill.name}（${body.length} 字符）→ 模型下一轮读取。${skill.manualOnly ? "" : "（该技能本可自动注入）"}`,
+			"info",
+		);
+	} catch (err) {
+		ctx.ui.notify(`注入失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 扩展
 // ---------------------------------------------------------------------------
@@ -241,7 +264,7 @@ export default function (pi: ExtensionAPI) {
 				const manual = list.filter((s) => s.manualOnly);
 				const all = list.map((s) => s.name);
 				ctx.ui.notify(
-					`可用技能（${all.length}）: ${all.join(", ")}\n手动注入候选（${manual.length}）: ${manual.map((s) => s.name).join(", ")}\n用法: /skill-read <名>`,
+					`可用技能（${all.length}）: ${all.join(", ")}\n手动注入候选（${manual.length}）: ${manual.map((s) => s.name).join(", ")}\n用法: /skill-read <名> 或 /skill-read:list`,
 					"info",
 				);
 				return;
@@ -251,23 +274,111 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`技能不存在: ${name}`, "error");
 				return;
 			}
-			try {
-				const body = readSkillBody(skill);
-				pi.sendMessage(
-					{
-						customType: "dsh-skill-read",
-						content: body,
-						display: false,
-						details: { skill: skill.name, manualOnly: skill.manualOnly },
-					},
-					{ triggerTurn: true },
-				);
-				ctx.ui.notify(
-					`已注入技能 ${skill.name}（${body.length} 字符）→ 模型下一轮读取。${skill.manualOnly ? "" : "（该技能本可自动注入）"}`,
-					"info",
-				);
-			} catch (err) {
-				ctx.ui.notify(`注入失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+			injectSkill(pi, skill, ctx);
+		},
+	});
+
+	// /skill-read:list：TUI 完整技能列表（搜索过滤 + 上下滚动），选择即注入
+	pi.registerCommand("skill-read:list", {
+		description: "TUI 展示全部技能：输入过滤、↑↓/jk 滚动、Enter 注入、Esc 取消",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/skill-read:list 仅支持 TUI 模式（RPC 用 /skill-read <名>）", "warning");
+				return;
+			}
+			if (list.length === 0) refresh();
+			const skill = await ctx.ui.custom<ManualSkill | undefined>(
+				(tui, theme, _kb, done) => {
+					let query = "";
+					let selected = 0;
+					// 可见窗口（行数受终端高度约束）
+					const WINDOW = 18;
+
+					const filtered = (): ManualSkill[] => {
+						const q = query.trim().toLowerCase();
+						if (!q) return list;
+						return list.filter(
+							(s) =>
+								s.name.toLowerCase().includes(q) ||
+								s.description.toLowerCase().includes(q),
+						);
+					};
+
+					const render = (): string[] => {
+						const lines: string[] = [];
+						lines.push(theme.fg("accent", `技能列表（${list.length}）· 过滤 ${filtered().length}`));
+						lines.push(theme.fg("dim", `搜索: ${query}▌`));
+						lines.push("");
+						const items = filtered();
+						if (items.length === 0) {
+							lines.push(theme.fg("warning", "(无匹配，按 Backspace 清空搜索)"));
+						} else {
+							// 窗口化：selected 居中
+							const total = items.length;
+							let start = Math.max(0, Math.min(selected - Math.floor(WINDOW / 2), total - WINDOW));
+							if (start < 0) start = 0;
+							const end = Math.min(total, start + WINDOW);
+							for (let i = start; i < end; i++) {
+								const s = items[i];
+								const prefix = i === selected ? theme.fg("accent", "▸ ") : "  ";
+								const name = i === selected ? theme.fg("text", s.name) : s.name;
+								const marker = s.manualOnly ? "" : theme.fg("success", " ★");
+								const desc = s.description
+									? theme.fg("dim", ` — ${truncateToWidth(s.description, 36)}`)
+									: "";
+								lines.push(`${prefix}${name}${marker}${desc}`);
+							}
+							if (total > end) lines.push(theme.fg("dim", `… 还有 ${total - end} 项`));
+						}
+						lines.push("");
+						lines.push(theme.fg("dim", "输入过滤 · Backspace 清除 · ↑↓/jk 选择 · Enter 注入 · Esc 取消（★ = 自动注入）"));
+						return lines;
+					};
+
+					const handleInput = (data: string): void => {
+						// 可打印字符 → 追加到搜索词（排除控制键/转义序列）
+						if (data.length > 0 && !data.startsWith("\x1b") && data !== "\n" && data !== "\r" && data !== "\t" && data !== "\b") {
+							query += data;
+							selected = 0;
+							tui.requestRender();
+							return;
+						}
+						if (matchesKey(data, Key.backspace)) {
+							query = query.slice(0, -1);
+							selected = 0;
+							tui.requestRender();
+							return;
+						}
+						if (matchesKey(data, Key.up) || data === "k") {
+							selected = Math.max(0, selected - 1);
+							tui.requestRender();
+							return;
+						}
+						if (matchesKey(data, Key.down) || data === "j") {
+							const items = filtered();
+							selected = Math.min(items.length - 1, selected + 1);
+							tui.requestRender();
+							return;
+						}
+						if (matchesKey(data, Key.enter)) {
+							const items = filtered();
+							const pick = items[selected];
+							done(pick);
+							return;
+						}
+						if (matchesKey(data, Key.escape)) {
+							done(undefined);
+							return;
+						}
+					};
+
+					return { render, invalidate: () => undefined, handleInput };
+				},
+			);
+			if (skill) {
+				injectSkill(pi, skill, ctx);
+			} else {
+				ctx.ui.notify("已取消技能选择", "info");
 			}
 		},
 	});
