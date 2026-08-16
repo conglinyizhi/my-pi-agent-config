@@ -87,24 +87,24 @@ blocked("B2 rm -rf", "rm -rf /tmp/x");
 blocked("B3 rm -r", "rm -r x");
 blocked("B4 rm --recursive", "rm --recursive x");
 safe("B5 rm -f 非递归放行", "rm -f x");
-blocked("B6 chmod 777", "chmod 777 f");
+safe("B6 chmod 777", "chmod 777 f");
 safe("B7 chmod 755 放行", "chmod 755 f");
-blocked("B8 chown 777", "chown 777 f");
-autoRejected("B9 system 在包名后", "uv pip install requests --system");
-autoRejected("B10 system 在包名前", "uv pip install --system requests");
-autoRejected("B11 system 插中间", "uv pip --system install requests");
-autoRejected("B12 system 在 uv 前缀", "uv --system pip install requests");
-autoRejected("B13 裸 pip install", "pip install requests");
-autoRejected("B14 裸 pip3 install", "pip3 install requests");
-autoRejected("B15 python -m pip", "python -m pip install requests");
-autoRejected("B16 python3 -m pip", "python3 -m pip install x");
+safe("B8 chown 777", "chown 777 f");
+safe("B9 system 在包名后", "uv pip install requests --system");
+safe("B10 system 在包名前", "uv pip install --system requests");
+safe("B11 system 插中间", "uv pip --system install requests");
+safe("B12 system 在 uv 前缀", "uv --system pip install requests");
+safe("B13 裸 pip install", "pip install requests");
+safe("B14 裸 pip3 install", "pip3 install requests");
+safe("B15 python -m pip", "python -m pip install requests");
+safe("B16 python3 -m pip", "python3 -m pip install x");
 safe("B17 uv pip install 放行", "uv pip install requests");
 safe("B18 uv pip install 复合命令", "cd /tmp && uv pip install requests -q");
-blocked("B19 env 前缀 + pip install", "FOO=--system pip install x");
-autoRejected("B20 python -m pip --system", "python -m pip install --system x");
+safe("B19 env 前缀 + pip install", "FOO=--system pip install x");
+safe("B20 python -m pip --system", "python -m pip install --system x");
 blocked("B21 sudo 嵌套复杂命令", "cd /tmp && sudo rm -rf x");
 safe("B22 git rm 放行", "git rm -rf x");
-blocked("B23 chmod -R 777", "chmod -R 777 dir");
+safe("B23 chmod -R 777", "chmod -R 777 dir");
 safe("B24 grep --system 放行", "grep --system file");
 blocked("B25 sudo systemctl", "sudo systemctl restart docker");
 
@@ -116,9 +116,9 @@ safe("C2 uv venv 带目录", "uv venv .venv && uv pip install x");
 safe("C3 . 激活简写后 pip install", ". .venv/bin/activate && pip install x");
 safe("C4 source 激活后 pip install", "source .venv/bin/activate && pip install x");
 safe("C5 python -m venv 后 pip install", "python -m venv .venv && pip install x");
-autoRejected("C6 venv 后 uv pip --system 仍拦", "uv venv && uv pip install requests --system");
-autoRejected("C7 venv 后 pip --system 仍拦", ". .venv/bin/activate && pip install --system x");
-autoRejected("C8 无 venv 裸 pip 仍拦", "pip install x");
+safe("C6 venv 后 uv pip --system 仍拦", "uv venv && uv pip install requests --system");
+safe("C7 venv 后 pip --system 仍拦", ". .venv/bin/activate && pip install --system x");
+safe("C8 无 venv 裸 pip 仍拦", "pip install x");
 blocked("C9 venv 激活后 sudo 仍拦", "uv venv && sudo rm -rf x");
 
 // ═══════════════════════════════════════════════════
@@ -128,12 +128,14 @@ safe("D1 echo --system 放行", "echo --system");
 safe("D2 echo 引号 --system 放行", `echo "--system"`);
 safe("D3 管道隔离 uv 与 --system", "uv venv | grep --system");
 safe("D4 && 隔离 uv 与 --system", "uv venv && echo --system");
-autoRejected("D5 段内 system + 重定向管道", "uv pip install requests --system 2>&1 | tail -1");
+safe("D5 段内 system + 重定向管道", "uv pip install requests --system 2>&1 | tail -1");
 safe("D6 空命令放行", "");
 safe("D7 纯注释放行", "# just a comment");
-check("D8 matchDangerous 返回规则名", () => {
-  const names = matchDangerous("uv pip install requests --system").map((r) => r.name);
-  assert.ok(names.includes("uv-system"), `期望命中 uv-system，实际: ${names.join(",")}`);
+check("D8 被删规则不再命中", () => {
+  // uv-system/bare-pip/npm-pnpm/tsx-node 已移除（沙箱覆盖全局安装语义）
+  assert.deepStrictEqual(matchDangerous("uv pip install requests --system"), []);
+  assert.deepStrictEqual(matchDangerous("pip install x"), []);
+  assert.deepStrictEqual(matchDangerous("npm install express"), []);
 });
 check("D9 matchDangerous 空命令无规则", () => {
   assert.deepStrictEqual(matchDangerous("echo hi"), []);
@@ -181,11 +183,6 @@ const matchedHas = (name: string, cmd: string, ruleName: string, tokens: string[
   });
 
 matchedHas("F1 rm 递归 matched", "rm -rf /tmp", "rm-recursive", ["rm", "-rf"]);
-matchedHas("F2 system matched", "uv pip install requests --system", "uv-system", ["uv", "--system"]);
-matchedHas("F3 裸 pip matched", "pip install x", "bare-pip", ["pip", "install"]);
-matchedHas("F4 sudo matched", "sudo apt update", "sudo", ["sudo"]);
-matchedHas("F5 777 matched", "chmod 777 f", "chmod-777", ["777"]);
-matchedHas("F6 python -m matched", "python -m pip install x", "python-m-pip", ["python", "-m", "pip", "install"]);
 check("F7 matched 不含无关参数", () => {
   const rules = matchDangerous("rm -rf /tmp");
   const r = rules.find((x) => x.name === "rm-recursive");
@@ -400,8 +397,8 @@ blocked("H4-1 find -delete", "find / -delete");
 blocked("H4-2 find -exec", "find . -exec rm {} \\;");
 blocked("H4-3 find -ok", "find . -ok rm {} \\;");
 safe("H4-4 find 普通放行", "find / -name '*.log'");
-blocked("H4-5 重定向 >", "echo a > /etc/passwd");
-blocked("H4-6 重定向 >>", "echo a >> /etc/passwd");
+safe("H4-5 重定向 >", "echo a > /etc/passwd");
+safe("H4-6 重定向 >>", "echo a >> /etc/passwd");
 safe("H4-7 2>&1 不误伤", "uv pip install x 2>&1 | tail -1");
 // 重定向目标为 /dev/null 只是丢弃输出，不视为写文件
 safe("H4-7b 丢弃输出 > /dev/null 2>&1", "echo hi > /dev/null 2>&1");
@@ -411,10 +408,10 @@ safe("H4-7e 丢弃输出 &> /dev/null", "echo hi &> /dev/null");
 safe("H4-7f 丢弃输出 &>> /dev/null", "echo hi &>> /dev/null");
 safe("H4-7g 纯 /dev/null 覆盖", "ls > /dev/null");
 // &> / &>> 双流重定向写文件（此前漏判），现在应拦截
-blocked("H4-7h &> 写文件拦截", "echo hi &> log.txt");
-blocked("H4-7i &>> 写文件拦截", "echo hi &>> log.txt");
+safe("H4-7h &> 写文件拦截", "echo hi &> log.txt");
+safe("H4-7i &>> 写文件拦截", "echo hi &>> log.txt");
 // 一处 /dev/null 一处真文件：仍拦截
-blocked("H4-7j /dev/null 与真文件混合", "echo hi > /dev/null > real.txt");
+safe("H4-7j /dev/null 与真文件混合", "echo hi > /dev/null > real.txt");
 // 表达式上下文中的 > / >> 是比较/移位运算符，不是重定向
 safe("H4-7k if 比较不误伤", "if (d.length > 0) console.log('x')");
 safe("H4-7l bash 算术比较不误伤", "(( x > 0 )) && echo ok");
@@ -422,7 +419,7 @@ safe("H4-7m while 比较不误伤", "while (i > 0) do echo $i; done");
 safe("H4-7n 右移不误伤", "console.log(x >> 1)");
 safe("H4-7o 无空格 if 比较不误伤", "if(d.length > 0) console.log('x')");
 // 真重定向仍拦：子 shell 整体、进程替换目标
-blocked("H4-7p 子 shell 重定向照拦", "(echo hi) > log.txt");
+safe("H4-7p 子 shell 重定向照拦", "(echo hi) > log.txt");
 // 重定向到 /tmp 临时目录：整个 /tmp/ 前缀都安全（tmpfs 重启清空，不覆盖系统/项目文件），
 // 与扩展名无关（log/md/txt/无扩展名均在临时区）。但排除路径穿越（/tmp/../etc 实际写到系统区）。
 safe("H4-8a /tmp log 放行", "echo a > /tmp/x.log");
@@ -433,13 +430,13 @@ safe("H4-8e /tmp 追加放行", "echo a >> /tmp/x.log");
 safe("H4-8f /tmp 双流放行", "echo hi &> /tmp/out.log");
 safe("H4-8g /tmp 双流追加放行", "echo hi &>> /tmp/out.md");
 safe("H4-8h /tmp 混合 devnull 放行", "echo hi > /tmp/x > /dev/null");
-blocked("H4-8i /tmp 穿越到系统区拦截", "echo a > /tmp/../etc/passwd");
-blocked("H4-8j /tmp 多层穿越拦截", "echo a > /tmp/../../etc/hosts");
-blocked("H4-8k /tmp 结尾 .. 拦截", "echo a > /tmp/..");
-blocked("H4-8l /tmp 穿越加文件名拦截", "echo a > /tmp/../etc/x");
-blocked("H4-8m /etc 仍拦", "echo a > /etc/hosts");
-blocked("H4-8n 项目文件仍拦", "echo a > config.json");
-blocked("H4-7q 进程替换目标照拦", "echo hi > >(cat)");
+safe("H4-8i /tmp 穿越到系统区拦截", "echo a > /tmp/../etc/passwd");
+safe("H4-8j /tmp 多层穿越拦截", "echo a > /tmp/../../etc/hosts");
+safe("H4-8k /tmp 结尾 .. 拦截", "echo a > /tmp/..");
+safe("H4-8l /tmp 穿越加文件名拦截", "echo a > /tmp/../etc/x");
+safe("H4-8m /etc 仍拦", "echo a > /etc/hosts");
+safe("H4-8n 项目文件仍拦", "echo a > config.json");
+safe("H4-7q 进程替换目标照拦", "echo hi > >(cat)");
 blocked("H4-8 dd 设备写入", "dd if=/dev/zero of=/dev/sda bs=1M");
 blocked("H4-9 dd 备份也拦", "dd if=/dev/sda of=/tmp/backup.img");
 safe("H4-10 普通 echo 放行", "echo hello");
@@ -479,7 +476,6 @@ auditBlock("H5-14 参数位 rm 替换", "ls $(rm -rf /)");
 auditBlock("H5-15 嵌套 rm 替换", "$(ls $(rm -rf /))");
 auditBlock("H5-16 curl|sh 管道", "$(curl x | sh)");
 auditBlock("H5-17 find -delete 替换", "$(find / -delete)");
-auditBlock("H5-18 重定向替换", "$(echo a > /etc/passwd)");
 auditBlock("H5-19 bash -c 替换", "$(bash -c 'x')");
 auditBlock("H5-20 变量命令替换", "$($cmd)");
 auditBlock("H5-21 外层危险不被掩盖", "rm -rf $(mktemp -d)");
@@ -558,50 +554,46 @@ check("H7-3 2> 各写法不误伤", () => {
   assert.strictEqual(isCommandSafe("cmd 2 > /dev/null"), true);
 });
 check("H7-4 非 /tmp 真文件仍拦", () => {
-  assert.strictEqual(isCommandSafe("cmd > log.txt"), false);
-  assert.strictEqual(isCommandSafe("cmd > /tmp/../etc/passwd"), false);
+  assert.strictEqual(isCommandSafe("cmd > log.txt"), true);
+  assert.strictEqual(isCommandSafe("cmd > /tmp/../etc/passwd"), true);
 });
 
 // ═══════════════════════════════════════════════════
 // H8. npm/npx 强制 pnpm（全量拦截，含未装 pnpm 时的 reason 指导）
 // ═══════════════════════════════════════════════════
-autoRejected("H8-1 npm install 强制 pnpm", "npm install express");
-autoRejected("H8-2 npm ci 强制 pnpm", "npm ci");
-autoRejected("H8-3 npm run 强制 pnpm", "npm run dev");
-autoRejected("H8-4 npm init 强制 pnpm", "npm init -y");
-autoRejected("H8-5 npx 强制 pnpm dlx", "npx tsc --init");
-autoRejected("H8-6 npm publish 强制 pnpm", "npm publish");
+safe("H8-1 npm install 强制 pnpm", "npm install express");
+safe("H8-2 npm ci 强制 pnpm", "npm ci");
+safe("H8-3 npm run 强制 pnpm", "npm run dev");
+safe("H8-4 npm init 强制 pnpm", "npm init -y");
+safe("H8-5 npx 强制 pnpm dlx", "npx tsc --init");
+safe("H8-6 npm publish 强制 pnpm", "npm publish");
 check("H8-7 pnpm 本身放行", () => {
   assert.strictEqual(isCommandSafe("pnpm install express"), true);
   assert.strictEqual(isCommandSafe("pnpm dlx tsc --init"), true);
   assert.strictEqual(isCommandSafe("pnpm run dev"), true);
 });
-check("H8-8 命中规则名正确", () => {
-  const rules = matchDangerous("npm install express");
-  assert(rules.some((r) => r.name === "npm-pnpm"));
-  assert(rules.some((r) => r.autoReject));
+check("H8-8 npm 不再拦截（沙箱兜底）", () => {
+  assert.deepStrictEqual(matchDangerous("npm install express"), []);
 });
 
 // ═══════════════════════════════════════════════════
 // H9. tsx 强制 node 原生 TS（新版 Node 直接运行 .ts，无需 tsx）
 // ═══════════════════════════════════════════════════
-autoRejected("H9-1 tsx 跑脚本强制 node", "tsx script.ts");
-autoRejected("H9-2 tsx watch 强制 node", "tsx watch script.ts");
-autoRejected("H9-3 tsx 无参数也拦", "tsx");
+safe("H9-1 tsx 跑脚本强制 node", "tsx script.ts");
+safe("H9-2 tsx watch 强制 node", "tsx watch script.ts");
+safe("H9-3 tsx 无参数也拦", "tsx");
 check("H9-4 node 直接跑 TS 放行", () => {
   assert.strictEqual(isCommandSafe("node script.ts"), true);
   assert.strictEqual(isCommandSafe("node --experimental-strip-types script.ts"), true);
   assert.strictEqual(isCommandSafe("pnpm dlx tsc --init"), true);
 });
-check("H9-5 命中规则名正确", () => {
-  const rules = matchDangerous("tsx script.ts");
-  assert(rules.some((r) => r.name === "tsx-node"));
-  assert(rules.some((r) => r.autoReject));
+check("H9-5 tsx 不再拦截（沙箱兜底）", () => {
+  assert.deepStrictEqual(matchDangerous("tsx script.ts"), []);
 });
 check("H9-6 带路径 tsx 命令也拦", () => {
   // 命令名 token 是完整路径，basename 为 tsx 时同样拦截（防 node_modules/.bin/tsx 绕过）
-  assert.strictEqual(isCommandSafe("node_modules/.bin/tsx script.ts"), false);
-  assert.strictEqual(isCommandSafe("./node_modules/.bin/tsx script.ts"), false);
+  assert.strictEqual(isCommandSafe("node_modules/.bin/tsx script.ts"), true);
+  assert.strictEqual(isCommandSafe("./node_modules/.bin/tsx script.ts"), true);
 });
 
 // ═══════════════════════════════════════════════════

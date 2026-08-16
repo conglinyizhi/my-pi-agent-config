@@ -30,7 +30,7 @@ pi
 
 **subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel / chain 三种模式。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
 
-**permission-gate** 和 **confirm-destructive** — 一个拦危险命令（rm -rf 之类），一个在切换/分叉 session 前提醒，防手滑。
+**permission-gate** 和 **confirm-destructive** — permission-gate 已精简为 4 条真实 gap 规则（rm-recursive/find-delete/sudo/dd），被沙箱覆盖的规则（sudo 提权/外部写/全局安装）已移除；confirm-destructive 在切换/分叉 session 前提醒，防手滑。
 
 **protected-paths** — .env、node_modules 之类碰不得的路径直接挡住，免得不小心写坏。
 

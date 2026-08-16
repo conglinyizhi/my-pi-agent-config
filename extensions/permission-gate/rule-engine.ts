@@ -60,54 +60,10 @@ interface RuleDef {
 
 const RULES: RuleDef[] = [
   {
-    name: "sudo",
-    cmd: "sudo",
-    tip: "请避免使用 sudo，考虑是否有不需要提权的替代方案",
-  },
-  {
     name: "rm-recursive",
     cmd: "rm",
     anyFlags: ["-rf", "-r", "--recursive"],
     tip: "避免递归删除，请先确认目标路径",
-  },
-  {
-    name: "chmod-777",
-    cmd: ["chmod", "chown"],
-    anyArgs: ["777"],
-    tip: "777 权限过于宽松，请使用更严格的权限设置",
-  },
-  {
-    name: "uv-system",
-    cmd: "uv",
-    anyFlags: ["--system"],
-    tip: "严禁 uv 使用 --system 标志，会污染系统 Python 环境。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
-    autoReject: true,
-  },
-  {
-    name: "bare-pip",
-    cmd: ["pip", "pip3"],
-    subcmd: ["install"],
-    tip: "请使用 uv 代替 pip。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
-    autoReject: true,
-  },
-  {
-    name: "python-m-pip",
-    cmd: ["python", "python3"],
-    subcmd: ["-m", "pip", "install"],
-    tip: "请使用 uv 代替 python -m pip。正确做法：先 uv venv 创建虚拟环境，再 uv pip install",
-    autoReject: true,
-  },
-  {
-    name: "npm-pnpm",
-    cmd: ["npm", "npx"],
-    tip: "请使用 pnpm 代替 npm/npx（npm install → pnpm install，npx xxx → pnpm dlx xxx）。统一使用 pnpm 管理依赖",
-    autoReject: true,
-  },
-  {
-    name: "tsx-node",
-    cmd: "tsx",
-    tip: "请使用 node 代替 tsx（tsx script.ts → node script.ts，新版 Node 原生支持类型剥离，可直接运行 .ts 文件）。统一使用 node 运行 TS",
-    autoReject: true,
   },
   {
     name: "find-delete",
@@ -116,34 +72,14 @@ const RULES: RuleDef[] = [
     tip: "find 配合 -delete/-exec/-ok 会删除或执行任意匹配文件，请改为显式确认后的操作",
   },
   {
-    name: "write-redirect",
-    // cmd 省略 = 任意命令：输出重定向写入（> 覆盖、>> 追加、&> / &>> 双流）可能改动系统文件
-    anyArgs: [">", ">>", "&>", "&>>"],
-    // 重定向到 /dev/null 只是丢弃输出，不写文件，不视为危险
-    exceptNextArgs: ["/dev/null"],
-    // 重定向到 /tmp 临时目录：tmpfs 重启清空，不覆盖系统/项目文件，整体放行（与扩展名无关）
-    exceptNextPrefixes: ["/tmp/"],
-    // 表达式上下文中的 > / >> 是比较/移位运算符，不是重定向：
-    //   if (d.length > 0)   —— 前 token 以 ( 开头（表达式左边界）
-    //   函数调用中的 x >> 1) —— 后 token 以 ) 结尾（表达式右边界）
-    //   (( x > 0 )) && ...  —— 段内 (( 开头 + )) 结尾（bash 算术段）
-    // 排除真重定向：前 token 是完整括号 token（(cmd) > file）、后 token 是进程替换（> >(cat)）
-    skip: (tokens, idx) => {
-      const t = tokens[idx];
-      if (t !== ">" && t !== ">>") return false;
-      const prev = tokens[idx - 1];
-      const next = tokens[idx + 1];
-      if (prev && prev.startsWith("(") && !prev.endsWith(")")) return true;
-      if (next && next.endsWith(")") && !next.startsWith(">(")) return true;
-      if (tokens.some((x) => x.startsWith("((")) && tokens.some((x) => x.endsWith("))"))) return true;
-      return false;
-    },
-    tip: "命令输出重定向写入文件，可能覆盖系统或项目文件，请确认目标路径",
+    name: "sudo",
+    cmd: "sudo",
+    tip: "提权命令：沙箱 no_new_privs 已禁 setuid 提权，但 sudo 前缀的破坏命令（如 sudo rm -rf）仍以普通权限执行，请确认",
   },
   {
     name: "dd",
     cmd: "dd",
-    tip: "dd 可直写块设备（of= 指向磁盘/分区），请确认输入输出路径",
+    tip: "dd 可直读/写块设备（if=/dev/sda 读盘、of=/dev/sda 写盘）；沙箱 --ro / 允许读 /dev，读盘外传是真实泄漏，请确认",
   },
 ];
 
