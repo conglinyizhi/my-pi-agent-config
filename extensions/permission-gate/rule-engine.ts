@@ -79,7 +79,7 @@ const RULES: RuleDef[] = [
   {
     name: "dd",
     cmd: "dd",
-    tip: "dd 可直读/写块设备（if=/dev/sda 读盘、of=/dev/sda 写盘）；沙箱 --ro / 允许读 /dev，读盘外传是真实泄漏，请确认",
+    tip: "dd 可直读块设备（if=/dev/sda 把磁盘原始内容读到 /tmp 外传）；沙箱 --ro / 允许读 /dev（写盘 of= 已被沙箱 --rw 不含 /dev 拒绝），读盘是绕过沙箱的唯一手段，请确认",
   },
 ];
 
