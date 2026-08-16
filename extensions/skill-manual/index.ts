@@ -25,7 +25,9 @@ const AGENTS_SKILLS_DIR = join(homedir(), ".agents", "skills");
 const REPO_TOML_PATH = join(AGENT_DIR, "skill-repo", "repo.toml");
 
 // ---------------------------------------------------------------------------
-// frontmatter 解析（简单 YAML 头：--- 之间的 key: value）
+// frontmatter 解析（YAML 头：--- 之间的 key: value；支持块标量 >/ >-/ |/ |-
+// 的 description 折叠块——第三方技能大量使用，简单正则会把块标记 `>-` 解析成
+// 字面 ">-" 导致摘要显示成「大于号+减号」）
 // ---------------------------------------------------------------------------
 
 interface Frontmatter {
@@ -34,17 +36,64 @@ interface Frontmatter {
 	"disable-model-invocation"?: boolean;
 }
 
-function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
+/** YAML 折叠块标量标记（`>` 折叠 / `|` 字面，`-` strip / `+` keep） */
+const BLOCK_SCALAR_RE = /^([a-zA-Z0-9_-]+):\s*(>|\||>\||>-|\|\+|\|-)\s*$/;
+
+/** 拼接折叠块内容（简化 YAML 语义：`>` 换行折叠为空格、`|` 保留换行，`-` strip 尾换行） */
+function joinBlockScalar(lines: string[], kind: string): string {
+	let start = 0;
+	while (start < lines.length && lines[start].trim() === "") start++;
+	const content = lines.slice(start);
+	if (content.length === 0) return "";
+	const baseIndent = content[0].match(/^\s*/)?.[0].length ?? 0;
+	const body = content
+		.map((line) => (line.trim() === "" ? "" : line.slice(baseIndent)))
+		.join("\n");
+	const isLiteral = kind.startsWith("|");
+	const strip = kind.endsWith("-");
+	if (isLiteral) {
+		return strip ? body.replace(/\n+$/, "") : body.replace(/\n+$/, "\n");
+	}
+	// 折叠块：非空行间换行 → 空格，空行保留为换行
+	const folded = body
+		.split("\n")
+		.map((line, i, arr) => {
+			if (line === "") return "\n";
+			if (i > 0 && arr[i - 1] !== "" && !line.endsWith(" ")) return " " + line;
+			return line;
+		})
+		.join("");
+	return (strip ? folded.replace(/\s+$/, "") : folded.replace(/\s+$/, "") + "\n");
+}
+
+export function parseFrontmatter(content: string): { frontmatter: Frontmatter; body: string } {
 	const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
 	if (!m) return { frontmatter: {}, body: content };
 	const fm: Frontmatter = {};
-	for (const line of m[1].split("\n")) {
+	const lines = m[1].split("\n");
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		const block = BLOCK_SCALAR_RE.exec(line.trim());
+		if (block) {
+			const collected: string[] = [];
+			let j = i + 1;
+			while (j < lines.length && (lines[j].startsWith(" ") || lines[j].startsWith("\t") || lines[j].trim() === "")) {
+				collected.push(lines[j]);
+				j++;
+			}
+			fm[block[1] as keyof Frontmatter] = joinBlockScalar(collected, block[2]) as never;
+			i = j;
+			continue;
+		}
 		const kv = /^([a-zA-Z0-9_-]+):\s*(.*)$/.exec(line.trim());
-		if (!kv) continue;
-		const value = kv[2].trim();
-		if (value === "true") fm[kv[1] as keyof Frontmatter] = true as never;
-		else if (value === "false") fm[kv[1] as keyof Frontmatter] = false as never;
-		else fm[kv[1] as keyof Frontmatter] = value.replace(/^["']|["']$/g, "") as never;
+		if (kv) {
+			const value = kv[2].trim();
+			if (value === "true") fm[kv[1] as keyof Frontmatter] = true as never;
+			else if (value === "false") fm[kv[1] as keyof Frontmatter] = false as never;
+			else fm[kv[1] as keyof Frontmatter] = value.replace(/^["']|["']$/g, "") as never;
+		}
+		i++;
 	}
 	return { frontmatter: fm, body: m[2] };
 }

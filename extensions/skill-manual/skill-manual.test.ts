@@ -10,9 +10,25 @@ import { describe, it } from "node:test";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildManualSkillList, findSkill, readSkillBody } from "./index.ts";
+import { buildManualSkillList, findSkill, parseFrontmatter, readSkillBody } from "./index.ts";
 
 describe("frontmatter 解析（间接经 readSkillBody）", () => {
+	it("YAML 折叠块标量（description: >- / > / |）正确展开，不显示块标记", () => {
+		// >- strip：换行折叠为空格，无尾随换行
+		const strip = parseFrontmatter("---\ndescription: >-\n  第一行\n  第二行\n---\n正文");
+		assert.equal(strip.frontmatter.description, "第一行 第二行");
+		assert.ok(!strip.frontmatter.description!.includes(">-"));
+		// > clip：折叠，保留单个尾换行
+		const clip = parseFrontmatter("---\ndescription: >\n  内容\n---");
+		assert.equal(clip.frontmatter.description, "内容\n");
+		// | 字面：保留换行
+		const literal = parseFrontmatter("---\ndescription: |-\n  行一\n  行二\n---");
+		assert.equal(literal.frontmatter.description, "行一\n行二");
+		// 单行值不受影响
+		const plain = parseFrontmatter("---\ndescription: 单行描述\n---");
+		assert.equal(plain.frontmatter.description, "单行描述");
+	});
+
 	it("readSkillBody 剥离 frontmatter 并附加说明头", () => {
 		const dir = mkdtempSync(join(tmpdir(), "sm-fm-"));
 		const skillDir = join(dir, "test-skill");
