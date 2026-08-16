@@ -81,7 +81,10 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - `"sandboxExempt": ["git push", "npm publish"]` —— 前缀命中的命令**完全权限开放**（不沙箱，用户显式信任）
 - 环境变量 `LANDLOCK_RUN` 可覆盖 landlock-run 路径；缺失时 **fail-closed**（拒绝执行，绝不裸跑）
 - `PI_SANDBOX_DISABLE=1` 强制透传（临时关闭沙箱/测试的逃生门）
-- **仅 Linux**：Go 源码带 `//go:build linux`，非 Linux 平台编译产出 stub（运行报错 exit 125，不静默降级）；wrapper 在非 Linux 平台直接透传 bash（沙箱"不适用"而非"不可用"，不会挂掉 pi 的 bash）；macOS/Windows 如需沙箱是另一套机制（Seatbelt/ACL），不在本实现范围
+- **平台支持**（`scripts/vendor/landlock-run-go/` 按 `//go:build` 分平台实现）：
+  - **Linux**：Landlock（默认沙箱，`--ro /` 全读 + workspace/tmp 可写）
+  - **macOS**：Seatbelt（`sandbox-exec` + SBPL profile，语义对齐 Linux；Apple 已标废弃但仍可用，与 DSH 同路线）
+  - **Windows**：受限令牌 + NTFS ACL runner（`CreateRestrictedToken` WRITE_RESTRICTED + workspace 目录 Write ACE，对齐 DSH windows-acl）——**已实现但未经真机验证**，默认透传，设 `PI_SANDBOX_WINDOWS=1` 显式启用（真机验证通过前保持默认安全）
 
 ### Skill
 

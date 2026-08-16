@@ -56,10 +56,14 @@ if (args[0] !== "-c" || args.length < 2) {
 }
 const command = args.slice(1).join(" ");
 
-// 1. 平台守卫：Landlock 仅 Linux（内核机制）。非 Linux → 直接透传 bash——
-//    沙箱在此平台"不适用"而非"不可用"，绝不能 fail-closed 挂掉 pi 的所有 bash。
-//    逃生门：PI_SANDBOX_DISABLE=1 强制透传（临时关闭沙箱 / 测试）。
-if ((process.platform !== "linux" && process.platform !== "darwin") || process.env.PI_SANDBOX_DISABLE === "1") {
+// 1. 平台守卫：Linux → Landlock、darwin → Seatbelt（sandbox-exec）。
+//    Windows → 受限令牌+ACL runner 已实现但未真机验证，默认透传；
+//    显式 PI_SANDBOX_WINDOWS=1 才启用（真机验证通过前保持默认安全）。
+//    其余平台或 PI_SANDBOX_DISABLE=1 → 直接透传 bash——沙箱在此"不适用"
+//    而非"不可用"，绝不能 fail-closed 挂掉 pi 的所有 bash。
+const platformSandboxed = process.platform === "linux" || process.platform === "darwin"
+  || (process.platform === "win32" && process.env.PI_SANDBOX_WINDOWS === "1");
+if (!platformSandboxed || process.env.PI_SANDBOX_DISABLE === "1") {
   execBash(command);
 }
 
