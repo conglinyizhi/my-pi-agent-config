@@ -11,8 +11,11 @@
 //   4. 以受限令牌 CreateProcessAsUser 起子进程（继承 stdio），镜像退出码
 //   5. 退出后撤销本次授予的 ACE
 //
-// 注意：本文件仅 windows 构建；**未经 Windows 真机验证**（开发环境为 Linux，
-// 仅交叉编译通过）。真机适配以 MSDN 与 DSH 实现为准。
+// WARNING 真机验证状态（2026-08）：本文件仅 windows 构建；开发环境为 Linux，
+// 仅交叉编译通过（GOOS=windows go build），全部 Win32 行为未经 Windows 真机验证。
+// 下文所有 TODO(win-verify) 标记均为已知风险点；启用前必须在 Windows 上逐项实测
+// （wrapper 需设 PI_SANDBOX_WINDOWS=1 才会走本后端）。适配基准：MSDN +
+// DSH 的 dsh-sandbox-windows-acl 实现。
 //
 // 构建：GOOS=windows go build（见 build.sh）
 
@@ -102,7 +105,10 @@ func freeSid(sid uintptr) {
 	procFreeSid.Call(sid)
 }
 
-// 创建 WRITE_RESTRICTED 受限令牌，restricting list 含 capability SID
+// TODO(win-verify) DSH 注释明确 WRITE_RESTRICTED 的 restricting list 必须保留
+	// Everyone（否则基础读/系统路径不可达），当前只放 1 个 capability SID，真机
+	// 可能连 bash 都起不来——需按 DSH 补充 Everyone。
+	// 创建 WRITE_RESTRICTED 受限令牌，restricting list 含 capability SID
 func createRestrictedToken(capSID uintptr) (windows.Token, error) {
 	var curProc windows.Handle
 	r1, _, _ := procGetCurrentProcess.Call()
@@ -141,7 +147,9 @@ func grantDirectoryWrite(dir string, capSID uintptr) (func(), error) {
 		0, 0, uintptr(unsafe.Pointer(&daclPtr)), 0, uintptr(unsafe.Pointer(&sdSize)),
 	)
 	_ = r
-	// 从 SD 解析现有 DACL 的 ACL 长度
+	// TODO(win-verify) GetNamedSecurityInfo 返回/安全描述符布局、GetAclInformation
+	// 取长度调用是否成立均未实测（可能需 LocalAlloc 后解析 ACL 结构）；aclSize==0
+	// 时兜底 256 字节。
 	var aclSize uint32
 	procGetAclInformation.Call(daclPtr, 0, 0, uintptr(unsafe.Pointer(&aclSize)))
 
@@ -154,8 +162,9 @@ func grantDirectoryWrite(dir string, capSID uintptr) (func(), error) {
 	if r == 0 {
 		return nil, fmt.Errorf("InitializeAcl: %w", err)
 	}
-	// 复制现有 ACE（简化：v1 只追加，不复制原 ACE——受限令牌下原 ACE 影响有限，
-	// 真机适配时按 DSH 保留 Everyone 读权限）
+	// TODO(win-verify) 只追加本 SID 的 Write ACE，未复制目录原 DACL：会丢掉原有权
+	// （Everyone 读等；DSH 明确 WRITE_RESTRICTED 必须保留 Everyone），且
+	// ProtectiveDaclInfo 对目录已有共享/继承设置的影响未验证
 	r, _, err = procAddAccessAllowedAceEx.Call(
 		uintptr(unsafe.Pointer(&newAcl[0])), aclRevision, 0,
 		fileGenericWrite|fileName|fileWriteData|fileAppendData,
@@ -172,14 +181,18 @@ func grantDirectoryWrite(dir string, capSID uintptr) (func(), error) {
 	if r != 0 {
 		return nil, fmt.Errorf("SetNamedSecurityInfo: %w", err)
 	}
-	// 清理：恢复为"无 DACL 修改"（v1 简化——置空 DACL 会破坏目录权限，
-	// 真机适配需保留原始 DACL 并只删本 SID 的 ACE）
+	// TODO(win-verify) revert 目前是空实现：ACE 授出后不会撤销（目录永久多该 SID
+	// 的写权限、多 session 累积；DSH 是 workspace ACE 常驻复用 + 仅私有 temp ACE
+	// 撤销）。真机需实现备份原 DACL → 还原。
 	revert := func() {}
 	return revert, nil
 }
 
 // 以受限令牌创建子进程（继承 stdio），返回退出码
 func runChild(token windows.Token, cmd []string) (int, error) {
+	// TODO(win-verify) CreateProcessAsUser 的 lpCommandLine 首 token 按 PATH 解析依赖
+	// 受限令牌 PATH 可达（Git Bash 位置）；createUnicodeEnv 但 env 传 nil（未
+	// CreateEnvironmentBlock），私有 temp 重定向未实现——真机需补。
 	// 命令行为单一字符串（CreateProcess 的 lpCommandLine 可变）
 	cmdline := windows.EscapeArg(cmd[0])
 	for _, a := range cmd[1:] {
@@ -292,8 +305,9 @@ func main() {
 	}
 	defer token.Close()
 
-	// 重定向 TMP/TEMP 到私有临时目录（受限令牌下原 temp 可能不可写）
-	// v1 简化：沿用环境；真机适配时创建私有 temp 并授 ACE
+	// TODO(win-verify) DSH 会给每个 session 建随机私有 temp 目录、授 tempWriteSid
+	// ACE、重定向 TMP/TEMP、退出后撤销；当前沿用环境（受限令牌下原 temp 可能
+	// 不可写导致命令失败）。真机需补私有 temp 流程。
 
 	code, err := runChild(token, cmd)
 	if err != nil {
