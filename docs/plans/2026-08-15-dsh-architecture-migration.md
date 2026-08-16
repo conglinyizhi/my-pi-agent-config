@@ -185,18 +185,18 @@ spike 任务清单（建议在 `~/.pi/agent` 新建 `extensions/dsh-goal/`，参
 
 ### 已确认清单（按执行顺序）
 
-| # | 能力 | DSH 工具 / 服务 | pi 现状 | 迁移要点（对照 `dsh-agent-capability-inventory.md`） | 工作量 |
-|---|---|---|---|---|---|
-| 1 | **todo 任务列表** | `dsh-tool-todo`：`todo_write(todos)` 全量快照 last-wins，`todo/write` 事件入日志 | **无内建 todo 工具**（plan-mode 扩展有 `[DONE:n]` 追踪但非独立工具） | 全量替换 + 快照事件（折叠恢复）；TypeBox schema 照抄 | 小 |
-| 2 | **str_replace_editor** | `dsh-tool-str-replace-editor`：`old_string→new_string` 精确替换，maxOutputChars 16000 | pi `edit` 是行号/正则 diff 风格（edit-diff） | 语义照抄；注意与 pi `edit` 共存时的工具选择引导 | 小 |
-| 3 | **goal 工具组** | `dsh-goal` 服务 + `dsh-tool-goal`：`get_goal/create_goal/update_goal`（事件溯源 + revision CAS + Round 预算 + subagent 执行拒绝） | 现有 `/goal` 扩展是纯内存续行循环（prompt 协议） | 状态机/CAS/Round 逻辑照抄 B1 节；持久化用 `appendEntry`（等价 `goal/change` 事件）；续行驱动器挂 `agent_settled`；与现有 `/goal` 扩展 A/B 对比 | 中 |
-| 4 | **jobs 工具组** | `dsh-jobs` + `dsh-jobs-local` + `dsh-tool-jobs`：`job_output/job_list/job_kill` + 完成通知（wakeup/quiet） | **无**（pi 无后台任务原语） | 先建统一后台任务注册表（内存，重启即失——照抄 DSH「进程本地状态不持久化」）；bash 后台/子 agent 后台形态统一接入；完成通知经 `ctx.ui.notify` + `sendUserMessage` 投递 | 中 |
+| # | 能力 | DSH 工具 / 服务 | pi 现状 | 迁移要点（对照 `dsh-agent-capability-inventory.md`） | 工作量 | 状态 |
+|---|---|---|---|---|---|---|
+| 1 | **todo 任务列表** | `dsh-tool-todo`：`todo_write(todos)` 全量快照 last-wins，`todo/write` 事件入日志 | **无内建 todo 工具**（plan-mode 扩展有 `[DONE:n]` 追踪但非独立工具） | 全量替换 + 快照事件（折叠恢复）；TypeBox schema 照抄 | 小 | ✅ `extensions/dsh-tools/todo.ts` |
+| 2 | **str_replace_editor** | `dsh-tool-str-replace-editor`：`old_string→new_string` 精确替换，maxOutputChars 16000 | pi `edit` 是行号/正则 diff 风格（edit-diff） | 语义照抄；注意与 pi `edit` 共存时的工具选择引导 | 小 | ✅ `extensions/dsh-tools/str-replace.ts` |
+| 3 | **goal 工具组** | `dsh-goal` 服务 + `dsh-tool-goal`：`get_goal/create_goal/update_goal`（事件溯源 + revision CAS + Round 预算 + subagent 执行拒绝） | 现有 `/goal` 扩展是纯内存续行循环（prompt 协议） | 状态机/CAS/Round 逻辑照抄 B1 节；持久化用 `appendEntry`（等价 `goal/change` 事件）；续行驱动器挂 `agent_settled`；与现有 `/goal` 扩展 A/B 对比 | 中 | ⏳ 第二批 |
+| 4 | **jobs 工具组** | `dsh-jobs` + `dsh-jobs-local` + `dsh-tool-jobs`：`job_output/job_list/job_kill` + 完成通知（wakeup/quiet） | **无**（pi 无后台任务原语） | 先建统一后台任务注册表（内存，重启即失——照抄 DSH「进程本地状态不持久化」）；bash 后台/子 agent 后台形态统一接入；完成通知经 `ctx.ui.notify` + `sendUserMessage` 投递 | 中 | ⏳ 第三批 |
 
 **不选**：ralph（基于 subagent 的包装，价值低-中）、ask_user/web_search 规范化（已有扩展基本等价）。
 
 ### 执行顺序建议
 
-1. **第一批**（#1 #2）：两个独立小工具，先跑通「移植 + 开关 + A/B」全流程。
+1. **第一批**（#1 #2，✅ 已完成 2026-08-15）：`extensions/dsh-tools/`——`todo_write`（appendEntry 持久化 + `/dsh-todos` 折叠展示）+ `str_replace_editor`（view/create/str_replace/insert 四命令，行号编辑工作流；与 pi `edit` 的唯一性要求等价，差异化在行号定位）。开关：settings `dshTodo` / `dshTodoParallel` / `dshStrReplaceEditor`。
 2. **第二批**（#3）：goal 工具组——需要先定事件溯源持久化载体（`appendEntry` CustomEntry 方案），并与现有 `/goal` 扩展并存 A/B。
 3. **第三批**（#4）：jobs 工具组——先建注册表（可复用在 trident-subagent 的后台形态上），再挂工具。
 
