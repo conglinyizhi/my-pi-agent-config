@@ -73,8 +73,9 @@ pi
 ### 沙箱（bash 内核隔离）
 
 **landlock-shell** — pi 的 bash 工具默认经 `scripts/sandbox-shell.mjs` 包装进
-Landlock 内核文件系统沙箱（vendored `scripts/vendor/landlock-run`）：全系统只读 +
-工作区/`/tmp` 可写，写工作区外由内核 EROFS 拒绝，无需逐条审批。配置：
+Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，源码在
+`scripts/vendor/landlock-run-go/`，`CGO_ENABLED=0 go build` 可重新构建）：
+全系统只读 + 工作区/`/tmp` 可写，写工作区外由内核 EROFS 拒绝，无需逐条审批。配置：
 
 - `settings.tracked.json` → `"shellPath": "~/.pi/agent/scripts/sandbox-shell.mjs"`（启用；删除即关闭）
 - `"sandboxExempt": ["git push", "npm publish"]` —— 前缀命中的命令**完全权限开放**（不沙箱，用户显式信任）

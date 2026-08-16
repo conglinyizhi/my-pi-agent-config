@@ -44,3 +44,4 @@ permission-gate-reasons.json
 # 独立工程（不属于 pi 配置，剥离）
 dsh-notify/
 minicpm5-deploy/
+.go-cache/
