@@ -45,3 +45,5 @@ permission-gate-reasons.json
 dsh-notify/
 minicpm5-deploy/
 .go-cache/
+.go-cache/
+scripts/vendor/landlock-run
