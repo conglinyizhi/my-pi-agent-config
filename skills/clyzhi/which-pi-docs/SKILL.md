@@ -1,7 +1,6 @@
 ---
 name: which-pi-docs
 description: 用于查询 pi 的文档和源码的所在位置
-disable-model-invocation: true
 ---
 
 # Pi 文档参考

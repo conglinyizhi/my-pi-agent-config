@@ -74,11 +74,12 @@ pi
 
 ### Skill
 
-> **手动注入策略（2026-08-16）**：所有技能已标记 `disable-model-invocation: true`
+> **手动注入策略（2026-08-16）**：除 `data-name` / `git-commit` / `which-pi-docs`
+> 三个保留自动注入外，其余技能均标记 `disable-model-invocation: true`
 > （自写 skill 在 SKILL.md frontmatter；第三方在 skill-repo/repo.toml 的
-> `disable_model_invocation`），不再出现在系统提示词的 `<available_skills>` 目录，
-> 模型不会自动读取。需要时主动注入：`/skill:name`（pi 内建，加载并执行）或
-> `/skill-read <名>`（把 SKILL.md 全文注入会话上下文）。TUI 常驻区域会列出候选清单。
+> `disable_model_invocation`），不出现在 `<available_skills>` 目录，模型不会自动读取。
+> 需要时主动注入：`/skill:name`（pi 内建，加载并执行）或 `/skill-read <名>`
+> （把 SKILL.md 全文注入会话上下文）。TUI 常驻一行提示当前手动候选数。
 
 自己写的 skill（全部手动注入）：
 
