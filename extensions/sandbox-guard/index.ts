@@ -158,13 +158,15 @@ function blockedReason(kind: string, target: string, rule: CompiledRule): string
 // ── 扩展入口 ──
 
 export default function (pi: ExtensionAPI) {
-  let rules: CompiledRule[] = [];
+  // 初始化：factory 即加载（worker 子进程 --no-session 无 session_start，
+  // 必须在此加载黑名单才能拦截）；/reload 重载扩展会重新执行 factory
+  let rules: CompiledRule[] = loadBlacklist();
 
   const refresh = (): void => {
     rules = loadBlacklist();
   };
 
-  // 初始化 / reload：session_start（reason 含 reload）都触发
+  // 双保险：session_start（含 reload）时刷新
   pi.on("session_start", (_event, ctx) => {
     refresh();
     ctx.ui.setStatus("sandbox-guard", rules.length > 0 ? `🔒 ${rules.length} 条黑名单` : undefined);
