@@ -1,6 +1,6 @@
 ---
 name: which-pi-docs
-description: 用于查询 pi 的文档和源码的所在位置
+description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发规范（API 按 pi 官方规范、内部设计借鉴 DSH、KV 缓存命中规则）。创建或修改 pi 扩展/插件前必读本技能。
 ---
 
 # Pi 文档参考
