@@ -1,6 +1,6 @@
 ---
 name: which-pi-docs
-description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发规范（API 按 pi 官方规范、内部设计借鉴 DSH、KV 缓存命中规则）。创建或修改 pi 扩展/插件前必读本技能。
+description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发规范（重点是不要破坏 KV 缓存命中）。创建或修改 pi 扩展/插件前必读本技能。
 ---
 
 # Pi 文档参考
@@ -44,15 +44,12 @@ description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发�
 
 编写 pi 扩展时，同时遵循两条准则：
 
-1. **API 按 pi 官方规范**：扩展本体只用 pi 官方扩展 API
-   （`registerTool` / `registerCommand` / `pi.on(事件)` / `appendEntry` /
-   `sendMessage` / `ctx.ui`），参考 `<PI_PKG>/docs/extensions.md` 与
-   `<PI_PKG>/examples/extensions/`。DSH（DeepSeek Harness）的 cordis 插件形态
-   在 pi 里无法加载，**不要照搬 DSH 的插件框架写法**。
-2. **内部设计习惯借鉴 DSH**（我们移植扩展时的准则，已落地的例子：
-   `extensions/prompt-sections`、`extensions/dsh-goal`、`extensions/dsh-jobs`、
-   `extensions/dsh-tools`）：
-   - 状态用 `appendEntry` 写会话（事件溯源，不进 LLM 上下文），恢复时折叠
+1. **API 只用 pi 官方扩展 API**：`registerTool` / `registerCommand` /
+   `pi.on(事件)` / `appendEntry` / `sendMessage` / `ctx.ui`，参考
+   `<PI_PKG>/docs/extensions.md` 与 `<PI_PKG>/examples/extensions/`。
+2. **参考仓库已有扩展的写法**：`extensions/prompt-sections`、
+   `extensions/dsh-goal`、`extensions/dsh-jobs`、`extensions/dsh-tools`：
+   - 状态用 `appendEntry` 写会话（不进 LLM 上下文），恢复时折叠
    - 进程本地状态不持久化（重启后显式重建，不做"自动复活"）
    - last-wins 全量快照、CAS（ref + revision）防陈旧写
 
@@ -80,5 +77,4 @@ description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发�
     让稳定文本固定在前缀里、动态变量解析后放尾部
   - 否则静态写入工具 `promptGuidelines`，不逐轮变化
 
-**配方一句话**：按 pi 规范写 API、按 DSH 习惯设计状态、
-按"稳定前缀 + 动态消息尾部"组织提示词。
+**配方一句话**：按 pi 官方规范写 API，按"稳定前缀 + 动态消息尾部"组织提示词。
