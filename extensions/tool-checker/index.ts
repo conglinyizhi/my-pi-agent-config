@@ -1,6 +1,7 @@
 // 工具检测器：声明式检测外部 CLI 工具并注入系统提示词（详见 README.md）
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 import type { Detector, DetectorResult } from "./types.js";
 import { exec } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -232,6 +233,17 @@ function renderToolStatus(entry: CacheEntry, theme: ExtensionContext["ui"]["them
 }
 
 export default function toolChecker(pi: ExtensionAPI): void {
+  // prompt-sections：无条件注册为 order-150 工具指导段（禁用时不会被装配，注册无害）。
+  // 装配时等待检测完成并渲染；返回空串 → 空段丢弃（等价 v0.1.0 的「无可用工具不追加」）。
+  registerSection({
+    name: "tool-guidance:tool-checker",
+    order: 150,
+    text: async () => {
+      await ensureChecksDone();
+      return buildPromptAppend(); // "" → 空段丢弃
+    },
+  });
+
   // session_start: 启动异步检测，不阻塞会话初始化
   pi.on("session_start", (_event, ctx) => {
     startChecks(ctx.ui);
@@ -284,8 +296,11 @@ export default function toolChecker(pi: ExtensionAPI): void {
   });
 
   // before_agent_start: 等待检测完成 → 注入提示词
+  // prompt-sections 启用时由 order-150 段承载（工具指导区），保持 v0.1.0 的纯追加行为作回退
   pi.on("before_agent_start", async (event, _ctx) => {
     await ensureChecksDone();
+
+    if (isPromptSectionsEnabled()) return; // 段已注册，装配时渲染
 
     const append = buildPromptAppend();
     if (!append) return; // 无可用的外部工具，不修改提示词

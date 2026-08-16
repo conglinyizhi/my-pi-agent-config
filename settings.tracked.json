@@ -8,6 +8,7 @@
   "packages": [
     "npm:pi-mcp-adapter"
   ],
+  "promptSections": true,
   "retry": {
     "enabled": true,
     "maxRetries": 10,
