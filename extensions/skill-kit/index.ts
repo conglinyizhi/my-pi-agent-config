@@ -33,6 +33,7 @@ import {
   getExamplesPath,
   getReadmePath,
 } from "@earendil-works/pi-coding-agent";
+import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 
 const execAsync = promisify(exec);
 
@@ -455,6 +456,18 @@ function getSelfPromptPath(): string {
 // =========================================================================
 
 export default function skillKitExtension(pi: ExtensionAPI): void {
+  // prompt-sections：无条件注册 trigger 预检表为 order-110 工具指导段（禁用时不会被装配）。
+  // 装配时按当前 repo 配置求值；无 trigger 条目 → 空串 → 空段丢弃（等价 v0.1.0 不追加）。
+  registerSection({
+    name: "tool-guidance:skill-triggers",
+    order: 110,
+    text: () => {
+      const entries = loadRepoConfig();
+      if (!entries) return "";
+      return buildPreflightRule(entries); // "" → 空段丢弃
+    },
+  });
+
   // ---- session_start: 后台同步 ----
   pi.on("session_start", (_event, ctx) => {
     const config = loadRepoConfig();
@@ -540,9 +553,11 @@ export default function skillKitExtension(pi: ExtensionAPI): void {
       for (const name of loadDisabledList()) disabled.add(name);
       prompt = filterDisabledSkills(prompt, disabled);
 
-      // 5. 注入 trigger 预检表
-      const rule = buildPreflightRule(latestEntries);
-      if (rule) prompt += rule;
+      // 5. 注入 trigger 预检表（prompt-sections 启用时由 order-110 段承载，避免重复）
+      if (!isPromptSectionsEnabled()) {
+        const rule = buildPreflightRule(latestEntries);
+        if (rule) prompt += rule;
+      }
     }
 
     return { systemPrompt: prompt };

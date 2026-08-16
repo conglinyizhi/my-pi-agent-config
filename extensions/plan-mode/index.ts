@@ -5,6 +5,7 @@ import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
+import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 import { notifyQuestion } from "../../lib/notify-send";
 
 // 工具集合
@@ -50,10 +51,56 @@ function getTextContent(message: AssistantMessage): string {
     .join("\n");
 }
 
+/** 计划模式策略段（order-50）：只读探索，与 DSH dsh-plan-mode 的策略段设计一致 */
+const PLAN_MODE_POLICY = `[PLAN MODE ACTIVE]
+你当前处于计划模式，这是一种用于安全代码分析的只读探索模式。
+
+限制：
+- 你只能使用：read、bash、grep、find、ls、ask_question
+- 你不能使用：edit、write（文件修改已禁用）
+- Bash 仅允许白名单中的只读命令
+
+使用 ask_question 工具提出澄清问题。
+如需网页检索，可通过 bash 使用 brave-search skill。
+
+请在 "Plan:" 标题下创建一份详细的编号计划：
+
+Plan:
+1. 第一步描述
+2. 第二步描述
+...
+
+不要尝试做出修改，只描述你将会怎么做。`;
+
+/** 执行模式策略段：剩余步骤清单（动态，装配时按 todoItems 求值） */
+function buildExecutionPolicy(todoItems: TodoItem[]): string {
+  const remaining = todoItems.filter((t) => !t.completed);
+  const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
+  return `[EXECUTING PLAN - Full tool access enabled]
+
+剩余步骤：
+${todoList}
+
+请按顺序执行每一步。
+每完成一步，都在回复中包含一个 [DONE:n] 标记。`;
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
   let planModeEnabled = false;
   let executionMode = false;
   let todoItems: TodoItem[] = [];
+
+  // prompt-sections：无条件注册策略段（order-50）。装配时按当前模式求值；
+  // 未激活/无待办 → 空串 → 空段丢弃（等价 v0.1.0 不注入 message）。
+  registerSection({
+    name: "policy:plan-mode",
+    order: 50,
+    text: () => {
+      if (planModeEnabled) return PLAN_MODE_POLICY;
+      if (executionMode && todoItems.length > 0) return buildExecutionPolicy(todoItems);
+      return "";
+    },
+  });
 
   pi.registerFlag("plan", {
     description: "以计划模式启动（只读探索）",
@@ -166,49 +213,27 @@ export default function planModeExtension(pi: ExtensionAPI): void {
     };
   });
 
-  // 在 agent 启动前注入计划/执行上下文
+  // 在 agent 启动前注入计划/执行上下文。
+  // prompt-sections 启用时由 policy:plan-mode 段承载（order-50，装配时渲染）；
+  // 未启用保持 v0.1.0 的 message 注入行为。
   pi.on("before_agent_start", async () => {
+    if (isPromptSectionsEnabled()) return; // 段已注册，装配时渲染
+
     if (planModeEnabled) {
       return {
         message: {
           customType: "plan-mode-context",
-          content: `[PLAN MODE ACTIVE]
-你当前处于计划模式，这是一种用于安全代码分析的只读探索模式。
-
-限制：
-- 你只能使用：read、bash、grep、find、ls、ask_question
-- 你不能使用：edit、write（文件修改已禁用）
-- Bash 仅允许白名单中的只读命令
-
-使用 ask_question 工具提出澄清问题。
-如需网页检索，可通过 bash 使用 brave-search skill。
-
-请在 "Plan:" 标题下创建一份详细的编号计划：
-
-Plan:
-1. 第一步描述
-2. 第二步描述
-...
-
-不要尝试做出修改，只描述你将会怎么做。`,
+          content: PLAN_MODE_POLICY,
           display: false,
         },
       };
     }
 
     if (executionMode && todoItems.length > 0) {
-      const remaining = todoItems.filter((t) => !t.completed);
-      const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
       return {
         message: {
           customType: "plan-execution-context",
-          content: `[EXECUTING PLAN - Full tool access enabled]
-
-剩余步骤：
-${todoList}
-
-请按顺序执行每一步。
-每完成一步，都在回复中包含一个 [DONE:n] 标记。`,
+          content: buildExecutionPolicy(todoItems),
           display: false,
         },
       };

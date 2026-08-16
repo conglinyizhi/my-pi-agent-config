@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
+import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 import { scanTodos, type TodoItem, type ScanState, type ScanTodosOptions } from "./todo-scan";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,12 @@ async function enterHomeport(pi: ExtensionAPI, ctx: any) {
       c.ui.notify("已进入母港。维修模式。", "info");
     },
   });
+}
+
+/** 母港提示词正文：文件缺失时回退一行（与 v0.1.0 handler 内联逻辑一致） */
+function readHomeportPrompt(): string {
+  const promptPath = join(__dirname, "homeport-prompt.md");
+  return existsSync(promptPath) ? readFileSync(promptPath, "utf-8") : "直接编码助手。";
 }
 
 export default function (pi: ExtensionAPI) {
@@ -129,12 +136,19 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // 母港模式：替换系统提示词
+  // 母港模式：替换系统提示词。
+  // prompt-sections 启用时由 persona:homeport complete 段承载（装配时渲染）；
+  // 未启用保持 v0.1.0 的整体替换行为。
+  registerSection({
+    name: "persona:homeport",
+    order: 0,
+    complete: true,
+    text: () => (homeportSession ? readHomeportPrompt() : ""), // 非母港 → 空段丢弃，不构成 complete
+  });
   pi.on("before_agent_start", (event) => {
     if (!homeportSession) return;
-    const promptPath = join(__dirname, "homeport-prompt.md");
-    const prompt = existsSync(promptPath) ? readFileSync(promptPath, "utf-8") : "直接编码助手。";
-    return { systemPrompt: prompt };
+    if (isPromptSectionsEnabled()) return; // 由段承载
+    return { systemPrompt: readHomeportPrompt() };
   });
 
   // ═══════════════════════════════════════════════════

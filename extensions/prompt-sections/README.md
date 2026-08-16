@@ -58,16 +58,23 @@ if (isPromptSectionsEnabled()) { /* 走段；否则保持旧行为 */ }
 
 ## 已迁移的示例
 
-- **tool-checker**：原来在 `before_agent_start` 里 `systemPrompt + append`（纯追加），现改为
-  无条件注册 `tool-guidance:tool-checker`（order 150，装配时 `await ensureChecksDone()` 后渲染）；
-  启用 prompt-sections 时其事件处理器直接 return（由段承载），关闭时保持 v0.1.0 追加行为。
-- **plan-mode / skill-kit / trident-routing**：phase-2 迁移候选（plan-mode 走 message 注入不冲突；
-  skill-kit 的 trigger 表可迁移为 order-110 段；trident-routing 母港替换可迁移为 complete 段）。
+- **tool-checker**：`tool-guidance:tool-checker`（order 150，装配时 `await ensureChecksDone()` 后渲染）；
+  启用时其事件处理器直接 return（由段承载），关闭时保持 v0.1.0 追加行为。
+- **skill-kit**：`tool-guidance:skill-triggers`（order 110，装配时按 repo 配置求值 trigger 预检表）；
+  其 handler 的占位符/日期/技能过滤等文本变换保留在链上，仅 trigger 追加在启用时让位给段。
+- **plan-mode**：`policy:plan-mode`（order 50，装配时按当前模式求值 [PLAN MODE ACTIVE] /
+  [EXECUTING PLAN] 策略；未激活 → 空段丢弃）；启用时不再注入 message（v0.1.0 行为保留为回退）。
+  迁移方向与 DSH 一致（DSH plan mode 即 order-50 策略段），且段在系统前缀、对 KV 缓存更友好。
+- **trident-routing**：`persona:homeport`（order 0, `complete: true`；非母港 → 空段丢弃不构成
+  complete）；启用时 handler 让位，关闭时保持 v0.1.0 整体替换。这是「母港替换」语义的
+  一等公民表达：维修模式 = 唯一 complete 段。
+
+以上各扩展的 v0.1.0 行为均保留为关闭开关时的回退路径。
 
 ## 已知交互
 
-- **母港模式（trident-routing）**：仍整体替换 systemPrompt——若本扩展在其前装配、其在后替换，
-  装配结果会被覆盖（母港意图即整体替换，符合预期）。后续可让母港注册 complete 段来统一语义。
+- **母港模式（trident-routing）**：已迁移为 `persona:homeport` complete 段——母港时装配只保留
+  该段（含变量解析），非母港时空段丢弃、正常装配。若关闭 prompt-sections，回落 v0.1.0 的整体替换。
 - **扩展加载顺序**：pi 的扩展发现是文件系统序（不可依赖）。本设计不依赖顺序：装配在链上任一
   位置都安全（产出含完整默认文本），段注册在工厂期无条件完成、仅运行时门控。
 
