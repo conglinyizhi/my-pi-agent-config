@@ -52,8 +52,8 @@ export default function (pi: ExtensionAPI) {
       "将已经由主 agent 整理好的完整任务说明派给一个或多个隔离 worker 子进程执行。同步等待：所有 worker 都进入终态（成功/失败/中止/超时）才返回。支持单个字符串（单 worker）或字符串数组（并行多 worker）。",
     promptSnippet: "Dispatch side-quests to worker subagents and wait for all results",
     promptGuidelines: [
-      "subagent 是支线任务执行系统。参数必须是林汐自己整理好的完整任务说明（含目标、约束、验收标准），不是用户原始发言。",
-      "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则林汐自己动手。",
+      "subagent 是支线任务执行系统。参数必须是你自己整理好的完整任务说明（含目标、约束、验收标准），不是用户原始发言。",
+      "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则你自己动手。",
       "需要并行多个独立任务时传数组，全部并行启动。",
       "工具会同步阻塞直到所有 worker 结束：一个失败不终止其他 worker，逐个在结果里汇报。",
       "运行期间可用 /gui:subagents 查看每个 worker 的实时详情。",
