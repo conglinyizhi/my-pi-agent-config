@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
-import { loadBlacklist, pathBlocked, commandBlocked } from "./guard.ts";
+import { loadBlacklist, pathBlocked, commandBlocked, writePathBlocked } from "./guard.ts";
 
 describe("黑名单加载", () => {
   it("读默认黑名单文件并编译规则", () => {
@@ -61,5 +61,26 @@ describe("commandBlocked（bash 命令拦截）", () => {
 
   it(".env 路径段命中", () => {
     assert.equal(commandBlocked("cat /work/project/.env", rules), true);
+  });
+});
+
+describe("writePathBlocked（仅写保护路径，原 protected-paths 并入）", () => {
+  it(".git/ 与 node_modules/ 命中（相对与绝对）", () => {
+    assert.equal(writePathBlocked(".git/config"), true);
+    assert.equal(writePathBlocked("/work/proj/.git/HEAD"), true);
+    assert.equal(writePathBlocked("node_modules/foo/index.js"), true);
+    assert.equal(writePathBlocked("/work/proj/node_modules/foo/index.js"), true);
+  });
+
+  it(".env 及 .env.* 命中（比黑名单 .env/.env.local 更宽）", () => {
+    assert.equal(writePathBlocked(".env"), true);
+    assert.equal(writePathBlocked(".env.production"), true);
+    assert.equal(writePathBlocked("/work/proj/.env.test.local"), true);
+  });
+
+  it("普通文件不命中", () => {
+    assert.equal(writePathBlocked("src/main.ts"), false);
+    assert.equal(writePathBlocked("/work/proj/README.md"), false);
+    assert.equal(writePathBlocked(""), false);
   });
 });
