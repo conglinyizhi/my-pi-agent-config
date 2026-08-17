@@ -32,9 +32,7 @@ pi
 
 **confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
-**protected-paths** — .env、node_modules 之类碰不得的路径直接挡住，免得不小心写坏。
-
-**plan-mode** — 注册了 `/plan` 和 `/todos` 两个命令。切到计划模式后只读探索不乱改，先想清楚再动手。计划生成后桌面通知带音效提醒确认。
+**plan-mode** — 注册了 `/plan` 命令。切到计划模式后只读探索不乱改，先想清楚再动手。计划生成后桌面通知带音效提醒确认；产出的计划步骤与 todo_write 共用同一份存储（`/dsh-todos` 查看）。
 
 **custom-providers** — `/provider fast-add` 快速加模型供应商，`/provider reload` 重载配置。
 
@@ -59,13 +57,13 @@ pi
 
 **tool-checker** — 注册工具检测器，用于调试工具是否正常工作。（开发用）
 
-**editor-margin** — 调编辑器边距，虽然小但舒服。
+**editor** — 编辑器能力四合一：`/prompt-edit-gui`（Wails GUI，读 Ctrl+C 历史）、圆角边距输入框、Ctrl+C 历史保存（`cliphist.json`）、外部编辑器（Ctrl+O / `/open-editor`）。
 
 **prompt-sections** — DSH 风格的有序段系统提示词组装（A/B 测试，对照 v0.1.0 tag）。`/prompt-sections on|off|status` 开关，`/prompt-sections-preview` 预览装配结果。plan-mode / skill-boot(原 skill-kit) / tool-checker / trident-routing 母港已迁移为段（order 约定：-100 身份 / 0 默认 / 50 策略 / 100-199 工具指导）。详见 `extensions/prompt-sections/README.md`。
 
-**dsh-tools** — DSH 工具移植第一批：`todo_write`（全量快照任务列表，appendEntry 持久化，`/dsh-todos` 查看）与 `str_replace_editor`（view/create/str_replace/insert 四命令行号编辑工作流）。开关 `dshTodo` / `dshStrReplaceEditor`。
+**dsh-tools** — DSH 工具移植第一批：`todo_write`（全量快照任务列表，与 plan-mode 共用统一存储 `lib/todo-store.ts`，`/dsh-todos` 查看）与 `str_replace_editor`（view/create/str_replace/insert 四命令行号编辑工作流）。开关 `dshTodo` / `dshStrReplaceEditor`。
 
-**dsh-goal** — DSH 事件溯源持久化目标 + 自动续行：`get_goal / create_goal / update_goal` 工具 + `/dsh-goal` 命令，会话日志折叠恢复，激活位进程本地不持久化。开关 `dshGoal`（默认关，与旧 `/goal` 扩展 A/B 共存）。
+**dsh-goal** — DSH 事件溯源持久化目标 + 自动续行：`get_goal / create_goal / update_goal` 工具 + `/goal` 命令，会话日志折叠恢复，激活位进程本地不持久化。开关 `dshGoal`（默认开，旧 `<summary>` XML 版 `/goal` 扩展已退役，`"dshGoal": false` 可关闭）。
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
 
