@@ -38,6 +38,8 @@ pi
 
 **stream-monitor** — 偷偷盯着流式响应，变慢了你能察觉。
 
+**status-bus** — 状态栏总线：在扩展与状态栏之间注入一层两侧抽象（`lib/status-bus.ts`）。对扩展零迁移——仍是原生 `ctx.ui.setStatus/setWidget/setWorking*`，总线透明记录进规范存储并透传 TUI（行为不变）；输出侧 `statusBus.subscribe()` 订阅同一份变更流，未来 web/文件/事件桥目标从这里接入。当前只接 TUI 一个目标。
+
 **ask_question** — 注册了一个工具让 AI 能弹选项框问你，不用打字的确认体验好很多。多问题时 Tab 切换标签页。
 
 **thinking-control** — `/thinking` 切换思考深度。
