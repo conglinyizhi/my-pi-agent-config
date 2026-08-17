@@ -10,11 +10,10 @@
 //   激活位（armed/disarmed）进程本地，绝不持久化——resume/fork 后须人类显式 resume 重新武装。
 //
 // 开关（settings.json，/reload 生效）：
-//   "dshGoal": true — 注册 goal 工具/驱动器/命令。默认 false：
-//     与现有 /goal 扩展（extensions/goal，v0.1.0 的 <summary> 续行）A/B 共存——
-//     同一会话同时激活两个续行循环会打架，启用 dsh-goal 前建议停用 /goal。
+//   "dshGoal": false — 显式关闭。默认开启：原 /goal 扩展（v0.1.0 的 <summary>
+//     续行）已退役，本扩展成为唯一的目标续行实现，故默认开启。
 //
-// /dsh-goal 命令：status | <objective> | edit <objective|max:N> | pause | resume | complete | clear
+// /goal 命令：status | <objective> | edit <objective|max:N> | pause | resume | complete | clear
 
 import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -76,7 +75,7 @@ export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT) return;
 
 	const settings = readSettings();
-	if (settings.dshGoal !== true) return; // 默认关闭（与现有 /goal A/B 共存，避免双续行循环）
+	if (settings.dshGoal === false) return; // 默认开启；"dshGoal": false 可显式关闭
 
 	const domain = new GoalDomain({ defaultMaxGoalRounds: 64 });
 	const persist = (change: GoalChange): void => {
@@ -93,7 +92,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			domain.hydrate(changes, rounds);
 		} catch (err) {
-			ctx.ui.notify(`[dsh-goal] 会话 goal 恢复失败，已重置: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			ctx.ui.notify(`[goal] 会话 goal 恢复失败，已重置: ${err instanceof Error ? err.message : String(err)}`, "warning");
 			domain.hydrate([], 0);
 		}
 	});
@@ -101,9 +100,9 @@ export default function (pi: ExtensionAPI) {
 	registerGoalTools(pi, domain, { blockedAfterConsecutiveRounds: 3 });
 	registerGoalDriver(pi, domain, { persist });
 
-	// /dsh-goal 命令
-	pi.registerCommand("dsh-goal", {
-		description: "持久化目标管理：status | <objective> | edit <objective|max:N> | pause | resume | complete | clear",
+	// /goal 命令
+	pi.registerCommand("goal", {
+		description: "持久化目标管理（设计参考 DeepSeek Harness 的 dsh-goal）：status | <objective> | edit <objective|max:N> | pause | resume | complete | clear",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const line = (args ?? "").trim();
 			const view = domain.view;
@@ -114,7 +113,7 @@ export default function (pi: ExtensionAPI) {
 					: "（无当前目标）";
 
 			if (!line || line === "status") {
-				ctx.ui.notify(`dsh-goal: ${render(view)}`, "info");
+				ctx.ui.notify(`goal: ${render(view)}`, "info");
 				return;
 			}
 
@@ -130,24 +129,24 @@ export default function (pi: ExtensionAPI) {
 						maxGoalRounds: maxMatch ? Number(maxMatch[1]) : undefined,
 					});
 					persist(changed.change);
-					ctx.ui.notify(`dsh-goal: 已编辑 → ${render(domain.view)}`, "info");
+					ctx.ui.notify(`goal: 已编辑 → ${render(domain.view)}`, "info");
 				} else if (verb === "pause" || verb === "resume" || verb === "complete") {
 					const changed = domain.mutate({ operation: verb, ref: domain.ref });
 					persist(changed.change);
-					ctx.ui.notify(`dsh-goal: 已 ${verb} → ${render(domain.view)}`, "info");
+					ctx.ui.notify(`goal: 已 ${verb} → ${render(domain.view)}`, "info");
 				} else if (verb === "clear") {
 					const changed = domain.mutate({ operation: "clear", ref: domain.ref });
 					persist(changed.change);
-					ctx.ui.notify("dsh-goal: 已清除（tombstone 已持久化）", "info");
+					ctx.ui.notify("goal: 已清除（tombstone 已持久化）", "info");
 				} else {
 					// 默认：create
 					const objective = line;
 					const created = domain.mutate({ operation: "create", objective });
 					persist(created.change);
-					ctx.ui.notify(`dsh-goal: 已创建并武装 → ${render(domain.view)}`, "info");
+					ctx.ui.notify(`goal: 已创建并武装 → ${render(domain.view)}`, "info");
 				}
 			} catch (err) {
-				ctx.ui.notify(`dsh-goal: ${err instanceof Error ? err.message : String(err)}`, "error");
+				ctx.ui.notify(`goal: ${err instanceof Error ? err.message : String(err)}`, "error");
 			}
 		},
 	});
