@@ -66,6 +66,8 @@ pi
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
 
+**sandbox-allow** — DSH 升权移植：`sandbox-allow` 工具临时同意「单一指令」跨越沙箱（等价 DSH bash 的 `sandbox_permissions` + `justification`）。审批合并进现有权限闸门 GUI（`gate` 窗口按 `kind=sandbox-allow` 分支渲染），GUI 不可用时回退 TUI；授权只此一次、绝不持久化。优先 `permission=write-paths`（最小权限：保持只读沙箱、只额外开放指定目录），确需全局改动才 `full-access`。拒绝/取消/无 UI 一律不执行（fail-closed）。升权与执行审计写入会话日志（`sandbox-allow` CustomEntry）。
+
 ### 暂时停用插件
 
 **opencode-models** — `/model-more` 切换到从 opencode 导入的模型列表。
@@ -83,6 +85,7 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - `"sandboxExempt": ["git push", "npm publish"]` —— 前缀命中的命令**完全权限开放**（不沙箱，用户显式信任）
 - 环境变量 `LANDLOCK_RUN` 可覆盖 landlock-run 路径；缺失时 **fail-closed**（拒绝执行，绝不裸跑）
 - `PI_SANDBOX_DISABLE=1` 强制透传（临时关闭沙箱/测试的逃生门）
+- `PI_SANDBOX_RW_EXTRA=<dir>:...` 额外可写根，叠加在默认 cwd 之上（`sandbox-allow` 升权工具的 write-paths 通道）
 - **平台支持**（`scripts/vendor/landlock-run-go/` 按 `//go:build` 分平台实现）：
   - **Linux**：Landlock（默认沙箱，`--ro /` 全读 + workspace/tmp 可写）
   - **macOS**：Seatbelt（`sandbox-exec` + SBPL profile，语义对齐 Linux；Apple 已标废弃但仍可用，与 DSH 同路线）
