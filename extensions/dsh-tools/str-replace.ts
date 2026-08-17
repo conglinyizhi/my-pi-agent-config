@@ -280,7 +280,7 @@ export function registerStrReplaceEditor(
 				[Type.Literal("view"), Type.Literal("create"), Type.Literal("str_replace"), Type.Literal("insert")],
 				{ description: "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`." },
 			),
-			path: Type.String({ description: "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`." }),
+			path: Type.String({ description: "Absolute path to file or directory, e.g. `/home/user/project/main.go` or `/home/user/project`." }),
 			file_text: Type.Optional(
 				Type.String({ description: "Required parameter of `create` command, with the content of the file to be created." }),
 			),
