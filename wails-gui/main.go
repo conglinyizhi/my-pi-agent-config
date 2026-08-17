@@ -21,7 +21,7 @@ type windowConfig struct {
 
 var windowConfigs = map[string]windowConfig{
 	"editor":    {"提示词输入 · pi", 800, 450},
-	"gate":      {"权限闸门 · 危险命令审计", 800, 520},
+	"gate":      {"权限闸门 · 命令审批", 800, 520},
 	"setup":     {"三叉戟 · 模型路由配置", 960, 600},
 	"subagents": {"Subagent 详情 · 三叉戟", 1160, 780},
 	"routing":   {"TODO 调度 · 三叉戟", 900, 640},

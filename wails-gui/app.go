@@ -69,6 +69,11 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["command"] = req["command"]
 		base["taskId"] = req["taskId"]
 		base["rules"] = req["rules"]
+		// sandbox-allow 升权审批合并进 gate 窗口：kind 判别 audit（默认）/ sandbox-allow
+		base["kind"] = req["kind"]
+		base["permission"] = req["permission"]
+		base["writePaths"] = req["writePaths"]
+		base["justification"] = req["justification"]
 	case "editor":
 		base["clipHistory"] = req["clipHistory"]
 	}

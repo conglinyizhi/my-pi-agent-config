@@ -2,10 +2,11 @@
   <div v-if="ready" class="app">
     <header class="top-bar">
       <div class="top-left">
-        <h1>⚠️ 危险命令审计</h1>
-        <span v-if="taskId" class="task-badge">📋 {{ taskId }}</span>
+        <h1 :class="{ 'h1-sa': isSandboxAllow }">{{ isSandboxAllow ? '🔓 跨沙箱请求（仅此一次）' : '⚠️ 危险命令审计' }}</h1>
+        <span v-if="taskId && !isSandboxAllow" class="task-badge">📋 {{ taskId }}</span>
+        <span v-if="isSandboxAllow" data-name="sa-perm" class="perm-badge" :class="permission">{{ permLabel }}</span>
       </div>
-      <div v-if="highlights.length > 0" class="hl-nav">
+      <div v-if="!isSandboxAllow && highlights.length > 0" class="hl-nav">
         <span class="hl-count">{{ cur + 1 }} / {{ highlights.length }}</span>
         <button data-name="highlight-prev" @click="prev" :disabled="cur<=0" class="hl-btn">◀ 上一个</button>
         <button data-name="highlight-next" @click="next" :disabled="cur>=highlights.length-1" class="hl-btn">下一个 ▶</button>
@@ -16,10 +17,23 @@
 
     <div v-if="tip" class="tooltip" :style="tipPos">⚠️ {{ tip }}</div>
 
-    <div @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
+    <!-- sandbox-allow：理由 + 可写路径 -->
+    <div v-if="isSandboxAllow" class="sa-info">
+      <div v-if="justification" class="sa-row">
+        <span class="sa-label">理由</span>
+        <span class="sa-justification">{{ justification }}</span>
+      </div>
+      <div v-if="writePaths.length" class="sa-row">
+        <span class="sa-label">额外可写</span>
+        <span class="sa-paths"><code v-for="p in writePaths" :key="p" class="sa-path">{{ p }}</code></span>
+      </div>
+    </div>
+
+    <!-- 规则列表（仅 audit） -->
+    <div v-if="!isSandboxAllow" @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
       {{ showRules ? '▼' : '▶' }} {{ rules.length }} 条规则匹配
     </div>
-    <div v-if="showRules" class="collapse-body">
+    <div v-if="!isSandboxAllow && showRules" class="collapse-body">
       <div v-for="(r,i) in rules" :key="i" class="rule-row">
         <code class="rule-pattern">{{ r.name }}</code>
         <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
@@ -28,13 +42,19 @@
     </div>
 
     <footer class="actions">
-      <button data-name="action-deny" @click="denyDirect" class="btn btn-deny">🚫 拒绝</button>
-      <button data-name="action-deny-reason" @click="openDialog" class="btn btn-warn">📝 拒绝并说明理由</button>
-      <button data-name="action-allow" @click="respond('allow')" class="btn btn-allow">✅ 放行</button>
+      <template v-if="isSandboxAllow">
+        <button data-name="sa-deny" @click="respond('deny')" class="btn btn-deny">🚫 拒绝</button>
+        <button data-name="sa-allow" @click="respond('allow')" class="btn btn-allow">✅ 允许（仅此一次）</button>
+      </template>
+      <template v-else>
+        <button data-name="action-deny" @click="denyDirect" class="btn btn-deny">🚫 拒绝</button>
+        <button data-name="action-deny-reason" @click="openDialog" class="btn btn-warn">📝 拒绝并说明理由</button>
+        <button data-name="action-allow" @click="respond('allow')" class="btn btn-allow">✅ 放行</button>
+      </template>
     </footer>
 
-    <!-- 拒绝理由对话框 -->
-    <div v-if="dlg" @click.self="dlg=false" class="overlay">
+    <!-- 拒绝理由对话框（仅 audit） -->
+    <div v-if="!isSandboxAllow && dlg" @click.self="dlg=false" class="overlay">
       <div class="dialog">
         <h2 class="dialog-title">审核意见</h2>
         <div v-for="(r,i) in rules" :key="i" @click="tog(i)" class="dialog-rule" :class="{ flagged: flg.has(i) }">
@@ -67,6 +87,11 @@ const ready = ref(false);
 const cmd = ref("");
 const taskId = ref(null);
 const rules = ref([]);
+// sandbox-allow 升权审批字段（kind=sandbox-allow 时启用）
+const kind = ref("");
+const permission = ref("");
+const writePaths = ref([]);
+const justification = ref("");
 
 const tip = ref("");
 const tipPos = ref({});
@@ -77,6 +102,11 @@ const reasons = ref([]);
 const flg = ref(new Set());
 const showRules = ref(false);
 const cmdBox = ref(null);
+
+const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
+const permLabel = computed(() =>
+  permission.value === "full-access" ? "完全开放 · 无沙箱" : "保持只读 + 额外可写"
+);
 
 const highlights = computed(() => {
   const r = [];
@@ -170,6 +200,10 @@ onMounted(async () => {
   cmd.value = data.command || "";
   taskId.value = data.taskId || null;
   rules.value = data.rules || [];
+  kind.value = data.kind || "audit";
+  permission.value = data.permission || "";
+  writePaths.value = data.writePaths || [];
+  justification.value = data.justification || "";
   reasons.value = await window.go.main.App.LoadReasons();
   ready.value = true;
   await window.go.main.App.MarkReady();
@@ -186,7 +220,13 @@ onMounted(async () => {
 .top-bar { padding: 8px 16px; border-bottom: 1px solid #2a2a4a; display: flex; justify-content: space-between; align-items: center; }
 .top-left { display: flex; align-items: center; gap: 10px; }
 .top-left h1 { font-size: 15px; color: #ff6b6b; margin: 0; }
+.top-left h1.h1-sa { color: #7aa2f7; }
 .task-badge { font-size: 11px; color: #7aa2f7; background: #1a1a3e; padding: 2px 8px; border-radius: 4px; }
+
+/* ── sandbox-allow 权限徽标 ── */
+.perm-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+.perm-badge.full-access { color: #ff6b6b; background: #3a1a1a; border: 1px solid #ff6b6b55; }
+.perm-badge.write-paths { color: #7aa2f7; background: #1a1a3e; border: 1px solid #7aa2f755; }
 
 /* ── 高亮导航 ── */
 .hl-nav { display: flex; gap: 6px; align-items: center; font-size: 12px; }
@@ -199,6 +239,14 @@ onMounted(async () => {
 
 /* ── 提示浮窗 ── */
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #e67e22; padding: 5px 10px; border-radius: 4px; font-size: 12px; color: #e67e22; z-index: 100; pointer-events: none; }
+
+/* ── sandbox-allow 信息区 ── */
+.sa-info { padding: 10px 16px; border-top: 1px solid #2a2a4a; display: flex; flex-direction: column; gap: 8px; }
+.sa-row { display: flex; gap: 10px; align-items: baseline; }
+.sa-label { flex-shrink: 0; font-size: 11px; color: #888; }
+.sa-justification { font-size: 13px; color: #e0e0e0; line-height: 1.6; }
+.sa-paths { display: flex; flex-wrap: wrap; gap: 6px; }
+.sa-path { color: #7aa2f7; background: #1a1a3e; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
 
 /* ── 规则列表 ── */
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }

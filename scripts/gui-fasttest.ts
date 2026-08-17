@@ -237,7 +237,18 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
     request: {
       command: "rm -rf /tmp/test",
       taskId: "test-task-001",
-      rules: [{ pattern: "rm -rf", tip: "危险删除操作", autoReject: false }],
+      rules: [{ name: "rm-recursive", tip: "危险删除操作", autoReject: false, matched: ["rm", "-rf"] }],
+    },
+  },
+  {
+    name: "gate-sandbox-allow",
+    windowName: "gate",
+    request: {
+      kind: "sandbox-allow",
+      command: "install -m 755 /tmp/build/bin/tool /usr/local/bin/tool",
+      permission: "write-paths",
+      writePaths: ["/usr/local/bin"],
+      justification: "需要把编译产物安装到系统 PATH 目录",
     },
   },
   {
