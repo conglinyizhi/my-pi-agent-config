@@ -49,6 +49,18 @@ describe("setStatus 记录 + 转发", () => {
 		assert.deepEqual(calls, [{ method: "setStatus", args: ["sandbox-guard", "🔒 19 条黑名单"] }]);
 	});
 
+	it("store 存去 ANSI 的纯文本，转发仍保留原始着色（数据/渲染分离）", () => {
+		const bus = new StatusBus();
+		const { ui, calls } = makeUI();
+		bus.attach(ui);
+
+		const colored = "\x1b[36m林汐\x1b[0m";
+		ui.setStatus("trident", colored);
+
+		assert.equal(bus.getSnapshot().statuses["trident"].text, "林汐");
+		assert.deepEqual(calls, [{ method: "setStatus", args: ["trident", colored] }]);
+	});
+
 	it("undefined 删键并转发", () => {
 		const bus = new StatusBus();
 		const { ui, calls } = makeUI();
@@ -72,7 +84,7 @@ describe("setWidget 记录 + 转发", () => {
 		ui.setWidget("plan-todos", ["a", "b"], { placement: "aboveEditor" });
 
 		const w = bus.getSnapshot().widgets["plan-todos"];
-		assert.deepEqual(w.content, ["a", "b"]);
+		assert.deepEqual(w.content, { kind: "lines", lines: ["a", "b"] });
 		assert.deepEqual(w.options, { placement: "aboveEditor" });
 		assert.deepEqual(calls, [{ method: "setWidget", args: ["plan-todos", ["a", "b"], { placement: "aboveEditor" }] }]);
 	});
@@ -86,6 +98,42 @@ describe("setWidget 记录 + 转发", () => {
 		ui.setWidget("plan-todos", undefined);
 
 		assert.equal("plan-todos" in bus.getSnapshot().widgets, false);
+	});
+});
+
+describe("JSON 契约（细粒度数据，渲染交给前端）", () => {
+	it("组件工厂归一化为 factory 占位标记，不存函数", () => {
+		const bus = new StatusBus();
+		const { ui, calls } = makeUI();
+		bus.attach(ui);
+
+		const factory = () => ({});
+		ui.setWidget("plan-todos", factory);
+
+		const w = bus.getSnapshot().widgets["plan-todos"];
+		assert.equal(w.content.kind, "factory");
+		if (w.content.kind === "factory") {
+			assert.equal(w.content.serialized, false);
+			assert.equal(typeof w.content.note, "string");
+		}
+		// TUI 目标仍收到原函数，渲染不受影响
+		assert.equal(calls[0].args[1], factory);
+	});
+
+	it("快照整体可 JSON 序列化且往返无损（含去 ANSI 纯文本）", () => {
+		const bus = new StatusBus();
+		const { ui } = makeUI();
+		bus.attach(ui);
+
+		ui.setStatus("a", "\x1b[33mwarning text\x1b[0m");
+		ui.setWidget("w", ["x", "y"], { placement: "aboveEditor" });
+		ui.setWorkingIndicator({ frames: ["●"], intervalMs: 500 });
+
+		const parsed = JSON.parse(JSON.stringify(bus.getSnapshot()));
+		assert.equal(parsed.statuses.a.text, "warning text");
+		assert.deepEqual(parsed.widgets.w.content, { kind: "lines", lines: ["x", "y"] });
+		assert.deepEqual(parsed.widgets.w.options, { placement: "aboveEditor" });
+		assert.deepEqual(parsed.working.indicator, { frames: ["●"], intervalMs: 500 });
 	});
 });
 
