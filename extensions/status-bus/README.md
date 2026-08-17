@@ -102,6 +102,55 @@ const off = statusBus.subscribe((change) => {
 - `working.indicator` 只保留 `{ frames?: string[], intervalMs?: number }` 的可序列化子集。
 - `version` 每次变更单调递增，供消费方做增量/去重。
 
+## 演进草案：结构化状态（未实现 · 仅契约）
+
+> 状态：**草案**。当前总线只透传 `setStatus` 的字符串，`level` 一律缺省；本节定义将来
+> 让「语义级着色」进入总线的契约，**尚未实现**。
+
+### 问题
+
+扩展现在这样写状态：`ctx.ui.setStatus("trident", theme.fg("accent", "林汐"))`。
+「accent」这个语义在 `theme.fg` 里被烧成颜色码（TUI 下）或直接丢失（RPC 下），
+总线只能拿到最终字符串，无法把「accent」作为结构化数据交给 web。这正是「数据/渲染
+分离」里唯一没法自动恢复的一块——所以需要扩展显式供给，而不是让总线猜。
+
+### 契约
+
+```ts
+type StatusLevel = "default" | "accent" | "success" | "warning" | "error" | "muted";
+
+interface StructuredStatus {
+  text: string;        // 纯文本数据（不含 ANSI）
+  level?: StatusLevel; // 语义级；缺省 "default"
+}
+```
+
+`StatusEntry` 演进为 `{ text, level?, updatedAt }`；`level` 由**扩展显式提供**，
+总线不做任何语义反解。
+
+### 供给方式（推荐 A）
+
+**A. 总线新增可选结构化入口（不破坏零迁移）**：
+
+```ts
+// 草案（未实现）
+statusBus.setStatus("trident", { text: "母港", level: "accent" });
+```
+
+- 写 store 的结构化 `{ text, level }`；
+- 同时渲染成字符串转发原生 `ctx.ui.setStatus`（TUI 用 `theme.fg(level, text)`，
+  RPC 纯文本），TUI 行为不变；
+- 旧扩展继续 `ctx.ui.setStatus(key, string)`，`level` 缺省 `default`，零迁移。
+
+**B. 字符串约定前缀（如 `[warning]…`）**：不采纳——污染数据、易误解析。
+
+### 前端消费
+
+- TUI 侧：继续用 `theme.fg(level, text)` 渲染（`level` 是 pi 主题已有的色名）。
+- web 侧：把 `level` 映射到自己的 CSS/组件（如 `.status--warning`），各自决定样式。
+
+总线两端都不改渲染逻辑，只是把「accent」从颜色码升级成结构化字段。
+
 ## 已知边界
 
 扩展加载顺序 = `readdirSync`（非字母序、不可控）。因此 `attach` 可能晚于少数扩展的

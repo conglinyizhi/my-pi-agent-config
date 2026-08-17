@@ -17,6 +17,7 @@
 //     web 侧拿纯文本自行渲染。
 //   - 本层不做语义反解（如从颜色码猜 success/warning/accent）。将来若需要语义级
 //     着色，应由扩展提供结构化状态字段（text + level），而不是让本层猜测。
+//     （结构化状态契约草案见 extensions/status-bus/README.md「演进草案」，未实现）
 //
 // ── JSON 契约（web / 外部消费方从这里开始读）──
 // getSnapshot() 的产物 100% 可 JSON.stringify。唯一不直接可序列化的「组件工厂」
