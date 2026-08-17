@@ -10,9 +10,11 @@
 //   "sandboxExempt": ["git push", "npm publish"]           前缀命中 → 完全权限开放（不沙箱）
 //   环境变量 LANDLOCK_RUN 可覆盖 landlock-run 路径（默认仓库 scripts/vendor/landlock-run）
 //
-// 细粒度限制（subagent 场景，父进程注入 env，仅影响该子进程）：
-//   PI_SANDBOX_RW=<dir>[:<dir>...]   可写根替换 cwd（subagent 只能写指定目录，其余只读）
-//   PI_SANDBOX_READONLY=1            只读模式：不写 workspace（保留 /tmp /dev/null）
+// 细粒度限制（父进程注入 env，仅影响该子进程）：
+//   PI_SANDBOX_RW=<dir>[:<dir>...]       可写根替换 cwd（subagent 只能写指定目录，其余只读）
+//   PI_SANDBOX_READONLY=1                只读模式：不写 workspace（保留 /tmp /dev/null）
+//   PI_SANDBOX_RW_EXTRA=<dir>[:<dir>...] 额外可写根，叠加在默认 cwd 之上（sandbox-allow 一次性升权用）
+//   PI_SANDBOX_DISABLE=1                 完全开放，直接透传 bash（一次性升权 / 逃生门）
 //
 // 安全策略：fail-closed——landlock-run 缺失时拒绝执行并报错，绝不裸跑。
 // 跨平台：仅 Linux（Landlock 内核机制）；macOS/Windows 不适用本 wrapper。
@@ -56,6 +58,12 @@ function buildGrants() {
       }
     } else {
       rw.push(process.cwd());
+    }
+  }
+  // 一次性升权：额外可写根，叠加在默认 cwd 之上（sandbox-allow 注入 PI_SANDBOX_RW_EXTRA）
+  if (process.env.PI_SANDBOX_RW_EXTRA) {
+    for (const dir of process.env.PI_SANDBOX_RW_EXTRA.split(":")) {
+      if (dir) rw.push(dir);
     }
   }
   const grants = ["--ro", "/"];
