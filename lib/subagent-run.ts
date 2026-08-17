@@ -104,7 +104,7 @@ const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
 const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
-const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-guard", "index.ts");
+const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "guard.ts");
 
 /**
  * 构造 worker 子进程 env（纯函数，不改 process.env）：

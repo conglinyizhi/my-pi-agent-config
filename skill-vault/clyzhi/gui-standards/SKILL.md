@@ -39,7 +39,7 @@ lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + ru
 | setup | SetupView | extensions/trident-subagent（/gui:trident-setup）|
 | subagents | SubagentsView | extensions/trident-subagent（/gui:subagents）|
 | routing | RoutingView | extensions/trident-routing |
-| gate | GateView | extensions/permission-gate |
+| gate | GateView | extensions/sandbox-permissions（gate/allow） |
 | editor | EditorView | extensions/editor-gui |
 
 ## extension 侧调用

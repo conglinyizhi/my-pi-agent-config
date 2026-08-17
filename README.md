@@ -30,7 +30,7 @@ pi
 
 **subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel / chain 三种模式。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
 
-**permission-gate** 和 **confirm-destructive** — permission-gate 已精简为 4 条真实 gap 规则（rm-recursive/find-delete/sudo/dd），被沙箱覆盖的规则（sudo 提权/外部写/全局安装）已移除；confirm-destructive 在切换/分叉 session 前提醒，防手滑。
+**confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
 **protected-paths** — .env、node_modules 之类碰不得的路径直接挡住，免得不小心写坏。
 
@@ -48,7 +48,10 @@ pi
 
 **sysinfo** — `/sysinfo` 一键收集系统信息发给 LLM。
 
-**sandbox-guard** — 敏感路径黑名单防护（恶意 skill 防护）：初始化/reload 时读取 `sandbox-blacklist.json`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截 read/write/edit/bash 触碰黑名单路径。新增黑名单模式直接编辑该文件，`/reload` 生效。
+**sandbox-permissions** — 沙箱权限三合一扩展（`guard` 防读 + `gate` 审批 + `allow` 升权，一个目录三个子模块）：
+- `guard`：敏感路径黑名单防护（恶意 skill 防护），初始化/reload 时读取 `sandbox-blacklist.json`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截 read/write/edit/bash 触碰黑名单路径
+- `gate`：危险 bash 命令审批（token 化规则引擎判定 rm-recursive/find-delete/sudo/dd 等 gap 规则 + 动态构造降级），GUI 审计面板 + TUI 回退
+- `allow`：DSH 升权移植，`sandbox-allow` 工具临时同意「单一指令」跨越沙箱（等价 `sandbox_permissions` + `justification`），审批并入 `gate` 窗口（`kind=sandbox-allow` 分支），授权只此一次、fail-closed，审计写会话日志
 
 **talk-sleep** — `/talk-sleep [备注]` 暂存当前对话，换台电脑 `pi --resume` 继续聊。
 
@@ -65,8 +68,6 @@ pi
 **dsh-goal** — DSH 事件溯源持久化目标 + 自动续行：`get_goal / create_goal / update_goal` 工具 + `/dsh-goal` 命令，会话日志折叠恢复，激活位进程本地不持久化。开关 `dshGoal`（默认关，与旧 `/goal` 扩展 A/B 共存）。
 
 **dsh-jobs** — DSH 后台任务：`bash_background` 启动 + `job_output / job_list / job_kill` 管理，完成通知（wakeup 空闲开新轮次 / quiet 仅通知用户）。`/dsh-jobs` 查看。
-
-**sandbox-allow** — DSH 升权移植：`sandbox-allow` 工具临时同意「单一指令」跨越沙箱（等价 DSH bash 的 `sandbox_permissions` + `justification`）。审批合并进现有权限闸门 GUI（`gate` 窗口按 `kind=sandbox-allow` 分支渲染），GUI 不可用时回退 TUI；授权只此一次、绝不持久化。优先 `permission=write-paths`（最小权限：保持只读沙箱、只额外开放指定目录），确需全局改动才 `full-access`。拒绝/取消/无 UI 一律不执行（fail-closed）。升权与执行审计写入会话日志（`sandbox-allow` CustomEntry）。
 
 ### 暂时停用插件
 

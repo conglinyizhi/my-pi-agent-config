@@ -1,11 +1,11 @@
-// sandbox-guard.test.ts — 黑名单解析与路径/命令拦截测试
+// guard.test.ts — 黑名单解析与路径/命令拦截测试
 //
-// 跑法：node --experimental-strip-types extensions/sandbox-guard/sandbox-guard.test.ts
+// 跑法：node --experimental-strip-types extensions/sandbox-permissions/guard.test.ts
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
-import { loadBlacklist, pathBlocked, commandBlocked } from "./index.ts";
+import { loadBlacklist, pathBlocked, commandBlocked } from "./guard.ts";
 
 describe("黑名单加载", () => {
   it("读默认黑名单文件并编译规则", () => {
