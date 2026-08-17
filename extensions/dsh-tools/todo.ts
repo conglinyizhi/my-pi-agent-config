@@ -3,7 +3,7 @@
 // 语义照抄 @deepseek-ai/dsh-tool-todo（见 docs/plans/2026-08-15-dsh-agent-capability-inventory.md）：
 //   - 每次调用提交 ENTIRE 列表（整表替换，无局部更新、无单条编辑）
 //   - content trim 后非空且唯一；allowParallel 为 false 时最多一个 in_progress
-//   - 持久化：appendEntry("dsh-todo", {todos}) 写会话 JSONL（CustomEntry，不进 LLM 上下文）；
+//   - 持久化：writeSteps() 即 appendEntry("dsh-todo", {todos}) 写会话 JSONL（CustomEntry，不进 LLM 上下文）；
 //     折叠规则 last-wins（区别于 DSH 的 turn/start 投影重置——pi 端保持会话级持续，
 //     /resume 后可恢复）
 //
@@ -11,24 +11,19 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { TODO_STATUSES, type Step, writeSteps } from "../../lib/todo-store.ts";
 
-/** DSH TodoItem 的合法状态 */
-export const TODO_STATUSES = ["pending", "in_progress", "completed"] as const;
-export type TodoStatus = (typeof TODO_STATUSES)[number];
-
-export interface TodoItem {
-	content: string;
-	status: TodoStatus;
-}
+/** DSH 侧叫 TodoItem，统一存储侧叫 Step（同形状，见 lib/todo-store.ts） */
+export type TodoItem = Step;
 
 export interface TodoWriteResult {
-	todos: TodoItem[];
+	todos: Step[];
 	counts: { pending: number; inProgress: number; completed: number };
 }
 
-/** 校验模型提交的列表并构建规范 TodoItem[]（DSH toTodoList 语义） */
-export function toTodoList(raw: TodoItem[], allowParallel: boolean): TodoItem[] {
-	const todos: TodoItem[] = [];
+/** 校验模型提交的列表并构建规范 Step[]（DSH toTodoList 语义） */
+export function toTodoList(raw: Step[], allowParallel: boolean): Step[] {
+	const todos: Step[] = [];
 	const seen = new Set<string>();
 	let active = 0;
 	for (const item of raw) {
@@ -58,7 +53,7 @@ export function describeTodoTool(allowParallel: boolean): string {
 	return DESCRIPTION_HEAD + (allowParallel ? DESCRIPTION_PARALLEL : DESCRIPTION_SINGLE) + DESCRIPTION_TAIL;
 }
 
-export function countTodos(todos: TodoItem[]): TodoWriteResult["counts"] {
+export function countTodos(todos: Step[]): TodoWriteResult["counts"] {
 	return {
 		pending: todos.filter((t) => t.status === "pending").length,
 		inProgress: todos.filter((t) => t.status === "in_progress").length,
@@ -75,7 +70,7 @@ export function countTodos(todos: TodoItem[]): TodoWriteResult["counts"] {
 export function registerTodoTool(
 	pi: ExtensionAPI,
 	allowParallel: boolean,
-	persist: (todos: TodoItem[]) => void = (todos) => pi.appendEntry("dsh-todo", { todos }),
+	persist: (todos: Step[]) => void = (todos) => writeSteps(pi, todos),
 ): void {
 	pi.registerTool({
 		name: "todo_write",
@@ -86,6 +81,7 @@ export function registerTodoTool(
 			"todo_write 是全量替换：每次调用提交完整列表，没有局部更新",
 			"在开始多步任务前列出每个具体步骤，随进度更新状态",
 			"完成即标记 completed，不要攒批；全部完成时不应有 in_progress 项",
+			"这是当前任务的步骤清单；跨轮长期目标（整个会话的唯一使命）用 goal 工具（create_goal），不要用 todo_write 承载目标",
 		],
 		parameters: Type.Object({
 			todos: Type.Array(

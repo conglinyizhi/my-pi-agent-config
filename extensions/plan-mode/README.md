@@ -2,17 +2,13 @@
 
 ## 功能概述
 
-用于安全代码分析的只读探索模式。启用后只能使用只读工具（read、bash 白名单、grep、find、ls、ask_question），禁止文件修改。支持从 LLM 输出中提取编号计划步骤，并在执行期间追踪进度。
+用于安全代码分析的只读探索模式。启用后只能使用只读工具（read、bash 白名单、grep、find、ls、ask_question），禁止文件修改。支持从 LLM 输出中提取编号计划步骤，并在执行期间追踪进度（步骤与 todo_write 共用统一存储）。
 
 ## 提供的命令
 
 ### `/plan`
 
 切换计划模式。快捷键：`Ctrl+Alt+P`。
-
-### `/todos`
-
-显示当前计划待办列表及完成状态。
 
 ## 工作流程
 
@@ -36,8 +32,9 @@ plan-mode/
 
 - `planModeEnabled` — 是否处于计划模式
 - `executionMode` — 是否处于执行模式
-- `todoItems` — 计划步骤列表（含完成状态）
-- 状态通过 `SessionEntry(type: "custom", customType: "plan-mode")` 持久化
+- `steps` — 计划步骤列表（`Step[]`：`{content, status}`，与 todo_write 共用统一存储）
+- 模式开关通过 `SessionEntry(type: "custom", customType: "plan-mode")` 持久化
+- 步骤列表通过统一存储 `lib/todo-store.ts` 持久化为 `dsh-todo` entry（与 todo_write 同一份）
 
 ### 关键设计
 
@@ -59,5 +56,6 @@ plan-mode/
 
 ### 依赖
 
-- `./utils.ts` — TodoItem 类型、extractTodoItems、isSafeCommand、markCompletedSteps
+- `./utils.ts` — extractTodoItems、isSafeCommand、markCompletedSteps
+- `../../lib/todo-store.ts` — 统一步骤存储（Step 类型、readSteps、writeSteps）
 - `@earendil-works/pi-tui` — Key 快捷键定义

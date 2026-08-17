@@ -3,6 +3,8 @@
  * 为了便于测试而提取。
  */
 
+import type { Step } from "../../lib/todo-store.ts";
+
 // 在 plan mode 中会被阻止的破坏性命令
 const DESTRUCTIVE_PATTERNS = [
   /\brm\b/i,
@@ -99,12 +101,6 @@ export function isSafeCommand(command: string): boolean {
   return !isDestructive && isSafe;
 }
 
-export interface TodoItem {
-  step: number;
-  text: string;
-  completed: boolean;
-}
-
 export function cleanStepText(text: string): string {
   let cleaned = text
     .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // 去掉粗体/斜体
@@ -122,8 +118,8 @@ export function cleanStepText(text: string): string {
   return cleaned;
 }
 
-export function extractTodoItems(message: string): TodoItem[] {
-  const items: TodoItem[] = [];
+export function extractTodoItems(message: string): Step[] {
+  const items: Step[] = [];
   const headerMatch = message.match(/\*{0,2}Plan:\*{0,2}\s*\n/i);
   if (!headerMatch) return items;
 
@@ -138,7 +134,7 @@ export function extractTodoItems(message: string): TodoItem[] {
     if (text.length > 5 && !text.startsWith("`") && !text.startsWith("/") && !text.startsWith("-")) {
       const cleaned = cleanStepText(text);
       if (cleaned.length > 3) {
-        items.push({ step: items.length + 1, text: cleaned, completed: false });
+        items.push({ content: cleaned, status: "pending" });
       }
     }
   }
@@ -154,11 +150,13 @@ export function extractDoneSteps(message: string): number[] {
   return steps;
 }
 
-export function markCompletedSteps(text: string, items: TodoItem[]): number {
+export function markCompletedSteps(text: string, steps: Step[]): number {
   const doneSteps = extractDoneSteps(text);
   for (const step of doneSteps) {
-    const item = items.find((t) => t.step === step);
-    if (item) item.completed = true;
+    const index = step - 1;
+    if (index >= 0 && index < steps.length) {
+      steps[index].status = "completed";
+    }
   }
   return doneSteps.length;
 }
