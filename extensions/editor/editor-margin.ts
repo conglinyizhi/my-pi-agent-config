@@ -1,4 +1,4 @@
-// 带圆角边框和可配置边距的输入编辑器（详见 editor-margin.README.md）
+// 带圆角边框和可配置边距的输入编辑器（详见同目录 README.md 的 editor-margin 节）
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";

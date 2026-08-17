@@ -40,7 +40,7 @@ lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + ru
 | subagents | SubagentsView | extensions/trident-subagent（/gui:subagents）|
 | routing | RoutingView | extensions/trident-routing |
 | gate | GateView | extensions/sandbox-permissions（gate/allow） |
-| editor | EditorView | extensions/editor-gui |
+| editor | EditorView | extensions/editor |
 
 ## extension 侧调用
 
