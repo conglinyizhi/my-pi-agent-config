@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { type ExtensionAPI, getAgentDir, type ProviderConfig, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir, type ExtensionCommandContext, type ProviderConfig, type ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
 import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
@@ -9,6 +9,7 @@ import { diffModelLists, formatDiffReport, formatTokens, fmtPrice } from "./prov
 import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
+import { fastDelHandler } from "./fast-del.ts";
 
 const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
@@ -57,6 +58,15 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
       await fastAddHandler(input, ctx, pi);
     },
   });
+
+  const fastDelCommand = {
+    description: "删除自定义供应商（支持模糊匹配和 TUI 选择）",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      await fastDelHandler(args, ctx, pi);
+    },
+  };
+  pi.registerCommand("provider:fast-del", fastDelCommand);
+  pi.registerCommand("provider:fast-remove", fastDelCommand);
 
   // /provider:reload —— 重新加载 providers.toml
   pi.registerCommand("provider:reload", {

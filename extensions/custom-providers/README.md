@@ -15,6 +15,15 @@
   - URL 与 API Key 必填；模型名可选（留空则从 API 自动拉取）
 - **无参**：进入交互式引导，逐步填写 URL / Key / 模型名
 
+### `/provider:fast-del` / `/provider:fast-remove`
+
+删除自定义供应商，两个命令是同一功能的别名。
+
+- **有参**：按供应商标识符、名称或地址进行大小写不敏感的包含匹配
+- 匹配多个时展开 TUI 选择，避免模糊匹配误删
+- 无参时展开全部供应商供选择
+- 选中后需要二次确认，同时移除 `providers.toml` / `auth.json` 配置并注销运行时 provider
+
 ### `/provider:reload`
 
 重新加载 `~/.pi/agent/providers.toml`，热更新已注册的供应商。
@@ -35,6 +44,7 @@ custom-providers/
 ├── detector.ts              # API 格式自动检测（请求 /models 端点）
 ├── models.ts                # 模型列表解析（/models 端点）与格式映射
 ├── fast-add.ts              # /provider:fast-add 命令实现
+├── fast-del.ts              # /provider:fast-del 和 /provider:fast-remove 命令实现
 ├── models-dev.ts            # 开发环境模型配置
 ├── models-dev-static.json   # 静态模型数据
 ├── loader.test.ts           # loader 测试
