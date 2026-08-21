@@ -5,7 +5,7 @@
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
 | `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
-| `gate.ts` | 危险 bash 命令审批（规则引擎 + GUI/TUI） | `pi.on("tool_call"/"tool_result"/"session_start")` |
+| `gate.ts` | 危险 bash 命令审批（规则引擎 + GUI/TUI） | `pi.on("tool_call"/"session_start")` |
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow` | `pi.registerTool("sandbox-allow")` |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。

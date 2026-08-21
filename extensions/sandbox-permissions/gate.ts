@@ -19,7 +19,7 @@ import * as os from "node:os";
 import { spawnSync } from "node:child_process";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
-import { hasDynamicConstructs, auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
+import { auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
 import { buildInlineScriptRejection, extractInlineScript, saveInlineScript } from "./inline-script";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
@@ -51,9 +51,6 @@ const PIPE_EXEC_RULE: TokenRule = {
 };
 
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死；窗口内不再自动超时，用户可任意时长审批）
-
-/** 安全动态放行记录：tool_result 命中则在结果前插备注（模型有知情权） */
-const allowedDynamicCommands = new Set<string>();
 
 /** pnpm 可用性（带缓存；startup 检测一次，tool_call 复用） */
 let pnpmChecked = false;
@@ -165,14 +162,13 @@ export default async function (pi: ExtensionAPI) {
 
     // 分级审核：mask 盲区 → 剥洋葱内部审核 → Python 段检测 → 管道执行器 → 规则判定
     const audit = auditCommand(command);
-    const { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked } = audit;
+    const { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec } = audit;
 
     // /tmp 重定向目标动态校验：软链指向 /tmp 之外（如系统文件）视为危险，静态前缀豁免不覆盖
     const tmpEscape = extractTmpRedirectTargets(command).filter((t) => !isTmpRedirectTargetSafe(t));
 
-    // 完全安全 → 放行；mask 后仍有动态（安全替换被审核放行）→ 记录，tool_result 插备注
+    // 完全安全 → 放行
     if (allow && tmpEscape.length === 0) {
-      if (hasDynamicConstructs(masked)) allowedDynamicCommands.add(command);
       return undefined;
     }
     if (tmpEscape.length > 0) {
@@ -263,19 +259,5 @@ export default async function (pi: ExtensionAPI) {
 
     if (choice?.includes("允许")) return undefined;
     return { block: true, reason: buildRejectReason(command, rules, undefined, "已被用户阻止") };
-  });
-
-  pi.on("tool_result", async (event) => {
-    if (event.toolName !== "bash") return undefined;
-    const command = event.input?.command as string | undefined;
-    if (!command || !allowedDynamicCommands.has(command)) return undefined;
-    allowedDynamicCommands.delete(command);
-    // content 是 (TextContent | ImageContent)[]，返回新数组在结果前插备注
-    return {
-      content: [
-        { type: "text" as const, text: "[权限闸门] 命令含命令替换，内部指令已通过规则审核，放行" },
-        ...event.content,
-      ],
-    };
   });
 }
