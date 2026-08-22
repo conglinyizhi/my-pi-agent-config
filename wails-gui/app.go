@@ -69,6 +69,8 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["command"] = req["command"]
 		base["taskId"] = req["taskId"]
 		base["rules"] = req["rules"]
+		// 云端模型审核意见（verdict/reason/suggestion/opinion；nil 时前端容错为不展示）
+		base["review"] = req["review"]
 		// sandbox-allow 升权审批合并进 gate 窗口：kind 判别 audit（默认）/ sandbox-allow
 		base["kind"] = req["kind"]
 		base["permission"] = req["permission"]

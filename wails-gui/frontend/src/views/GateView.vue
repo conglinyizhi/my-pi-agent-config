@@ -29,6 +29,17 @@
       </div>
     </div>
 
+    <!-- 云端模型审核意见（仅 audit） -->
+    <div v-if="!isSandboxAllow && review" class="review-block">
+      <div class="review-header">
+        🤖 云端模型审核
+        <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
+      </div>
+      <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
+      <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
+      <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
+    </div>
+
     <!-- 规则列表（仅 audit） -->
     <div v-if="!isSandboxAllow" @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
       {{ showRules ? '▼' : '▶' }} {{ rules.length }} 条规则匹配
@@ -41,8 +52,8 @@
       </div>
     </div>
 
-    <!-- 目录白/黑名单（候选目录逐个加入，长期生效） -->
-    <div v-if="candidatePaths.length" class="paths-block">
+    <!-- 目录白/黑名单（仅升权申请窗口；候选目录逐个加入，长期生效） -->
+    <div v-if="isSandboxAllow && candidatePaths.length" class="paths-block">
       <div class="paths-header">📁 目录名单 <span class="paths-sub">（加入后长期生效）</span></div>
       <div v-for="p in candidatePaths" :key="p" class="path-row">
         <code class="path-dir">{{ p }}</code>
@@ -98,6 +109,8 @@ const ready = ref(false);
 const cmd = ref("");
 const taskId = ref(null);
 const rules = ref([]);
+// 云端模型审核意见（audit：verdict/reason/suggestion/opinion）
+const review = ref(null);
 // sandbox-allow 升权审批字段（kind=sandbox-allow 时启用）
 const kind = ref("");
 const permission = ref("");
@@ -120,6 +133,13 @@ const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全开放 · 无沙箱" : "保持只读 + 额外可写"
 );
+const verdictMeta = computed(() => {
+  const v = review.value?.verdict;
+  if (v === "safe") return { label: "✅ 安全", cls: "v-safe" };
+  if (v === "risky") return { label: "⚠️ 有风险", cls: "v-risky" };
+  if (v === "dangerous") return { label: "🔴 危险", cls: "v-dangerous" };
+  return { label: "❌ 审核失败", cls: "v-error" };
+});
 
 const highlights = computed(() => {
   const r = [];
@@ -218,6 +238,7 @@ onMounted(async () => {
   cmd.value = data.command || "";
   taskId.value = data.taskId || null;
   rules.value = data.rules || [];
+  review.value = data.review || null;
   kind.value = data.kind || "audit";
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
@@ -275,6 +296,18 @@ onMounted(async () => {
 .path-dir { flex: 1; color: #e0e0e0; background: #0d0d1a; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; word-break: break-all; }
 .paths-hint { font-size: 11px; color: #666; margin-top: 4px; }
 .btn-sm { padding: 2px 8px; font-size: 11px; }
+
+/* ── 云端模型审核意见 ── */
+.review-block { padding: 8px 16px; border-top: 1px solid #2a2a4a; background: #131328; }
+.review-header { font-size: 12px; color: #7aa2f7; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+.verdict-badge { font-size: 11px; padding: 1px 8px; border-radius: 3px; }
+.verdict-badge.v-safe { color: #7ee787; background: #12261a; border: 1px solid #7ee78744; }
+.verdict-badge.v-risky { color: #e67e22; background: #2a1a0a; border: 1px solid #e67e2255; }
+.verdict-badge.v-dangerous { color: #ff6b6b; background: #3a1a1a; border: 1px solid #ff6b6b55; }
+.verdict-badge.v-error { color: #999; background: #1a1a2e; border: 1px solid #444; }
+.review-reason { font-size: 13px; color: #e0e0e0; line-height: 1.6; }
+.review-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
+.review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 
 /* ── 规则列表 ── */
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }
