@@ -241,4 +241,14 @@ describe("formatReviewNote", () => {
 		assert.ok(note.includes("看法"));
 		assert.ok(note.includes("建议下次显式列出路径"));
 	});
+	it("error 结论明确标示审核失败", () => {
+		const note = formatReviewNote({
+			verdict: "error",
+			reason: "审核模型全部失败：zen/free：审核请求超时（10000ms 内未收到远端响应）",
+			suggestion: "",
+		});
+		assert.ok(note.includes("审核失败"));
+		assert.ok(note.includes("超时"));
+		assert.ok(note.includes("10000ms"));
+	});
 });

@@ -412,10 +412,16 @@ export async function reviewCommand(
 				);
 			}
 			if (response.stopReason === "aborted" || response.stopReason === "error") {
-				const reason = response.errorMessage ?? `llm ${response.stopReason}`;
-				if (signal?.aborted || response.stopReason === "aborted") {
-					return { verdict: "error", reason: "aborted", suggestion: "" };
+				// `aborted` 既可能来自用户取消，也可能是本次审核的超时信号。
+				// 先区分二者，不能把超时笼统报成一个毫无上下文的 "aborted"。
+				if (signal?.aborted) {
+					return { verdict: "error", reason: "审核已取消：主任务已中止", suggestion: "" };
 				}
+				if (timeoutSignal.aborted) {
+					failures.push(`${label}: 审核请求超时（${cfg.timeoutMs}ms 内未收到远端响应）`);
+					continue;
+				}
+				const reason = response.errorMessage || `远端服务中止了审核请求（${response.stopReason}，未提供详细错误）`;
 				failures.push(`${label}: ${reason}`);
 				continue;
 			}
@@ -428,10 +434,14 @@ export async function reviewCommand(
 			failures.push(`${label}: ${result.reason}`);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			if (signal?.aborted || msg === "aborted") {
-				return { verdict: "error", reason: "aborted", suggestion: "" };
+			if (signal?.aborted) {
+				return { verdict: "error", reason: "审核已取消：主任务已中止", suggestion: "" };
 			}
-			failures.push(`${label}: ${msg}`);
+			if (timeoutSignal.aborted) {
+				failures.push(`${label}: 审核请求超时（${cfg.timeoutMs}ms 内未收到远端响应）`);
+				continue;
+			}
+			failures.push(`${label}: ${msg || "远端服务未提供错误详情"}`);
 		}
 	}
 	return {
@@ -444,7 +454,13 @@ export async function reviewCommand(
 /** 审核结论的展示文本（供弹窗 / GUI 展示附加） */
 export function formatReviewNote(review: ReviewResult): string {
 	const label =
-		review.verdict === "dangerous" ? "危险" : review.verdict === "risky" ? "有风险" : review.verdict;
+		review.verdict === "dangerous"
+			? "危险"
+			: review.verdict === "risky"
+				? "有风险"
+				: review.verdict === "safe"
+					? "安全"
+					: "审核失败";
 	const parts = [`🤖 LLM 审查：${label}`];
 	if (review.reason) parts.push(review.reason);
 	if (review.suggestion) parts.push(`建议：${review.suggestion}`);

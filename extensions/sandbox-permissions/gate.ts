@@ -243,18 +243,18 @@ export default async function (pi: ExtensionAPI) {
         });
         return undefined;
       }
-      // 有有效结论，或模型返回了可展示的文本（opinion）——即使是 error 也一并展示，供人工判断
-      if (review.verdict !== "error" || review.opinion) {
-        pi.appendEntry("sandbox-llm-review", {
-          command,
-          verdict: review.verdict,
-          reason: review.reason,
-          opinion: review.opinion,
-          ts: Date.now(),
-        });
+      // 无论审核是否成功都写会话记录。失败记录必须可追溯，不能只在弹窗里留下一个模糊状态。
+      pi.appendEntry("sandbox-llm-review", {
+        command,
+        verdict: review.verdict,
+        reason: review.reason,
+        opinion: review.opinion,
+        ts: Date.now(),
+      });
+      // 有有效结论，或审核失败：都传进 GUI。失败原因是人工决定是否放行的重要上下文。
+      if (review.verdict !== "error" || review.reason || review.opinion) {
         reviewNote = `\n\n${formatReviewNote(review)}`;
       }
-      // 审核失败（限流/超时/无模型）：不静默吞掉，失败原因随 GUI 一并展示，用户知道云端审核为何没出意见
     }
 
     // 桌面通知
