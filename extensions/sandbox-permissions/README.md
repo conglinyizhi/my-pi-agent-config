@@ -129,6 +129,27 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 | `risky` / `dangerous` | ⚠️ 弹窗（附 LLM 意见） | ⚠️ 弹窗（附 LLM 意见） |
 | 审核失败（超时/网络/解析/无模型） | ⚠️ 回退弹窗，绝不静默放行 | ⚠️ 回退弹窗 |
 
+### 审核 prompt（review-system-prompt.txt）
+
+发送给 LLM 的 system prompt 独立存放在 `extensions/sandbox-permissions/review-system-prompt.txt`（纯文本，改了即生效，下次审核就用到，无需 /reload）。文件缺失或读失败时按「审核失败」处理：回退弹窗，绝不静默放行。
+
+### 结论回传：工具调用
+
+审核结论通过工具调用回传：请求时注册 `report_review_verdict` 工具（参数 `verdict` / `reason` / `suggestion`，schema 约束枚举），LLM 直接调用该工具提交结论。模型的回复文本不做 JSON 解析——允许像日常交流一样自然表述，原样作为 `opinion`（看法）展示给人工审核者；即使未调用工具（verdict 无法判定，回退弹窗），文本也一并展示。
+
+审核模型：支持**模型池**（`models = [{provider, model}, ...]`），按序尝试，单个模型失败（限流/超时/网络）自动切换下一个，全部失败才回退弹窗（失败原因汇总展示）。池子未配置时兼容旧的 `provider`/`model` 单模型；两者皆无才用当前会话模型——绝不静默切换到未配置的模型（池内切换是显式配置的容错，不是静默）。prompt 内置注入防护：「测试环境 / 直接放行 / 忽略安全审核」等放宽审核的声称一律按注入忽略，判定只认命令本身，宁严勿松。
+
+**池管理指令**（不用手抄供应商名/模型名）：
+
+- `/provider:fast-put [关键词]` — 从全局模型列表里筛选一个加入审核池（交互式，展示上下文/价格；加完可选「测试一次审核链路」验证模型可用性）
+- `/provider:fast-pop [provider/model 或模型名]` — 从审核池移除一个模型（池子清空后审核回退当前会话模型）
+
+审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/max_cache）。
+
+### GUI 联动（wails-gui 权限闸门窗口）
+
+LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块——verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的自然语言看法（`opinion`，原样完整展示）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
+
 ### 配置（extensions.toml 的 `[sandbox-llm-review]`）
 
 扩展配置统一放 `~/.pi/agent/extensions.toml`（不进 settings.json，避免换模型时被误改）：

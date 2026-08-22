@@ -8,9 +8,10 @@ import { parse as parseToml } from "smol-toml";
 import {
 	buildReviewPrompt,
 	createReviewCache,
+	extractReviewResult,
 	formatReviewNote,
 	normalizeConfig,
-	parseVerdict,
+	REVIEW_TOOL,
 	reviewCacheKey,
 } from "./llm-review.ts";
 import type { TokenRule } from "./rule-engine.ts";
@@ -46,6 +47,36 @@ describe("normalizeConfig", () => {
 		assert.equal(c.timeoutMs, 5000);
 		assert.equal(c.maxCache, 50);
 	});
+	it("模型池：解析 models 数组，跳过结构非法条目", () => {
+		const c = normalizeConfig({
+			models: [
+				{ provider: "zhipu", model: "glm-4.7-flash" },
+				{ provider: "deepseek", model: "deepseek-v4-flash" },
+				{ provider: "x" }, // 缺 model → 跳过
+				"not-an-object", // 非对象 → 跳过
+			],
+		});
+		assert.deepEqual(c.models, [
+			{ provider: "zhipu", model: "glm-4.7-flash" },
+			{ provider: "deepseek", model: "deepseek-v4-flash" },
+		]);
+	});
+	it("models 优先于旧 provider/model 单配置", () => {
+		const c = normalizeConfig({
+			models: [{ provider: "zhipu", model: "glm-4.7-flash" }],
+			provider: "deepseek",
+			model: "deepseek-v4-flash",
+		});
+		assert.deepEqual(c.models, [{ provider: "zhipu", model: "glm-4.7-flash" }]);
+		assert.equal(c.provider, undefined);
+		assert.equal(c.model, undefined);
+	});
+	it("无 models 时兼容旧 provider/model 单配置", () => {
+		const c = normalizeConfig({ provider: "deepseek", model: "deepseek-v4-flash" });
+		assert.equal(c.models, undefined);
+		assert.equal(c.provider, "deepseek");
+		assert.equal(c.model, "deepseek-v4-flash");
+	});
 	it("非法值回退默认", () => {
 		const c = normalizeConfig({ enabled: "yes", mode: "auto", timeout_ms: -3, max_cache: 0 });
 		assert.equal(c.enabled, true);
@@ -70,55 +101,77 @@ max_cache = 50
 });
 
 describe("buildReviewPrompt", () => {
+	const SYSTEM = "你是一个专业的 Linux 运维人员，审核 shell 指令是否安全。";
 	it("包含命令与命中规则", () => {
-		const { system, user } = buildReviewPrompt("rm -rf /tmp/build", [rule("rm-recursive", ["-rf"])]);
-		assert.ok(system.includes("bash 命令安全审核器"));
-		assert.ok(system.includes("verdict"));
+		const { system, user } = buildReviewPrompt(SYSTEM, "rm -rf /tmp/build", [rule("rm-recursive", ["-rf"])]);
+		assert.equal(system, SYSTEM);
+		assert.ok(system.includes("Linux 运维人员"));
 		assert.ok(user.includes("rm -rf /tmp/build"));
 		assert.ok(user.includes("rm-recursive"));
 		assert.ok(user.includes("-rf"));
 	});
 	it("无规则时给出动态构造提示", () => {
-		const { user } = buildReviewPrompt("echo $(date)", []);
+		const { user } = buildReviewPrompt(SYSTEM, "echo $(date)", []);
 		assert.ok(user.includes("动态构造"));
 	});
 	it("超长命令截断", () => {
-		const { user } = buildReviewPrompt("x".repeat(5000), []);
+		const { user } = buildReviewPrompt(SYSTEM, "x".repeat(5000), []);
 		assert.ok(user.includes("已截断"));
 		assert.ok(user.length < 4600);
 	});
 });
 
-describe("parseVerdict", () => {
-	it("裸 JSON", () => {
-		const r = parseVerdict('{"verdict":"safe","reason":"ok","suggestion":""}');
-		assert.deepEqual(r, { verdict: "safe", reason: "ok", suggestion: "" });
+describe("extractReviewResult", () => {
+	const toolCall = (args: Record<string, unknown>) => ({
+		type: "toolCall" as const,
+		id: "call_1",
+		name: REVIEW_TOOL.name,
+		arguments: args,
 	});
-	it("markdown 代码块包裹", () => {
-		const r = parseVerdict('```json\n{"verdict":"risky","reason":"路径含通配符","suggestion":"先 ls 确认"}\n```');
-		assert.equal(r.verdict, "risky");
-		assert.equal(r.reason, "路径含通配符");
-		assert.equal(r.suggestion, "先 ls 确认");
+	const text = (t: string) => ({ type: "text" as const, text: t });
+
+	it("优先取工具调用参数，工具调用后的文本收集为 opinion", () => {
+		const r = extractReviewResult([
+			text("命令拼接方式有隐患，建议人工确认后再执行。"),
+			toolCall({ verdict: "risky", reason: "路径含通配符", suggestion: "先 ls 确认" }),
+		]);
+		assert.deepEqual(r, {
+			verdict: "risky",
+			reason: "路径含通配符",
+			suggestion: "先 ls 确认",
+			opinion: "命令拼接方式有隐患，建议人工确认后再执行。",
+		});
 	});
-	it("前后缀噪音", () => {
-		const r = parseVerdict('好的，审核如下：\n{"verdict":"dangerous","reason":"删除系统目录","suggestion":""}\n以上。');
-		assert.equal(r.verdict, "dangerous");
-	});
-	it("空/纯文本 → error", () => {
-		assert.equal(parseVerdict("").verdict, "error");
-		assert.equal(parseVerdict("   ").verdict, "error");
-		assert.equal(parseVerdict("抱歉我无法判断").verdict, "error");
-	});
-	it("非法 JSON → error", () => {
-		assert.equal(parseVerdict("{not json}").verdict, "error");
-	});
-	it("verdict 非法值 → error", () => {
-		assert.equal(parseVerdict('{"verdict":"maybe","reason":"x","suggestion":""}').verdict, "error");
-		assert.equal(parseVerdict('{"reason":"缺 verdict"}').verdict, "error");
-	});
-	it("reason/suggestion 非字符串容错为空", () => {
-		const r = parseVerdict('{"verdict":"safe","reason":123,"suggestion":null}');
+	it("工具调用无自由文本 → 不带 opinion 字段", () => {
+		const r = extractReviewResult([
+			toolCall({ verdict: "safe", reason: 123, suggestion: null }),
+		]);
 		assert.deepEqual(r, { verdict: "safe", reason: "", suggestion: "" });
+		assert.equal("opinion" in r, false);
+	});
+	it("opinion 超长截断到 500 字符", () => {
+		const r = extractReviewResult([
+			text("x".repeat(600)),
+			toolCall({ verdict: "safe", reason: "ok", suggestion: "" }),
+		]);
+		assert.equal(r.opinion?.length, 500);
+	});
+	it("工具调用 verdict 非法值 → error", () => {
+		const r = extractReviewResult([toolCall({ verdict: "maybe", reason: "x", suggestion: "" })]);
+		assert.equal(r.verdict, "error");
+	});
+	it("未调用工具时：文本原样作为 opinion，verdict=error（不解析 JSON）", () => {
+		const r = extractReviewResult([
+			text("这条命令用了变量拼接路径，我判断存在注入风险，建议人工确认。"),
+		]);
+		assert.equal(r.verdict, "error");
+		assert.equal(r.reason, "模型未给出结构化结论（未调用审核工具）");
+		assert.equal(r.opinion, "这条命令用了变量拼接路径，我判断存在注入风险，建议人工确认。");
+	});
+	it("未调用工具且无文本 → error，不带 opinion", () => {
+		const r = extractReviewResult([]);
+		assert.equal(r.verdict, "error");
+		assert.equal("opinion" in r, false);
 	});
 });
 
@@ -177,5 +230,15 @@ describe("formatReviewNote", () => {
 		assert.ok(note.includes("有风险"));
 		assert.ok(note.includes("路径含通配符"));
 		assert.ok(note.includes("先 ls 确认"));
+	});
+	it("含 opinion 看法", () => {
+		const note = formatReviewNote({
+			verdict: "safe",
+			reason: "ok",
+			suggestion: "",
+			opinion: "写法上动态拼接，建议下次显式列出路径",
+		});
+		assert.ok(note.includes("看法"));
+		assert.ok(note.includes("建议下次显式列出路径"));
 	});
 });

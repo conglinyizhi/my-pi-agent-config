@@ -23,8 +23,8 @@ import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
 import { auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
 import { buildInlineScriptRejection, extractInlineScript, saveInlineScript } from "./inline-script";
-import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "./llm-review";
-import { addAllowDir, addBlockDir, collectCandidateDirs, isWhitelisted, loadSandboxPaths } from "./paths";
+import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "./llm-review";
+import { addAllowDir, addBlockDir, isWhitelisted, loadSandboxPaths } from "./paths";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -84,6 +84,7 @@ async function tryGuiApproval(
   command: string,
   rules: TokenRule[],
   signal: AbortSignal | undefined,
+  review?: ReviewResult,
 ): Promise<
   | {
       action: "allow" | "deny" | "reject-all";
@@ -105,8 +106,9 @@ async function tryGuiApproval(
       autoReject: r.autoReject || false,
       matched: r.matched ?? [],
     })),
-    // GUI 候选目录：从命令提取的路径（供白/黑名单按钮）
-    candidatePaths: collectCandidateDirs(command, []),
+    // 云端模型审核意见：verdict/reason/suggestion/opinion，GUI 完整展示供用户判断
+    review: review ?? null,
+    // 目录白名单归属升权申请窗口（allow.ts 传 candidatePaths）；审计窗口专注命令与审核意见
   }, { timeoutMs: GUI_TIMEOUT_MS, signal });
 
   // 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭或未选择 → 视为 GUI 不可用，回退 TUI
@@ -226,9 +228,11 @@ export default async function (pi: ExtensionAPI) {
 
     // ====== LLM 预审层：需确认命令先过 LLM；safe 且 auto 模式自动放行，减少弹窗 ======
     let reviewNote = "";
+    // LLM 预审结论：随 GUI 窗口一并传给用户查看（verdict/reason/suggestion/opinion）
+    let review: ReviewResult | undefined;
     const reviewConfig = loadLlmReviewConfig();
     if (reviewConfig.enabled) {
-      const review = await reviewCommand(pi, ctx, command, rules, ctx.signal, reviewCache, reviewConfig);
+      review = await reviewCommand(pi, ctx, command, rules, ctx.signal, reviewCache, reviewConfig);
       if (review.verdict === "safe" && reviewConfig.mode === "auto") {
         pi.appendEntry("sandbox-llm-review", {
           command,
@@ -239,15 +243,18 @@ export default async function (pi: ExtensionAPI) {
         });
         return undefined;
       }
-      if (review.verdict !== "error") {
+      // 有有效结论，或模型返回了可展示的文本（opinion）——即使是 error 也一并展示，供人工判断
+      if (review.verdict !== "error" || review.opinion) {
         pi.appendEntry("sandbox-llm-review", {
           command,
           verdict: review.verdict,
           reason: review.reason,
+          opinion: review.opinion,
           ts: Date.now(),
         });
         reviewNote = `\n\n${formatReviewNote(review)}`;
       }
+      // 审核失败（限流/超时/无模型）：不静默吞掉，失败原因随 GUI 一并展示，用户知道云端审核为何没出意见
     }
 
     // 桌面通知
@@ -259,8 +266,8 @@ export default async function (pi: ExtensionAPI) {
 
     // ====== 审批流程 ======
 
-    // 1. 尝试 Wails GUI
-    const guiResult = await tryGuiApproval(command, rules, ctx.signal);
+    // 1. 尝试 Wails GUI（带云端模型审核意见，窗口内完整展示）
+    const guiResult = await tryGuiApproval(command, rules, ctx.signal, review);
 
     if (guiResult === "gui-unavailable") { /* fall through to TUI */ }
     else {
@@ -302,7 +309,7 @@ export default async function (pi: ExtensionAPI) {
 
     if (choice?.includes("GUI")) {
       // 递归重试 GUI（注意：tryGuiApproval 的 allow 是对象 { action: "allow" }，不是字符串）
-      const retry = await tryGuiApproval(command, rules, ctx.signal);
+      const retry = await tryGuiApproval(command, rules, ctx.signal, review);
       if (retry !== "gui-unavailable" && retry.action === "allow") return undefined;
       if (retry === "gui-unavailable") {
         // GUI 再次未响应：回 TUI 兜底，不再递归，别把「窗口没打开」伪装成「用户拒绝」

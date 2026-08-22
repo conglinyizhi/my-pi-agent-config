@@ -13,9 +13,20 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import guard from "./guard";
 import gate from "./gate";
 import allow from "./allow";
+import { poolAddHandler, poolRemoveHandler } from "./review-pool";
 
 export default async function (pi: ExtensionAPI): Promise<void> {
 	await guard(pi);
 	await gate(pi);
 	await allow(pi);
+
+	// 审核模型池管理（fast-add 体系配套）：/provider:fast-put 添加、/provider:fast-pop 移除
+	pi.registerCommand("provider:fast-put", {
+		description: "从可用模型筛选一个加入审核池（LLM 预审模型池）：/provider:fast-put [关键词]",
+		handler: (args, ctx) => poolAddHandler(args, ctx, pi),
+	});
+	pi.registerCommand("provider:fast-pop", {
+		description: "从审核池移除一个模型：/provider:fast-pop [provider/model 或模型名]",
+		handler: (args, ctx) => poolRemoveHandler(args, ctx),
+	});
 }

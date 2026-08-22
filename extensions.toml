@@ -84,9 +84,9 @@ hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（
 # sandbox-permissions：gate 危险命令的 LLM 预审
 # ─────────────────────────────────────────────────────────────
 [sandbox-llm-review]
-enabled = true          # 总开关；false = 回到纯规则弹窗流程
-mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
-provider = "zhipu"      # 审核模型供应商（缺省用当前会话模型）
-model = "glm-4.7-flash"
-timeout_ms = 10000      # 单次审核超时（毫秒）；超时回退弹窗
-max_cache = 200         # 内存缓存上限（同命令同规则不重复调 API）
+enabled = true # 总开关；false = 回到纯规则弹窗流程
+mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
+# 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
+# 用 /provider:fast-put / /provider:fast-pop 管理
+timeout_ms = 10000 # 单模型单次审核超时（毫秒）；超时切换下一个模型
+max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）

@@ -12,16 +12,17 @@
 //   - 命令文本会发送到配置的 LLM API（默认当前会话模型）；启用即视为知情
 //
 // 结构：纯函数（可单测）与副作用（调 API / 读配置）分离：
-//   - buildReviewPrompt / parseVerdict / reviewCacheKey / createReviewCache /
-//     normalizeConfig 为纯函数，llm-review.test.ts 覆盖
-//   - reviewCommand / loadLlmReviewConfig 为副作用，不单测
+//   - buildReviewPrompt / extractReviewResult / reviewCacheKey /
+//     createReviewCache / normalizeConfig 为纯函数，llm-review.test.ts 覆盖
+//   - reviewCommand / loadLlmReviewConfig / loadReviewSystemPrompt 为副作用，不单测
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseToml } from "smol-toml";
+import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
 import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
@@ -32,6 +33,14 @@ export interface ReviewResult {
 	reason: string;
 	/** 更安全的替代写法或注意点（无则空字符串） */
 	suggestion: string;
+	/** 模型调用工具后补充的命令质量看法（可选，供人工审核参考） */
+	opinion?: string;
+}
+
+/** 审核模型引用（provider/model 对，用于模型池） */
+export interface ModelRef {
+	provider: string;
+	model: string;
 }
 
 export interface LlmReviewConfig {
@@ -42,10 +51,16 @@ export interface LlmReviewConfig {
 	 * strict：LLM 只提供意见，无论 verdict 都仍弹窗人工确认
 	 */
 	mode: "auto" | "strict";
-	/** 指定审核模型（provider/model）；缺省用当前会话模型 ctx.model */
+	/**
+	 * 审核模型池：按顺序尝试，单个模型失败（限流/超时/网络）自动切换下一个，
+	 * 全部失败才判 error 回退弹窗（失败原因汇总展示）。缓解免费模型限流冲击。
+	 * 池子为空且未配置 provider/model → 用当前会话模型。
+	 */
+	models?: ModelRef[];
+	/** 兼容旧配置：单模型（provider/model）；与 models 互斥，models 优先 */
 	provider?: string;
 	model?: string;
-	/** 单次审核超时（毫秒），超时视为 error 回退弹窗 */
+	/** 单模型单次审核超时（毫秒），超时视为该模型失败，切换下一个 */
 	timeoutMs: number;
 	/** 内存缓存上限（同命令同规则不重复调 API） */
 	maxCache: number;
@@ -64,6 +79,10 @@ const DEFAULT_CONFIG: LlmReviewConfig = {
 
 const EXTENSIONS_TOML_PATH = join(getAgentDir(), "extensions.toml");
 const CONFIG_SECTION = "sandbox-llm-review";
+/** 独立存放的审核 system prompt（纯文本；改完即生效，下次审核现读） */
+const REVIEW_PROMPT_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-system-prompt.txt");
+/** 审核模型池独立文件（个人依赖：供应商配置/API key 不入库，已 gitignore） */
+const REVIEW_POOL_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-pool.toml");
 
 /** 合并原始配置对象与默认值（纯函数；raw 可为 extensions.toml 中 section 的任意值） */
 export function normalizeConfig(raw: unknown): LlmReviewConfig {
@@ -71,8 +90,24 @@ export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	const out: LlmReviewConfig = { ...DEFAULT_CONFIG };
 	if (typeof cfg.enabled === "boolean") out.enabled = cfg.enabled;
 	if (cfg.mode === "strict") out.mode = "strict";
-	if (typeof cfg.provider === "string" && cfg.provider) out.provider = cfg.provider;
-	if (typeof cfg.model === "string" && cfg.model) out.model = cfg.model;
+	// 模型池：models = [{ provider, model }, ...]；仅收录结构合法的条目
+	if (Array.isArray(cfg.models)) {
+		const refs: ModelRef[] = [];
+		for (const m of cfg.models) {
+			if (m && typeof m === "object") {
+				const { provider, model } = m as Record<string, unknown>;
+				if (typeof provider === "string" && provider && typeof model === "string" && model) {
+					refs.push({ provider, model });
+				}
+			}
+		}
+		if (refs.length > 0) out.models = refs;
+	}
+	// 兼容旧配置：单模型（models 缺省时生效）
+	if (!out.models && typeof cfg.provider === "string" && cfg.provider && typeof cfg.model === "string" && cfg.model) {
+		out.provider = cfg.provider;
+		out.model = cfg.model;
+	}
 	if (typeof cfg.timeout_ms === "number" && Number.isFinite(cfg.timeout_ms) && cfg.timeout_ms > 0) {
 		out.timeoutMs = Math.round(cfg.timeout_ms);
 	}
@@ -82,11 +117,35 @@ export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	return out;
 }
 
-/** 读取 extensions.toml 的 [sandbox-llm-review] 配置（文件缺失/解析失败/缺 section → 默认配置） */
+/** 读取独立审核池文件（副作用；缺失/解析失败/无 models → undefined） */
+function loadReviewPool(): ModelRef[] | undefined {
+	try {
+		const doc = parseToml(readFileSync(REVIEW_POOL_PATH, "utf8")) as { models?: unknown };
+		if (!Array.isArray(doc.models)) return undefined;
+		const refs: ModelRef[] = [];
+		for (const m of doc.models) {
+			if (m && typeof m === "object") {
+				const { provider, model } = m as Record<string, unknown>;
+				if (typeof provider === "string" && provider && typeof model === "string" && model) {
+					refs.push({ provider, model });
+				}
+			}
+		}
+		return refs;
+	} catch {
+		return undefined;
+	}
+}
+
+/** 读取 extensions.toml 的 [sandbox-llm-review] 配置，模型池以独立文件为准（文件缺失/解析失败 → 默认配置） */
 export function loadLlmReviewConfig(): LlmReviewConfig {
 	try {
 		const doc = parseToml(readFileSync(EXTENSIONS_TOML_PATH, "utf8")) as Record<string, unknown>;
-		return normalizeConfig(doc[CONFIG_SECTION]);
+		const cfg = normalizeConfig(doc[CONFIG_SECTION]);
+		// 审核模型池独立存放（个人依赖，不入库）；外部文件优先，缺省回退 extensions.toml 内联 models
+		const pool = loadReviewPool();
+		if (pool && pool.length > 0) cfg.models = pool;
+		return cfg;
 	} catch {
 		return { ...DEFAULT_CONFIG };
 	}
@@ -96,23 +155,36 @@ export function loadLlmReviewConfig(): LlmReviewConfig {
 // Prompt 构造（纯函数）
 // ═══════════════════════════════════════════════════
 
-const REVIEW_SYSTEM_PROMPT = [
-	"你是一个 bash 命令安全审核器。你的任务：判断一条即将被执行的 bash 命令是否危险、写法是否合格。",
-	"本地规则引擎已标记该命令命中以下风险点：",
-	"",
-	"请综合命令的真实意图与风险，只输出一个严格 JSON 对象（不要输出任何其他内容、不要 markdown 代码块）：",
-	'{"verdict":"safe|risky|dangerous","reason":"一句话理由（中文）","suggestion":"更安全的替代写法或注意点（无则空字符串）"}',
-	"",
-	"判定标准：",
-	"- safe：意图明确、风险可控、属常见操作。例如：对明确的临时目录做递归删除、对明确文件的权限调整、动态构造但内容可静态确认无注入。",
-	"- risky：存在一定风险或写法不当，建议人工确认。例如：删除路径含通配符或变量、重定向覆盖非临时文件、命令拼接不可静态确认。",
-	"- dangerous：明确危险或可能破坏系统/泄露数据。例如：删除系统关键路径、绕过沙箱、把敏感数据外传、sudo 提权后做破坏性操作。",
-	"",
-	"注意：只做审核与建议，不要执行、不要展开发挥。",
-].join("\n");
+// system prompt 独立存放在 review-system-prompt.txt（本插件目录），改完即生效；
+// 读失败返回 null，调用方按 error 回退弹窗，绝不静默放行。
 
-/** 构造审核请求的 system + user 消息（纯函数） */
-export function buildReviewPrompt(command: string, rules: TokenRule[]): { system: string; user: string } {
+/** 审核结论汇报工具：LLM 通过工具调用提交结构化结论（verdict/reason/suggestion），
+ *  替代脆弱的自由文本 JSON 解析；参数由 schema 约束，免去文本容错。 */
+export const REVIEW_TOOL: Tool = {
+	name: "report_review_verdict",
+	description: "汇报对 shell 命令的安全审核结论。",
+	parameters: Type.Object({
+		verdict: Type.Union([Type.Literal("safe"), Type.Literal("risky"), Type.Literal("dangerous")]),
+		reason: Type.String({ description: "一句话理由（中文）" }),
+		suggestion: Type.String({ description: "更安全的替代写法或注意点（无则空字符串）" }),
+	}),
+};
+
+/** 读取审核 system prompt（副作用；文件缺失/读失败 → null） */
+export function loadReviewSystemPrompt(): string | null {
+	try {
+		return readFileSync(REVIEW_PROMPT_PATH, "utf8");
+	} catch {
+		return null;
+	}
+}
+
+/** 构造审核请求的 system + user 消息（纯函数；system 由调用方传入） */
+export function buildReviewPrompt(
+	system: string,
+	command: string,
+	rules: TokenRule[],
+): { system: string; user: string } {
 	const ruleText =
 		rules.length === 0
 			? "（无具体规则命中，属动态构造等需人工确认的情形）"
@@ -121,7 +193,7 @@ export function buildReviewPrompt(command: string, rules: TokenRule[]): { system
 					.join("\n");
 	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（命令过长已截断）" : command;
 	return {
-		system: REVIEW_SYSTEM_PROMPT,
+		system,
 		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}`,
 	};
 }
@@ -130,38 +202,38 @@ export function buildReviewPrompt(command: string, rules: TokenRule[]): { system
 // 输出解析（纯函数，容错）
 // ═══════════════════════════════════════════════════
 
-/** 从 LLM 输出中容错解析审核结论；任何失败 → verdict=error（调用方回退弹窗） */
-export function parseVerdict(text: string): ReviewResult {
-	const fail = (reason: string): ReviewResult => ({ verdict: "error", reason, suggestion: "" });
-	if (!text || !text.trim()) return fail("empty response");
-
-	// 剥离 ```json ... ``` / ``` ... ``` 包裹
-	let cleaned = text.trim();
-	const fence = cleaned.match(/^```(?:json)?\s*([\s\S]*?)```$/);
-	if (fence) cleaned = fence[1].trim();
-
-	// 提取第一个 { 到最后一个 }（容忍前后缀噪音）
-	const start = cleaned.indexOf("{");
-	const end = cleaned.lastIndexOf("}");
-	if (start === -1 || end <= start) return fail("no json object in response");
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(cleaned.slice(start, end + 1));
-	} catch {
-		return fail("invalid json");
+/** 从完整响应中提取审核结论（纯函数；传 response.content）：
+ *  结论通过 report_review_verdict 工具调用提交（结构化 verdict，schema 约束）；
+ *  模型回复的自由文本一律不做 JSON 解析，原样作为 opinion（看法）展示给人工审核者，
+ *  允许像日常交流一样自然表述；
+ *  未调用工具 → 无法结构化判定（verdict=error，回退弹窗），文本仍作为 opinion 附带展示。 */
+export function extractReviewResult(content: AssistantMessage["content"]): ReviewResult {
+	const opinion = content
+		.filter((c): c is TextContent => c.type === "text")
+		.map((c) => c.text)
+		.join("\n")
+		.trim()
+		.slice(0, 500);
+	const toolCall = content.find((c): c is ToolCall => c.type === "toolCall" && c.name === REVIEW_TOOL.name);
+	if (toolCall) {
+		const { verdict, reason, suggestion } = toolCall.arguments ?? {};
+		if (verdict === "safe" || verdict === "risky" || verdict === "dangerous") {
+			const result: ReviewResult = {
+				verdict,
+				reason: typeof reason === "string" ? reason.slice(0, 300) : "",
+				suggestion: typeof suggestion === "string" ? suggestion.slice(0, 300) : "",
+			};
+			if (opinion) result.opinion = opinion;
+			return result;
+		}
+		return { verdict: "error", reason: "invalid tool call arguments", suggestion: "", ...(opinion ? { opinion } : {}) };
 	}
-	if (!parsed || typeof parsed !== "object") return fail("json not an object");
-
-	const obj = parsed as Record<string, unknown>;
-	const verdict = obj.verdict;
-	if (verdict !== "safe" && verdict !== "risky" && verdict !== "dangerous") {
-		return fail(`unexpected verdict: ${String(verdict)}`);
-	}
+	// 未调用工具：不把文本当 JSON 解析，文本作为看法展示；verdict 按无法判定回退弹窗
 	return {
-		verdict,
-		reason: typeof obj.reason === "string" ? obj.reason.slice(0, 300) : "",
-		suggestion: typeof obj.suggestion === "string" ? obj.suggestion.slice(0, 300) : "",
+		verdict: "error",
+		reason: "模型未给出结构化结论（未调用审核工具）",
+		suggestion: "",
+		...(opinion ? { opinion } : {}),
 	};
 }
 
@@ -214,14 +286,27 @@ export function createReviewCache(maxEntries = 200): ReviewCache {
 // 审核调用（副作用：读配置 + 调 LLM API）
 // ═══════════════════════════════════════════════════
 
-/** 选择审核模型：配置显式指定优先，否则当前会话模型，兜底 deepseek flash */
-function pickModel(ctx: ExtensionContext, config: LlmReviewConfig): Model<any> | undefined {
-	if (config.provider && config.model) {
-		const m = ctx.modelRegistry.find(config.provider, config.model);
-		if (m) return m;
+/**
+ * 候选审核模型列表。
+ * - 配置了模型池（models）或单模型（provider/model）→ 只返回这些（配置缺失的跳过），
+ *   池内切换是显式配置的容错，不是静默换模型；
+ * - 完全未配置 → 当前会话模型（文档化的默认行为）；
+ * - 返回 source 供调用方区分「配置了但不可用」与「未配置且无会话模型」。
+ */
+function pickModels(
+	ctx: ExtensionContext,
+	config: LlmReviewConfig,
+): { models: Model<any>[]; source: "configured" | "session" } {
+	const refs =
+		config.models ??
+		(config.provider && config.model ? [{ provider: config.provider, model: config.model }] : []);
+	if (refs.length > 0) {
+		const models = refs
+			.map((r) => ctx.modelRegistry.find(r.provider, r.model))
+			.filter((m): m is Model<any> => m !== undefined);
+		return { models, source: "configured" };
 	}
-	if (ctx.model) return ctx.model;
-	return ctx.modelRegistry.find("deepseek", "deepseek-v4-flash");
+	return { models: ctx.model ? [ctx.model] : [], source: "session" };
 }
 
 /**
@@ -244,13 +329,20 @@ export async function reviewCommand(
 	const hit = cache.get(key);
 	if (hit) return hit;
 
-	const model = pickModel(ctx, cfg);
-	if (!model) return { verdict: "error", reason: "no usable model for llm review", suggestion: "" };
+	const { models, source } = pickModels(ctx, cfg);
+	if (models.length === 0) {
+		return {
+			verdict: "error",
+			reason: source === "configured" ? "配置的审核模型均不可用" : "no usable model for llm review",
+			suggestion: "",
+		};
+	}
 
-	const { system, user } = buildReviewPrompt(command, rules);
-	// 超时兜底 + 会话中止信号合并；任一触发即中止
-	const timeoutSignal = AbortSignal.timeout(cfg.timeoutMs);
-	const merged = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+	const systemPrompt = loadReviewSystemPrompt();
+	if (systemPrompt === null) {
+		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
+	}
+	const { system, user } = buildReviewPrompt(systemPrompt, command, rules);
 
 	// 本地类型 0.80.10 的 ModelRegistry 尚无 complete（运行时 0.84.2 已提供），
 	// 用窄接口断言绕过类型检查；运行时行为以实际 pi 版本为准。
@@ -262,45 +354,60 @@ export async function reviewCommand(
 		): Promise<AssistantMessage>;
 	};
 
-	try {
-		const response = await completer.complete(
-			model,
-			{
-				systemPrompt: system,
-				messages: [{ role: "user", content: user, timestamp: Date.now() }],
-			},
-			{ signal: merged, maxTokens: 512, temperature: 0 },
-		);
-		if (response.stopReason === "aborted" || response.stopReason === "error") {
-			return {
-				verdict: "error",
-				reason: response.errorMessage ?? `llm ${response.stopReason}`,
-				suggestion: "",
-			};
+	// 模型池：按序尝试，单个失败（限流/超时/网络）切换下一个；全部失败才 error。
+	// 用户中止信号（signal）一旦触发立即返回，不再换模型。
+	const failures: string[] = [];
+	for (const model of models) {
+		const timeoutSignal = AbortSignal.timeout(cfg.timeoutMs);
+		const merged = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+		try {
+			const response = await completer.complete(
+				model,
+				{
+					systemPrompt: system,
+					messages: [{ role: "user", content: user, timestamp: Date.now() }],
+					// 审核结论走工具调用（report_review_verdict），结构化参数免文本解析
+					tools: [REVIEW_TOOL],
+				},
+				{ signal: merged, maxTokens: 512, temperature: 0 },
+			);
+			if (response.stopReason === "aborted" || response.stopReason === "error") {
+				const reason = response.errorMessage ?? `llm ${response.stopReason}`;
+				if (signal?.aborted || response.stopReason === "aborted") {
+					return { verdict: "error", reason: "aborted", suggestion: "" };
+				}
+				failures.push(`${model.id}: ${reason}`);
+				continue;
+			}
+			const result = extractReviewResult(response.content);
+			if (result.verdict !== "error") {
+				// 只缓存有效结论；error 是瞬态（网络抖动等），下次重审
+				cache.set(key, result);
+				return result;
+			}
+			failures.push(`${model.id}: ${result.reason}`);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (signal?.aborted || msg === "aborted") {
+				return { verdict: "error", reason: "aborted", suggestion: "" };
+			}
+			failures.push(`${model.id}: ${msg}`);
 		}
-		const text = response.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n");
-		const result = parseVerdict(text);
-		// 只缓存有效结论；error 是瞬态（网络抖动等），下次重审
-		if (result.verdict !== "error") cache.set(key, result);
-		return result;
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		if (msg === "aborted" || /aborted|timeout/i.test(msg)) {
-			return { verdict: "error", reason: "aborted", suggestion: "" };
-		}
-		return { verdict: "error", reason: `llm call failed: ${msg}`, suggestion: "" };
 	}
+	return {
+		verdict: "error",
+		reason: `审核模型全部失败：${failures.join("；")}`,
+		suggestion: "",
+	};
 }
 
-/** 审核结论的展示文本（供 TUI 弹窗附加） */
+/** 审核结论的展示文本（供弹窗 / GUI 展示附加） */
 export function formatReviewNote(review: ReviewResult): string {
 	const label =
 		review.verdict === "dangerous" ? "危险" : review.verdict === "risky" ? "有风险" : review.verdict;
 	const parts = [`🤖 LLM 审查：${label}`];
 	if (review.reason) parts.push(review.reason);
 	if (review.suggestion) parts.push(`建议：${review.suggestion}`);
+	if (review.opinion) parts.push(`看法：${review.opinion}`);
 	return parts.join(" —— ");
 }
