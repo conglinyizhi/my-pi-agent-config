@@ -86,7 +86,7 @@ hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（
 [sandbox-llm-review]
 enabled = true          # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
-# provider = "deepseek" # 可选：指定审核模型（缺省用当前会话模型）
-# model = "deepseek-v4-flash"
+provider = "zhipu"      # 审核模型供应商（缺省用当前会话模型）
+model = "glm-4.7-flash"
 timeout_ms = 10000      # 单次审核超时（毫秒）；超时回退弹窗
 max_cache = 200         # 内存缓存上限（同命令同规则不重复调 API）
