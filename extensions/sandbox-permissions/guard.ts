@@ -30,6 +30,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, isAbsolute, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { loadSandboxPaths } from "./paths.ts";
 
 const AGENT_DIR = getAgentDir();
 const EXTENSIONS_TOML = join(AGENT_DIR, "extensions.toml");
@@ -109,14 +110,21 @@ function compileRule(raw: string): CompiledRule | null {
 // ── 黑名单加载（session_start 时读取，reload 随扩展重载重新触发） ──
 
 export function loadBlacklist(): CompiledRule[] {
+  const patterns: string[] = [];
   try {
     const doc = parseToml(readFileSync(EXTENSIONS_TOML, "utf8")) as Record<string, unknown>;
     const section = (doc["sandbox-guard"] ?? {}) as { blacklist?: unknown };
-    const list = Array.isArray(section.blacklist) ? section.blacklist.filter((x): x is string => typeof x === "string") : [];
-    return list.map(compileRule).filter((r): r is CompiledRule => r !== null);
+    if (Array.isArray(section.blacklist)) {
+      patterns.push(...section.blacklist.filter((x): x is string => typeof x === "string"));
+    }
   } catch {
-    return [];
+    /* extensions.toml 缺失/损坏：仅用动态黑名单 */
   }
+  // 动态黑名单目录（GUI 审核时用户添加的 block_dirs）：目录自身 + 目录下所有内容
+  for (const dir of loadSandboxPaths().blockDirs) {
+    patterns.push(dir, `${dir.replace(/\/+$/, "")}/**`);
+  }
+  return patterns.map(compileRule).filter((r): r is CompiledRule => r !== null);
 }
 
 /** 目标路径是否命中黑名单（路径规范化：绝对化 + realpath 存在时解析符号链接） */

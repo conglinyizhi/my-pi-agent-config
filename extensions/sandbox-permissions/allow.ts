@@ -24,11 +24,18 @@ import {
 	resolveWritePaths,
 } from "./helpers.ts";
 import { findGuiBinary, runGuiWindow } from "../../lib/gui-runner";
+import { addAllowDir, addBlockDir, collectCandidateDirs, isDirInside, loadSandboxPaths } from "./paths";
 
 const MAX_OUTPUT_BYTES = 1_000_000;
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（窗口内不自动超时；仅防窗口进程卡死）
 const APPROVE = "✅ 允许执行（仅此一次）";
 const DENY = "❌ 拒绝";
+
+interface GuiDecision {
+	action: "allow" | "deny";
+	/** 用户在 GUI 上点选的目录白/黑名单操作 */
+	pathActions?: { path: string; list: "allow" | "block" }[];
+}
 
 /** 通过 GUI 审批（合并进现有权限闸门 gate 窗口，kind=sandbox-allow） */
 async function tryGuiApproval(
@@ -37,16 +44,24 @@ async function tryGuiApproval(
 	writePaths: string[],
 	justification: string,
 	signal: AbortSignal | undefined,
-): Promise<"allow" | "deny" | "gui-unavailable"> {
+): Promise<GuiDecision | "gui-unavailable"> {
 	if (!findGuiBinary()) return "gui-unavailable";
 	const result = await runGuiWindow(
 		"gate",
-		{ kind: "sandbox-allow", command, permission, writePaths, justification },
+		{
+			kind: "sandbox-allow",
+			command,
+			permission,
+			writePaths,
+			justification,
+			// GUI 候选目录：请求的可写目录 + 命令中提取的路径（供白/黑名单按钮）
+			candidatePaths: collectCandidateDirs(command, writePaths),
+		},
 		{ timeoutMs: GUI_TIMEOUT_MS, signal },
 	);
 	// 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭/超时/中止 → 回退 TUI
 	if (result.ok && result.data && (result.data.action === "allow" || result.data.action === "deny")) {
-		return result.data.action;
+		return { action: result.data.action, pathActions: result.data.pathActions };
 	}
 	return "gui-unavailable";
 }
@@ -111,14 +126,29 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// 3. 同意门（对齐 DSH allowed-once）：GUI 优先，回退 TUI；拒绝/取消/无 UI = 不执行
+			//    前置：目录白名单豁免——请求的可写目录全部在 allow_dirs 内 → 免弹窗直接执行
 			let decision: "allow" | "deny" = "deny";
-			const gui = await tryGuiApproval(command, permission, writePaths, justification, signal);
-			if (gui !== "gui-unavailable") {
-				decision = gui;
-			} else if (ctx.hasUI) {
-				const title = buildApprovalTitle(command, permission, writePaths, justification);
-				const choice = await ctx.ui.select(title, [APPROVE, DENY]);
-				decision = choice?.includes("允许") ? "allow" : "deny";
+			const { allowDirs } = loadSandboxPaths();
+			const whitelisted =
+				permission === "write-paths" &&
+				writePaths.length > 0 &&
+				writePaths.every((p) => allowDirs.some((d) => isDirInside(p, d)));
+			if (whitelisted) {
+				decision = "allow";
+			} else {
+				const gui = await tryGuiApproval(command, permission, writePaths, justification, signal);
+				if (gui !== "gui-unavailable") {
+					// 用户在 GUI 上点选的目录白/黑名单操作（无论 allow/deny 都先落名单）
+					for (const pa of gui.pathActions ?? []) {
+						if (pa?.list === "allow" && typeof pa.path === "string") addAllowDir(pa.path);
+						else if (pa?.list === "block" && typeof pa.path === "string") addBlockDir(pa.path);
+					}
+					decision = gui.action;
+				} else if (ctx.hasUI) {
+					const title = buildApprovalTitle(command, permission, writePaths, justification);
+					const choice = await ctx.ui.select(title, [APPROVE, DENY]);
+					decision = choice?.includes("允许") ? "allow" : "deny";
+				}
 			}
 
 			if (decision !== "allow") {
@@ -142,7 +172,7 @@ export default function (pi: ExtensionAPI) {
 				permission,
 				paths: writePaths,
 				justification,
-				outcome: "approved",
+				outcome: whitelisted ? "approved-whitelist" : "approved",
 				ts: Date.now(),
 			});
 

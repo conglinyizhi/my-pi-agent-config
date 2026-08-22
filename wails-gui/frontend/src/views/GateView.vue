@@ -41,6 +41,17 @@
       </div>
     </div>
 
+    <!-- 目录白/黑名单（候选目录逐个加入，长期生效） -->
+    <div v-if="candidatePaths.length" class="paths-block">
+      <div class="paths-header">📁 目录名单 <span class="paths-sub">（加入后长期生效）</span></div>
+      <div v-for="p in candidatePaths" :key="p" class="path-row">
+        <code class="path-dir">{{ p }}</code>
+        <button data-name="path-allow" @click="pathAction(p, 'allow')" class="btn btn-allow btn-sm" title="该目录下命令以后直接放行">⬜ 白名单</button>
+        <button data-name="path-block" @click="pathAction(p, 'block')" class="btn btn-deny btn-sm" title="该目录以后直接拦截">⬛ 黑名单</button>
+      </div>
+      <div class="paths-hint">白名单：该目录下命令直接放行；黑名单：该目录任何引用直接拒绝</div>
+    </div>
+
     <footer class="actions">
       <template v-if="isSandboxAllow">
         <button data-name="sa-deny" @click="respond('deny')" class="btn btn-deny">🚫 拒绝</button>
@@ -92,6 +103,8 @@ const kind = ref("");
 const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
+// 目录白/黑名单候选（writePaths + 命令路径）
+const candidatePaths = ref([]);
 
 const tip = ref("");
 const tipPos = ref({});
@@ -183,10 +196,15 @@ function submit() {
   if (c) svR(c);
   respond("deny", c || undefined, [...flg.value]);
 }
-async function respond(a, c, f) {
+/** 把目录加入白/黑名单并结束本次审核（白名单→放行，黑名单→拒绝） */
+function pathAction(path, list) {
+  respond(list === "allow" ? "allow" : "deny", undefined, undefined, [{ path, list }]);
+}
+async function respond(a, c, f, pathActions) {
   const p = { action: a };
   if (c) p.comment = c;
   if (f && f.length > 0) p.flagged = f;
+  if (pathActions && pathActions.length > 0) p.pathActions = pathActions;
   await window.go.main.App.SaveResponse(JSON.stringify(p));
   window.runtime.Quit();
 }
@@ -204,6 +222,7 @@ onMounted(async () => {
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
+  candidatePaths.value = data.candidatePaths || [];
   reasons.value = await window.go.main.App.LoadReasons();
   ready.value = true;
   await window.go.main.App.MarkReady();
@@ -247,6 +266,15 @@ onMounted(async () => {
 .sa-justification { font-size: 13px; color: #e0e0e0; line-height: 1.6; }
 .sa-paths { display: flex; flex-wrap: wrap; gap: 6px; }
 .sa-path { color: #7aa2f7; background: #1a1a3e; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+
+/* ── 目录白/黑名单 ── */
+.paths-block { padding: 8px 16px; border-top: 1px solid #2a2a4a; background: #14142a; }
+.paths-header { font-size: 12px; color: #7aa2f7; margin-bottom: 6px; }
+.paths-sub { color: #888; font-size: 11px; }
+.path-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.path-dir { flex: 1; color: #e0e0e0; background: #0d0d1a; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; word-break: break-all; }
+.paths-hint { font-size: 11px; color: #666; margin-top: 4px; }
+.btn-sm { padding: 2px 8px; font-size: 11px; }
 
 /* ── 规则列表 ── */
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }

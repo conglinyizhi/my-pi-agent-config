@@ -74,6 +74,8 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["permission"] = req["permission"]
 		base["writePaths"] = req["writePaths"]
 		base["justification"] = req["justification"]
+		// 目录白/黑名单候选：writePaths + 命令中提取的路径（GUI 逐个加入名单）
+		base["candidatePaths"] = req["candidatePaths"]
 	case "editor":
 		base["clipHistory"] = req["clipHistory"]
 	}

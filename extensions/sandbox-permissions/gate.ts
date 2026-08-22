@@ -24,6 +24,7 @@ import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send"
 import { auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
 import { buildInlineScriptRejection, extractInlineScript, saveInlineScript } from "./inline-script";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "./llm-review";
+import { addAllowDir, addBlockDir, collectCandidateDirs, isWhitelisted, loadSandboxPaths } from "./paths";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -83,7 +84,16 @@ async function tryGuiApproval(
   command: string,
   rules: TokenRule[],
   signal: AbortSignal | undefined,
-): Promise<{ action: "allow" | "deny" | "reject-all"; comment?: string; flagged?: number[] } | "gui-unavailable"> {
+): Promise<
+  | {
+      action: "allow" | "deny" | "reject-all";
+      comment?: string;
+      flagged?: number[];
+      /** 用户在 GUI 上点选的目录白/黑名单操作 */
+      pathActions?: { path: string; list: "allow" | "block" }[];
+    }
+  | "gui-unavailable"
+> {
   if (!findGuiBinary()) return "gui-unavailable";
 
   const result = await runGuiWindow("gate", {
@@ -95,6 +105,8 @@ async function tryGuiApproval(
       autoReject: r.autoReject || false,
       matched: r.matched ?? [],
     })),
+    // GUI 候选目录：从命令提取的路径（供白/黑名单按钮）
+    candidatePaths: collectCandidateDirs(command, []),
   }, { timeoutMs: GUI_TIMEOUT_MS, signal });
 
   // 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭或未选择 → 视为 GUI 不可用，回退 TUI
@@ -198,6 +210,14 @@ export default async function (pi: ExtensionAPI) {
       return { block: true, reason: `自动拒绝：${tipText}${pnpmHint}` };
     }
 
+    // 目录白名单豁免：命令所有目标路径都在 allow_dirs 内 → 直接放行（不弹窗、不过 LLM 预审）
+    // 保守：autoReject 硬拦优先（白名单不豁免）；动态构造/变量引用/无路径 → 不豁免
+    const { allowDirs } = loadSandboxPaths();
+    if (isWhitelisted(command, allowDirs)) {
+      pi.appendEntry("sandbox-paths", { command, action: "allow-whitelist", dirs: allowDirs, ts: Date.now() });
+      return undefined;
+    }
+
     // 无 UI 则直接阻止
     if (!ctx.hasUI) {
       const tipText = rules.map(r => `${r.name}: ${r.tip}`).join("；");
@@ -243,23 +263,30 @@ export default async function (pi: ExtensionAPI) {
     const guiResult = await tryGuiApproval(command, rules, ctx.signal);
 
     if (guiResult === "gui-unavailable") { /* fall through to TUI */ }
-    else if (guiResult.action === "allow") return undefined;
-    else if (guiResult.action === "deny" || guiResult.action === "reject-all") {
-      // 保存审核意见
-      if (guiResult.comment) {
-        try {
-          const reasonsFile = path.join(os.homedir(), ".pi", "agent", "permission-gate-reasons.json");
-          const reasons: string[] = fs.existsSync(reasonsFile)
-            ? JSON.parse(fs.readFileSync(reasonsFile, "utf-8"))
-            : [];
-          reasons.unshift(guiResult.comment);
-          if (reasons.length > 20) reasons.length = 20;
-          fs.mkdirSync(path.dirname(reasonsFile), { recursive: true });
-          fs.writeFileSync(reasonsFile, JSON.stringify(reasons, null, 2));
-        } catch {}
+    else {
+      // 用户在 GUI 上点选的目录白/黑名单操作（无论最终 allow/deny 都先落名单）
+      for (const pa of guiResult.pathActions ?? []) {
+        if (pa?.list === "allow" && typeof pa.path === "string") addAllowDir(pa.path);
+        else if (pa?.list === "block" && typeof pa.path === "string") addBlockDir(pa.path);
       }
-      const reason = buildRejectReason(command, rules, guiResult.comment, "GUI 审批拒绝", guiResult.flagged);
-      return { block: true, reason };
+      if (guiResult.action === "allow") return undefined;
+      if (guiResult.action === "deny" || guiResult.action === "reject-all") {
+        // 保存审核意见
+        if (guiResult.comment) {
+          try {
+            const reasonsFile = path.join(os.homedir(), ".pi", "agent", "permission-gate-reasons.json");
+            const reasons: string[] = fs.existsSync(reasonsFile)
+              ? JSON.parse(fs.readFileSync(reasonsFile, "utf-8"))
+              : [];
+            reasons.unshift(guiResult.comment);
+            if (reasons.length > 20) reasons.length = 20;
+            fs.mkdirSync(path.dirname(reasonsFile), { recursive: true });
+            fs.writeFileSync(reasonsFile, JSON.stringify(reasons, null, 2));
+          } catch {}
+        }
+        const reason = buildRejectReason(command, rules, guiResult.comment, "GUI 审批拒绝", guiResult.flagged);
+        return { block: true, reason };
+      }
     }
 
     // 2. GUI 不可用 → TUI 回退
