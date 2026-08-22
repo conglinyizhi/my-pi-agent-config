@@ -151,7 +151,7 @@ export function skillPickerFactory(
 	tui: TUI,
 	theme: Theme,
 	done: (skill: ManualSkill | undefined) => void,
-): { render: () => string[]; invalidate: () => void; handleInput: (data: string) => void } {
+): { render: (width: number) => string[]; invalidate: () => void; handleInput: (data: string) => void } {
 	let query = "";
 	let selected = 0;
 	const WINDOW = 18;
@@ -164,7 +164,7 @@ export function skillPickerFactory(
 		);
 	};
 
-	const render = (): string[] => {
+	const render = (width: number): string[] => {
 		const lines: string[] = [];
 		lines.push(theme.fg("accent", `技能列表（${list.length}）· 过滤 ${filtered().length}`));
 		lines.push(theme.fg("dim", `搜索: ${query}▌`));
@@ -190,8 +190,9 @@ export function skillPickerFactory(
 			if (total > end) lines.push(theme.fg("dim", `… 还有 ${total - end} 项`));
 		}
 		lines.push("");
-		lines.push(theme.fg("dim", "输入过滤 · Backspace 清除 · ↑↓/jk 选择 · Enter 注入 · Esc 取消（★ = 自动注入）"));
-		return lines;
+		lines.push(theme.fg("dim", "过滤 · Backspace 清除 · ↑↓/jk 选择 · Enter 注入 · Esc 取消（★ 自动）"));
+		// 逐行兜底截断：任何行超过视口宽度都被截到 width（truncateToWidth 正确处理 ANSI/宽字符）
+		return lines.map((l) => truncateToWidth(l, width));
 	};
 
 	const handleInput = (data: string): void => {
