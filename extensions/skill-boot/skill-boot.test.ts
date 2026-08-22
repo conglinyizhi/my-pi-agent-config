@@ -1,6 +1,6 @@
 // skill-boot.test.ts — skill-boot（skill-kit + skill-manual 合并）清单/解析/查找测试
 //
-// 覆盖：frontmatter 块标量解析、清单构建（vault + 自动 3 个）、findSkill 最短匹配、
+// 覆盖：frontmatter 块标量解析、清单构建（vault + 自动 4 个）、findSkill 最短匹配、
 // readSkillBody 剥离 frontmatter
 //
 // 跑法：node --experimental-strip-types extensions/skill-boot/skill-boot.test.ts
@@ -48,15 +48,15 @@ describe("frontmatter 块标量解析", () => {
 	});
 });
 
-describe("清单构建（skill-vault + 自动 3 个）", () => {
-	it("vault 全部为手动候选；自动可见仅 3 个", () => {
+describe("清单构建（skill-vault + 自动 4 个）", () => {
+	it("vault 全部为手动候选；自动可见仅 4 个", () => {
 		const list = buildManualSkillList();
 		assert.ok(list.length >= 37, `技能总数应 >= 37，实际 ${list.length}`);
 		const auto = list.filter((s) => !s.manualOnly);
 		assert.deepEqual(
 			auto.map((s) => s.name).sort(),
-			["data-name", "git-commit", "which-pi-docs"],
-			`自动可见技能应为 3 个，实际: ${auto.map((s) => s.name).join(", ")}`,
+			["data-name", "git-commit", "moonbit-skills-guide", "which-pi-docs"],
+			`自动可见技能应为 4 个，实际: ${auto.map((s) => s.name).join(", ")}`,
 		);
 		// vault 内技能可发现（第三方软链接 + clyzhi 目录）
 		const names = list.map((s) => s.name);
