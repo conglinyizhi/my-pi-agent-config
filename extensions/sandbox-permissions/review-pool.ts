@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { parse as parseToml } from "smol-toml";
 import { createReviewCache, loadLlmReviewConfig, reviewCommand, type ModelRef } from "./llm-review";
+import { loadUsableModelIds } from "../opencode-free/catalog.ts";
 
 const REVIEW_POOL_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-pool.toml");
 
@@ -73,16 +74,33 @@ export async function poolAddHandler(
 	const pool = readPool();
 	const poolIds = new Set(pool.map((m) => `${m.provider}:${m.model}`));
 
-	// 枚举全局模型列表（modelRegistry.getAll：全部已注册模型，含自定义供应商与内置）
-	const registry = ctx.modelRegistry as unknown as { getAll(): readonly { id: string; provider: string; name?: string; contextWindow?: number; cost?: { input: number; output: number } }[] };
+	// 候选模型：来自两处——
+	//   1. modelRegistry.getAll()（本地已注册模型）
+	//   2. opencode-free 清单（extensions/opencode-free/models.json，无 key 免费档）
+	// 免费模型统一以 provider="opencode-free"、id=模型 slug 并入，便于同一套筛选/展示/写池。
+	interface Candidate {
+		provider: string;
+		id: string;
+		name?: string;
+		contextWindow?: number;
+		cost?: { input: number; output: number };
+		free?: boolean;
+	}
+	const registry = ctx.modelRegistry as unknown as { getAll(): readonly Candidate[] };
 	const all = typeof registry.getAll === "function" ? registry.getAll() : [];
-	const candidates = all.filter(
-		(m) =>
-			m &&
-			typeof m.id === "string" &&
-			m.id !== "auto-detect" && // 跳过占位模型
-			!poolIds.has(`${m.provider}:${m.id}`),
-	);
+	const candidates: Candidate[] = [
+		...all.filter(
+			(m) =>
+				m &&
+				typeof m.id === "string" &&
+				m.id !== "auto-detect" && // 跳过占位模型
+				!poolIds.has(`${m.provider}:${m.id}`),
+		),
+		// 无 key 免费档：清单里可用的模型（provider=opencode-free）
+		...loadUsableModelIds()
+			.filter((modelId) => !poolIds.has(`opencode-free:${modelId}`))
+			.map((modelId) => ({ provider: "opencode-free", id: modelId, free: true })),
+	];
 
 	if (candidates.length === 0) {
 		ctx.ui.notify("没有可添加的模型（池子里已包含所有可用模型）", "info");
@@ -112,6 +130,9 @@ export async function poolAddHandler(
 	// 展示候选（最多 30 个），单选
 	const limited = matched.slice(0, 30);
 	const options = limited.map((m) => {
+		if (m.free) {
+			return `${m.provider}/${m.id}（免费 | 无 key）`;
+		}
 		const c = m.cost;
 		const price = c && (c.input > 0 || c.output > 0) ? `¥${c.input.toFixed(2)}/${c.output.toFixed(2)}` : "价格未知";
 		return `${m.provider}/${m.id}（${fmtCtx(m.contextWindow ?? 0)} | ${price}）`;

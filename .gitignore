@@ -54,5 +54,8 @@ scripts/vendor/landlock-run
 # 审核模型池（供应商配置/API key 不入库）
 extensions/sandbox-permissions/review-pool.toml
 
+# OpenCode Zen 免费模型探活快照（运行时状态，不入库）
+extensions/opencode-free/models.json
+
 # wails-gui 根目录构建产物
 wails-gui/wails-gui

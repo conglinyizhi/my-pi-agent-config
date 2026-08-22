@@ -23,6 +23,7 @@ import { parse as parseToml } from "smol-toml";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
+import { callZenChat } from "../opencode-free/zen-client.ts";
 import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
@@ -287,26 +288,50 @@ export function createReviewCache(maxEntries = 200): ReviewCache {
 // ═══════════════════════════════════════════════════
 
 /**
+ * 可调用的审核模型判别联合。
+ * - kind="local"：pi 本地已注册的模型，走 modelRegistry.complete；
+ * - kind="free"：OpenCode Zen 免费模型（provider === "opencode-free"），
+ *   无本地注册，走 zen-client.callZenChat（空 auth 裸 HTTP）。
+ * 把两类统一进同一条 failover 链，方便门禁免费优先、付费兜底。
+ */
+type ResolvedModel =
+	| { kind: "local"; model: Model<any> }
+	| { kind: "free"; modelId: string };
+
+type PickResult = { models: ResolvedModel[]; source: "configured" | "session" };
+
+/** OpenCode Zen 免费档的 provider id（与 review-pool.toml / opencode-free 插件约定一致） */
+const OPencode_FREE_PROVIDER = "opencode-free";
+
+/**
  * 候选审核模型列表。
- * - 配置了模型池（models）或单模型（provider/model）→ 只返回这些（配置缺失的跳过），
- *   池内切换是显式配置的容错，不是静默换模型；
+ * - 配置了模型池（models）或单模型（provider/model）→ 逐条解析：
+ *   provider === "opencode-free" 的条目视为免费模型（kind="free"），
+ *   其余走 modelRegistry.find()（kind="local"，配置缺失的跳过）；
  * - 完全未配置 → 当前会话模型（文档化的默认行为）；
  * - 返回 source 供调用方区分「配置了但不可用」与「未配置且无会话模型」。
  */
 function pickModels(
 	ctx: ExtensionContext,
 	config: LlmReviewConfig,
-): { models: Model<any>[]; source: "configured" | "session" } {
+): PickResult {
 	const refs =
 		config.models ??
 		(config.provider && config.model ? [{ provider: config.provider, model: config.model }] : []);
 	if (refs.length > 0) {
-		const models = refs
-			.map((r) => ctx.modelRegistry.find(r.provider, r.model))
-			.filter((m): m is Model<any> => m !== undefined);
+		const models: ResolvedModel[] = [];
+		for (const r of refs) {
+			if (r.provider === OPencode_FREE_PROVIDER) {
+				// 免费模型：不需要本地注册，直接用模型 id
+				if (r.model) models.push({ kind: "free", modelId: r.model });
+			} else {
+				const m = ctx.modelRegistry.find(r.provider, r.model);
+				if (m) models.push({ kind: "local", model: m });
+			}
+		}
 		return { models, source: "configured" };
 	}
-	return { models: ctx.model ? [ctx.model] : [], source: "session" };
+	return { models: ctx.model ? [{ kind: "local", model: ctx.model }] : [], source: "session" };
 }
 
 /**
@@ -357,26 +382,41 @@ export async function reviewCommand(
 	// 模型池：按序尝试，单个失败（限流/超时/网络）切换下一个；全部失败才 error。
 	// 用户中止信号（signal）一旦触发立即返回，不再换模型。
 	const failures: string[] = [];
-	for (const model of models) {
+	for (const resolved of models) {
+		const label = resolved.kind === "local" ? resolved.model.id : resolved.modelId;
 		const timeoutSignal = AbortSignal.timeout(cfg.timeoutMs);
 		const merged = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		try {
-			const response = await completer.complete(
-				model,
-				{
+			let response: AssistantMessage;
+			if (resolved.kind === "free") {
+				// 免费模型：无 key 裸调 OpenCode Zen（用真实信号，超时由 callZenChat 内部计时）
+				response = await callZenChat(resolved.modelId, {
 					systemPrompt: system,
-					messages: [{ role: "user", content: user, timestamp: Date.now() }],
-					// 审核结论走工具调用（report_review_verdict），结构化参数免文本解析
+					messages: [{ role: "user", content: user }],
 					tools: [REVIEW_TOOL],
-				},
-				{ signal: merged, maxTokens: 512, temperature: 0 },
-			);
+					maxTokens: 512,
+					temperature: 0,
+					signal: merged,
+					timeoutMs: cfg.timeoutMs,
+				});
+			} else {
+				response = await completer.complete(
+					resolved.model,
+					{
+						systemPrompt: system,
+						messages: [{ role: "user", content: user, timestamp: Date.now() }],
+						// 审核结论走工具调用（report_review_verdict），结构化参数免文本解析
+						tools: [REVIEW_TOOL],
+					},
+					{ signal: merged, maxTokens: 512, temperature: 0 },
+				);
+			}
 			if (response.stopReason === "aborted" || response.stopReason === "error") {
 				const reason = response.errorMessage ?? `llm ${response.stopReason}`;
 				if (signal?.aborted || response.stopReason === "aborted") {
 					return { verdict: "error", reason: "aborted", suggestion: "" };
 				}
-				failures.push(`${model.id}: ${reason}`);
+				failures.push(`${label}: ${reason}`);
 				continue;
 			}
 			const result = extractReviewResult(response.content);
@@ -385,13 +425,13 @@ export async function reviewCommand(
 				cache.set(key, result);
 				return result;
 			}
-			failures.push(`${model.id}: ${result.reason}`);
+			failures.push(`${label}: ${result.reason}`);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (signal?.aborted || msg === "aborted") {
 				return { verdict: "error", reason: "aborted", suggestion: "" };
 			}
-			failures.push(`${model.id}: ${msg}`);
+			failures.push(`${label}: ${msg}`);
 		}
 	}
 	return {
