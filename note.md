@@ -149,3 +149,24 @@ task_create 始终异步发射，不提供 await 选项。OC agent 还需用于A
 # 20260821-权限闸门放行备注删除
 
 权限闸门那个「[权限闸门] 命令含命令替换，内部指令已通过规则审核，放行」前缀删了。考虑到大模型的纯净性：它在这个工具正常工作的时候，其实不知道这一行代表着什么，也没有必要去理解。所以工具有这一行纯属多余，最终删掉
+
+# 20260822-权限闸门 LLM 预审
+
+安全门弹窗太频繁了，加了一层 LLM 预审，接入了智谱的 GLM 4.7 Flash，这个模型是免费的，我基本上不用为模型的费用而担心。但是用多了可能会限流什么的
+
+# 20260822-扩展配置集中到 extensions.toml
+
+settings.json 已经被换模型这件事污染得很脏很脏了，每次动它都烦。扩展配置单起一个 ~/.pi/agent/extensions.toml，每个扩展一个 [section]：
+
+- [sandbox-guard]：敏感路径黑名单（原 sandbox-blacklist.json 并入）
+- [subagent-roles]：subagent worker 模型（原 providers.roles.toml 并入）
+- [tool-checker]：CLI 工具检测（原 tools.toml 并入）
+- [sandbox-llm-review]：LLM 预审配置
+
+三个旧配置文件退役。providers.toml（含 key）、settings.json（pi 核心）、auth.json、缓存类（models-store.json/mcp-cache.json）不并入。用 smol-toml 解析（本来就是项目依赖）。
+
+注意：trident-subagent 还是 disabled 状态，里面还引用 providers.roles.toml 旧路径，将来启用要适配。
+
+# 20260822-审核 GUI 目录白/黑名单
+
+自从上次安装沙箱之后，实际上需要我决策的指令已经小很多了。除了之前用 moonbit 的开发，deepseek 非要用 grep 写正则，这就导致权限误报了好几次……好吧，审核白黑名单主要是为了在弹窗的时候，他这次决策的记录能直接留在本地，然后避免让人类去决策
