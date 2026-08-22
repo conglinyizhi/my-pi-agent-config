@@ -10,6 +10,7 @@ import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
 import { fastDelHandler } from "./fast-del.ts";
+import { fastEditHandler } from "./fast-edit.ts";
 
 const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
@@ -68,29 +69,22 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
   pi.registerCommand("provider:fast-del", fastDelCommand);
   pi.registerCommand("provider:fast-remove", fastDelCommand);
 
+  // /provider:fast-edit —— 交互式编辑供应商 / 模型配置
+  pi.registerCommand("provider:fast-edit", {
+    description: "交互式编辑供应商/模型配置（API 切换、新增模型、模型微调）：/provider:fast-edit [供应商名]",
+    handler: async (args, ctx) => {
+      const result = await fastEditHandler(args, ctx);
+      if (!result?.changed) return;
+      await reloadProviders(ctx);
+      ctx.ui.notify(`✅ ${result.summary}`, "info");
+    },
+  });
+
   // /provider:reload —— 重新加载 providers.toml
   pi.registerCommand("provider:reload", {
     description: "重新加载 ~/.pi/agent/providers.toml 中的自定义供应商配置",
     handler: async (_args, ctx) => {
-      let config: { providers: RawProvider[]; raw: string } | null = null;
-      try {
-        config = loadProvidersConfig(CONFIG_PATH);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`重新加载 providers.toml 失败: ${message}`, "error");
-        return;
-      }
-      if (!config) {
-        ctx.ui.notify("providers.toml 不存在，可用 /provider:fast-add 添加供应商", "info");
-        return;
-      }
-      const diffs = await registerProviders(config.providers, config.raw);
-      const baseMsg = `已重新加载 providers.toml（${registeredIds.size} 个供应商）`;
-      if (diffs.length > 0) {
-        ctx.ui.notify(`${baseMsg}\n${diffs.join("\n")}`, "info");
-      } else {
-        ctx.ui.notify(baseMsg, "info");
-      }
+      await reloadProviders(ctx);
     },
   });
 
@@ -545,6 +539,29 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
     }
 
     return diffs;
+  }
+
+  /** 重新加载 providers.toml 并热更新已注册的供应商（reload 命令与 fast-edit 共用） */
+  async function reloadProviders(ctx: ExtensionCommandContext): Promise<void> {
+    let config: { providers: RawProvider[]; raw: string } | null = null;
+    try {
+      config = loadProvidersConfig(CONFIG_PATH);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`重新加载 providers.toml 失败: ${message}`, "error");
+      return;
+    }
+    if (!config) {
+      ctx.ui.notify("providers.toml 不存在，可用 /provider:fast-add 添加供应商", "info");
+      return;
+    }
+    const diffs = await registerProviders(config.providers, config.raw);
+    const baseMsg = `已重新加载 providers.toml（${registeredIds.size} 个供应商）`;
+    if (diffs.length > 0) {
+      ctx.ui.notify(`${baseMsg}\n${diffs.join("\n")}`, "info");
+    } else {
+      ctx.ui.notify(baseMsg, "info");
+    }
   }
 
   // ---- 初始化 ----

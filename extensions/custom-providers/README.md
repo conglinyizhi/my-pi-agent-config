@@ -24,6 +24,18 @@
 - 无参时展开全部供应商供选择
 - 选中后需要二次确认，同时移除 `providers.toml` / `auth.json` 配置并注销运行时 provider
 
+### `/provider:fast-edit`
+
+交互式编辑供应商 / 模型配置，不用手改 `providers.toml`。
+
+- **有参**：`/provider:fast-edit <供应商名>`，按标识符/名称/地址模糊匹配预筛选；无参时列出全部供应商
+- **选择供应商后** 进入操作菜单：
+  - `✏️ 编辑模型参数` —— 微调现有模型：上下文窗口、最大输出、价格（含缓存读写价）、推理开关、输入模态、CoT 回传、`cost_locked`、compat 等；菜单内还提供「删除此模型」
+  - `➕ 新增模型` —— 在当前供应商下添加新模型，输入 ID 后同菜单逐个配置参数
+  - `🔧 编辑供应商配置` —— 切换 API 格式（`openai-old` → `openai-new` → `anthropic` → `auto`）、改地址/名称、默认参数（`defaults.*`）、provider 级 CoT 回传与 compat
+  - `💾 保存并退出` —— 写回 `providers.toml` 并自动重新加载；`❌ 放弃修改` 不写盘
+- 所有修改先落在内存，统一保存；数字/文本字段预填当前值，输入 `clear` 清除该字段（回退默认）
+
 ### `/provider:reload`
 
 重新加载 `~/.pi/agent/providers.toml`，热更新已注册的供应商。
@@ -45,6 +57,7 @@ custom-providers/
 ├── models.ts                # 模型列表解析（/models 端点）与格式映射
 ├── fast-add.ts              # /provider:fast-add 命令实现
 ├── fast-del.ts              # /provider:fast-del 和 /provider:fast-remove 命令实现
+├── fast-edit.ts             # /provider:fast-edit 命令实现（交互式编辑供应商/模型）
 ├── models-dev.ts            # 开发环境模型配置
 ├── models-dev-static.json   # 静态模型数据
 ├── loader.test.ts           # loader 测试
