@@ -4,8 +4,8 @@
 // （浏览器密码、加密钱包密钥、API 密钥等）并外传。本扩展在工具层拦截：
 //   read / write / edit 的目标路径、bash 命令中引用的路径，命中黑名单即拒绝。
 //
-// 黑名单文件：~/.pi/agent/sandbox-blacklist.json（git 跟踪的路径模式，本身不敏感）
-//   - 格式：{ "blacklist": ["glob 模式", ...] }
+// 黑名单配置：extensions.toml 的 [sandbox-guard] section（git 跟踪，本身不敏感）
+//   - 格式：blacklist = ["glob 模式", ...]
 //   - glob 支持：~ 展开为 home；** 递归；* 单段（不含 /）；? 单字符
 //   - 读取时机：session_start（初始化与 /reload 都会触发）时读取并编译
 //
@@ -29,9 +29,10 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, isAbsolute, resolve, sep } from "node:path";
+import { parse as parseToml } from "smol-toml";
 
 const AGENT_DIR = getAgentDir();
-const BLACKLIST_PATH = join(AGENT_DIR, "sandbox-blacklist.json");
+const EXTENSIONS_TOML = join(AGENT_DIR, "extensions.toml");
 const HOME = homedir();
 
 // ── glob → 正则（最小实现：** 递归、* 单段、? 单字符） ──
@@ -109,9 +110,10 @@ function compileRule(raw: string): CompiledRule | null {
 
 export function loadBlacklist(): CompiledRule[] {
   try {
-    const raw = readFileSync(BLACKLIST_PATH, "utf8");
-    const data = JSON.parse(raw) as { blacklist?: string[] };
-    return (data.blacklist ?? []).map(compileRule).filter((r): r is CompiledRule => r !== null);
+    const doc = parseToml(readFileSync(EXTENSIONS_TOML, "utf8")) as Record<string, unknown>;
+    const section = (doc["sandbox-guard"] ?? {}) as { blacklist?: unknown };
+    const list = Array.isArray(section.blacklist) ? section.blacklist.filter((x): x is string => typeof x === "string") : [];
+    return list.map(compileRule).filter((r): r is CompiledRule => r !== null);
   } catch {
     return [];
   }

@@ -5,7 +5,8 @@
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
 | `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
-| `gate.ts` | 危险 bash 命令审批（规则引擎 + GUI/TUI） | `pi.on("tool_call"/"session_start")` |
+| `gate.ts` | 危险 bash 命令审批（规则引擎 + LLM 预审 + GUI/TUI） | `pi.on("tool_call"/"session_start")` |
+| `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow` | `pi.registerTool("sandbox-allow")` |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
@@ -19,7 +20,9 @@ sandbox-permissions/
 ├── index.ts             # 合成入口（方案 B：真融合）
 ├── guard.ts             # 敏感路径黑名单拦截
 ├── guard.test.ts
-├── gate.ts              # 危险命令审批（GUI 审计 + TUI 回退）
+├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
+├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
+├── llm-review.test.ts
 ├── rule-engine.ts       # token 化规则引擎
 ├── rule-engine.test.ts
 ├── scanner.ts           # 命令分段/token 化
@@ -38,6 +41,7 @@ node --experimental-strip-types extensions/sandbox-permissions/guard.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/rule-engine.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/inline-script.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/helpers.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/llm-review.test.ts
 ```
 
 ## gate 规则引擎（原 permission-gate）
@@ -60,7 +64,12 @@ bash 命令
   │           ▼                          ▼
   │     直接拦 / 弹窗确认           无动态构造 ──► 放行
   │                                        │
-  │                                        含动态构造 ──► 人工确认
+  │                                        含动态构造 ──► LLM 预审
+  │
+  ├─ LLM 预审（需确认命令）：
+  │     ├─ verdict=safe 且 auto 模式 ──► 放行（不弹窗）
+  │     ├─ verdict=risky/dangerous ──► 弹窗（附 LLM 意见）
+  │     └─ 审核失败/超时/禁用 ──► 回退弹窗（绝不静默放行）
   │
   └─ 非交互模式 → 直接阻止（无 UI 无法确认）
 ```
@@ -99,8 +108,42 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 | 命令 | 判定 |
 |------|------|
-| `cd /tmp && rm -rf mbtest && mkdir mbtest` | ⚠️ 确认（rm 递归） |
+| `cd /tmp && rm -rf mbtest && mkdir mbtest` | ⚠️ LLM 预审 → 多为 safe 自动放行 |
 | `uv pip install requests --system` | 🚫 自动拒绝 |
 | `uv pip install requests` | ✅ 放行 |
 | `uv venv && pip install requests` | ✅ 放行（venv 白名单） |
-| `echo $(date)` | ⚠️ 确认（动态构造） |
+| `echo $(date)` | ⚠️ LLM 预审（动态构造） |
+
+## LLM 预审（llm-review.ts）
+
+命中「需人工确认」级别的命令（rm 递归 / sudo / dd / 动态构造 / 管道执行器 / Python 段等）不再直接弹窗，而是先调用 LLM API 审核命令的质量与安全性，减少弹窗打扰。
+
+### 判定行为
+
+| LLM 判定 | auto 模式（默认） | strict 模式 |
+|----------|------------------|-------------|
+| `safe`（意图明确、风险可控） | ✅ 自动放行，不弹窗 | ⚠️ 仍弹窗（附意见） |
+| `risky` / `dangerous` | ⚠️ 弹窗（附 LLM 意见） | ⚠️ 弹窗（附 LLM 意见） |
+| 审核失败（超时/网络/解析/无模型） | ⚠️ 回退弹窗，绝不静默放行 | ⚠️ 回退弹窗 |
+
+### 配置（extensions.toml 的 `[sandbox-llm-review]`）
+
+扩展配置统一放 `~/.pi/agent/extensions.toml`（不进 settings.json，避免换模型时被误改）：
+
+```toml
+[sandbox-llm-review]
+enabled = true          # 总开关；false = 回到纯规则弹窗流程
+mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
+# provider = "deepseek" # 可选：指定审核模型（缺省用当前会话模型）
+# model = "deepseek-v4-flash"
+timeout_ms = 10000      # 单次审核超时；超时回退弹窗
+max_cache = 200         # 内存缓存上限（同命令同规则不重复调 API）
+```
+
+### 安全底线
+
+- **autoReject 规则永不进 LLM 层**：`rm -rf`、`sudo`、`dd` 直读设备等仍由规则引擎处理，gate.ts 先硬拦/确认，不因 LLM 判定放宽
+- **失败即保守**：LLM 不可用（未配置模型 / 超时 / 网络错误 / 输出无法解析）一律回退原弹窗流程，绝不静默放行
+- **无 UI 模式不变**：非交互模式（print/json）仍直接阻止，不进 LLM 预审
+- **知情**：命令文本会发送到配置的 LLM API（默认当前会话模型）；启用即视为知情，介意可关 `enabled`
+- 审核记录写入会话（`sandbox-llm-review` 条目，不进 LLM 上下文），可在 `/session` 查看

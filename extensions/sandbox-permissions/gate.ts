@@ -8,8 +8,10 @@
  * 审批流程：
  * 1. 安全白名单放行
  * 2. 自动拒绝规则直接拦（不弹窗）
- * 3. Wails GUI 审计面板（主要审批方式）
- * 4. GUI 不可用时回退到 TUI（含命中的规则详情）
+ * 3. LLM 预审：需确认命令先过 LLM（verdict=safe 且 auto 模式 → 自动放行不弹窗；
+ *    否则带 LLM 意见进入弹窗；审核失败回退弹窗，绝不静默放行）
+ * 4. Wails GUI 审计面板（主要审批方式）
+ * 5. GUI 不可用时回退到 TUI（含命中的规则详情与 LLM 意见）
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,6 +23,7 @@ import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
 import { checkNotificationSupport, notifyQuestion } from "../../lib/notify-send";
 import { auditCommand, extractTmpRedirectTargets, isTmpRedirectTargetSafe, type TokenRule } from "./rule-engine";
 import { buildInlineScriptRejection, extractInlineScript, saveInlineScript } from "./inline-script";
+import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "./llm-review";
 
 /** 动态构造命令的合成规则（无危险规则命中但含动态构造时降级为人工确认） */
 const DYNAMIC_RULE: TokenRule = {
@@ -55,6 +58,9 @@ const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（仅防窗口进程卡死�
 /** pnpm 可用性（带缓存；startup 检测一次，tool_call 复用） */
 let pnpmChecked = false;
 let pnpmAvailable = false;
+
+/** LLM 预审内存缓存（同命令同规则不重复调 API） */
+const reviewCache = createReviewCache();
 
 /** 检测 pnpm 是否可用：spawnSync 跑 pnpm --version，ENOENT 视为未安装 */
 function detectPnpm(): boolean {
@@ -198,10 +204,36 @@ export default async function (pi: ExtensionAPI) {
       return { block: true, reason: tipText ? `危险命令已阻止：${tipText}` : "危险命令已阻止" };
     }
 
+    // ====== LLM 预审层：需确认命令先过 LLM；safe 且 auto 模式自动放行，减少弹窗 ======
+    let reviewNote = "";
+    const reviewConfig = loadLlmReviewConfig();
+    if (reviewConfig.enabled) {
+      const review = await reviewCommand(pi, ctx, command, rules, ctx.signal, reviewCache, reviewConfig);
+      if (review.verdict === "safe" && reviewConfig.mode === "auto") {
+        pi.appendEntry("sandbox-llm-review", {
+          command,
+          verdict: review.verdict,
+          reason: review.reason,
+          mode: "auto-allow",
+          ts: Date.now(),
+        });
+        return undefined;
+      }
+      if (review.verdict !== "error") {
+        pi.appendEntry("sandbox-llm-review", {
+          command,
+          verdict: review.verdict,
+          reason: review.reason,
+          ts: Date.now(),
+        });
+        reviewNote = `\n\n${formatReviewNote(review)}`;
+      }
+    }
+
     // 桌面通知
     if (notificationReady) {
       notifyQuestion(
-        `危险命令请求确认：${command.slice(0, 80)}${command.length > 80 ? "..." : ""}`
+        `危险命令请求确认：${command.slice(0, 80)}${command.length > 80 ? "..." : ""}${reviewNote ? `\n${reviewNote}` : ""}`
       ).catch(() => {});
     }
 

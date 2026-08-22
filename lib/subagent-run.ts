@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { parse as parseToml } from "smol-toml";
 import type { Message } from "@earendil-works/pi-ai";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
@@ -207,21 +208,12 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 export function getWorkerModel(): string {
-  const rolesPath = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
+  const rolesPath = path.join(os.homedir(), ".pi", "agent", "extensions.toml");
   try {
-    const content = fs.readFileSync(rolesPath, "utf-8");
-    let inRoles = false;
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed === "[roles]") { inRoles = true; continue; }
-      if (inRoles && trimmed.startsWith("[")) break;
-      if (!inRoles) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-      if (key === "worker" && value) return value;
-    }
+    const doc = parseToml(fs.readFileSync(rolesPath, "utf-8")) as Record<string, unknown>;
+    const section = (doc["subagent-roles"] ?? {}) as { worker?: unknown };
+    const worker = typeof section.worker === "string" && section.worker ? section.worker : "";
+    if (worker) return worker;
   } catch { /* ignore */ }
   return "worker";
 }

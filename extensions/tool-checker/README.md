@@ -26,18 +26,21 @@
 tool-checker/
 ├── index.ts     # 主入口：声明式检测器生成、事件钩子
 ├── types.ts     # 类型定义（Detector, DetectorResult）
-├── tools.toml   # 声明式配置，新增工具只需编辑此文件
 └── README.md    # 本文件
 ```
 
-### 声明式配置（tools.toml）
+配置在根目录 `extensions.toml` 的 `[tool-checker]` section（扩展集中配置，原 tools.toml 已并入）。
 
-每个工具只需定义：
+### 声明式配置（extensions.toml 的 [tool-checker]）
+
+每个工具只需定义（`[[tool-checker.tools]]` 块）：
 - `name` / `display` — 标识和显示名
 - `check` — 检测命令（如 `gh --version`）
 - `auth` — 鉴权命令（可选，如 `gh auth status`）
 - `version` — 版本号正则提取（可选）
 - `hint` — 注入到系统提示词的指引文本
+
+新增工具：在 `extensions.toml` 的 `[tool-checker]` 下追加一个 `[[tool-checker.tools]]` 块，`/reload` 生效。
 
 ### 执行流程
 
@@ -48,7 +51,7 @@ tool-checker/
 
 ### 关键设计
 
-- **声明式**：新增工具只需编辑 tools.toml，无需改代码
+- **声明式**：新增工具只需编辑 extensions.toml 的 [tool-checker] section，无需改代码
 - **非阻塞**：检测异步执行，不延迟会话启动
 - **容错**：单个检测器失败不影响其他检测器
 - **缓存**：检测结果缓存在会话级别，before_agent_start 只读取缓存

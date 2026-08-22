@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════════
+# extensions.toml — pi 扩展集中配置
+# ═══════════════════════════════════════════════════════════
+#
+# 用途：扩展自己的配置统一放这里，每个扩展一个 [section]。
+# 本文件不进 LLM 上下文；由各扩展在初始化/调用时自行读取。
+#
+# 背景：扩展配置曾散落在 settings.json（换模型时被误改，很脏）与
+# 各扩展目录（tools.toml / sandbox-blacklist.json / providers.roles.toml 等）。
+# 本文件作为集中入口，后续同类配置可逐步并入对应 section。
+#
+# 注意：providers.toml（含凭据）、settings.json（pi 核心）、
+# auth.json、缓存类文件（models-store.json / mcp-cache.json）不并入。
+
+# ─────────────────────────────────────────────────────────────
+# sandbox-permissions：敏感路径黑名单（原 sandbox-blacklist.json）
+# 防恶意 skill 诱导模型读取敏感文件（浏览器密码/钱包密钥/API key）并外传
+# ─────────────────────────────────────────────────────────────
+[sandbox-guard]
+blacklist = [
+  "~/.ssh/**",
+  "~/.aws/**",
+  "~/.gnupg/**",
+  "~/.config/gh/**",
+  "~/.config/google-chrome/**",
+  "~/.config/chromium/**",
+  "~/.config/microsoft-edge/**",
+  "~/.config/BraveSoftware/**",
+  "~/.mozilla/**",
+  "~/.npmrc",
+  "~/.bash_history",
+  "~/.zsh_history",
+  "~/.pi/agent/auth.json",
+  "~/.pi/agent/providers.toml",
+  "~/.pi/agent/mcp-cache.json",
+  ".env",
+  ".env.local",
+  "**/.env",
+  "**/.env.local",
+]
+
+# ─────────────────────────────────────────────────────────────
+# subagent 模型角色路由（原 providers.roles.toml）
+# worker = 子代理（subagent）默认模型；oc = 原 trident 主代理角色（当前仅
+# trident-subagent 扩展使用，该扩展处于 disabled 状态，启用时需适配本文件）
+# ─────────────────────────────────────────────────────────────
+[subagent-roles]
+worker = "deepseek/deepseek-v4-flash"
+oc = "tokenflux/deepseek-v4-flash"
+
+# ─────────────────────────────────────────────────────────────
+# tool-checker：外部 CLI 工具检测（原 extensions/tool-checker/tools.toml）
+# 每个 [[tool-checker.tools]] 块定义一个工具：
+#   name - 唯一标识；display - 状态栏短名；check - 检测命令（支持管道）
+#   version - 可选，正则，capture group 1 提取版本号
+#   auth - 可选，鉴权命令，返回码 0 = 已鉴权
+#   hint - 注入系统提示词的指引文案
+# ─────────────────────────────────────────────────────────────
+[tool-checker]
+
+[[tool-checker.tools]]
+name = "gh-cli"
+display = "gh"
+check = "gh --version 2>/dev/null | head -1"
+auth = "gh auth status"
+version = 'gh version (\S+)'
+hint = "系统已安装 gh CLI 并且完成密钥配置，有需要应使用该工具（gh 命令）而不是直接调用 GitHub API。"
+
+[[tool-checker.tools]]
+name = "uv"
+display = "uv"
+check = "uv --version"
+version = 'uv (\S+)'
+hint = "用户已经配置好 uv（Rust 实现的 Python 包管理器）。严格使用 uv 处理所有 Python 包管理操作，包括但不限于：uv pip install（安装包）、uv pip uninstall（卸载）、uv venv（创建虚拟环境）、uv pip list（列出已安装包）、uv pip compile（锁定依赖）。禁止使用 pip 或 python -m pip。安装任何包之前必须先用 uv venv 创建虚拟环境，严禁使用 --system 标志。"
+
+[[tool-checker.tools]]
+name = "pnpm"
+display = "pn"
+check = "pnpm --version"
+version = '(\S+)'
+hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（pnpm install / pnpm add / pnpm remove 等），禁止使用 npm 或 yarn。如果项目已有 pnpm-lock.yaml，必须用 pnpm install 而非 npm install。"
+
+# ─────────────────────────────────────────────────────────────
+# sandbox-permissions：gate 危险命令的 LLM 预审
+# ─────────────────────────────────────────────────────────────
+[sandbox-llm-review]
+enabled = true          # 总开关；false = 回到纯规则弹窗流程
+mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
+# provider = "deepseek" # 可选：指定审核模型（缺省用当前会话模型）
+# model = "deepseek-v4-flash"
+timeout_ms = 10000      # 单次审核超时（毫秒）；超时回退弹窗
+max_cache = 200         # 内存缓存上限（同命令同规则不重复调 API）

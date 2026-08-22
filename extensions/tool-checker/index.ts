@@ -1,26 +1,22 @@
 // 工具检测器：声明式检测外部 CLI 工具并注入系统提示词（详见 README.md）
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 import type { Detector, DetectorResult } from "./types.js";
 import { exec } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { parse as parseToml } from "smol-toml";
 
 const execAsync = promisify(exec);
 
 // ---------------------------------------------------------------------------
-// 定位 TOML 配置文件
+// 定位 TOML 配置文件（扩展集中配置 extensions.toml 的 [tool-checker] section）
 // ---------------------------------------------------------------------------
 
-const __dirname = (() => {
-  try { return dirname(fileURLToPath(import.meta.url)); } catch { return resolve("."); }
-})();
-
-const TOML_PATH = resolve(__dirname, "tools.toml");
+const TOML_PATH = resolve(getAgentDir(), "extensions.toml");
 
 // ---------------------------------------------------------------------------
 // TOML 配置类型
@@ -98,8 +94,8 @@ function createDetector(cfg: ToolConfig): Detector {
 function loadDetectors(): Detector[] {
   try {
     const raw = readFileSync(TOML_PATH, "utf-8");
-    const data = parseToml(raw) as { tools?: ToolConfig[] };
-    return (data.tools || []).map(createDetector);
+    const data = parseToml(raw) as { "tool-checker"?: { tools?: ToolConfig[] } };
+    return (data["tool-checker"]?.tools || []).map(createDetector);
   } catch {
     return [];
   }
