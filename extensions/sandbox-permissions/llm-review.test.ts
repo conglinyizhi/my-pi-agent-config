@@ -13,6 +13,7 @@ import {
 	normalizeConfig,
 	REVIEW_TOOL,
 	reviewCacheKey,
+	reviewCommand,
 } from "./llm-review.ts";
 import type { TokenRule } from "./rule-engine.ts";
 
@@ -250,5 +251,58 @@ describe("formatReviewNote", () => {
 		assert.ok(note.includes("审核失败"));
 		assert.ok(note.includes("超时"));
 		assert.ok(note.includes("10000ms"));
+	});
+});
+
+describe("reviewCommand 失败拼装", () => {
+	const makeCtx = (completeImpl: (modelId: string) => unknown) => {
+		const models = new Map<string, { id: string }>();
+		return {
+			modelRegistry: {
+				// 记录每个 provider/model 组合对应的 model id，方便按模型 id 返回不同响应
+				find: (_p: string, m: string) => {
+					const mm = { id: m };
+					models.set(m, mm);
+					return mm;
+				},
+				complete: async (model: { id: string }) => {
+					const r = completeImpl(model.id);
+					return { content: r, stopReason: "stop" } as unknown;
+				},
+				_models: models,
+			},
+			signal: undefined,
+			model: undefined,
+		} as any;
+	};
+	const text = (s: string) => ({ type: "text", text: s });
+	const cache = createReviewCache(10);
+	const config = {
+		enabled: true,
+		mode: "auto" as const,
+		timeoutMs: 10000,
+		maxCache: 10,
+		models: [
+			{ provider: "zhipu", model: "glm-a" },
+			{ provider: "deepseek", model: "ds-b" },
+		],
+	};
+
+	it("未调用工具的模型：输出附进失败原因", async () => {
+		const ctx = makeCtx((id) => (id === "glm-a" ? [text("这条命令动态拼接路径，建议人工确认。")] : [text("另一条")]));
+		const r = await reviewCommand({} as any, ctx, "rm -rf x", [], undefined, cache, config);
+		assert.equal(r.verdict, "error");
+		assert.ok(r.reason.includes("模型未给出结构化结论（未调用审核工具）"));
+		assert.ok(r.reason.includes("模型输出：这条命令动态拼接路径"));
+	});
+
+	it("多个模型失败：每个模型独占一行（换行分隔）", async () => {
+		const ctx = makeCtx(() => [text("模型没调工具")]);
+		const r = await reviewCommand({} as any, ctx, "rm -rf x", [], undefined, createReviewCache(10), config);
+		assert.equal(r.verdict, "error");
+		// 换行分隔而非分号拼接：两个模型分布在 2 行（标题+模型1 同行，模型2 换行）
+		assert.equal(r.reason.split("\n").length, 2);
+		assert.ok(!r.reason.includes("；"));
+		assert.ok(r.reason.split("\n")[1].includes("ds-b"));
 	});
 });

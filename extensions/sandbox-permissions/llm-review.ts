@@ -431,7 +431,13 @@ export async function reviewCommand(
 				cache.set(key, result);
 				return result;
 			}
-			failures.push(`${label}: ${result.reason}`);
+			// 未调用审核工具（未给出结构化结论）的模型，把它的自由文本输出也附上，
+			// 供人工审核者在 GUI 里看到模型到底回了什么，而不是事后只看到一句空泛的失败原因
+			failures.push(
+				result.opinion
+					? `${label}: ${result.reason}（模型输出：${result.opinion.slice(0, 200)}）`
+					: `${label}: ${result.reason}`,
+			);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (signal?.aborted) {
@@ -446,7 +452,7 @@ export async function reviewCommand(
 	}
 	return {
 		verdict: "error",
-		reason: `审核模型全部失败：${failures.join("；")}`,
+		reason: `审核模型全部失败：${failures.join("\n")}`,
 		suggestion: "",
 	};
 }

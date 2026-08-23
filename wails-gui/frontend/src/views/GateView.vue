@@ -305,7 +305,7 @@ onMounted(async () => {
 .verdict-badge.v-risky { color: #e67e22; background: #2a1a0a; border: 1px solid #e67e2255; }
 .verdict-badge.v-dangerous { color: #ff6b6b; background: #3a1a1a; border: 1px solid #ff6b6b55; }
 .verdict-badge.v-error { color: #999; background: #1a1a2e; border: 1px solid #444; }
-.review-reason { font-size: 13px; color: #e0e0e0; line-height: 1.6; }
+.review-reason { font-size: 13px; color: #e0e0e0; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .review-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 
