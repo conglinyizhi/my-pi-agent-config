@@ -82,6 +82,8 @@ const EXTENSIONS_TOML_PATH = join(getAgentDir(), "extensions.toml");
 const CONFIG_SECTION = "sandbox-llm-review";
 /** 独立存放的审核 system prompt（纯文本；改完即生效，下次审核现读） */
 const REVIEW_PROMPT_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-system-prompt.txt");
+/** 常见误判样本（容易误报的命令），独立存放便于不断追加案例 */
+const REVIEW_EXAMPLES_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-examples.txt");
 /** 审核模型池独立文件（个人依赖：供应商配置/API key 不入库，已 gitignore） */
 const REVIEW_POOL_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-pool.toml");
 
@@ -178,6 +180,25 @@ export function loadReviewSystemPrompt(): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/** 读取常见误判样本（容易误报的命令，独立存放便于追加案例；缺失/读失败 → null） */
+export function loadReviewExamples(): string | null {
+	try {
+		return readFileSync(REVIEW_EXAMPLES_PATH, "utf8");
+	} catch {
+		return null;
+	}
+}
+
+/** 读取审核 system prompt，并把常见误判样本拼到末尾（样本缺失不影响主体） */
+export function loadReviewPrompt(): string | null {
+	const system = loadReviewSystemPrompt();
+	if (system === null) return null;
+	const examples = loadReviewExamples();
+	return examples ? `${system}
+
+${examples}` : system;
 }
 
 /** 构造审核请求的 system + user 消息（纯函数；system 由调用方传入） */
@@ -363,7 +384,7 @@ export async function reviewCommand(
 		};
 	}
 
-	const systemPrompt = loadReviewSystemPrompt();
+	const systemPrompt = loadReviewPrompt();
 	if (systemPrompt === null) {
 		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
 	}

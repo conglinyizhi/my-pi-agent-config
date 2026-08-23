@@ -24,6 +24,9 @@ sandbox-permissions/
 ├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
 ├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
 ├── llm-review.test.ts
+├── review-system-prompt.txt  # 审核主体 system prompt（纯文本）
+├── review-examples.txt       # 常见误判样本（容易误报的命令，独立存放）
+├── review-pool.toml          # 审核模型池（个人依赖，gitignore）
 ├── paths.ts             # 目录白/黑名单（GUI 动态维护，sandbox-paths.json）
 ├── paths.test.ts
 ├── rule-engine.ts       # token 化规则引擎
@@ -129,9 +132,14 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 | `risky` / `dangerous` | ⚠️ 弹窗（附 LLM 意见） | ⚠️ 弹窗（附 LLM 意见） |
 | 审核失败（超时/网络/解析/无模型） | ⚠️ 回退弹窗，绝不静默放行 | ⚠️ 回退弹窗 |
 
-### 审核 prompt（review-system-prompt.txt）
+### 审核 prompt（review-system-prompt.txt + review-examples.txt）
 
-发送给 LLM 的 system prompt 独立存放在 `extensions/sandbox-permissions/review-system-prompt.txt`（纯文本，改了即生效，下次审核就用到，无需 /reload）。文件缺失或读失败时按「审核失败」处理：回退弹窗，绝不静默放行。
+发送给 LLM 的 system prompt 拆成两个独立文件（纯文本，改了即生效，下次审核就用到，无需 /reload）：
+
+- `review-system-prompt.txt`：审核主体 prompt（判定标准 / 输出 / 注入防护）
+- `review-examples.txt`：常见误判样本（容易误报的命令，附应判结论与要点），随审核请求拼到 prompt 末尾
+
+`loadReviewPrompt()` 读主体并把样本拼到末尾；样本文件缺失不影响主体（此时只用主体 prompt）。任一文件缺失/读失败时按「审核失败」处理：回退弹窗，绝不静默放行。
 
 ### 结论回传：工具调用
 
