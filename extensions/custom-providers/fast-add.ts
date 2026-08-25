@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
 import type { ModelOverride, InputCapability } from "./types.ts";
+import { isProtected } from "./model-protection.ts";
 import { maskKey } from "../../lib/auth";
 import { extractDomainId } from "../../lib/url-utils";
 import {
@@ -513,6 +514,7 @@ function tomlModel(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheRead !== undefined && m.costCacheRead > 0) result.cost_cache_read = m.costCacheRead;
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) result.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) result.reasoning = m.reasoning;
+  if (m.do_not !== undefined && m.do_not.length > 0) result.do_not = m.do_not;
   if (m.cotReplay !== undefined) result.cot_replay = m.cotReplay;
   if (m.input !== undefined && m.input.length > 1) result.input = m.input;
   if (m.compat && Object.keys(m.compat).length > 0) result.compat = m.compat;
@@ -588,6 +590,7 @@ async function applyAndRegister(
                 costCacheRead: (m as Record<string, unknown>).cost_cache_read as number | undefined,
                 costCacheWrite: (m as Record<string, unknown>).cost_cache_write as number | undefined,
                 reasoning: (m as Record<string, unknown>).reasoning as boolean | undefined,
+                do_not: (m as Record<string, unknown>).do_not as ModelOverride["do_not"],
                 cotReplay: (m as Record<string, unknown>).cot_replay as boolean | undefined,
                 input: (m as Record<string, unknown>).input as InputCapability[] | undefined,
               });
@@ -623,7 +626,11 @@ async function applyAndRegister(
         // 合并已有模型 + 新模型（新模型覆盖同 id 的已有模型参数）
         const mergedMap = new Map<string, ModelOverride>();
         for (const m of existingOverrides) mergedMap.set(m.id, m);
-        for (const m of newModels) mergedMap.set(m.id, m); // 新模型优先
+        for (const m of newModels) {
+          const existing = mergedMap.get(m.id);
+          if (existing && isProtected(existing, "edit")) continue;
+          mergedMap.set(m.id, m); // 新模型优先
+        }
         allModelsForRegister = [...mergedMap.values()];
       }
     } else {

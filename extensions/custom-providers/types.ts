@@ -28,9 +28,13 @@ export interface CompatOverride {
   supports_eager_tool_input_streaming?: boolean;
 }
 
+export type ProtectedModelAction = "remove" | "update" | "edit";
+
 export interface ModelOverride extends Partial<ProviderDefaults> {
   id: string;
   name?: string;
+  /** 保护模型免受指定自动/手动操作影响 */
+  do_not?: ProtectedModelAction[];
   /** 锁定价格，reload-online 不覆盖 */
   cost_locked?: boolean;
   /**

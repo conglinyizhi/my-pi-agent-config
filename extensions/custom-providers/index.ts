@@ -4,13 +4,14 @@ import { parse, stringify } from "smol-toml";
 import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
-import { resolveModels, toPiApi } from "./models.ts";
+import { buildModelConfig, resolveModels, toPiApi } from "./models.ts";
 import { diffModelLists, formatDiffReport, formatTokens, fmtPrice } from "./provider-diff.ts";
 import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
 import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
 import { fastDelHandler } from "./fast-del.ts";
 import { fastEditHandler } from "./fast-edit.ts";
+import { isProtected, preserveProtectedUpdate } from "./model-protection.ts";
 
 const PLACEHOLDER_MODEL = "auto-detect";
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
@@ -158,6 +159,31 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
             continue;
           }
 
+          const existingOverrides: ModelOverride[] = Array.isArray(provider.models)
+            ? provider.models
+            : [];
+
+          // do_not.remove 的模型不依赖供应商在线列表，始终保留在运行时和写回配置中。
+          const onlineIds = new Set(models.map(m => m.id));
+          for (const protectedModel of existingOverrides) {
+            if (isProtected(protectedModel, "remove") && !onlineIds.has(protectedModel.id)) {
+              models.push({
+                ...buildModelConfig(protectedModel.id, provider, protectedModel),
+                api: toPiApi(format),
+              });
+              continue;
+            }
+            if (isProtected(protectedModel, "update") && onlineIds.has(protectedModel.id)) {
+              const index = models.findIndex(model => model.id === protectedModel.id);
+              if (index >= 0) {
+                models[index] = {
+                  ...buildModelConfig(protectedModel.id, provider, protectedModel),
+                  api: toPiApi(format),
+                };
+              }
+            }
+          }
+
           // 对比找出新模型
           const newModels = models.filter(m => !existingIds.has(m.id));
 
@@ -177,9 +203,6 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           totalRefreshed++;
 
           // 构建要写回 TOML 的模型覆盖列表（合并已有覆盖 + 新模型 models.dev 匹配）
-          const existingOverrides: ModelOverride[] = Array.isArray(provider.models)
-            ? provider.models
-            : [];
           const existingOverrideMap = new Map<string, ModelOverride>();
           for (const m of existingOverrides) existingOverrideMap.set(m.id, m);
 
@@ -209,7 +232,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
               if (existing && devCandidate) {
                 // 已有模型 + models.dev 匹配：能力更新，价格看 cost_locked
                 const matched = await buildMatchedModel(m.id, devCandidate);
-                return {
+                return preserveProtectedUpdate({
                   id: matched.id,
                   name: matched.name !== matched.id ? matched.name : existing.name,
                   contextWindow: matched.contextWindow,
@@ -223,7 +246,8 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
                   cost_locked: existing.cost_locked,
                   cotReplay: existing.cotReplay,
                   compat: existing.compat,
-                };
+                  do_not: existing.do_not,
+                }, existing);
               }
               if (existing) {
                 // 已有模型但 models.dev 无匹配：保留原配置
@@ -265,7 +289,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
           // 下线模型（toml 有但 API 不再返回）
           const apiModelIds = new Set(models.map(m => m.id));
           const removedOverrides = [...existingOverrideMap.keys()]
-            .filter(id => !apiModelIds.has(id));
+            .filter(id => !apiModelIds.has(id) && !isProtected(existingOverrideMap.get(id)!, "remove"));
           if (removedOverrides.length > 0) {
             ctx.ui.notify(
               `"${provider.id}" ${removedOverrides.length} 个模型已下线: ${removedOverrides.join(", ")}`,
@@ -641,6 +665,7 @@ function tomlModelEntry(m: ModelOverride): Record<string, unknown> {
   if (m.costCacheWrite !== undefined && m.costCacheWrite > 0) entry.cost_cache_write = m.costCacheWrite;
   if (m.reasoning !== undefined) entry.reasoning = m.reasoning;
   if (m.input !== undefined) entry.input = m.input;
+  if (m.do_not !== undefined && m.do_not.length > 0) entry.do_not = m.do_not;
   if (m.cost_locked) entry.cost_locked = true;
   if (m.cotReplay !== undefined) entry.cot_replay = m.cotReplay;
   return entry;

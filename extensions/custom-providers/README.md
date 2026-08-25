@@ -80,6 +80,7 @@ custom-providers/
 - **格式自动检测**：请求 `/models` 端点，根据响应结构判断 OpenAI/Anthropic
 - **配置持久化**：检测结果自动写回 providers.toml，下次启动直接使用
 - **reload 安全**：reload 时清理旧注册，避免重复注册
+- **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。
 - **密钥管理**：通过 `../../lib/auth.ts` 获取 API key
 
 ### 依赖

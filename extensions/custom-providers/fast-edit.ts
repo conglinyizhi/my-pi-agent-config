@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { getAgentDir, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
 import { findProviderMatches, type DeletableProvider } from "./fast-del.ts";
+import { isProtected } from "./model-protection.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
@@ -337,6 +338,11 @@ async function modelEditMenu(
   provider: Record<string, unknown>,
   model: Record<string, unknown>,
 ): Promise<void> {
+  if (isProtected(model, "edit")) {
+    ctx.ui.notify(`模型 "${model.id}" 受 do_not.edit 保护，不能编辑或删除`, "warning");
+    return;
+  }
+
   while (true) {
     const options = MODEL_FIELDS.map(f =>
       `${f.label} — ${fmtValue(getFieldValue(model, f))}`,

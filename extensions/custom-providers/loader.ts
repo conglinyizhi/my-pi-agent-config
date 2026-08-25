@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
-import type { CompatOverride, InputCapability, ModelOverride, ProviderDefaults, ProvidersConfig, RawProvider } from "./types.ts";
+import type { CompatOverride, InputCapability, ModelOverride, ProtectedModelAction, ProviderDefaults, ProvidersConfig, RawProvider } from "./types.ts";
 
 export function parseProvidersToml(raw: string): ProvidersConfig {
   const parsed = parse(raw) as { providers?: Array<Record<string, unknown>> };
@@ -72,11 +72,20 @@ function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
     costOutput: raw.cost_output as number | undefined,
     costCacheRead: raw.cost_cache_read as number | undefined,
     costCacheWrite: raw.cost_cache_write as number | undefined,
+    do_not: normalizeProtectedActions(raw.do_not),
     cost_locked: raw.cost_locked as boolean | undefined,
     cotReplay: raw.cot_replay as boolean | undefined,
     thinkingLevelMap: normalizeThinkingLevelMap(raw.thinking_level_map as Record<string, unknown> | undefined),
     compat: normalizeCompat(raw.compat as Record<string, unknown> | undefined),
   };
+}
+
+function normalizeProtectedActions(raw: unknown): ProtectedModelAction[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const actions = raw.filter((value): value is ProtectedModelAction =>
+    value === "remove" || value === "update" || value === "edit",
+  );
+  return actions.length > 0 ? actions : undefined;
 }
 
 function normalizeDefaults(raw: Record<string, unknown>): ProviderDefaults {
