@@ -37,6 +37,25 @@ function readSettings() {
   }
 }
 
+/**
+ * 读目录白名单 allowDirs（extensions/sandbox-permissions/sandbox-paths.json）。
+ * 主 agent 的 bash 沙盒把这些目录作为常驻 `--rw` 可写根，免走 sandbox-allow 一次授权。
+ * 读失败 / 不存在 → []；过滤空串与非绝对路径，拒绝根目录 `/`（避免 --rw / 覆盖 --ro /）。
+ */
+function readAllowDirs() {
+  try {
+    const doc = JSON.parse(
+      readFileSync(join(AGENT_DIR, "extensions", "sandbox-permissions", "sandbox-paths.json"), "utf8"),
+    );
+    const list = Array.isArray(doc.allowDirs) ? doc.allowDirs : [];
+    return list.filter(
+      (d) => typeof d === "string" && d && d !== "/" && d.startsWith("/"),
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** 直接执行 bash（豁免命令：完全权限开放） */
 function execBash(command) {
   const res = spawnSync("bash", ["-c", command], { stdio: "inherit", cwd: process.cwd() });
@@ -53,11 +72,17 @@ function buildGrants() {
   const rw = ["/tmp", "/dev/null"];
   if (process.env.PI_SANDBOX_READONLY !== "1") {
     if (process.env.PI_SANDBOX_RW) {
+      // subagent：只能写指定的 sandboxDir，工程其余只读——保持隔离，不叠加白名单
       for (const dir of process.env.PI_SANDBOX_RW.split(":")) {
         if (dir) rw.push(dir);
       }
     } else {
       rw.push(process.cwd());
+      // 主 agent 默认：白名单目录（sandbox-paths.json 的 allowDirs）作为常驻可写根，
+      // bash 可直接写这些目录，免走 sandbox-allow 一次授权
+      for (const dir of readAllowDirs()) {
+        if (dir && !rw.includes(dir)) rw.push(dir);
+      }
     }
   }
   // 一次性升权：额外可写根，叠加在默认 cwd 之上（sandbox-allow 注入 PI_SANDBOX_RW_EXTRA）
