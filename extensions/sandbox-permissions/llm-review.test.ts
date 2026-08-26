@@ -28,7 +28,8 @@ describe("normalizeConfig", () => {
 		const c = normalizeConfig(undefined);
 		assert.equal(c.enabled, true);
 		assert.equal(c.mode, "auto");
-		assert.equal(c.timeoutMs, 10_000);
+		assert.equal(c.timeoutMs, 30_000);
+		assert.equal(c.tokenIdleMs, 4_000);
 		assert.equal(c.maxCache, 200);
 	});
 	it("覆盖已知字段（toml 下划线风格）、忽略未知字段", () => {
@@ -38,6 +39,7 @@ describe("normalizeConfig", () => {
 			provider: "deepseek",
 			model: "deepseek-v4-flash",
 			timeout_ms: 5000,
+			token_idle_ms: 3000,
 			max_cache: 50,
 			bogus: 1,
 		});
@@ -46,6 +48,7 @@ describe("normalizeConfig", () => {
 		assert.equal(c.provider, "deepseek");
 		assert.equal(c.model, "deepseek-v4-flash");
 		assert.equal(c.timeoutMs, 5000);
+		assert.equal(c.tokenIdleMs, 3000);
 		assert.equal(c.maxCache, 50);
 	});
 	it("模型池：解析 models 数组，跳过结构非法条目", () => {
@@ -82,7 +85,8 @@ describe("normalizeConfig", () => {
 		const c = normalizeConfig({ enabled: "yes", mode: "auto", timeout_ms: -3, max_cache: 0 });
 		assert.equal(c.enabled, true);
 		assert.equal(c.mode, "auto");
-		assert.equal(c.timeoutMs, 10_000);
+		assert.equal(c.timeoutMs, 30_000);
+		assert.equal(c.tokenIdleMs, 4_000);
 		assert.equal(c.maxCache, 200);
 	});
 	it("真实 toml 文本解析后 normalize 生效", () => {
@@ -91,12 +95,14 @@ describe("normalizeConfig", () => {
 enabled = true
 mode = "auto"
 timeout_ms = 8000
+token_idle_ms = 6500
 max_cache = 50
 `) as Record<string, unknown>;
 		const c = normalizeConfig(doc["sandbox-llm-review"]);
 		assert.equal(c.enabled, true);
 		assert.equal(c.mode, "auto");
 		assert.equal(c.timeoutMs, 8000);
+		assert.equal(c.tokenIdleMs, 6500);
 		assert.equal(c.maxCache, 50);
 	});
 });
@@ -245,12 +251,12 @@ describe("formatReviewNote", () => {
 	it("error 结论明确标示审核失败", () => {
 		const note = formatReviewNote({
 			verdict: "error",
-			reason: "审核模型全部失败：zen/free：审核请求超时（10000ms 内未收到远端响应）",
+			reason: "审核模型全部失败：ds-b：审核总时长超时（30000ms）",
 			suggestion: "",
 		});
 		assert.ok(note.includes("审核失败"));
 		assert.ok(note.includes("超时"));
-		assert.ok(note.includes("10000ms"));
+		assert.ok(note.includes("30000ms"));
 	});
 });
 
@@ -280,7 +286,8 @@ describe("reviewCommand 失败拼装", () => {
 	const config = {
 		enabled: true,
 		mode: "auto" as const,
-		timeoutMs: 10000,
+		timeoutMs: 30000,
+		tokenIdleMs: 4000,
 		maxCache: 10,
 		models: [
 			{ provider: "zhipu", model: "glm-a" },

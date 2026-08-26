@@ -61,8 +61,16 @@ export interface LlmReviewConfig {
 	/** 兼容旧配置：单模型（provider/model）；与 models 互斥，models 优先 */
 	provider?: string;
 	model?: string;
-	/** 单模型单次审核超时（毫秒），超时视为该模型失败，切换下一个 */
+	/**
+	 * 注册模型（走 modelRegistry.complete）的单次审核总时长兜底（毫秒）。
+	 * 从请求发出起算，超过即判失败切换下一个。防止挂死，不参与 token 间隔语义。
+	 */
 	timeoutMs: number;
+	/**
+	 * 免费模型（opencode-free 走 callZenChat 流式）的相邻 token 间隔上限（毫秒）。
+	 * 任意两个相邻 token（含首个 token 相对请求发出）间隔超过此值即判停滞失败。
+	 */
+	tokenIdleMs: number;
 	/** 内存缓存上限（同命令同规则不重复调 API） */
 	maxCache: number;
 }
@@ -70,7 +78,8 @@ export interface LlmReviewConfig {
 const DEFAULT_CONFIG: LlmReviewConfig = {
 	enabled: true,
 	mode: "auto",
-	timeoutMs: 10_000,
+	timeoutMs: 30_000,
+	tokenIdleMs: 4_000,
 	maxCache: 200,
 };
 
@@ -113,6 +122,9 @@ export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	}
 	if (typeof cfg.timeout_ms === "number" && Number.isFinite(cfg.timeout_ms) && cfg.timeout_ms > 0) {
 		out.timeoutMs = Math.round(cfg.timeout_ms);
+	}
+	if (typeof cfg.token_idle_ms === "number" && Number.isFinite(cfg.token_idle_ms) && cfg.token_idle_ms > 0) {
+		out.tokenIdleMs = Math.round(cfg.token_idle_ms);
 	}
 	if (typeof cfg.max_cache === "number" && Number.isFinite(cfg.max_cache) && cfg.max_cache > 0) {
 		out.maxCache = Math.round(cfg.max_cache);
@@ -410,15 +422,17 @@ export async function reviewCommand(
 		try {
 			let response: AssistantMessage;
 			if (resolved.kind === "free") {
-				// 免费模型：无 key 裸调 OpenCode Zen（用真实信号，超时由 callZenChat 内部计时）
+				// 免费模型：无 key 裸调 OpenCode Zen 流式；token 间隔由 callZenChat 内部
+				// tokenIdleMs 控制（停滞>阈值判失败），此处只传用户 signal + 间隔阈值，
+				// 不并入注册模型的 timeoutSignal（那是总时长兜底，语义不同）。
 				response = await callZenChat(resolved.modelId, {
 					systemPrompt: system,
 					messages: [{ role: "user", content: user }],
 					tools: [REVIEW_TOOL],
 					maxTokens: 512,
 					temperature: 0,
-					signal: merged,
-					timeoutMs: cfg.timeoutMs,
+					signal,
+					tokenIdleMs: cfg.tokenIdleMs,
 				});
 			} else {
 				response = await completer.complete(
@@ -439,7 +453,8 @@ export async function reviewCommand(
 					return { verdict: "error", reason: "审核已取消：主任务已中止", suggestion: "" };
 				}
 				if (timeoutSignal.aborted) {
-					failures.push(`${label}: 审核请求超时（${cfg.timeoutMs}ms 内未收到远端响应）`);
+					// 注册模型总时长兜底触发（默认 30s 未完成整个回复）
+					failures.push(`${label}: 审核总时长超时（${cfg.timeoutMs}ms）`);
 					continue;
 				}
 				const reason = response.errorMessage || `远端服务中止了审核请求（${response.stopReason}，未提供详细错误）`;
@@ -465,7 +480,7 @@ export async function reviewCommand(
 				return { verdict: "error", reason: "审核已取消：主任务已中止", suggestion: "" };
 			}
 			if (timeoutSignal.aborted) {
-				failures.push(`${label}: 审核请求超时（${cfg.timeoutMs}ms 内未收到远端响应）`);
+				failures.push(`${label}: 审核总时长超时（${cfg.timeoutMs}ms）`);
 				continue;
 			}
 			failures.push(`${label}: ${msg || "远端服务未提供错误详情"}`);
