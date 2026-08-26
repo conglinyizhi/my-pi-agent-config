@@ -152,7 +152,7 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 - `/provider:fast-put [关键词]` — 从全局模型列表里筛选一个加入审核池（交互式，展示上下文/价格；加完可选「测试一次审核链路」验证模型可用性）
 - `/provider:fast-pop [provider/model 或模型名]` — 从审核池移除一个模型（池子清空后审核回退当前会话模型）
 
-审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/max_cache）。
+审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/token_idle_ms/max_cache）。
 
 ### GUI 联动（wails-gui 权限闸门窗口）
 
@@ -168,7 +168,8 @@ enabled = true          # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
 # provider = "deepseek" # 可选：指定审核模型（缺省用当前会话模型）
 # model = "deepseek-v4-flash"
-timeout_ms = 10000      # 单次审核超时；超时回退弹窗
+timeout_ms = 30000      # 注册模型单次审核总时长兜底；超时回退弹窗
+token_idle_ms = 4000    # 免费模型相邻 token 间隔上限；停滞超阈值判失败
 max_cache = 200         # 内存缓存上限（同命令同规则不重复调 API）
 ```
 

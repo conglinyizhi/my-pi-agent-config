@@ -88,5 +88,6 @@ enabled = true # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
 # 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
 # 用 /provider:fast-put / /provider:fast-pop 管理
-timeout_ms = 10000 # 单模型单次审核超时（毫秒）；超时切换下一个模型
+timeout_ms = 30000 # 注册模型单次审核总时长兜底（毫秒）；超时切换下一个模型
+token_idle_ms = 4000 # 免费模型相邻 token 间隔上限（毫秒）；停滞超阈值判失败
 max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
