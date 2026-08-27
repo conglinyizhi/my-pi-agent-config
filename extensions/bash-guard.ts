@@ -1,0 +1,117 @@
+// extensions/bash-guard.ts — 接管内建 bash 工具（检查前置 + 沙箱通道 + 审批链）
+//
+// 背景：内建 bash 的沙箱与审批依赖 gate/guard 的 tool_call hook 拦截。本插件改为
+// 「同名覆盖 bash」，把整条「检查 + 沙箱 + 审批」链写进工具 execute 内部（执行前），
+// 不依赖事件链。
+//
+// 审批链（用户确认的编排，一体）：
+//   1. spawnHook 注入 PI_SANDBOX_* env → sandbox-shell.mjs Landlock 写保护
+//   2. checkCommand 自动判定：黑名单/内联脚本/危险规则 → 大多直接拦
+//   3. 命中风险项 → LLM 二次预审（reviewCommand，复用 gate 的 llm-review）
+//   4. LLM 不通过 / 无 LLM → ctx.ui 人类兜底确认
+//   5. 通过 → 官方原版 execute（行为零异常）
+//
+// 设计（用户确认方向）：createBashToolDefinition 生成官方原版 definition
+// （含 renderCall/renderResult/截断/超时/临时文件）。promptSnippet/promptGuidelines
+// 显式定义（官方不继承），静态常量保证 KV 缓存稳定。
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
+import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
+import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
+
+// ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
+const PROMPT_SNIPPET = "Execute a bash command in the current working directory. Returns stdout and stderr.";
+const PROMPT_GUIDELINES = [
+	"Use bash to inspect files, run commands, and check tool availability.",
+	"bash 命令经沙箱通道执行（Landlock 写保护），危险命令会在执行前被拦截。",
+] as const;
+
+/** LLM 预审内存缓存（同命令同规则不重复调 API；gate 同款） */
+const reviewCache = createReviewCache();
+
+/**
+ * 人类兜底确认（替代 gate 的完整 GUI 弹窗，保留核心审批语义）。
+ * 返回 true=放行，false=拒绝。ctx.ui 不可用时默认拒绝（fail-closed）。
+ */
+async function humanConfirm(ctx: ExtensionContext, reason: string | undefined, review?: ReviewResult): Promise<boolean> {
+	if (!ctx?.ui) return false;
+	const reviewNote = review && (review.reason || review.suggestion || review.opinion)
+		? `\n\n${formatReviewNote(review)}`
+		: "";
+	const choice = await ctx.ui.select(
+		`⚠️ 命令需确认：\n\n  ${reason ?? "命中风险规则"}${reviewNote}\n\n是否允许执行？`,
+		["✅ 允许执行", "❌ 拒绝"],
+	);
+	return choice?.includes("允许") ?? false;
+}
+
+export default function (pi: ExtensionAPI) {
+	const cwd = process.cwd();
+
+	// ── 沙箱指令注入点（spawnHook）：在官方 execute 内部被 resolveSpawnContext 调用，
+	//    env 基于 process.env 展开后透传给 ops.exec → sandbox-shell.mjs。
+	//    buildSandboxEnv 默认透传：sandbox-shell 默认 Landlock（--ro / + --rw <cwd>/tmp）
+	//    已提供沙箱安全环境。需升权/只读时在 buildSandboxEnv 注入 PI_SANDBOX_RW_EXTRA / READONLY。 ──
+	const spawnHook = ({ command, cwd, env }: BashSpawnContext): BashSpawnContext => ({
+		command,
+		cwd,
+		env: buildSandboxEnv(env),
+	});
+
+	// 官方原版 bash definition（含 renderCall/renderResult，行为零异常）
+	const bashDef = createBashToolDefinition(cwd, { spawnHook });
+
+	pi.registerTool({
+		...bashDef,
+		// 官方不继承 prompt 元数据，必须显式定义（静态常量，保证 KV 缓存稳定）
+		promptSnippet: PROMPT_SNIPPET,
+		promptGuidelines: [...PROMPT_GUIDELINES],
+
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const command: string = params.command as string;
+
+			// ── 2. 自动判定层（黑名单/内联脚本/危险规则/白名单）──
+			const verdict: SandboxCheckResult = checkCommand(command, { cwd: ctx?.cwd ?? cwd });
+
+			if (!verdict.allow) {
+				// 纯自动拒绝（黑名单/内联脚本/全 autoReject）→ 直接拦，不弹窗
+				if (verdict.rules && verdict.rules.length > 0 && verdict.rules.every((r) => r.autoReject)) {
+					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
+				}
+
+				// 【1】白名单豁免：checkCommand 在 allowDirs 内已返回 allow，此处已是需确认类
+				// 【2】需确认类（动态构造/非 autoReject）→ LLM 预审 + 人类兜底
+				if (verdict.rules && verdict.rules.length > 0 && !verdict.rules.every((r) => r.autoReject)) {
+					// ── 3. LLM 二次预审（gate 同款）──
+					let review: ReviewResult | undefined;
+					const reviewConfig = loadLlmReviewConfig();
+					if (reviewConfig.enabled) {
+						// LLM 预审失败/不可用时降级到人类确认（fail-closed）：不因 API 异常放行危险命令
+						try {
+							review = await reviewCommand(pi, ctx!, command, verdict.rules, signal, reviewCache, reviewConfig);
+						} catch {
+							review = undefined;
+						}
+						if (review?.verdict === "safe" && reviewConfig.mode === "auto") {
+							// LLM 判定安全且 auto 模式 → 自动放行，不打扰用户
+							return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+						}
+					}
+
+					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式）──
+					const ok = await humanConfirm(ctx!, verdict.reason, review);
+					if (!ok) {
+						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}` }], details: {} as BashToolDetails };
+					}
+				} else {
+					// 无 rules 但 allow=false（黑名单/内联脚本），直接拦
+					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
+				}
+			}
+
+			// ── 5. 通过 → 走官方原版 execute（内部已应用 spawnHook 的沙箱 env）──
+			return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+	});
+}

@@ -13,8 +13,9 @@
 //   read    → 参数 path
 //   write   → 参数 path（黑名单 + 仅写保护路径）
 //   edit    → 参数 path（黑名单 + 仅写保护路径）
-//   bash    → 参数 command 中的路径引用（保守匹配：命中任一黑名单模式的
-//             展开前缀即拒绝——命令可能经变量/拼接间接读，检测不完美但安全优先）
+//   bash    → 2026-08 起不再在此拦截：bash 检查移至 extensions/bash-guard.ts
+//             的 bash 工具内部（checkCommand 前置调用 commandBlocked）。
+//             纯函数 commandBlocked/loadBlacklist 仍保留，供 lib/sandbox-check.ts 复用。
 //
 // 仅写保护路径（合并自原 protected-paths 扩展）：只拦 write/edit，不拦 read。
 //   .git/ 与 node_modules/ 是工程级路径，模型需要读（如查 node_modules 类型），
@@ -209,7 +210,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", (event, ctx) => {
     const input = event.input as Record<string, unknown>;
     const path = typeof input?.path === "string" ? input.path : undefined;
-    const command = typeof input?.command === "string" ? input.command : undefined;
 
     // read：仅黑名单（敏感凭据路径防读也防写）
     if (path !== undefined && event.toolName === "read") {
@@ -230,12 +230,8 @@ export default function (pi: ExtensionAPI) {
       }
     }
     // bash：命令中的路径引用（保守拦截）
-    if (command !== undefined && event.toolName === "bash") {
-      const hit = rules.find((r) => commandBlocked(command, [r]));
-      if (hit) {
-        return { block: true, reason: blockedReason("bash 命令", command.slice(0, 120), hit) };
-      }
-    }
+    // 2026-08 起 bash 检查已移至 extensions/bash-guard.ts 的工具内部（checkCommand
+    // 前置调用 commandBlocked）。此处不再拦 bash，避免 guard hook 与工具内检查双重拦截。
     return undefined;
   });
 }

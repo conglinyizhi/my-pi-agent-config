@@ -10,6 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerSection } from "../../lib/prompt-sections.ts";
+import { checkCommand } from "../../lib/sandbox-check.ts";
 import { JobRegistry, type JobSnapshot } from "./registry.ts";
 import { bashBackground } from "./providers.ts";
 
@@ -53,6 +54,17 @@ export function registerJobsTools(pi: ExtensionAPI, registry: JobRegistry, optio
 			command: Type.String({ description: "The full shell command to run in the background." }),
 		}),
 		async execute(_toolCallId, params: { command: string }, _signal, _onUpdate, ctx) {
+			// ── 前置检查（对齐 bash-guard 的自动判定层）──
+			// 后台任务不等待用户确认（违背后台语义）：黑名单/内联脚本/全 autoReject 硬拦；
+			// 「需人工确认」类也拒绝（后台无法同步确认）。
+			const verdict = checkCommand(params.command, { cwd: ctx.cwd });
+			if (!verdict.allow) {
+				return {
+					content: [{ type: "text", text: `已拦截：${verdict.reason ?? "命令不符合沙盒策略"}` }],
+					details: { job_id: undefined, label: "blocked" },
+				};
+			}
+
 			const id = registry.start(bashBackground(params.command, { cwd: ctx.cwd }));
 			const snapshot = registry.get(id);
 			return {
