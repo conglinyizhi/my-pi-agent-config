@@ -18,8 +18,13 @@ import { GOAL_ROUND_CUSTOM_TYPE, type GoalRoundDetails } from "./tools.ts";
 
 /** round 提示词（照抄 DSH goal-round-driver 的 <goal_round> 模板） */
 export function buildGoalRoundPrompt(objective: string, round: number, maxGoalRounds: number): string {
+	const isFirst = round === 1;
+	// 首轮：给完整目标 + 启动引导；后续轮：精简（状态读 get_goal，避免长上下文反复塞目标）
+	const instruction = isFirst
+		? `Objective: ${JSON.stringify(objective)}`
+		: `Continue the current round. Read get_goal before further work for the live goal state.`;
 	return `<goal_round>
-Objective: ${JSON.stringify(objective)}\nRound: ${round}/${maxGoalRounds}\n\nContinue working toward the objective in this same session. Treat the current workspace, tool results, and durable session state as authoritative; inspect them instead of assuming earlier narration is still current. Make concrete progress and verify the result. Before claiming completion, gather evidence that the whole objective is achieved, read the current goal, and mark it complete. If work remains, leave the goal active for the next round. Follow the configured goal-tool policy before reporting a blocker.
+${instruction}\nRound: ${round}/${maxGoalRounds}\n\nConcrete progress this round; verify against the workspace. Mark complete via update_goal action=complete the moment the objective is actually achieved, or report a persistent blocker via action=blocked with blocked_reason. If no concrete work remains and the goal is done, complete it rather than starting another round.
 </goal_round>`;
 }
 

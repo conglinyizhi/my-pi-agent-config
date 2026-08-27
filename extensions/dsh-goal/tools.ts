@@ -89,6 +89,14 @@ function goalValue(view: GoalView | undefined) {
 	};
 }
 
+/** 模型可见的 goal 状态文本（get_goal 的 content 用；details 不入模型上下文，必须放 content） */
+function goalText(view: GoalView | undefined): string {
+	if (!view) return "（无当前目标）";
+	const header = `goal ${view.id.slice(0, 12)}… rev=${view.revision} | phase=${view.phase} | rounds=${view.roundsStarted}/${view.maxGoalRounds} | ${view.activation === "armed" ? "armed" : "disarmed"}`;
+	const blocked = view.blockedReason ? `\nblocked: ${view.blockedReason.code} — ${view.blockedReason.message}` : "";
+	return `${header}\nobjective: ${view.objective}${blocked}`;
+}
+
 const UPDATE_ACTIONS = ["edit", "pause", "resume", "complete", "blocked"] as const;
 
 function goalRef(id: string, revision: number): GoalRef {
@@ -125,7 +133,7 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 		promptSnippet: "Read the current same-session goal",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			return { content: [{ type: "text", text: "Read current goal" }], details: goalValue(domain.view) };
+			return { content: [{ type: "text", text: goalText(domain.view) }], details: goalValue(domain.view) };
 		},
 	});
 
@@ -150,9 +158,10 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 				maxGoalRounds: params.max_goal_rounds,
 			});
 			pi.appendEntry("dsh-goal-change", created.change);
+			const createdView = created.result.kind === "view" ? created.result.view : undefined;
 			return {
-				content: [{ type: "text", text: "Created goal" }],
-				details: goalValue(created.result.kind === "view" ? created.result.view : undefined),
+				content: [{ type: "text", text: `Created goal\n${goalText(createdView)}` }],
+				details: goalValue(createdView),
 			};
 		},
 	});
@@ -205,9 +214,10 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 					maxGoalRounds: hasRoundCap ? params.max_goal_rounds : undefined,
 				});
 				pi.appendEntry("dsh-goal-change", edited.change);
+				const editedView = edited.result.kind === "view" ? edited.result.view : undefined;
 				return {
-					content: [{ type: "text", text: "Edited goal" }],
-					details: goalValue(edited.result.kind === "view" ? edited.result.view : undefined),
+					content: [{ type: "text", text: `Edited goal\n${goalText(editedView)}` }],
+					details: goalValue(editedView),
 				};
 			}
 
@@ -221,9 +231,10 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 				}
 				const changed = domain.mutate({ operation: params.action, ref });
 				pi.appendEntry("dsh-goal-change", changed.change);
+				const changedView = changed.result.kind === "view" ? changed.result.view : undefined;
 				return {
-					content: [{ type: "text", text: params.action === "pause" ? "Paused goal" : "Resumed goal" }],
-					details: goalValue(changed.result.kind === "view" ? changed.result.view : undefined),
+					content: [{ type: "text", text: `${params.action === "pause" ? "Paused" : "Resumed"} goal\n${goalText(changedView)}` }],
+					details: goalValue(changedView),
 				};
 			}
 
@@ -260,9 +271,10 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 				blockedReason: hasBlockedReason ? { code: "model-reported", message: params.blocked_reason!.trim() } : undefined,
 			});
 			pi.appendEntry("dsh-goal-change", completed.change);
+			const completedView = completed.result.kind === "view" ? completed.result.view : undefined;
 			return {
-				content: [{ type: "text", text: params.action === "complete" ? "Completed goal" : "Marked goal blocked" }],
-				details: goalValue(completed.result.kind === "view" ? completed.result.view : undefined),
+				content: [{ type: "text", text: `${params.action === "complete" ? "Completed goal" : "Marked goal blocked"}\n${goalText(completedView)}` }],
+				details: goalValue(completedView),
 			};
 		},
 	});
