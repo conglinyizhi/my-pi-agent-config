@@ -15,7 +15,7 @@ export default function (pi: ExtensionAPI) {
     description: "查看当前 system prompt（写入临时文件并用编辑器打开）",
     handler: async (_args, ctx) => {
       if (!latestPrompt) {
-        ctx.ui.notify("尚无 system prompt，请先发起一次对话", "warn");
+        ctx.ui.notify("尚无 system prompt，请先发起一次对话", "warning");
         return;
       }
 

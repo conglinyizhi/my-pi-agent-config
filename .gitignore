@@ -38,6 +38,7 @@ permission-gate-reasons.csv
 **/gui-manager/app.js
 **/gui-manager/app.mjs
 permission-gate-reasons.json
+extensions/sandbox-permissions/sandbox-paths.json
 
 # git worktrees
 .worktrees/

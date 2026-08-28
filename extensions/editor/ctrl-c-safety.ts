@@ -94,7 +94,6 @@ export default function (pi: ExtensionAPI) {
       } catch {
         ctx.ui.notify("Ctrl+C 保存失败", "error");
       }
-      return true;
     },
   });
 }
