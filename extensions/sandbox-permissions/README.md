@@ -8,7 +8,8 @@
 | `gate.ts` | 危险 bash 命令审批（规则引擎 + 白名单豁免 + LLM 预审 + GUI/TUI） | `pi.on("tool_call"/"session_start")` |
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
 | `paths.ts` | 目录白/黑名单（GUI 动态维护，sandbox-paths.json） | gate/guard/allow 内部调用 |
-| `allow.ts` | 一次性沙箱升权工具 `sandbox-allow` | `pi.registerTool("sandbox-allow")` |
+| `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
+| `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
@@ -37,6 +38,8 @@ sandbox-permissions/
 ├── allow.ts             # sandbox-allow 升权工具
 ├── helpers.ts           # 升权 env/路径解析纯函数
 ├── helpers.test.ts
+├── session-access.ts    # 当前 session 的临时可写根/信任根
+├── session-access.test.ts
 └── README.md
 ```
 
@@ -181,13 +184,15 @@ max_cache = 200         # 内存缓存上限（同命令同规则不重复调 AP
 - **知情**：命令文本会发送到配置的 LLM API（默认当前会话模型）；启用即视为知情，介意可关 `enabled`
 - 审核记录写入会话（`sandbox-llm-review` 条目，不进 LLM 上下文），可在 `/session` 查看
 
-## 目录白/黑名单（paths.ts，GUI 动态维护）
+## 目录授权（paths.ts，GUI 动态维护）
 
-gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录（请求的 writePaths + 命令中提取的路径），每个候选目录旁有「⬜ 白名单」「⬛ 黑名单」按钮，用户逐个加入，长期生效：
+gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录（请求的 writePaths + 命令中提取的路径），每个候选目录可选择长期或当前 session 的授权级别：
 
-| 名单 | 效果 | 生效层 |
+| 名单/授权 | 效果 | 生效层 |
 |------|------|--------|
-| 白名单 `allowDirs` | 命令涉及的所有目标路径都在该目录内 → gate 直接放行（不弹窗、不过 LLM 预审） | gate.ts（即时生效） |
+| 长期信任 `allowDirs` | 普通 bash 常驻可写；sandbox-allow 的 write-paths 完全覆盖时可免审批；autoReject 仍优先 | shell/allow（即时生效） |
+| 本 session 信任 | 当前 session 可写；后续 sandbox-allow 完全覆盖时可免审批 | session-access/allow（内存） |
+| 本 session 可写 | 当前 session 可写；后续 sandbox-allow 仍需审批 | session-access/bash/job（内存） |
 | 黑名单 `blockDirs` | 该目录整体视为敏感，read/write/bash 一旦引用直接拒绝 | guard.ts（session_start 加载，reload 生效） |
 
 ### 存储
@@ -195,21 +200,56 @@ gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录�
 `extensions/sandbox-permissions/sandbox-paths.json`（程序动态写入，与手写静态配置 extensions.toml 分离——JSON 写入不破坏 toml 注释）：
 
 ```json
-{ "allowDirs": ["/tmp/build"], "blockDirs": ["/home/user/secret"] }
+{ "allowDirs": ["~/.pnpm", "~/.go"], "blockDirs": ["/home/user/secret"] }
 ```
 
-### 白名单豁免的保守规则（paths.ts `isWhitelisted`）
+`allowDirs` 是长期生效的**可写根 + sandbox-allow 信任根**：普通 bash 会把它们作为常驻 `--rw` 根；`sandbox-allow` 的 `write-paths` 请求若完全落在其中，可免重复审批。它不改变当前用户的系统身份，也不能绕过 `autoReject` 硬拒绝规则。
 
-- 命令**所有**目标路径都在 allowDirs 内才放行；任一目标在白名单外 → 照常审核
+当前 session 的目录授权只存在内存，不写入上述文件：
+
+- **本 session 可写**：后续普通 bash 可写该目录，但 `sandbox-allow` 仍需审批
+- **本 session 信任**：后续普通 bash 可写该目录，且匹配的 `sandbox-allow` 可免审批
+- 两者都只在当前 session 有效；切换、恢复、分叉或退出后不继承
+
+### 长期根的命令豁免规则（paths.ts `isWhitelisted`）
+
+- 命令**所有**目标路径都在长期 `allowDirs` 内才可免后续 sandbox-allow 审批；任一目标在长期根外 → 照常审核
+- 长期根只减少重复审批，不绕过 `autoReject` 硬拒绝规则
 - 含动态构造（`$()` / 变量引用 `$dir` 等）→ 不豁免（路径无法静态确认，避免 `cd /tmp/build && rm -rf $dir` 误放行）
 - 提取不到目标路径 → 不豁免；autoReject 硬拦优先于白名单（白名单不豁免 autoReject）
 
 ### GUI 交互
 
-GateView.vue 的「📁 目录名单」区块：点击候选目录的「白名单」→ 落 allowDirs 且当前命令放行；「黑名单」→ 落 blockDirs 且当前命令拒绝。返回 `pathActions: [{ path, list }]`，gate/allow 收到后写名单并继续原判定。
+GateView.vue 的「📁 目录授权」区块提供四种动作：
+
+- 「长期信任」→ 写入 `allowDirs`，当前命令放行
+- 「本 session 信任」→ 写入当前内存信任根，当前命令放行
+- 「本 session 可写」→ 写入当前内存可写根，当前命令放行
+- 「黑名单」→ 写入 `blockDirs`，当前命令拒绝
+
+返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次窗口展示过的候选路径，再应用授权。
+
+### sandbox-allow 使用语义
+
+`sandbox-allow` 只在普通 bash 确实因为沙箱写保护无法完成时使用。它执行的是一整条 shell 命令字符串；`&&`、`;`、管道、重定向和子 shell 都包含在同一次审批与同一个 timeout 内。
+
+- `permission=write-paths`：保留文件系统沙箱，只额外开放 `paths` 中的最小可写根；`paths` 必填，根目录 `/` 禁止
+- `permission=full-access`：本次命令完全取消文件系统沙箱，可以读写当前用户原本有权限访问的任意路径；它不是“多开放一个目录”，也不提升为 root
+- `justification`：非空理由会展示给审批者
+- `timeout`：用户批准后整条命令链的最长执行时间（秒），不限制用户查看审批窗口的时间
+
+GUI 中的目录动作会同时批准当前命令：
+
+- **长期信任**：写入 `allowDirs`，跨 session 可写并可免后续 `sandbox-allow` 审批
+- **本 session 信任**：当前 session 可写并可免后续 `sandbox-allow` 审批
+- **本 session 可写**：当前 session 可写，但后续 `sandbox-allow` 仍需审批
+- **黑名单**：写入 `blockDirs`，后续敏感路径拦截
+
+长期根、session 根和本次 `paths` 都会在执行前合并；GUI 响应中的路径只接受本次窗口展示过的候选目录。
 
 ### 生效与同步
 
-- 白名单：gate 每次审核实时读取，立即生效
+- 长期 `allowDirs`：shell 每次启动读取，普通 bash 与 `sandbox-allow` 实时生效；它们同时承担可写根与长期信任根
+- session 可写/信任根：当前进程内存状态，按 session ID 隔离，不跨 session、不落盘
 - 黑名单：guard 在 session_start 加载（reload 随扩展重载重新触发），添加后需 `/reload`
 - `sandbox-paths.json` 进 git 同步（与多机配置一致）

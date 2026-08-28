@@ -27,6 +27,24 @@
         <span class="sa-label">额外可写</span>
         <span class="sa-paths"><code v-for="p in writePaths" :key="p" class="sa-path">{{ p }}</code></span>
       </div>
+      <div class="sa-row">
+        <span class="sa-label">执行时限</span>
+        <span>{{ timeout === undefined ? '默认' : `${timeout} 秒` }}（仅批准后生效）</span>
+      </div>
+    </div>
+
+    <!-- sandbox-allow 风险提示：full-access 仍要展示命令审计结果，不等于跳过安全检查 -->
+    <div v-if="isSandboxAllow && permission === 'full-access'" class="sandbox-warning">
+      <strong>🔴 完全取消文件系统沙箱</strong>
+      <span>本次命令可读写当前用户本来有权限访问的任意路径；这不是“额外开放某个目录”。</span>
+    </div>
+    <div v-if="isSandboxAllow && rules.length" class="sandbox-risk">
+      <div class="paths-header">⚠️ 命令审计命中 {{ rules.length }} 项</div>
+      <div v-for="(r,i) in rules" :key="i" class="rule-row">
+        <code class="rule-pattern">{{ r.name }}</code>
+        <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
+        <span class="rule-tip">{{ r.tip }}</span>
+      </div>
     </div>
 
     <!-- 云端模型审核意见（仅 audit） -->
@@ -52,15 +70,18 @@
       </div>
     </div>
 
-    <!-- 目录白/黑名单（仅升权申请窗口；候选目录逐个加入，长期生效） -->
-    <div v-if="isSandboxAllow && candidatePaths.length" class="paths-block">
-      <div class="paths-header">📁 目录名单 <span class="paths-sub">（加入后长期生效）</span></div>
+    <!-- 目录授权（仅升权申请窗口；命令链整体作为一次审批单元） -->
+    <div v-if="isSandboxAllow && permission === 'write-paths' && rules.length === 0 && candidatePaths.length" class="paths-block">
+      <div class="paths-header">📁 目录授权 <span class="paths-sub">（当前命令链整体一次执行）</span></div>
       <div v-for="p in candidatePaths" :key="p" class="path-row">
         <code class="path-dir">{{ p }}</code>
-        <button data-name="path-allow" @click="pathAction(p, 'allow')" class="btn btn-allow btn-sm" title="该目录下命令以后直接放行">⬜ 白名单</button>
-        <button data-name="path-block" @click="pathAction(p, 'block')" class="btn btn-deny btn-sm" title="该目录以后直接拦截">⬛ 黑名单</button>
+        <span class="path-state">{{ pathState(p) }}</span>
+        <button v-if="!coveredBy(p, persistentRoots)" data-name="path-persistent" @click="pathAction(p, 'allow')" class="btn btn-allow btn-sm" title="长期可写；命中后 sandbox-allow 可免审批">长期信任</button>
+        <button v-if="!coveredBy(p, sessionTrustedRoots) && !coveredBy(p, persistentRoots)" data-name="path-session-trust" @click="pathAction(p, 'session-trust')" class="btn btn-trust btn-sm" title="本 session 可写，后续 sandbox-allow 可免审批">本 session 信任</button>
+        <button v-if="!coveredBy(p, sessionWriteRoots) && !coveredBy(p, sessionTrustedRoots) && !coveredBy(p, persistentRoots)" data-name="path-session-write" @click="pathAction(p, 'session-write')" class="btn btn-warn btn-sm" title="本 session 增加可写权限，但后续 sandbox-allow 仍需审批">本 session 可写</button>
+        <button data-name="path-block" @click="pathAction(p, 'block')" class="btn btn-deny btn-sm" title="该目录以后直接拦截">黑名单</button>
       </div>
-      <div class="paths-hint">白名单：该目录下命令直接放行；黑名单：该目录任何引用直接拒绝</div>
+      <div class="paths-hint">目录授权只对无风险命令提供快捷设置。长期信任 = 跨 session 可写并可免 sandbox-allow 审批；本 session 信任 = 当前 session 可写并可免审；本 session 可写 = 当前 session 可写但仍需审；黑名单 = 长期拦截。点击授权动作会同时批准当前命令链，&&、;、管道和重定向也包含在内。</div>
     </div>
 
     <footer class="actions">
@@ -116,8 +137,12 @@ const kind = ref("");
 const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
+const timeout = ref(undefined);
 // 目录白/黑名单候选（writePaths + 命令路径）
 const candidatePaths = ref([]);
+const persistentRoots = ref([]);
+const sessionWriteRoots = ref([]);
+const sessionTrustedRoots = ref([]);
 
 const tip = ref("");
 const tipPos = ref({});
@@ -131,7 +156,7 @@ const cmdBox = ref(null);
 
 const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
 const permLabel = computed(() =>
-  permission.value === "full-access" ? "完全开放 · 无沙箱" : "保持只读 + 额外可写"
+  permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写"
 );
 const verdictMeta = computed(() => {
   const v = review.value?.verdict;
@@ -216,9 +241,18 @@ function submit() {
   if (c) svR(c);
   respond("deny", c || undefined, [...flg.value]);
 }
-/** 把目录加入白/黑名单并结束本次审核（白名单→放行，黑名单→拒绝） */
+/** 选择目录授权并结束本次审核；授权动作同时放行当前命令链 */
 function pathAction(path, list) {
-  respond(list === "allow" ? "allow" : "deny", undefined, undefined, [{ path, list }]);
+  respond(list === "block" ? "deny" : "allow", undefined, undefined, [{ path, list }]);
+}
+function coveredBy(path, roots) {
+  return roots.some((root) => path === root || path.startsWith(`${root}/`));
+}
+function pathState(path) {
+  if (coveredBy(path, persistentRoots.value)) return "长期信任";
+  if (coveredBy(path, sessionTrustedRoots.value)) return "本 session 信任";
+  if (coveredBy(path, sessionWriteRoots.value)) return "本 session 可写";
+  return "本次新增";
 }
 async function respond(a, c, f, pathActions) {
   const p = { action: a };
@@ -243,7 +277,11 @@ onMounted(async () => {
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
+  timeout.value = data.timeout;
   candidatePaths.value = data.candidatePaths || [];
+  persistentRoots.value = data.persistentRoots || [];
+  sessionWriteRoots.value = data.sessionWriteRoots || [];
+  sessionTrustedRoots.value = data.sessionTrustedRoots || [];
   reasons.value = await window.go.main.App.LoadReasons();
   ready.value = true;
   await window.go.main.App.MarkReady();
@@ -267,6 +305,10 @@ onMounted(async () => {
 .perm-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
 .perm-badge.full-access { color: #ff6b6b; background: #3a1a1a; border: 1px solid #ff6b6b55; }
 .perm-badge.write-paths { color: #7aa2f7; background: #1a1a3e; border: 1px solid #7aa2f755; }
+.path-state { flex-shrink: 0; color: #aaa; font-size: 11px; }
+.btn-trust { color: #c792ea; background: #241b32; border-color: #c792ea55; }
+.sandbox-warning { padding: 10px 16px; border-top: 1px solid #ff6b6b55; background: #3a1a1a; color: #ffb4b4; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 1.5; }
+.sandbox-risk { padding: 8px 16px; border-top: 1px solid #e67e2255; background: #2a1a0a; }
 
 /* ── 高亮导航 ── */
 .hl-nav { display: flex; gap: 6px; align-items: center; font-size: 12px; }

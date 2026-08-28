@@ -249,6 +249,9 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
       permission: "write-paths",
       writePaths: ["/usr/local/bin"],
       justification: "需要把编译产物安装到系统 PATH 目录",
+      persistentRoots: ["/home/test/.pnpm"],
+      sessionWriteRoots: ["/tmp/session-build"],
+      sessionTrustedRoots: ["/tmp/session-trusted"],
     },
   },
   {
