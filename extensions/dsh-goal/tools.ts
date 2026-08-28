@@ -103,39 +103,21 @@ const GOAL_ID_PARAMETER = Type.String({ description: "Exact id returned by get_g
 const REVISION_PARAMETER = Type.Number({ description: "Exact positive revision returned by get_goal." });
 
 /**
- * 按 action 收窄参数形状，避免 complete/resume 等操作看起来可以携带 edit 字段。
- * 每个分支都重复公共字段，是为了让 JSON Schema 给模型展示清晰的合法组合。
+ * OpenAI function schema 要求根节点是 object，不能使用根级 Type.Union。
+ * 因此这里保留一个严格的 object 形状；action 与专属字段的组合由字段描述
+ * 和 execute 内的运行时校验共同约束：edit 才能带 objective/max_goal_rounds，
+ * blocked 才能带 blocked_reason，complete/pause/resume 不带这些字段。
  */
-export const UPDATE_PARAMETERS = Type.Union([
-	Type.Object({
-		goal_id: GOAL_ID_PARAMETER,
-		revision: REVISION_PARAMETER,
-		action: Type.Literal("edit"),
-		objective: Type.Optional(Type.String({ description: "Replacement objective for this goal." })),
-		max_goal_rounds: Type.Optional(Type.Number({ description: "Replacement positive safe-integer cap for automatic continuation rounds." })),
-	}, { additionalProperties: false }),
-	Type.Object({
-		goal_id: GOAL_ID_PARAMETER,
-		revision: REVISION_PARAMETER,
-		action: Type.Literal("pause"),
-	}, { additionalProperties: false }),
-	Type.Object({
-		goal_id: GOAL_ID_PARAMETER,
-		revision: REVISION_PARAMETER,
-		action: Type.Literal("resume"),
-	}, { additionalProperties: false }),
-	Type.Object({
-		goal_id: GOAL_ID_PARAMETER,
-		revision: REVISION_PARAMETER,
-		action: Type.Literal("complete"),
-	}, { additionalProperties: false }),
-	Type.Object({
-		goal_id: GOAL_ID_PARAMETER,
-		revision: REVISION_PARAMETER,
-		action: Type.Literal("blocked"),
-		blocked_reason: Type.String({ description: "Concrete blocking condition that has persisted across the required goal rounds." }),
-	}, { additionalProperties: false }),
-]);
+export const UPDATE_PARAMETERS = Type.Object({
+	goal_id: GOAL_ID_PARAMETER,
+	revision: REVISION_PARAMETER,
+	action: Type.Union(UPDATE_ACTIONS.map((a) => Type.Literal(a)), {
+		description: "edit | pause | resume | complete | blocked. Use only fields valid for the selected action.",
+	}),
+	objective: Type.Optional(Type.String({ description: "Only for action edit: replacement objective." })),
+	max_goal_rounds: Type.Optional(Type.Number({ description: "Only for action edit: replacement positive safe-integer cap." })),
+	blocked_reason: Type.Optional(Type.String({ description: "Only for action blocked: concrete persistent blocking condition." })),
+}, { additionalProperties: false });
 
 function goalRef(id: string, revision: number): GoalRef {
 	return { id: id as GoalRef["id"], revision };
