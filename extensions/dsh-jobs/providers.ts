@@ -17,6 +17,7 @@ export const MAX_OUTPUT_BYTES = 1_000_000;
 
 export interface BashBackgroundOptions {
 	cwd: string;
+	sessionId?: string;
 }
 
 /**
@@ -25,5 +26,5 @@ export interface BashBackgroundOptions {
  * @param options 工作目录等
  */
 export function bashBackground(command: string, options: BashBackgroundOptions): JobStart {
-	return createSandboxedCommandJob(command, { cwd: options.cwd });
+	return createSandboxedCommandJob(command, { cwd: options.cwd, sessionId: options.sessionId });
 }

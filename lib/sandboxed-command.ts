@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { addSessionWriteDirsToEnv } from "../extensions/sandbox-permissions/session-access.ts";
 
 import type { JobHooks, JobOutcome, JobStart } from "../extensions/dsh-jobs/registry.ts";
 
@@ -55,8 +56,10 @@ export interface SandboxedCommandOptions {
 	cwd?: string;
 	/** 额外环境变量。缺省不传，pi 用默认 shell env；传入会被当作整份 env */
 	env?: NodeJS.ProcessEnv;
-	/** 超时（毫秒）；缺省不设 */
+	/** 超时（秒）；与 pi 内建 bash 的 timeout 参数一致 */
 	timeoutMs?: number;
+	/** 启动时捕获的 session ID；缺省不继承 session 临时授权 */
+	sessionId?: string;
 }
 
 /** 一次性执行形态：返回 BashOperations.exec 封装，等价 createLocalBashOperations({shellPath}) */
@@ -71,7 +74,7 @@ export function createSandboxedExec(options: SandboxedCommandOptions = {}) {
 			onData: () => {}, // 一次性执行不流式；需流式用 job 形态
 			signal: extra?.signal,
 			timeout: extra?.timeout ?? options.timeoutMs,
-			env: extra?.env ?? options.env,
+			env: addSessionWriteDirsToEnv(extra?.env ?? options.env, options.sessionId),
 		});
 }
 
@@ -112,7 +115,7 @@ export function createSandboxedCommandJob(
 						onData: (d) => append(d.toString()),
 						signal: ac.signal,
 						timeout: options.timeoutMs,
-						env: options.env,
+						env: addSessionWriteDirsToEnv(options.env, options.sessionId),
 					})
 					.then((result) => {
 						resolve({

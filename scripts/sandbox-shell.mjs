@@ -21,7 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { homedir } from "node:os";
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
@@ -48,9 +48,15 @@ function readAllowDirs() {
       readFileSync(join(AGENT_DIR, "extensions", "sandbox-permissions", "sandbox-paths.json"), "utf8"),
     );
     const list = Array.isArray(doc.allowDirs) ? doc.allowDirs : [];
-    return list.filter(
-      (d) => typeof d === "string" && d && d !== "/" && d.startsWith("/"),
-    );
+    return list
+      .filter((d) => typeof d === "string" && d)
+      .map((d) => {
+        if (d === "~") return homedir();
+        if (d.startsWith("~/")) return join(homedir(), d.slice(2));
+        return d;
+      })
+      .map((d) => normalize(d))
+      .filter((d) => d !== "/" && d.startsWith("/"));
   } catch {
     return [];
   }

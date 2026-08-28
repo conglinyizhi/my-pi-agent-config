@@ -55,27 +55,30 @@ describe("buildEscalationEnv", () => {
 		assert.equal(env.PI_SANDBOX_RW, "/work/sandbox");
 		assert.equal(env.PI_SANDBOX_READONLY, "1");
 	});
-	it("write-paths 无路径时不设 RW_EXTRA", () => {
-		const env = buildEscalationEnv({}, "write-paths", []);
+	it("write-paths 无路径时不设 RW_EXTRA，并清除误继承的 full-access 标志", () => {
+		const env = buildEscalationEnv({ PI_SANDBOX_DISABLE: "1" }, "write-paths", []);
 		assert.equal(env.PI_SANDBOX_RW_EXTRA, undefined);
+		assert.equal(env.PI_SANDBOX_DISABLE, undefined);
 	});
 });
 
 describe("buildApprovalTitle", () => {
 	it("包含命令、权限与理由", () => {
-		const t = buildApprovalTitle("echo hi", "full-access", [], "因为要写系统目录");
+		const t = buildApprovalTitle("echo hi", "full-access", [], "因为要写系统目录", 30);
 		assert.ok(t.includes("echo hi"));
 		assert.ok(t.includes("完全开放"));
 		assert.ok(t.includes("因为要写系统目录"));
 		assert.ok(t.includes("仅此一次"));
+		assert.ok(t.includes("30 秒"));
 	});
 	it("write-paths 列出可写目录", () => {
-		const t = buildApprovalTitle("make install", "write-paths", ["/opt/x", "/usr/local"], "安装到系统目录");
+		const t = buildApprovalTitle("make install", "write-paths", ["/opt/x", "/usr/local"], "安装到系统目录", 120);
 		assert.ok(t.includes("/opt/x、/usr/local"));
 		assert.ok(t.includes("保持只读沙箱"));
+		assert.ok(t.includes("120 秒"));
 	});
 	it("超长命令截断", () => {
-		const t = buildApprovalTitle("x".repeat(500), "full-access", [], undefined);
+		const t = buildApprovalTitle("x".repeat(500), "full-access", [], undefined, undefined);
 		assert.ok(t.length < 400);
 		assert.ok(t.includes("（未提供）"));
 	});

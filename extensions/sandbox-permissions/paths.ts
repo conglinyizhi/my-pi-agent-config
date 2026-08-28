@@ -3,7 +3,7 @@
 // 背景：gate 审核弹窗（危险命令 / sandbox-allow 升权）时，模型会给出它想操作的
 // 目录（sandbox-allow 的 writePaths、命令中的目标路径）。用户可在界面上把单个
 // 目录加入名单：
-//   - 白名单 allowDirs：gate 审核时命令涉及的所有目标路径都在该目录内 → 直接放行
+//   - 长期 allowDirs：普通 bash 常驻可写；低风险 sandbox-allow 请求完全覆盖时可免审批
 //   - 黑名单 blockDirs：guard 拦截对该目录的任何 read/write/bash 引用
 //
 // 存储：extensions/sandbox-permissions/sandbox-paths.json。
@@ -14,7 +14,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { splitCommands, hasDynamicConstructs } from "./rule-engine.ts";
 
@@ -31,12 +31,14 @@ const EMPTY: SandboxPaths = { allowDirs: [], blockDirs: [] };
 // 纯函数
 // ═══════════════════════════════════════════════════
 
-/** 目录规范化：trim、展开 ~、去尾部斜杠（"/" 根目录保留） */
+/** 目录规范化：trim、展开 ~、消除 ..、转绝对路径、去尾部斜杠（"/" 根目录保留） */
 export function normalizeDir(dir: string): string {
 	let d = (dir ?? "").trim();
 	if (!d) return "";
-	if (d === "~") return homedir();
+	if (d === "~") d = homedir();
 	if (d.startsWith("~/")) d = join(homedir(), d.slice(2));
+	d = normalize(d);
+	if (!d.startsWith("/")) d = resolve(d);
 	while (d.length > 1 && d.endsWith("/")) d = d.slice(0, -1);
 	return d;
 }
@@ -68,7 +70,7 @@ export function isDirInside(target: string, dir: string): boolean {
 }
 
 /**
- * 白名单豁免判定：命令所有目标路径都落在 allowDirs 内才放行。
+ * 长期根豁免判定：命令所有目标路径都落在 allowDirs 内才放行。
  * 保守规则：
  *   - allowDirs 为空 → false
  *   - 命令含动态构造（$()/反引号/变量作命令等）→ false（路径无法静态确认）
@@ -108,7 +110,12 @@ export function collectCandidateDirs(command: string, writePaths: string[]): str
 function parsePaths(raw: string): SandboxPaths {
 	const doc = JSON.parse(raw) as Partial<SandboxPaths>;
 	const pick = (v: unknown): string[] =>
-		Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
+		Array.isArray(v)
+			? [...new Set(v
+				.filter((x): x is string => typeof x === "string" && x.length > 0)
+				.map(normalizeDir)
+				.filter((path): path is string => Boolean(path) && path !== "/"))]
+			: [];
 	return { allowDirs: pick(doc.allowDirs), blockDirs: pick(doc.blockDirs) };
 }
 
@@ -128,7 +135,7 @@ export function saveSandboxPaths(paths: SandboxPaths): void {
 /** 追加一个白名单目录（去重、规范化后写回）；返回实际新增与否 */
 export function addAllowDir(dir: string): boolean {
 	const d = normalizeDir(dir);
-	if (!d) return false;
+	if (!d || d === "/") return false;
 	const paths = loadSandboxPaths();
 	if (paths.allowDirs.includes(d)) return false;
 	paths.allowDirs.push(d);
@@ -139,7 +146,7 @@ export function addAllowDir(dir: string): boolean {
 /** 追加一个黑名单目录（去重、规范化后写回）；返回实际新增与否 */
 export function addBlockDir(dir: string): boolean {
 	const d = normalizeDir(dir);
-	if (!d) return false;
+	if (!d || d === "/") return false;
 	const paths = loadSandboxPaths();
 	if (paths.blockDirs.includes(d)) return false;
 	paths.blockDirs.push(d);

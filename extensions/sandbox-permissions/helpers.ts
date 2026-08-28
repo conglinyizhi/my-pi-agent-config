@@ -6,8 +6,9 @@
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { normalizeSandboxRoots } from "./session-access.ts";
 
 export type Permission = "full-access" | "write-paths";
 
@@ -31,22 +32,9 @@ export function readShellPath(): string | undefined {
 	}
 }
 
-/** 写路径规范化：相对路径基于 cwd 解析为绝对路径，去重、去空 */
+/** 写路径规范化：相对路径基于 cwd 解析、消除 ..、去重，并拒绝根目录。 */
 export function resolveWritePaths(paths: string[] | undefined, cwd: string): string[] {
-	if (!paths) return [];
-	const out: string[] = [];
-	const seen = new Set<string>();
-	for (const p of paths) {
-		if (typeof p !== "string") continue;
-		const t = p.trim();
-		if (!t) continue;
-		const abs = isAbsolute(t) ? t : resolve(cwd, t);
-		if (!seen.has(abs)) {
-			seen.add(abs);
-			out.push(abs);
-		}
-	}
-	return out;
+	return normalizeSandboxRoots(paths, cwd);
 }
 
 /**
@@ -66,6 +54,8 @@ export function buildEscalationEnv(
 		delete env.PI_SANDBOX_RW_EXTRA;
 		env.PI_SANDBOX_DISABLE = "1";
 	} else {
+		// write-paths 不能继承一个会把它升级为 full-access 的父进程标志。
+		delete env.PI_SANDBOX_DISABLE;
 		if (writePaths.length > 0) env.PI_SANDBOX_RW_EXTRA = writePaths.join(":");
 		else delete env.PI_SANDBOX_RW_EXTRA;
 	}
@@ -78,6 +68,7 @@ export function buildApprovalTitle(
 	permission: Permission,
 	writePaths: string[],
 	justification: string | undefined,
+	timeout: number | undefined,
 ): string {
 	const cmd = command.length > 200 ? command.slice(0, 200) + "…" : command;
 	const permText =
@@ -91,6 +82,7 @@ export function buildApprovalTitle(
 		`命令：${cmd}`,
 		`权限：${permText}`,
 		`理由：${just || "（未提供）"}`,
+		`执行时限：${timeout === undefined ? "默认" : `${timeout} 秒`}（仅在批准后生效）`,
 		"",
 		"是否允许？",
 	].join("\n");

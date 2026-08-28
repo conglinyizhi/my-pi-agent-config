@@ -5,8 +5,8 @@
 //   sandbox_permissions: "danger-full-access" | 额外写路径 + justification。
 //
 // 语义照抄 DSH（dsh-tool-bash + dsh-sandbox-policy + dsh-user-approval）：
-//   - 升权仅对「本次单条命令」生效（allowed-once），绝不持久化
-//   - 每次调用都必须经用户显式同意（审批提示本身就是征求同意；拒绝/取消/无 UI = 不执行）
+//   - 未被长期/session 信任根覆盖的升权仅对「本次单条命令」生效（allowed-once）
+//   - 非信任请求经用户显式同意；拒绝/取消/无 UI = 不执行
 //   - 优先 write-paths（最小权限：保持只读沙箱，只额外开放指定可写根）而非 full-access
 //   - justification 必填：一句话向用户解释为何这条命令需要更宽权限
 //
@@ -23,18 +23,66 @@ import {
 	readShellPath,
 	resolveWritePaths,
 } from "./helpers.ts";
-import { findGuiBinary, runGuiWindow } from "../../lib/gui-runner";
-import { addAllowDir, addBlockDir, collectCandidateDirs, isDirInside, loadSandboxPaths } from "./paths";
+import { runGuiWindow } from "../../lib/gui-runner.ts";
+import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
+import { addAllowDir, addBlockDir, collectCandidateDirs, loadSandboxPaths } from "./paths.ts";
+import {
+	addSessionTrustedDirs,
+	addSessionWriteDirs,
+	addSessionWriteDirsToEnv,
+	beginSandboxSession,
+	getSessionAccessSnapshot,
+	normalizeSandboxRoot,
+	pathsCoveredByRoots,
+} from "./session-access.ts";
 
 const MAX_OUTPUT_BYTES = 1_000_000;
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（窗口内不自动超时；仅防窗口进程卡死）
+const MAX_COMMAND_TIMEOUT_SECONDS = 2_147_483.647; // 与 pi 内建 bash 的 setTimeout 上限一致
 const APPROVE = "✅ 允许执行（仅此一次）";
 const DENY = "❌ 拒绝";
 
+export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
+	command: Type.String({ minLength: 1, description: "The complete shell command string to run once approved." }),
+	permission: Type.Union(
+		[Type.Literal("full-access"), Type.Literal("write-paths")],
+		{ description: "write-paths = sandbox plus listed paths (paths required); full-access = cancel file-system sandbox (paths forbidden)." },
+	),
+	justification: Type.String({ minLength: 1, description: "Non-empty one-sentence reason shown to the user for consent." }),
+	paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required for write-paths; smallest necessary writable roots; root `/` is forbidden." })),
+	timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: MAX_COMMAND_TIMEOUT_SECONDS, description: "Maximum execution time after approval, in seconds." })),
+}, { additionalProperties: false });
+
+type PathActionList = "allow" | "block" | "session-write" | "session-trust";
+
+export interface SandboxAllowInput {
+	command?: unknown;
+	permission?: unknown;
+	justification?: unknown;
+	paths?: unknown;
+	timeout?: unknown;
+}
+
+/** 根 schema 不能表达 permission 与 paths 的条件关系，运行时在执行前补齐。 */
+export function validateSandboxAllowInput(input: SandboxAllowInput, cwd = process.cwd()): string | undefined {
+	if (typeof input.command !== "string" || input.command.trim().length === 0) return "command 不能为空";
+	if (input.permission !== "write-paths" && input.permission !== "full-access") return "permission 必须是 write-paths 或 full-access";
+	if (typeof input.justification !== "string" || input.justification.trim().length === 0) return "justification 不能为空";
+	if (input.timeout !== undefined && (!Number.isFinite(input.timeout) || (input.timeout as number) <= 0 || (input.timeout as number) > MAX_COMMAND_TIMEOUT_SECONDS)) {
+		return `timeout 必须在 0 到 ${MAX_COMMAND_TIMEOUT_SECONDS} 秒之间`;
+	}
+	if (input.permission === "full-access" && input.paths !== undefined) return "full-access 不接受 paths";
+	if (input.permission === "write-paths") {
+		if (!Array.isArray(input.paths) || input.paths.length === 0) return "write-paths 需要至少一个 paths";
+		if (input.paths.some((path) => typeof path !== "string" || normalizeSandboxRoot(path, cwd) === undefined)) return "paths 必须是非根目录路径";
+	}
+	return undefined;
+}
+
 interface GuiDecision {
 	action: "allow" | "deny";
-	/** 用户在 GUI 上点选的目录白/黑名单操作 */
-	pathActions?: { path: string; list: "allow" | "block" }[];
+	/** 用户在 GUI 上点选的目录授权操作 */
+	pathActions?: { path: string; list: PathActionList }[];
 }
 
 /** 通过 GUI 审批（合并进现有权限闸门 gate 窗口，kind=sandbox-allow） */
@@ -43,9 +91,11 @@ async function tryGuiApproval(
 	permission: "full-access" | "write-paths",
 	writePaths: string[],
 	justification: string,
+	timeout: number | undefined,
+	sessionId: string | undefined,
 	signal: AbortSignal | undefined,
+	audit?: SandboxCheckResult,
 ): Promise<GuiDecision | "gui-unavailable"> {
-	if (!findGuiBinary()) return "gui-unavailable";
 	const result = await runGuiWindow(
 		"gate",
 		{
@@ -53,9 +103,12 @@ async function tryGuiApproval(
 			command,
 			permission,
 			writePaths,
-			justification,
-			// GUI 候选目录：请求的可写目录 + 命令中提取的路径（供白/黑名单按钮）
-			candidatePaths: collectCandidateDirs(command, writePaths),
+			timeout,
+			candidatePaths: permission === "write-paths" ? collectCandidateDirs(command, writePaths) : [],
+			persistentRoots: loadSandboxPaths().allowDirs,
+			sessionWriteRoots: getSessionAccessSnapshot(sessionId).writeDirs,
+			sessionTrustedRoots: getSessionAccessSnapshot(sessionId).trustedDirs,
+			rules: audit?.rules ?? [],
 		},
 		{ timeoutMs: GUI_TIMEOUT_MS, signal },
 	);
@@ -73,42 +126,40 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Run ONE bash command with temporarily elevated sandbox permissions.",
 			"Use only when the sandbox has actually denied a write the task legitimately needs (the default sandbox is read-only outside the workspace).",
-			"Every call requires the user's explicit one-shot consent and is scoped to that single command only — nothing is remembered.",
-			"Prefer permission=write-paths (least privilege: keep the read-only sandbox and only add the listed writable paths) over permission=full-access (no sandbox).",
-			"Always supply a one-sentence justification, shown to the user for consent.",
+			"A full-access request cancels the file-system sandbox for this command; write-paths keeps the sandbox and adds only the listed writable roots.",
+			"Non-trusted requests require approval and apply only to this command. Persistent allowDirs and explicitly trusted session roots may skip repeated approval; session-write roots only add write access.",
+			"Prefer write-paths with the smallest necessary writable roots. Never use full-access merely because a write failed if a directory can be named.",
+			"Always supply a non-empty one-sentence justification, shown to the user for consent.",
+			"timeout is the maximum execution time after approval, in seconds; it does not limit the user's approval time."
 		].join(" "),
 		promptSnippet: "Run one bash command with user-approved, one-shot elevated sandbox permissions",
 		promptGuidelines: [
-			"sandbox-allow 是升权工具：仅当沙箱确实拒绝了任务必需的写入时才用，绝不预先推测",
-			"优先 permission=write-paths（最小权限：保持只读沙箱、只额外开放指定目录），确需全局改动才用 full-access",
-			"每次调用都会弹给用户确认，授权只对这一次生效；被拒绝后可用更窄的模式+理由重试一次",
+			"sandbox-allow 是升权工具：仅当普通 bash 确实因沙箱拒绝而无法完成任务时才用，绝不预先调用",
+			"优先 permission=write-paths，并只列出完成命令所需的最小 writable roots；paths 不能是根目录 `/`",
+			"full-access 会完全取消文件系统沙箱，只在无法合理限定写入根时使用；它仍不改变当前用户的操作系统身份",
+			"长期 allowDirs 或本 session 信任根命中时可免重复审批；本 session 可写根不免审批",
+			"timeout 是获批后整条 shell 命令链的最长执行时间（秒），不限制用户审批等待时间"
 		],
-		parameters: Type.Object({
-			command: Type.String({ description: "The single bash command to run with elevated permissions." }),
-			permission: Type.Union(
-				[Type.Literal("full-access"), Type.Literal("write-paths")],
-				{
-					description:
-						"full-access = run with no sandbox at all; write-paths = keep the read-only sandbox but allow writing to the listed paths (least privilege).",
-				},
-			),
-			justification: Type.String({
-				description: "One sentence explaining why this command needs the wider permission (shown to the user for consent).",
-			}),
-			paths: Type.Optional(
-				Type.Array(Type.String(), {
-					description: "Writable paths to grant (absolute, or relative to cwd). Required when permission=write-paths.",
-				}),
-			),
-			timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional)." })),
-		}),
+		// OpenAI function schema 要求根节点是 object；条件字段由描述与运行时校验约束。
+		parameters: SANDBOX_ALLOW_PARAMETERS,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const { command, permission, justification, timeout } = params;
 			const cwd = ctx.cwd;
+			const sessionId = ctx.sessionManager.getSessionId();
+			beginSandboxSession(sessionId);
 
-			// 1. 校验：命令非空
-			if (!command || !command.trim()) {
-				return { content: [{ type: "text", text: "sandbox-allow: command 不能为空，未执行。" }], details: undefined };
+			const validationError = validateSandboxAllowInput(params, cwd);
+			if (validationError) {
+				return { content: [{ type: "text", text: `sandbox-allow: ${validationError}，未执行。` }], details: undefined };
+			}
+
+			// sandbox-allow 只改变文件系统沙箱范围，不绕过命令安全检查。
+			const audit = checkCommand(command as string, { cwd });
+			if (!audit.allow && audit.rules && audit.rules.length > 0 && audit.rules.every((rule) => rule.autoReject)) {
+				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
+			}
+			if (!audit.allow && !audit.rules?.length) {
+				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
 			}
 
 			// 2. write-paths 必须给出至少一个可写根
@@ -125,31 +176,60 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			// 3. 同意门（对齐 DSH allowed-once）：GUI 优先，回退 TUI；拒绝/取消/无 UI = 不执行
-			//    前置：目录白名单豁免——请求的可写目录全部在 allow_dirs 内 → 免弹窗直接执行
+			// 3. 同意门：长期 allowDirs 与 session 信任根可免重复审批；session 可写根不免审批。
 			let decision: "allow" | "deny" = "deny";
 			const { allowDirs } = loadSandboxPaths();
+			const sessionAccess = getSessionAccessSnapshot(sessionId);
+			const hasAuditRisk = !audit.allow || (audit.rules?.length ?? 0) > 0;
 			const whitelisted =
 				permission === "write-paths" &&
+				!hasAuditRisk &&
 				writePaths.length > 0 &&
-				writePaths.every((p) => allowDirs.some((d) => isDirInside(p, d)));
+				(pathsCoveredByRoots(writePaths, allowDirs, cwd) || pathsCoveredByRoots(writePaths, sessionAccess.trustedDirs, cwd));
 			if (whitelisted) {
 				decision = "allow";
 			} else {
-				const gui = await tryGuiApproval(command, permission, writePaths, justification, signal);
+				const gui = await tryGuiApproval(command, permission, writePaths, justification, timeout, sessionId, signal, audit);
 				if (gui !== "gui-unavailable") {
-					// 用户在 GUI 上点选的目录白/黑名单操作（无论 allow/deny 都先落名单）
+					// 只接受本次窗口展示过的候选目录，防止响应文件扩大授权范围。
+					const candidates = new Set(
+						(permission === "write-paths" ? collectCandidateDirs(command, writePaths) : [])
+							.map((path) => normalizeSandboxRoot(path, cwd))
+							.filter((path): path is string => path !== undefined),
+					);
+					const currentCommandRoots: string[] = [];
 					for (const pa of gui.pathActions ?? []) {
-						if (pa?.list === "allow" && typeof pa.path === "string") addAllowDir(pa.path);
-						else if (pa?.list === "block" && typeof pa.path === "string") addBlockDir(pa.path);
+						if (!pa || typeof pa.path !== "string") continue;
+						const path = normalizeSandboxRoot(pa.path, cwd);
+						if (!path || !candidates.has(path)) continue;
+						if (pa.list === "allow") {
+							// 目录信任只能减少安全命令的重复审批，不能批准风险命令。
+							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							addAllowDir(path);
+							currentCommandRoots.push(path);
+						} else if (pa.list === "block") {
+							addBlockDir(path);
+						} else if (pa.list === "session-write") {
+							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							addSessionWriteDirs([path], cwd);
+							currentCommandRoots.push(path);
+						} else if (pa.list === "session-trust") {
+							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							addSessionTrustedDirs([path], cwd);
+							currentCommandRoots.push(path);
+						}
 					}
+					writePaths = [...new Set([...writePaths, ...currentCommandRoots])];
 					decision = gui.action;
 				} else if (ctx.hasUI) {
-					const title = buildApprovalTitle(command, permission, writePaths, justification);
+					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout);
 					const choice = await ctx.ui.select(title, [APPROVE, DENY]);
 					decision = choice?.includes("允许") ? "allow" : "deny";
 				}
 			}
+
+			// session-write/session-trust 的路径动作已同时批准当前命令；
+			// writePaths 已并入本次执行环境，后续命令通过 session 状态继续继承。
 
 			if (decision !== "allow") {
 				pi.appendEntry("sandbox-allow", {
@@ -178,7 +258,10 @@ export default function (pi: ExtensionAPI) {
 
 			// 4. 执行：单次 spawn，升权 env 只进该子进程
 			const shellPath = readShellPath();
-			const env = buildEscalationEnv(process.env, permission, writePaths);
+			const env = addSessionWriteDirsToEnv(
+				buildEscalationEnv(process.env, permission, writePaths),
+				sessionId,
+			);
 			const ops = createLocalBashOperations({ shellPath });
 
 			const chunks: Buffer[] = [];

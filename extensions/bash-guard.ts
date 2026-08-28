@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createBashToolDefinition, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
+import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
 
 // ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
 const PROMPT_SNIPPET = "Execute a bash command in the current working directory. Returns stdout and stderr.";
@@ -29,6 +30,7 @@ const PROMPT_GUIDELINES = [
 
 /** LLM 预审内存缓存（同命令同规则不重复调 API；gate 同款） */
 const reviewCache = createReviewCache();
+let currentSessionId: string | undefined;
 
 /**
  * 人类兜底确认（替代 gate 的完整 GUI 弹窗，保留核心审批语义）。
@@ -49,6 +51,11 @@ async function humanConfirm(ctx: ExtensionContext, reason: string | undefined, r
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
+	pi.on("session_start", (_event, ctx) => {
+		currentSessionId = ctx.sessionManager.getSessionId();
+		beginSandboxSession(currentSessionId);
+	});
+
 	// ── 沙箱指令注入点（spawnHook）：在官方 execute 内部被 resolveSpawnContext 调用，
 	//    env 基于 process.env 展开后透传给 ops.exec → sandbox-shell.mjs。
 	//    buildSandboxEnv 默认透传：sandbox-shell 默认 Landlock（--ro / + --rw <cwd>/tmp）
@@ -56,7 +63,7 @@ export default function (pi: ExtensionAPI) {
 	const spawnHook = ({ command, cwd, env }: BashSpawnContext): BashSpawnContext => ({
 		command,
 		cwd,
-		env: buildSandboxEnv(env),
+		env: addSessionWriteDirsToEnv(buildSandboxEnv(env), currentSessionId),
 	});
 
 	// 官方原版 bash definition（含 renderCall/renderResult，行为零异常）
@@ -70,6 +77,8 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const command: string = params.command as string;
+			currentSessionId = ctx.sessionManager.getSessionId();
+			beginSandboxSession(currentSessionId);
 
 			// ── 2. 自动判定层（黑名单/内联脚本/危险规则/白名单）──
 			const verdict: SandboxCheckResult = checkCommand(command, { cwd: ctx?.cwd ?? cwd });

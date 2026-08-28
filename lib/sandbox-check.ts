@@ -108,17 +108,19 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	if (audit.pyDanger.length > 0) rulesOut.push({ name: "python-danger", tip: "Python 段含危险调用", autoReject: false, matched: [...audit.pyDanger] });
 	if (audit.pipeExec.length > 0) rulesOut.push({ name: "pipe-exec", tip: "管道右侧为执行器命令", autoReject: false, matched: [...audit.pipeExec] });
 
-	// 4. 白名单目录豁免：所有目标路径都在 allowDirs 内 → 放行（gate 同款逻辑）
+	// 4. 全部规则都是 autoReject → 自动拒绝。
+	// 长期 allowDirs 只减少写权限相关的重复审批，不能绕过硬拒绝规则。
+	if (rulesOut.length > 0 && rulesOut.every((r) => r.autoReject)) {
+		const tip = rulesOut.map((r) => r.tip).join("；");
+		return { allow: false, reason: `自动拒绝：${tip}`, rules: rulesOut };
+	}
+
+	// 5. 白名单目录豁免：所有目标路径都在 allowDirs 内 → 放行（gate 同款逻辑）。
+	// 放在 autoReject 之后，避免 allowDirs 把硬拒绝命令放过去。
 	const allowDirs = ctx.allowDirs ?? loadSandboxPaths().allowDirs;
 	const whitelisted = isWhitelisted(command, allowDirs);
 	if (whitelisted) {
 		return { allow: true, audit, rules: rulesOut };
-	}
-
-	// 5. 全部规则都是 autoReject → 自动拒绝（白名单不豁免硬拦）
-	if (rulesOut.length > 0 && rulesOut.every((r) => r.autoReject)) {
-		const tip = rulesOut.map((r) => r.tip).join("；");
-		return { allow: false, reason: `自动拒绝：${tip}`, rules: rulesOut };
 	}
 
 	// 6. 有规则但非全 autoReject（动态构造/需人工确认）→ 交由上层（bash-guard）走 LLM/弹窗审批

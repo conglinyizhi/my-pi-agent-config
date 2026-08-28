@@ -14,9 +14,15 @@ import guard from "./guard";
 import gate from "./gate";
 import allow from "./allow";
 import { poolAddHandler, poolRemoveHandler } from "./review-pool";
+import { beginSandboxSession } from "./session-access.ts";
 
 export default async function (pi: ExtensionAPI): Promise<void> {
 	await guard(pi);
+
+	// session 级目录授权只存在当前 session；session ID 变化时自动清空旧授权。
+	pi.on("session_start", (_event, ctx) => {
+		beginSandboxSession(ctx.sessionManager.getSessionId());
+	});
 	await gate(pi);
 	await allow(pi);
 

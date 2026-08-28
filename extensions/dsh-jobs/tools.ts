@@ -13,6 +13,7 @@ import { registerSection } from "../../lib/prompt-sections.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import { JobRegistry, type JobSnapshot } from "./registry.ts";
 import { bashBackground } from "./providers.ts";
+import { beginSandboxSession } from "../sandbox-permissions/session-access.ts";
 
 export interface JobsToolOptions {
 	/** wait 默认超时（ms，默认 30s） */
@@ -54,6 +55,8 @@ export function registerJobsTools(pi: ExtensionAPI, registry: JobRegistry, optio
 			command: Type.String({ description: "The full shell command to run in the background." }),
 		}),
 		async execute(_toolCallId, params: { command: string }, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId();
+			beginSandboxSession(sessionId);
 			// ── 前置检查（对齐 bash-guard 的自动判定层）──
 			// 后台任务不等待用户确认（违背后台语义）：黑名单/内联脚本/全 autoReject 硬拦；
 			// 「需人工确认」类也拒绝（后台无法同步确认）。
@@ -65,7 +68,7 @@ export function registerJobsTools(pi: ExtensionAPI, registry: JobRegistry, optio
 				};
 			}
 
-			const id = registry.start(bashBackground(params.command, { cwd: ctx.cwd }));
+			const id = registry.start(bashBackground(params.command, { cwd: ctx.cwd, sessionId }));
 			const snapshot = registry.get(id);
 			return {
 				content: [{ type: "text", text: `Started background job ${id}: ${snapshot.label}\n${snapshotStatusText(snapshot)}` }],
