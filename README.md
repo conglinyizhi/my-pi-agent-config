@@ -18,7 +18,7 @@ pi
 
 **for-grok-4-5** — 「强大、实惠、但疯跑的孩子」。grok-4.5 两大顽疾补丁：①空正文自动续跑 ②连续 bash true 空转识别为正常收工。续跑提示还会引导 grok 用 `echo job done already` 主动报完成。
 
-**skill-boot** — 技能引导与管理（skill-kit + skill-manual 合并）。启动时同步技能仓库（clone → skill-vault 软链接，pi 不扫描、启动更快）；`/skill-boot <名>` 引导注入指定 SKILL.md、`/skill-boot:list` TUI 列表选择、`/skill-manager` 交互式开关；同时负责系统提示词过滤。
+**skill-boot** — 技能来源同步与过渡期手动注入。启动时同步技能仓库（clone → skill-vault 软链接）；`/skill-boot <名>` 注入指定 SKILL.md。技能发现、可见性、会话开关和列表管理交给 Pi / skillful。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 

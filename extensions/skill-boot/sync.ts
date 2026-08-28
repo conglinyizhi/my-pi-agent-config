@@ -1,10 +1,9 @@
-// sync.ts — skill-repo 同步（合并自 skill-kit；软链接目标改为 skill-vault）
+// sync.ts — skill-repo 同步
 //
-// 功能：读取 repo.toml → clone 缺失仓库 → 在 skill-vault/ 建立软链接 →
-// 旧架构（skills/_repo）清理 → 禁用列表清理。skill-vault 不被 pi 扫描，
-// 只由本扩展管理（/skill-boot 手动注入、/skill-manager 开关）。
+// 功能：读取 repo.toml → clone 缺失仓库 → 在 skill-vault/ 建立软链接，
+// 并兼容清理旧的 skills/_repo 结构。技能可见性和启用状态由 Pi / skillful 管理。
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { join, relative, basename } from "node:path";
@@ -14,7 +13,6 @@ import { AGENT_DIR, REPO_TOML_PATH, SKILL_VAULT_DIR } from "./vault.ts";
 const execAsync = promisify(exec);
 const CLONE_TIMEOUT = 15_000;
 const SKILL_REPO_DIR = join(AGENT_DIR, "skill-repo");
-const STATE_PATH = join(AGENT_DIR, "skill-states.json");
 
 export interface SkillEntry {
 	name: string;
@@ -45,23 +43,6 @@ export function loadRepoConfig(): SkillEntry[] | null {
 	}
 }
 
-export function loadState(): { disabled: string[] } {
-	try {
-		const raw = readFileSync(STATE_PATH, "utf8");
-		return JSON.parse(raw);
-	} catch {
-		return { disabled: [] };
-	}
-}
-
-export function saveState(state: { disabled: string[] }): void {
-	writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), "utf8");
-}
-
-export function loadDisabledList(): string[] {
-	return loadState().disabled;
-}
-
 async function cloneRepoAsync(source: string, targetDir: string): Promise<void> {
 	const repo = source.replace("https://github.com/", "");
 	try {
@@ -79,7 +60,7 @@ async function cloneRepoAsync(source: string, targetDir: string): Promise<void> 
 	});
 }
 
-/** 在 skill-vault 下建软链接 */
+/** 在 skill-vault 下建立来源软链接。 */
 function linkSkill(linkName: string, srcAbs: string): "linked" | "skipped" {
 	mkdirSync(SKILL_VAULT_DIR, { recursive: true });
 	const linkPath = join(SKILL_VAULT_DIR, linkName);
@@ -97,39 +78,6 @@ function linkSkill(linkName: string, srcAbs: string): "linked" | "skipped" {
 	}
 	symlinkSync(relativeTarget, linkPath);
 	return "linked";
-}
-
-function toggleEnsureSymlink(linkName: string): boolean {
-	const entries = loadRepoConfig();
-	if (!entries) return false;
-	for (const entry of entries) {
-		if (entry.bundle && entry.link_targets) {
-			for (const target of entry.link_targets) {
-				if (basename(target) === linkName) {
-					const repoDirName = entry.source_dir || entry.name;
-					const src = join(SKILL_REPO_DIR, repoDirName, target);
-					if (!existsSync(src)) return false;
-					linkSkill(linkName, src);
-					return true;
-				}
-			}
-		} else if (entry.name === linkName) {
-			const src = join(SKILL_REPO_DIR, linkName);
-			if (!existsSync(src)) return false;
-			linkSkill(linkName, src);
-			return true;
-		}
-	}
-	return false;
-}
-
-function toggleRemoveSymlink(linkName: string): void {
-	const linkPath = join(SKILL_VAULT_DIR, linkName);
-	try {
-		if (lstatSync(linkPath).isSymbolicLink()) unlinkSync(linkPath);
-	} catch {
-		// 不存在
-	}
 }
 
 /** 旧架构清理：skills/_repo 残留 → 迁移到 skill-repo + vault 软链接 */
@@ -263,51 +211,5 @@ export async function syncSkillsAsync(tick: () => void): Promise<SyncResult[]> {
 
 	for (const r of resolveCollisions(entries)) results.push(r);
 
-	// 禁用列表清理（vault 中移除）
-	for (const name of loadDisabledList()) {
-		try {
-			if (lstatSync(join(SKILL_VAULT_DIR, name)).isSymbolicLink()) {
-				unlinkSync(join(SKILL_VAULT_DIR, name));
-				results.push({ name, action: "linked" });
-			}
-		} catch {
-			// 不存在
-		}
-	}
 	return results;
-}
-
-export { toggleEnsureSymlink, toggleRemoveSymlink };
-
-export interface SkillInfo {
-	name: string;
-	source: string;
-	enabled: boolean;
-}
-
-/** 汇总技能列表（bundle 分组 + 禁用状态），供 /skill-manager 展示 */
-export function collectSkills(): SkillInfo[] {
-	const skills: SkillInfo[] = [];
-	const state = loadState();
-	const entries = loadRepoConfig();
-	if (!entries) return [];
-	for (const entry of entries) {
-		if (entry.bundle && entry.link_targets && entry.link_targets.length > 0) {
-			for (const target of entry.link_targets) {
-				const skillName = basename(target);
-				skills.push({
-					name: skillName,
-					source: `bundle:${entry.name}`,
-					enabled: !state.disabled.includes(skillName),
-				});
-			}
-		} else {
-			skills.push({
-				name: entry.name,
-				source: `repo:${entry.name}`,
-				enabled: !state.disabled.includes(entry.name),
-			});
-		}
-	}
-	return skills;
 }
