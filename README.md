@@ -10,7 +10,7 @@ cd ~/.pi/agent && pnpm install
 pi
 ```
 
-第一次启动，`skill-boot` 会自动把第三方 skill 全拉下来（clone 进 skill-repo，软链接到 skill-vault），不用你操心。
+第一次启动，`skill-boot` 会自动把第三方 skill 拉到 `skill-repo`，并暴露到正式发现路径 `skills/external`。它们默认不进入模型自动发现提示；看到新增技能提示后，用 `/skillful` 自己开启。
 
 ## 里面有什么
 
@@ -18,7 +18,9 @@ pi
 
 **for-grok-4-5** — 「强大、实惠、但疯跑的孩子」。grok-4.5 两大顽疾补丁：①空正文自动续跑 ②连续 bash true 空转识别为正常收工。续跑提示还会引导 grok 用 `echo job done already` 主动报完成。
 
-**skill-boot** — 技能来源同步与过渡期手动注入。启动时同步技能仓库（clone → skill-vault 软链接）；`/skill-boot <名>` 注入指定 SKILL.md。技能发现、可见性、会话开关和列表管理交给 Pi / skillful。
+**skill-boot** — 技能来源同步与过渡期手动注入。启动时同步技能仓库（clone → `skills/external` 正式发现入口）；`/skill-boot <名>` 注入指定 SKILL.md。外部技能默认隐藏，技能发现与可见性统一交给 Pi / skillful。
+
+**skillful-local** — 从 `pi-skillful` 迁移的精简核心：发现 Git 仓库外层的 `.agents/skills/` 与 `skills/external` 正式入口，统一管理模型自动发现的技能可见性，并支持在输入任意位置显式调用 `/skill:name`。外部技能及后续新发现技能默认隐藏，只提示用户自行开启；`/skillful` 中的 **MoonBit 开发环境** 组会同时管理 9 个官方 MoonBit 技能和 `clyzhi-moonwell-spring` 热修复层。排除了安装遥测和会话快捷键。许可证与归属见 `extensions/skillful/`。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 

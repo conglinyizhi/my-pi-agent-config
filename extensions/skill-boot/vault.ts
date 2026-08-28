@@ -10,8 +10,10 @@ import { join, dirname, relative } from "node:path";
 import { parseFrontmatter } from "./frontmatter.ts";
 
 export const AGENT_DIR = getAgentDir();
-/** skill-boot 同步层的技能暴露目录；Pi / skillful 不扫描此目录。 */
+/** 迁移前的兼容入口；只保留本地过渡技能和手动注入兼容。 */
 export const SKILL_VAULT_DIR = join(AGENT_DIR, "skill-vault");
+/** 外部技能的正式 Pi 发现入口。 */
+export const SKILL_EXTERNAL_DIR = join(AGENT_DIR, "skills", "external");
 export const REPO_TOML_PATH = join(AGENT_DIR, "skill-repo", "repo.toml");
 
 export interface ManualSkill {
@@ -20,7 +22,7 @@ export interface ManualSkill {
 	path: string;
 }
 
-/** 只扫描 skill-vault，避免和 Pi / skillful 的技能发现重复。 */
+/** 扫描兼容 vault 与正式外部技能入口，供迁移期 /skill-boot 注入兼容。 */
 function scanVault(): ManualSkill[] {
 	const out: ManualSkill[] = [];
 	const walk = (dir: string, depth: number): void => {
@@ -52,6 +54,7 @@ function scanVault(): ManualSkill[] {
 		}
 	};
 	walk(SKILL_VAULT_DIR, 0);
+	walk(SKILL_EXTERNAL_DIR, 0);
 	return out;
 }
 

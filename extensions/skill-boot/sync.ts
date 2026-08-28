@@ -1,14 +1,28 @@
-// sync.ts — skill-repo 同步
+// sync.ts — skill-repo 同步与正式 Pi 技能路径暴露
 //
-// 功能：读取 repo.toml → clone 缺失仓库 → 在 skill-vault/ 建立软链接，
-// 并兼容清理旧的 skills/_repo 结构。技能可见性和启用状态由 Pi / skillful 管理。
+// 外部技能本体保存在 skill-repo/，正式发现入口统一暴露到：
+//   skills/external/<来源>/<skill>/
+//
+// skill-vault 里的旧外部软链接只在迁移期间兼容处理；技能显隐由 skillful-local 管理。
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	type Dirent,
+} from "node:fs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { join, relative, basename } from "node:path";
+import { join, relative, basename, dirname } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { AGENT_DIR, REPO_TOML_PATH, SKILL_VAULT_DIR } from "./vault.ts";
+import { AGENT_DIR, REPO_TOML_PATH, SKILL_EXTERNAL_DIR, SKILL_VAULT_DIR } from "./vault.ts";
 
 const execAsync = promisify(exec);
 const CLONE_TIMEOUT = 15_000;
@@ -31,6 +45,7 @@ export interface SyncResult {
 	name: string;
 	action: "skipped" | "cloned" | "linked" | "failed";
 	error?: string;
+	migrated?: boolean;
 }
 
 export function loadRepoConfig(): SkillEntry[] | null {
@@ -60,18 +75,27 @@ async function cloneRepoAsync(source: string, targetDir: string): Promise<void> 
 	});
 }
 
-/** 在 skill-vault 下建立来源软链接。 */
-function linkSkill(linkName: string, srcAbs: string): "linked" | "skipped" {
-	mkdirSync(SKILL_VAULT_DIR, { recursive: true });
-	const linkPath = join(SKILL_VAULT_DIR, linkName);
-	const relativeTarget = relative(SKILL_VAULT_DIR, srcAbs);
+function formalLinkPath(packageName: string): string {
+	return join(SKILL_EXTERNAL_DIR, packageName);
+}
+
+function legacyLinkPath(skillName: string): string {
+	return join(SKILL_VAULT_DIR, skillName);
+}
+
+/** 在正式 Pi 技能目录下建立来源仓库根软链接。 */
+function linkFormalPackage(packageName: string, repoDir: string): "linked" | "skipped" {
+	const linkPath = formalLinkPath(packageName);
+	mkdirSync(dirname(linkPath), { recursive: true });
+	const relativeTarget = relative(dirname(linkPath), repoDir);
 	try {
 		const stat = lstatSync(linkPath);
 		if (stat.isSymbolicLink()) {
 			if (readlinkSync(linkPath) === relativeTarget) return "skipped";
 			unlinkSync(linkPath);
 		} else {
-			return "skipped";
+			// 该目录是旧版按 skill 分别建立的运行时入口，只清理这一受管路径。
+			rmSync(linkPath, { recursive: true, force: true });
 		}
 	} catch {
 		// 不存在
@@ -80,7 +104,21 @@ function linkSkill(linkName: string, srcAbs: string): "linked" | "skipped" {
 	return "linked";
 }
 
-/** 旧架构清理：skills/_repo 残留 → 迁移到 skill-repo + vault 软链接 */
+/** 只把指向 skill-repo 的旧链接迁走，不碰 skill-vault 内的本地技能。 */
+function removeLegacyLink(skillName: string): boolean {
+	try {
+		const link = legacyLinkPath(skillName);
+		if (!lstatSync(link).isSymbolicLink()) return false;
+		const target = readlinkSync(link);
+		if (!target.includes("skill-repo") && !target.startsWith("../skill-repo")) return false;
+		unlinkSync(link);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** 旧架构清理：skills/_repo 残留迁入 skill-repo。 */
 function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 	const results: SyncResult[] = [];
 	const knownSkills = new Set<string>();
@@ -109,28 +147,14 @@ function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 		}
 		if (!oldStat.isDirectory()) continue;
 		const skillRepoSrc = join(SKILL_REPO_DIR, name);
-		const vaultLinkPath = join(SKILL_VAULT_DIR, name);
-		try {
-			const linkStat = lstatSync(vaultLinkPath);
-			if (linkStat.isSymbolicLink()) {
-				rmSync(oldPath, { recursive: true, force: true });
-				results.push({ name, action: "linked" });
-				continue;
-			}
-		} catch {
-			// 不存在
-		}
 		try {
 			if (!existsSync(skillRepoSrc)) {
 				mkdirSync(SKILL_REPO_DIR, { recursive: true });
 				renameSync(oldPath, skillRepoSrc);
-				linkSkill(name, skillRepoSrc);
-				results.push({ name, action: "linked" });
 			} else {
 				rmSync(oldPath, { recursive: true, force: true });
-				linkSkill(name, skillRepoSrc);
-				results.push({ name, action: "linked" });
 			}
+			results.push({ name, action: "linked", migrated: true });
 		} catch (e) {
 			results.push({
 				name,
@@ -142,74 +166,42 @@ function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 	return results;
 }
 
-/** 后台同步：clone + 软链接到 vault + 清理 */
+/** 后台同步：clone + 正式技能入口软链接 + 旧入口迁移。 */
 export async function syncSkillsAsync(tick: () => void): Promise<SyncResult[]> {
 	const entries = loadRepoConfig();
 	if (!entries || entries.length === 0) return [];
+
 	mkdirSync(SKILL_REPO_DIR, { recursive: true });
-	mkdirSync(SKILL_VAULT_DIR, { recursive: true });
-	const results: SyncResult[] = [];
+	mkdirSync(SKILL_EXTERNAL_DIR, { recursive: true });
+	const results = resolveCollisions(entries);
 
 	for (const entry of entries) {
 		const repoDirName = entry.source_dir || entry.name;
 		const repoDir = join(SKILL_REPO_DIR, repoDirName);
 
-		if (entry.bundle && entry.link_targets && entry.link_targets.length > 0) {
-			if (!existsSync(repoDir)) {
-				try {
-					await cloneRepoAsync(entry.source, repoDir);
-					results.push({ name: `${entry.name} (bundle)`, action: "cloned" });
-				} catch (e) {
-					results.push({
-						name: entry.name,
-						action: "failed",
-						error: String(e instanceof Error && "stderr" in e ? (e as { stderr?: string }).stderr : e instanceof Error ? e.message : "未知错误").slice(0, 200),
-					});
-					tick();
-					continue;
-				}
+		if (!existsSync(repoDir)) {
+			try {
+				await cloneRepoAsync(entry.source, repoDir);
+				results.push({ name: entry.name, action: "cloned" });
+			} catch (e) {
+				results.push({
+					name: entry.name,
+					action: "failed",
+					error: String(e instanceof Error && "stderr" in e ? (e as { stderr?: string }).stderr : e instanceof Error ? e.message : "未知错误").slice(0, 200),
+				});
+				tick();
+				continue;
 			}
-			for (const target of entry.link_targets) {
-				const src = join(repoDir, target);
-				const linkName = basename(target);
-				if (!existsSync(src)) {
-					results.push({ name: `${entry.name}/${linkName}`, action: "failed", error: `源路径不存在: ${target}` });
-					continue;
-				}
-				const action = linkSkill(linkName, src);
-				if (action === "linked") results.push({ name: `${entry.name}/${linkName}`, action: "linked" });
-			}
-			tick();
-			continue;
 		}
 
-		if (existsSync(repoDir)) {
-			const linkPath = join(SKILL_VAULT_DIR, entry.name);
-			if (!existsSync(linkPath)) {
-				linkSkill(entry.name, repoDir);
-				results.push({ name: entry.name, action: "linked" });
-			} else {
-				results.push({ name: entry.name, action: "skipped" });
-			}
-			tick();
-			continue;
-		}
-
-		try {
-			await cloneRepoAsync(entry.source, repoDir);
-			linkSkill(entry.name, repoDir);
-			results.push({ name: entry.name, action: "cloned" });
-		} catch (e) {
-			results.push({
-				name: entry.name,
-				action: "failed",
-				error: String(e instanceof Error && "stderr" in e ? (e as { stderr?: string }).stderr : e instanceof Error ? e.message : "未知错误").slice(0, 200),
-			});
-		}
+		const action = linkFormalPackage(entry.name, repoDir);
+		const legacyNames = entry.bundle && entry.link_targets && entry.link_targets.length > 0
+			? entry.link_targets.map((target) => basename(target))
+			: [entry.name];
+		const migrated = legacyNames.some((name) => removeLegacyLink(name));
+		if (action === "linked" || migrated) results.push({ name: entry.name, action, migrated });
 		tick();
 	}
-
-	for (const r of resolveCollisions(entries)) results.push(r);
 
 	return results;
 }

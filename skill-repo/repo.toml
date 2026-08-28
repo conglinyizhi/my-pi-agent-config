@@ -12,9 +12,9 @@
 #   link_targets  — 聚合仓库中需要暴露为独立技能的子目录列表（bundle=true 时使用）
 #   trigger       — 自然语言场景描述，预检扩展据此做语义匹配（可选）
 #
-# 单技能仓库：clone 后通过软链接 skills/<name> -> ../skill-repo/<name> 暴露
-# 多技能仓库：clone 到 skill-repo/<name>/，然后为每个 link_target 创建软链接至 skills/
-#   例：ln -s moonbit-skills/skills/moonbit-orientation moonbit-orientation
+# 单技能仓库：clone 后通过软链接 `skills/external/<name> -> ../skill-repo/<name>` 暴露
+# 多技能仓库：clone 到 `skill-repo/<name>/`，通过 `skills/external/<name>` 根软链接暴露，Pi 递归发现其中的 SKILL.md
+#   例如 moonbit-skills 的所有子技能都由一个根入口自动发现，仓库新增技能无需改 link_targets
 #
 # 2026-07-28 华夏技能瘦身：默认只同步 nopua / tiangong / bibuzaohua / paoding-jieniu。
 # 已除名（有用核并入 skills/clyzhi，clone 可留冷备份）：
