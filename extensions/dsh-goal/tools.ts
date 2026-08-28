@@ -99,6 +99,44 @@ function goalText(view: GoalView | undefined): string {
 
 const UPDATE_ACTIONS = ["edit", "pause", "resume", "complete", "blocked"] as const;
 
+const GOAL_ID_PARAMETER = Type.String({ description: "Exact id returned by get_goal." });
+const REVISION_PARAMETER = Type.Number({ description: "Exact positive revision returned by get_goal." });
+
+/**
+ * 按 action 收窄参数形状，避免 complete/resume 等操作看起来可以携带 edit 字段。
+ * 每个分支都重复公共字段，是为了让 JSON Schema 给模型展示清晰的合法组合。
+ */
+export const UPDATE_PARAMETERS = Type.Union([
+	Type.Object({
+		goal_id: GOAL_ID_PARAMETER,
+		revision: REVISION_PARAMETER,
+		action: Type.Literal("edit"),
+		objective: Type.Optional(Type.String({ description: "Replacement objective for this goal." })),
+		max_goal_rounds: Type.Optional(Type.Number({ description: "Replacement positive safe-integer cap for automatic continuation rounds." })),
+	}, { additionalProperties: false }),
+	Type.Object({
+		goal_id: GOAL_ID_PARAMETER,
+		revision: REVISION_PARAMETER,
+		action: Type.Literal("pause"),
+	}, { additionalProperties: false }),
+	Type.Object({
+		goal_id: GOAL_ID_PARAMETER,
+		revision: REVISION_PARAMETER,
+		action: Type.Literal("resume"),
+	}, { additionalProperties: false }),
+	Type.Object({
+		goal_id: GOAL_ID_PARAMETER,
+		revision: REVISION_PARAMETER,
+		action: Type.Literal("complete"),
+	}, { additionalProperties: false }),
+	Type.Object({
+		goal_id: GOAL_ID_PARAMETER,
+		revision: REVISION_PARAMETER,
+		action: Type.Literal("blocked"),
+		blocked_reason: Type.String({ description: "Concrete blocking condition that has persisted across the required goal rounds." }),
+	}, { additionalProperties: false }),
+]);
+
 function goalRef(id: string, revision: number): GoalRef {
 	return { id: id as GoalRef["id"], revision };
 }
@@ -123,7 +161,7 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 		name: "tool:goal",
 		order: 114,
 		text: () =>
-			`Use goal tools for one long-running completion objective in the current session. create_goal may infer goal intent from a direct human request in any language; do not create a goal for routine single-turn work. A goal is the cross-round long-term objective (one per session, human-sanctioned, drives auto-continuation); break down the current task into concrete steps with todo_write instead. Call get_goal before update_goal and copy its exact goal_id and revision. After session resume or fork, an active goal is disarmed: when a human asks to continue or resume in any wording or language, use update_goal action resume to rearm it. Mark complete only when the objective is actually achieved. Mark blocked only after the same blocking condition persists for at least ${blockedAfter} consecutive goal rounds, and report that concrete condition in blocked_reason; difficulty, uncertainty, or useful remaining work is not blocked.`,
+			`Use goal tools for one long-running completion objective in the current session. create_goal may infer goal intent from a direct human request in any language; do not create a goal for routine single-turn work. A goal is the cross-round long-term objective (one per session, human-sanctioned, drives auto-continuation); break down the current task into concrete steps with todo_write instead. Call get_goal before update_goal and copy its exact goal_id and revision. Action fields are exclusive: edit may include objective and max_goal_rounds; pause, resume, and complete take only action, goal_id, and revision; blocked additionally requires blocked_reason. Never send empty, copied, or irrelevant optional fields. After session resume or fork, an active goal is disarmed: when a human asks to continue or resume in any wording or language, use update_goal action resume to rearm it. Mark complete only when the objective is actually achieved, using only { action: "complete", goal_id, revision }. Mark blocked only after the same blocking condition persists for at least ${blockedAfter} consecutive goal rounds, and report that concrete condition in blocked_reason; difficulty, uncertainty, or useful remaining work is not blocked.`,
 	});
 
 	pi.registerTool({
@@ -170,20 +208,9 @@ export function registerGoalTools(pi: ExtensionAPI, domain: GoalDomain, options:
 		name: "update_goal",
 		label: "Update Goal",
 		description:
-			"Update the exact current goal revision. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.",
-		promptSnippet: "Update the exact current goal revision (edit/pause/resume/complete/blocked)",
-		parameters: Type.Object({
-			goal_id: Type.String({ description: "Exact id returned by get_goal." }),
-			revision: Type.Number({ description: "Exact positive revision returned by get_goal." }),
-			action: Type.Union(UPDATE_ACTIONS.map((a) => Type.Literal(a)), {
-				description: "edit | pause | resume | complete | blocked",
-			}),
-			objective: Type.Optional(Type.String({ description: "Replacement objective; valid only with action edit." })),
-			max_goal_rounds: Type.Optional(Type.Number({ description: "Replacement cap; valid only with action edit." })),
-			blocked_reason: Type.Optional(
-				Type.String({ description: "Concrete blocking condition; required only with action blocked." }),
-			),
-		}),
+			"Update the exact current goal revision. Action fields are exclusive: edit may include objective and max_goal_rounds; pause, resume, and complete accept only action, goal_id, and revision; blocked additionally requires blocked_reason. Never send unused optional fields. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count.",
+		promptSnippet: "Update a goal with only the fields valid for its action",
+		parameters: UPDATE_PARAMETERS,
 		async execute(
 			_toolCallId,
 			params: {
