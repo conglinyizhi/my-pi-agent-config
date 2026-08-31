@@ -9,6 +9,7 @@
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
 | `paths.ts` | 目录白/黑名单（GUI 动态维护，sandbox-paths.json） | gate/guard/allow 内部调用 |
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
+| `yolo.ts` | `/yolo` 会话级沙箱墙开关（全部降零，仅当前 session） | `pi.registerCommand("yolo")` |
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
@@ -22,6 +23,8 @@ sandbox-permissions/
 ├── index.ts             # 合成入口（方案 B：真融合）
 ├── guard.ts             # 敏感路径黑名单拦截
 ├── guard.test.ts
+├── yolo.ts              # /yolo 会话级沙箱墙开关（全部降零）
+├── yolo.test.ts
 ├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
 ├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
 ├── llm-review.test.ts
@@ -183,6 +186,31 @@ max_cache = 200         # 内存缓存上限（同命令同规则不重复调 AP
 - **无 UI 模式不变**：非交互模式（print/json）仍直接阻止，不进 LLM 预审
 - **知情**：命令文本会发送到配置的 LLM API（默认当前会话模型）；启用即视为知情，介意可关 `enabled`
 - 审核记录写入会话（`sandbox-llm-review` 条目，不进 LLM 上下文），可在 `/session` 查看
+
+## /yolo：会话级沙箱墙开关（yolo.ts）
+
+`/yolo` 把整面沙箱防护墙降到零（仅当前 session，默认关闭）。
+
+```
+/yolo         # 翻转开关
+/yolo on      # 开启（全部降零）
+/yolo off     # 恢复防护
+/yolo status  # 查看当前状态
+```
+
+开启时关闭三层墙：
+
+| 墙 | 关闭方式 |
+|----|---------|
+| bash 审批链（bash-guard） | 跳过 checkCommand / LLM 预审 / 人工确认，直接执行 |
+| Landlock 写保护（sandbox-shell） | spawnHook 注入 `PI_SANDBOX_DISABLE=1` |
+| read/write 黑名单（guard.ts） | 跳过敏感路径拦截 |
+
+要点：
+
+- 状态只存内存（`yolo.ts`），不开新 session、不写盘；新 session 自动复位为关闭
+- 状态通过 status bar（key=`sandbox-yolo`）显示在 session 中：开启显示 `🚀 YOLO`，关闭清除
+- 仅主进程生效：subagent 子进程经 `--extension` 单独加载 guard.ts，yolo 默认关闭，子进程保持防护
 
 ## 目录授权（paths.ts，GUI 动态维护）
 

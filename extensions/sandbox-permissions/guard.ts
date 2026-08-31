@@ -32,6 +32,7 @@ import { homedir } from "node:os";
 import { join, isAbsolute, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { loadSandboxPaths } from "./paths.ts";
+import { yoloEnabled } from "./yolo.ts";
 
 const AGENT_DIR = getAgentDir();
 const EXTENSIONS_TOML = join(AGENT_DIR, "extensions.toml");
@@ -208,6 +209,9 @@ export default function (pi: ExtensionAPI) {
 
   // 工具层拦截
   pi.on("tool_call", (event, ctx) => {
+    // yolo：跳过 read/write 黑名单（全部降零，不再拦截敏感路径）
+    if (yoloEnabled()) return undefined;
+
     const input = event.input as Record<string, unknown>;
     const path = typeof input?.path === "string" ? input.path : undefined;
 

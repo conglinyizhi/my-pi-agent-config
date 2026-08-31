@@ -21,6 +21,7 @@ import { checkCommand, buildSandboxEnv, type SandboxCheckResult, type TokenRule 
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
 import { runGuiWindow } from "../lib/gui-runner.ts";
+import { yoloEnabled } from "./sandbox-permissions/yolo.ts";
 
 // ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
 const PROMPT_SNIPPET = "Execute a bash command in the current working directory. Returns stdout and stderr.";
@@ -85,11 +86,13 @@ export default function (pi: ExtensionAPI) {
 	//    env 基于 process.env 展开后透传给 ops.exec → sandbox-shell.mjs。
 	//    buildSandboxEnv 默认透传：sandbox-shell 默认 Landlock（--ro / + --rw <cwd>/tmp）
 	//    已提供沙箱安全环境。需升权/只读时在 buildSandboxEnv 注入 PI_SANDBOX_RW_EXTRA / READONLY。 ──
-	const spawnHook = ({ command, cwd, env }: BashSpawnContext): BashSpawnContext => ({
-		command,
-		cwd,
-		env: addSessionWriteDirsToEnv(buildSandboxEnv(env), currentSessionId),
-	});
+	const spawnHook = ({ command, cwd, env }: BashSpawnContext): BashSpawnContext => {
+		// yolo 开启：连同 Landlock 写保护一并关闭（PI_SANDBOX_DISABLE=1），bash 可写任意路径
+		const base = yoloEnabled()
+			? { ...buildSandboxEnv(env), PI_SANDBOX_DISABLE: "1" }
+			: buildSandboxEnv(env);
+		return { command, cwd, env: addSessionWriteDirsToEnv(base, currentSessionId) };
+	};
 
 	// 官方原版 bash definition（含 renderCall/renderResult，行为零异常）
 	const bashDef = createBashToolDefinition(cwd, { spawnHook });
@@ -104,6 +107,12 @@ export default function (pi: ExtensionAPI) {
 			const command: string = params.command as string;
 			currentSessionId = ctx.sessionManager.getSessionId();
 			beginSandboxSession(currentSessionId);
+
+			// yolo：跳过整条审批链（自动判定/LLM/人工确认），直接执行官方原版。
+			// spawnHook 已据此注入 PI_SANDBOX_DISABLE=1，Landlock 写保护也一并关闭。
+			if (yoloEnabled()) {
+				return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+			}
 
 			// ── 2. 自动判定层（黑名单/内联脚本/危险规则/白名单）──
 			const verdict: SandboxCheckResult = checkCommand(command, { cwd: ctx?.cwd ?? cwd });

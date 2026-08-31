@@ -35,6 +35,7 @@ import {
 	normalizeSandboxRoot,
 	pathsCoveredByRoots,
 } from "./session-access.ts";
+import { yoloEnabled } from "./yolo.ts";
 
 const MAX_OUTPUT_BYTES = 1_000_000;
 const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（窗口内不自动超时；仅防窗口进程卡死）
@@ -154,11 +155,13 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// sandbox-allow 只改变文件系统沙箱范围，不绕过命令安全检查。
-			const audit = checkCommand(command as string, { cwd });
-			if (!audit.allow && audit.rules && audit.rules.length > 0 && audit.rules.every((rule) => rule.autoReject)) {
+			// yolo：整面墙已降零，跳过审计（不重复拦截）与同意门（直接放行）。
+			const yolo = yoloEnabled();
+			const audit = yolo ? undefined : checkCommand(command as string, { cwd });
+			if (!yolo && audit && !audit.allow && audit.rules && audit.rules.length > 0 && audit.rules.every((rule) => rule.autoReject)) {
 				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
 			}
-			if (!audit.allow && !audit.rules?.length) {
+			if (!yolo && audit && !audit.allow && !audit.rules?.length) {
 				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
 			}
 
@@ -180,13 +183,15 @@ export default function (pi: ExtensionAPI) {
 			let decision: "allow" | "deny" = "deny";
 			const { allowDirs } = loadSandboxPaths();
 			const sessionAccess = getSessionAccessSnapshot(sessionId);
-			const hasAuditRisk = !audit.allow || (audit.rules?.length ?? 0) > 0;
+			const hasAuditRisk = audit ? !audit.allow || (audit.rules?.length ?? 0) > 0 : false;
 			const whitelisted =
 				permission === "write-paths" &&
 				!hasAuditRisk &&
 				writePaths.length > 0 &&
 				(pathsCoveredByRoots(writePaths, allowDirs, cwd) || pathsCoveredByRoots(writePaths, sessionAccess.trustedDirs, cwd));
-			if (whitelisted) {
+			if (yolo) {
+				decision = "allow";
+			} else if (whitelisted) {
 				decision = "allow";
 			} else {
 				const gui = await tryGuiApproval(command, permission, writePaths, justification, timeout, sessionId, signal, audit);
@@ -198,23 +203,25 @@ export default function (pi: ExtensionAPI) {
 							.filter((path): path is string => path !== undefined),
 					);
 					const currentCommandRoots: string[] = [];
+					// 走到 GUI 分支说明非 yolo，audit 必已计算（非空）
+					const auditResolved = audit!;
 					for (const pa of gui.pathActions ?? []) {
 						if (!pa || typeof pa.path !== "string") continue;
 						const path = normalizeSandboxRoot(pa.path, cwd);
 						if (!path || !candidates.has(path)) continue;
 						if (pa.list === "allow") {
 							// 目录信任只能减少安全命令的重复审批，不能批准风险命令。
-							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
 							addAllowDir(path);
 							currentCommandRoots.push(path);
 						} else if (pa.list === "block") {
 							addBlockDir(path);
 						} else if (pa.list === "session-write") {
-							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
 							addSessionWriteDirs([path], cwd);
 							currentCommandRoots.push(path);
 						} else if (pa.list === "session-trust") {
-							if (!audit.allow || (audit.rules?.length ?? 0) > 0) continue;
+							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
 							addSessionTrustedDirs([path], cwd);
 							currentCommandRoots.push(path);
 						}
@@ -256,10 +263,10 @@ export default function (pi: ExtensionAPI) {
 				ts: Date.now(),
 			});
 
-			// 4. 执行：单次 spawn，升权 env 只进该子进程
+			// 4. 执行：单次 spawn，升权 env 只进该子进程。yolo 下按 full-access 降零。
 			const shellPath = readShellPath();
 			const env = addSessionWriteDirsToEnv(
-				buildEscalationEnv(process.env, permission, writePaths),
+				buildEscalationEnv(process.env, yolo ? "full-access" : permission, yolo ? [] : writePaths),
 				sessionId,
 			);
 			const ops = createLocalBashOperations({ shellPath });
