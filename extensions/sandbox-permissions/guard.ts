@@ -199,12 +199,9 @@ export default function (pi: ExtensionAPI) {
   };
 
   // 双保险：session_start（含 reload）时刷新
-  pi.on("session_start", (_event, ctx) => {
+  // 黑名单规则数不显示在状态栏（用户反馈用处不多，已隐藏）
+  pi.on("session_start", (_event, _ctx) => {
     refresh();
-    ctx.ui.setStatus("sandbox-guard", rules.length > 0 ? `🔒 ${rules.length} 条黑名单` : undefined);
-  });
-  pi.on("session_shutdown", (_event, ctx) => {
-    ctx.ui.setStatus("sandbox-guard", undefined);
   });
 
   // 工具层拦截
