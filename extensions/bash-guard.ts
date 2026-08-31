@@ -17,9 +17,10 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
-import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
+import { checkCommand, buildSandboxEnv, type SandboxCheckResult, type TokenRule } from "../lib/sandbox-check.ts";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
+import { runGuiWindow } from "../lib/gui-runner.ts";
 
 // ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
 const PROMPT_SNIPPET = "Execute a bash command in the current working directory. Returns stdout and stderr.";
@@ -32,11 +33,35 @@ const PROMPT_GUIDELINES = [
 const reviewCache = createReviewCache();
 let currentSessionId: string | undefined;
 
+/** 权限闸门窗口兜底超时（与 allow.ts 一致：窗口内不自动超时，仅防窗口进程卡死） */
+const GUI_TIMEOUT_MS = 3_600_000;
+
 /**
- * 人类兜底确认（替代 gate 的完整 GUI 弹窗，保留核心审批语义）。
- * 返回 true=放行，false=拒绝。ctx.ui 不可用时默认拒绝（fail-closed）。
+ * 人类兜底确认（风险命令）：优先走 wails-gui 权限闸门窗口（kind=audit，与
+ * sandbox-allow 升权审批共用 gate 窗口），窗口异常/不可用时回退 TUI select。
+ * 返回 true=放行，false=拒绝。两者皆不可用按 fail-closed 拒绝。
  */
-async function humanConfirm(ctx: ExtensionContext, reason: string | undefined, review?: ReviewResult): Promise<boolean> {
+async function humanConfirm(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	reason: string | undefined,
+	review: ReviewResult | undefined,
+	taskId: string | undefined,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	// 1. 优先 wails-gui 权限闸门窗口（kind=audit；GUI 侧展示命令/规则/LLM 审核意见）
+	const gui = await runGuiWindow(
+		"gate",
+		{ kind: "audit", command, taskId, rules, review },
+		{ timeoutMs: GUI_TIMEOUT_MS, signal },
+	);
+	// 仅采纳用户明确的选择（allow/deny）；窗口关闭/超时/进程退出 → 回退 TUI
+	if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
+		return gui.data.action === "allow";
+	}
+
+	// 2. GUI 不可用 → 回退 TUI select
 	if (!ctx?.ui) return false;
 	const reviewNote = review && (review.reason || review.suggestion || review.opinion)
 		? `\n\n${formatReviewNote(review)}`
@@ -108,8 +133,8 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 
-					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式）──
-					const ok = await humanConfirm(ctx!, verdict.reason, review);
+					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式；GUI 优先，TUI 回退）──
+					const ok = await humanConfirm(ctx!, command, verdict.rules, verdict.reason, review, toolCallId, signal);
 					if (!ok) {
 						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}` }], details: {} as BashToolDetails };
 					}
