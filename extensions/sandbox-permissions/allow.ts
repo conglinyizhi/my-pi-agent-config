@@ -84,6 +84,8 @@ interface GuiDecision {
 	action: "allow" | "deny";
 	/** 用户在 GUI 上点选的目录授权操作 */
 	pathActions?: { path: string; list: PathActionList }[];
+	/** GUI「拒绝并说明理由」写的用户理由（审计分支专属；sandbox-allow 分支目前不产） */
+	comment?: string;
 }
 
 /** 通过 GUI 审批（合并进现有权限闸门 gate 窗口，kind=sandbox-allow） */
@@ -115,7 +117,11 @@ async function tryGuiApproval(
 	);
 	// 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭/超时/中止 → 回退 TUI
 	if (result.ok && result.data && (result.data.action === "allow" || result.data.action === "deny")) {
-		return { action: result.data.action, pathActions: result.data.pathActions };
+		return {
+			action: result.data.action,
+			pathActions: result.data.pathActions,
+			comment: typeof result.data.comment === "string" ? result.data.comment : undefined,
+		};
 	}
 	return "gui-unavailable";
 }
@@ -181,6 +187,8 @@ export default function (pi: ExtensionAPI) {
 
 			// 3. 同意门：长期 allowDirs 与 session 信任根可免重复审批；session 可写根不免审批。
 			let decision: "allow" | "deny" = "deny";
+			let userComment: string | undefined;
+
 			const { allowDirs } = loadSandboxPaths();
 			const sessionAccess = getSessionAccessSnapshot(sessionId);
 			const hasAuditRisk = audit ? !audit.allow || (audit.rules?.length ?? 0) > 0 : false;
@@ -228,6 +236,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					writePaths = [...new Set([...writePaths, ...currentCommandRoots])];
 					decision = gui.action;
+					userComment = gui.comment;
 				} else if (ctx.hasUI) {
 					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout);
 					const choice = await ctx.ui.select(title, [APPROVE, DENY]);
@@ -239,17 +248,19 @@ export default function (pi: ExtensionAPI) {
 			// writePaths 已并入本次执行环境，后续命令通过 session 状态继续继承。
 
 			if (decision !== "allow") {
+				const userNote = userComment ? `用户理由：${userComment}。` : "";
 				pi.appendEntry("sandbox-allow", {
 					command,
 					permission,
 					paths: writePaths,
 					justification,
 					outcome: "denied",
+					...(userComment ? { comment: userComment } : {}),
 					ts: Date.now(),
 				});
 				return {
 					content: [
-						{ type: "text", text: "sandbox-allow: 升权请求未被同意（拒绝/取消/无 UI），命令未执行。如需继续，可用更窄的权限模式（如 write-paths）重试一次。" },
+						{ type: "text", text: `sandbox-allow: 升权请求未被同意（拒绝/取消/无 UI），命令未执行。${userNote}如需继续，可用更窄的权限模式（如 write-paths）重试一次。` },
 					],
 					details: undefined,
 				};

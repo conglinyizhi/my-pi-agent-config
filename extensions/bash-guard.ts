@@ -38,10 +38,15 @@ let currentSessionId: string | undefined;
 /** 权限闸门窗口兜底超时（与 allow.ts 一致：窗口内不自动超时，仅防窗口进程卡死） */
 const GUI_TIMEOUT_MS = 3_600_000;
 
+/** 人类兜底确认结果：ok=放行/拒绝；comment 为 GUI「拒绝并说明理由」写的用户理由 */
+type HumanConfirmResult = { ok: boolean; comment?: string };
+
 /**
  * 人类兜底确认（风险命令）：优先走 wails-gui 权限闸门窗口（kind=audit，与
  * sandbox-allow 升权审批共用 gate 窗口），窗口异常/不可用时回退 TUI select。
- * 返回 true=放行，false=拒绝。两者皆不可用按 fail-closed 拒绝。
+ * 返回 { ok, comment? }：ok=放行/拒绝；comment 为 GUI「拒绝并说明理由」对话框
+ * 写的用户理由（audit 专属，回退 TUI 或纯拒绝时不产生）。两者皆不可用按
+ * fail-closed 拒绝。
  */
 async function humanConfirm(
 	ctx: ExtensionContext,
@@ -51,7 +56,7 @@ async function humanConfirm(
 	review: ReviewResult | undefined,
 	taskId: string | undefined,
 	signal: AbortSignal | undefined,
-): Promise<boolean> {
+): Promise<HumanConfirmResult> {
 	// 1. 优先 wails-gui 权限闸门窗口（kind=audit；GUI 侧展示命令/规则/LLM 审核意见）
 	const gui = await runGuiWindow(
 		"gate",
@@ -60,11 +65,14 @@ async function humanConfirm(
 	);
 	// 仅采纳用户明确的选择（allow/deny）；窗口关闭/超时/进程退出 → 回退 TUI
 	if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
-		return gui.data.action === "allow";
+		return {
+			ok: gui.data.action === "allow",
+			comment: typeof gui.data.comment === "string" ? gui.data.comment : undefined,
+		};
 	}
 
 	// 2. GUI 不可用 → 回退 TUI select
-	if (!ctx?.ui) return false;
+	if (!ctx?.ui) return { ok: false };
 	const reviewNote = review && (review.reason || review.suggestion || review.opinion)
 		? `\n\n${formatReviewNote(review)}`
 		: "";
@@ -72,7 +80,7 @@ async function humanConfirm(
 		`⚠️ 命令需确认：\n\n  ${reason ?? "命中风险规则"}${reviewNote}\n\n是否允许执行？`,
 		["✅ 允许执行", "❌ 拒绝"],
 	);
-	return choice?.includes("允许") ?? false;
+	return { ok: choice?.includes("允许") ?? false };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -149,9 +157,10 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式；GUI 优先，TUI 回退）──
-					const ok = await humanConfirm(ctx!, command, verdict.rules, verdict.reason, review, toolCallId, signal);
-					if (!ok) {
-						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}` }], details: {} as BashToolDetails };
+					const decision = await humanConfirm(ctx!, command, verdict.rules, verdict.reason, review, toolCallId, signal);
+					if (!decision.ok) {
+						const userNote = decision.comment ? `（用户理由：${decision.comment}）` : "";
+						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}${userNote}` }], details: {} as BashToolDetails };
 					}
 				} else {
 					// 无 rules 但 allow=false（黑名单/内联脚本），直接拦

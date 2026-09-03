@@ -87,6 +87,7 @@
     <footer class="actions">
       <template v-if="isSandboxAllow">
         <button data-name="sa-deny" @click="respond('deny')" class="btn btn-deny">🚫 拒绝</button>
+        <button data-name="sa-deny-reason" @click="openDialog" class="btn btn-warn">📝 拒绝并说明理由</button>
         <button data-name="sa-allow" @click="respond('allow')" class="btn btn-allow">✅ 允许（仅此一次）</button>
       </template>
       <template v-else>
@@ -96,17 +97,19 @@
       </template>
     </footer>
 
-    <!-- 拒绝理由对话框（仅 audit） -->
-    <div v-if="!isSandboxAllow && dlg" @click.self="dlg=false" class="overlay">
+    <!-- 拒绝理由对话框（audit + sandbox-allow） -->
+    <div v-if="dlg" @click.self="dlg=false" class="overlay">
       <div class="dialog">
-        <h2 class="dialog-title">审核意见</h2>
-        <div v-for="(r,i) in rules" :key="i" @click="tog(i)" class="dialog-rule" :class="{ flagged: flg.has(i) }">
-          <input data-name="rule-check" type="checkbox" :checked="flg.has(i)" class="dialog-check">
-          <code class="rule-pattern">{{ r.name }}</code>
-          <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
-          <span class="rule-tip">{{ r.tip }}</span>
-        </div>
-        <div v-if="flg.size>0" class="flagged-hint">已标记 {{ flg.size }} 个危险点</div>
+        <h2 class="dialog-title">{{ isSandboxAllow ? '拒绝理由' : '审核意见' }}</h2>
+        <template v-if="!isSandboxAllow">
+          <div v-for="(r,i) in rules" :key="i" @click="tog(i)" class="dialog-rule" :class="{ flagged: flg.has(i) }">
+            <input data-name="rule-check" type="checkbox" :checked="flg.has(i)" class="dialog-check">
+            <code class="rule-pattern">{{ r.name }}</code>
+            <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
+            <span class="rule-tip">{{ r.tip }}</span>
+          </div>
+          <div v-if="flg.size>0" class="flagged-hint">已标记 {{ flg.size }} 个危险点</div>
+        </template>
         <label class="dialog-label">理由：</label>
         <select data-name="reason-select" v-model="txt" class="dialog-select">
           <option value="">-- 手动输入 --</option>
