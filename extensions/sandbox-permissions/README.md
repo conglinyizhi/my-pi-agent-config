@@ -265,6 +265,17 @@ GateView.vue 的「📁 目录授权」区块提供四种动作：
 - `permission=full-access`：本次命令完全取消文件系统沙箱，可以读写当前用户原本有权限访问的任意路径；它不是“多开放一个目录”，也不提升为 root
 - `justification`：非空理由会展示给审批者
 - `timeout`：用户批准后整条命令链的最长执行时间（秒），不限制用户查看审批窗口的时间
+- `memoryMb`：可选正整数（MB），设置该命令进程树的内存上限；缺省 `sandbox-shell` 按默认 1GiB 执行。**需要超过默认 1GiB 的命令必须由模型给出具体 MB 数值**（上限 `MAX_MEMORY_MB=32768`，更大拒绝）。数值会随审批标题展示给用户，并经用户同意后注入 `PI_SANDBOX_MEMORY_MB`。
+
+## 内存限制（内存墙）
+
+所有 bash 命令默认有 **1GiB 内存上限**，与文件系统沙箱（Landlock 写保护）**正交**——同一命令同时受两层约束，互不替代。
+
+- **实现**：`scripts/sandbox-shell.mjs` 对命令进程树采样匿名内存（`/proc/<pid>/status` 的 `RssAnon`），超过上限则以 `SIGKILL` 终止整棵进程组，退出码 `137`（128+9）。选用 `RssAnon` 而非 `VmRSS`，是为了避免多进程构建（如 `make -j`）里共享库被逐进程重复计数导致的误杀。
+- **提升**：普通 bash 固定 1GiB；需要更大内存时**必须**走 `sandbox-allow` 并显式指定 `memoryMb`（具体 MB 数值，上限 32768），经审批后该命令按指定上限执行。
+- **关闭**：`/yolo` 全降零时由 `bash-guard` 的 `spawnHook` 注入 `PI_SANDBOX_MEMORY_DISABLE=1`，内存墙一并关闭。普通 `sandbox-allow` 的 `full-access` 只取消文件系统沙箱，**不**关闭内存墙（仍按 1GiB 默认或 `memoryMb` 指定值执行）。
+- **通道覆盖**：内建 bash、`sandbox-allow`、`bash_background`（dsh-jobs）都经 `sandbox-shell.mjs`，缺省均为 1GiB；后台任务可通过 `SandboxedCommandOptions.memoryMb`（`lib/sandboxed-command.ts`）单独指定。
+- **局限**：内存墙依赖 `/proc`，仅 Linux 生效；macOS/Windows 无 `/proc` 时采样恒为 0，内存墙自动失效（不误杀、不报错）。
 
 GUI 中的目录动作会同时批准当前命令：
 

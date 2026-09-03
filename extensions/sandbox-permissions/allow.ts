@@ -20,8 +20,10 @@ import { Type } from "typebox";
 import {
 	buildApprovalTitle,
 	buildEscalationEnv,
+	MAX_MEMORY_MB,
 	readShellPath,
 	resolveWritePaths,
+	validateMemoryMb,
 } from "./helpers.ts";
 import { runGuiWindow } from "../../lib/gui-runner.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
@@ -52,6 +54,7 @@ export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 	justification: Type.String({ minLength: 1, description: "Non-empty one-sentence reason shown to the user for consent." }),
 	paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required for write-paths; smallest necessary writable roots; root `/` is forbidden." })),
 	timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: MAX_COMMAND_TIMEOUT_SECONDS, description: "Maximum execution time after approval, in seconds." })),
+	memoryMb: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_MEMORY_MB, description: "Memory limit (MB) for this command's process tree. Default 1 GiB (1024). Specify a concrete MB value only when the command needs more than the default; larger values raise the cap, subject to approval." })),
 }, { additionalProperties: false });
 
 type PathActionList = "allow" | "block" | "session-write" | "session-trust";
@@ -62,6 +65,7 @@ export interface SandboxAllowInput {
 	justification?: unknown;
 	paths?: unknown;
 	timeout?: unknown;
+	memoryMb?: unknown;
 }
 
 /** 根 schema 不能表达 permission 与 paths 的条件关系，运行时在执行前补齐。 */
@@ -72,6 +76,8 @@ export function validateSandboxAllowInput(input: SandboxAllowInput, cwd = proces
 	if (input.timeout !== undefined && (!Number.isFinite(input.timeout) || (input.timeout as number) <= 0 || (input.timeout as number) > MAX_COMMAND_TIMEOUT_SECONDS)) {
 		return `timeout 必须在 0 到 ${MAX_COMMAND_TIMEOUT_SECONDS} 秒之间`;
 	}
+	const memErr = validateMemoryMb(input.memoryMb);
+	if (memErr) return memErr;
 	if (input.permission === "full-access" && input.paths !== undefined) return "full-access 不接受 paths";
 	if (input.permission === "write-paths") {
 		if (!Array.isArray(input.paths) || input.paths.length === 0) return "write-paths 需要至少一个 paths";
@@ -98,6 +104,7 @@ async function tryGuiApproval(
 	sessionId: string | undefined,
 	signal: AbortSignal | undefined,
 	audit?: SandboxCheckResult,
+	memoryMb?: number,
 ): Promise<GuiDecision | "gui-unavailable"> {
 	const result = await runGuiWindow(
 		"gate",
@@ -107,6 +114,7 @@ async function tryGuiApproval(
 			permission,
 			writePaths,
 			timeout,
+			memoryMb,
 			candidatePaths: permission === "write-paths" ? collectCandidateDirs(command, writePaths) : [],
 			persistentRoots: loadSandboxPaths().allowDirs,
 			sessionWriteRoots: getSessionAccessSnapshot(sessionId).writeDirs,
@@ -144,13 +152,14 @@ export default function (pi: ExtensionAPI) {
 			"sandbox-allow 是升权工具：仅当普通 bash 确实因沙箱拒绝而无法完成任务时才用，绝不预先调用",
 			"优先 permission=write-paths，并只列出完成命令所需的最小 writable roots；paths 不能是根目录 `/`",
 			"full-access 会完全取消文件系统沙箱，只在无法合理限定写入根时使用；它仍不改变当前用户的操作系统身份",
+			"所有 bash 命令默认有 1GiB 内存上限；若命令可能超过（如重型构建/测试），必须用 memoryMb 给出**具体 MB 数值**，上限 32768 MB，更大会被拒绝",
 			"长期 allowDirs 或本 session 信任根命中时可免重复审批；本 session 可写根不免审批",
 			"timeout 是获批后整条 shell 命令链的最长执行时间（秒），不限制用户审批等待时间"
 		],
 		// OpenAI function schema 要求根节点是 object；条件字段由描述与运行时校验约束。
 		parameters: SANDBOX_ALLOW_PARAMETERS,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const { command, permission, justification, timeout } = params;
+			const { command, permission, justification, timeout, memoryMb } = params;
 			const cwd = ctx.cwd;
 			const sessionId = ctx.sessionManager.getSessionId();
 			beginSandboxSession(sessionId);
@@ -202,7 +211,7 @@ export default function (pi: ExtensionAPI) {
 			} else if (whitelisted) {
 				decision = "allow";
 			} else {
-				const gui = await tryGuiApproval(command, permission, writePaths, justification, timeout, sessionId, signal, audit);
+				const gui = await tryGuiApproval(command, permission, writePaths, justification, timeout, sessionId, signal, audit, memoryMb as number | undefined);
 				if (gui !== "gui-unavailable") {
 					// 只接受本次窗口展示过的候选目录，防止响应文件扩大授权范围。
 					const candidates = new Set(
@@ -238,7 +247,7 @@ export default function (pi: ExtensionAPI) {
 					decision = gui.action;
 					userComment = gui.comment;
 				} else if (ctx.hasUI) {
-					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout);
+					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout, memoryMb as number | undefined);
 					const choice = await ctx.ui.select(title, [APPROVE, DENY]);
 					decision = choice?.includes("允许") ? "allow" : "deny";
 				}
@@ -254,6 +263,7 @@ export default function (pi: ExtensionAPI) {
 					permission,
 					paths: writePaths,
 					justification,
+					...(memoryMb !== undefined ? { memoryMb: memoryMb as number } : {}),
 					outcome: "denied",
 					...(userComment ? { comment: userComment } : {}),
 					ts: Date.now(),
@@ -270,16 +280,19 @@ export default function (pi: ExtensionAPI) {
 				permission,
 				paths: writePaths,
 				justification,
+				...(memoryMb !== undefined ? { memoryMb: memoryMb as number } : {}),
 				outcome: whitelisted ? "approved-whitelist" : "approved",
 				ts: Date.now(),
 			});
 
 			// 4. 执行：单次 spawn，升权 env 只进该子进程。yolo 下按 full-access 降零。
+			// 内存墙与文件系统沙箱正交：memoryMb 注入 PI_SANDBOX_MEMORY_MB；yolo 全降零时同时关闭内存墙。
 			const shellPath = readShellPath();
 			const env = addSessionWriteDirsToEnv(
-				buildEscalationEnv(process.env, yolo ? "full-access" : permission, yolo ? [] : writePaths),
+				buildEscalationEnv(process.env, yolo ? "full-access" : permission, yolo ? [] : writePaths, memoryMb as number | undefined),
 				sessionId,
 			);
+			if (yolo) env.PI_SANDBOX_MEMORY_DISABLE = "1";
 			const ops = createLocalBashOperations({ shellPath });
 
 			const chunks: Buffer[] = [];
@@ -337,7 +350,7 @@ export default function (pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text: output || "(no output)" }],
-				details: { exitCode, permission, writePaths },
+				details: { exitCode, permission, writePaths, memoryMb: memoryMb as number | undefined },
 			};
 		},
 	});

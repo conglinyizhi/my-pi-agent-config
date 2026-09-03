@@ -9,8 +9,11 @@ import { join } from "node:path";
 import {
 	buildApprovalTitle,
 	buildEscalationEnv,
+	DEFAULT_MEMORY_MB,
 	expandTilde,
+	MAX_MEMORY_MB,
 	resolveWritePaths,
+	validateMemoryMb,
 } from "./helpers.ts";
 
 describe("expandTilde", () => {
@@ -60,6 +63,36 @@ describe("buildEscalationEnv", () => {
 		assert.equal(env.PI_SANDBOX_RW_EXTRA, undefined);
 		assert.equal(env.PI_SANDBOX_DISABLE, undefined);
 	});
+	it("memoryMb 注入 PI_SANDBOX_MEMORY_MB；缺省删除走默认", () => {
+		const withMem = buildEscalationEnv({}, "write-paths", [], 8192);
+		assert.equal(withMem.PI_SANDBOX_MEMORY_MB, "8192");
+		const noMem = buildEscalationEnv({ PI_SANDBOX_MEMORY_MB: "4096" }, "write-paths", []);
+		assert.equal(noMem.PI_SANDBOX_MEMORY_MB, undefined);
+		// full-access 也照常带 memoryMb
+		const fa = buildEscalationEnv({}, "full-access", [], 2048);
+		assert.equal(fa.PI_SANDBOX_MEMORY_MB, "2048");
+		assert.equal(fa.PI_SANDBOX_DISABLE, "1");
+	});
+});
+
+describe("validateMemoryMb", () => {
+	it("undefined → 通过（走默认）", () => {
+		assert.equal(validateMemoryMb(undefined), undefined);
+	});
+	it("正整数在 [1, MAX] 内 → 通过", () => {
+		assert.equal(validateMemoryMb(1), undefined);
+		assert.equal(validateMemoryMb(DEFAULT_MEMORY_MB), undefined);
+		assert.equal(validateMemoryMb(2048), undefined);
+		assert.equal(validateMemoryMb(MAX_MEMORY_MB), undefined);
+	});
+	it("越界 / 非法值 → 报错", () => {
+		assert.ok(validateMemoryMb(0));
+		assert.ok(validateMemoryMb(-5));
+		assert.ok(validateMemoryMb(MAX_MEMORY_MB + 1));
+		assert.ok(validateMemoryMb(1024.5));
+		assert.ok(validateMemoryMb("2048"));
+		assert.ok(validateMemoryMb(NaN));
+	});
 });
 
 describe("buildApprovalTitle", () => {
@@ -81,5 +114,14 @@ describe("buildApprovalTitle", () => {
 		const t = buildApprovalTitle("x".repeat(500), "full-access", [], undefined, undefined);
 		assert.ok(t.length < 400);
 		assert.ok(t.includes("（未提供）"));
+	});
+	it("内存缺省显示默认 1GiB", () => {
+		const t = buildApprovalTitle("echo hi", "full-access", [], undefined, undefined);
+		assert.ok(t.includes(`默认 1GiB（${DEFAULT_MEMORY_MB} MB）`));
+	});
+	it("显式 memoryMb 显示具体数值", () => {
+		const t = buildApprovalTitle("make -j8", "write-paths", ["/opt"], "构建", 60, 8192);
+		assert.ok(t.includes("8192 MB"));
+		assert.ok(t.includes("内存上限"));
 	});
 });

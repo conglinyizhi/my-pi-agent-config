@@ -31,6 +31,10 @@
         <span class="sa-label">执行时限</span>
         <span>{{ timeout === undefined ? '默认' : `${timeout} 秒` }}（仅批准后生效）</span>
       </div>
+      <div class="sa-row">
+        <span class="sa-label">内存上限</span>
+        <span>{{ memoryMb === undefined ? `默认 1GiB（${DEFAULT_MEMORY_MB} MB）` : `${memoryMb} MB` }}（超出即终止进程组）</span>
+      </div>
     </div>
 
     <!-- sandbox-allow 风险提示：full-access 仍要展示命令审计结果，不等于跳过安全检查 -->
@@ -141,6 +145,8 @@ const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
 const timeout = ref(undefined);
+const memoryMb = ref(undefined);
+const DEFAULT_MEMORY_MB = 1024;
 // 目录白/黑名单候选（writePaths + 命令路径）
 const candidatePaths = ref([]);
 const persistentRoots = ref([]);
@@ -281,6 +287,7 @@ onMounted(async () => {
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
   timeout.value = data.timeout;
+  memoryMb.value = data.memoryMb || undefined;
   candidatePaths.value = data.candidatePaths || [];
   persistentRoots.value = data.persistentRoots || [];
   sessionWriteRoots.value = data.sessionWriteRoots || [];

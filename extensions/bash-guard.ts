@@ -29,6 +29,7 @@ const PROMPT_SNIPPET = "Execute a bash command in the current working directory.
 const PROMPT_GUIDELINES = [
 	"Use bash to inspect files, run commands, and check tool availability.",
 	"bash 命令经沙箱通道执行（Landlock 写保护），危险命令会在执行前被拦截。",
+	"所有 bash 命令默认有 1GiB 内存上限（进程树匿名内存），超出会以退出码 137 终止；需要更大内存时用 sandbox-allow 的 memoryMb 参数给出具体 MB 数值（上限 32768 MB）。",
 ] as const;
 
 /** LLM 预审内存缓存（同命令同规则不重复调 API；gate 同款） */
@@ -99,9 +100,10 @@ export default function (pi: ExtensionAPI) {
 	//    buildSandboxEnv 默认透传：sandbox-shell 默认 Landlock（--ro / + --rw <cwd>/tmp）
 	//    已提供沙箱安全环境。需升权/只读时在 buildSandboxEnv 注入 PI_SANDBOX_RW_EXTRA / READONLY。 ──
 	const spawnHook = ({ command, cwd, env }: BashSpawnContext): BashSpawnContext => {
-		// yolo 开启：连同 Landlock 写保护一并关闭（PI_SANDBOX_DISABLE=1），bash 可写任意路径
+		// yolo 开启：连同 Landlock 写保护一并关闭（PI_SANDBOX_DISABLE=1），bash 可写任意路径；
+		// 内存墙是正交维度，也一并关闭（PI_SANDBOX_MEMORY_DISABLE=1），保证「全降零」语义一致。
 		const base = yoloEnabled()
-			? { ...buildSandboxEnv(env), PI_SANDBOX_DISABLE: "1" }
+			? { ...buildSandboxEnv(env), PI_SANDBOX_DISABLE: "1", PI_SANDBOX_MEMORY_DISABLE: "1" }
 			: buildSandboxEnv(env);
 		return { command, cwd, env: addSessionWriteDirsToEnv(base, currentSessionId) };
 	};

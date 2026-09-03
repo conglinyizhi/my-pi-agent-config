@@ -60,6 +60,19 @@ export interface SandboxedCommandOptions {
 	timeoutMs?: number;
 	/** 启动时捕获的 session ID；缺省不继承 session 临时授权 */
 	sessionId?: string;
+	/** 内存上限（MB）；缺省走 sandbox-shell 默认 1GiB。注入子进程 PI_SANDBOX_MEMORY_MB，越界由 sandbox-shell 内部钳制 */
+	memoryMb?: number;
+}
+
+/** 把可选 memoryMb 注入子进程 env（PI_SANDBOX_MEMORY_MB）；未提供则删除，让 sandbox-shell 走默认 1GiB。 */
+function withMemoryLimit(env: NodeJS.ProcessEnv, memoryMb?: number): NodeJS.ProcessEnv {
+	const e = { ...env };
+	if (typeof memoryMb === "number" && Number.isInteger(memoryMb) && memoryMb > 0) {
+		e.PI_SANDBOX_MEMORY_MB = String(memoryMb);
+	} else {
+		delete e.PI_SANDBOX_MEMORY_MB;
+	}
+	return e;
 }
 
 /** 一次性执行形态：返回 BashOperations.exec 封装，等价 createLocalBashOperations({shellPath}) */
@@ -115,7 +128,7 @@ export function createSandboxedCommandJob(
 						onData: (d) => append(d.toString()),
 						signal: ac.signal,
 						timeout: options.timeoutMs,
-						env: addSessionWriteDirsToEnv(options.env, options.sessionId),
+						env: withMemoryLimit(addSessionWriteDirsToEnv(options.env, options.sessionId), options.memoryMb),
 					})
 					.then((result) => {
 						resolve({
