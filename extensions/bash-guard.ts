@@ -16,7 +16,8 @@
 // 显式定义（官方不继承），静态常量保证 KV 缓存稳定。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createBashToolDefinition, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, getAgentDir, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 import { checkCommand, buildSandboxEnv, type SandboxCheckResult, type TokenRule } from "../lib/sandbox-check.ts";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
@@ -76,6 +77,9 @@ async function humanConfirm(
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
+	// 沙箱壳路径：插件自算（getAgentDir() + scripts/sandbox-shell.mjs），
+	// 不依赖 settings.shellPath——即使 settings 未配 shellPath，bash 仍经 Landlock 沙箱执行。
+	const sandboxShellPath = join(getAgentDir(), "scripts", "sandbox-shell.mjs");
 
 	pi.on("session_start", (_event, ctx) => {
 		currentSessionId = ctx.sessionManager.getSessionId();
@@ -95,7 +99,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// 官方原版 bash definition（含 renderCall/renderResult，行为零异常）
-	const bashDef = createBashToolDefinition(cwd, { spawnHook });
+	// 显式传 shellPath = 沙箱壳：bash 经 sandbox-shell.mjs 的 Landlock 写保护执行，
+	// 不再回退到系统默认 bash（bash_background 同源同一通道）。
+	const bashDef = createBashToolDefinition(cwd, { spawnHook, shellPath: sandboxShellPath });
 
 	pi.registerTool({
 		...bashDef,
