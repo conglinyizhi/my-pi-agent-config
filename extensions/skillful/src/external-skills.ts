@@ -6,7 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	readSkillfulSettings,
 	writeHiddenSkills,
-	globalSettingsPath,
+	globalSkillfulPath,
 } from "./config.ts";
 import { parseFrontmatter } from "../../skill-boot/frontmatter.ts";
 
@@ -95,7 +95,7 @@ export async function registerExternalSkills(cwd: string, projectTrusted: boolea
 	const names = scanExternalSkillNames();
 	const previous = readState();
 	const newNames = names.filter((name) => !previous.seen.has(name));
-	const settings = await readSkillfulSettings(globalSettingsPath());
+	const settings = await readSkillfulSettings(globalSkillfulPath());
 	const hidden = new Set(settings.hiddenSkills);
 	for (const identity of newNames) hidden.add(identity.split(":").at(-1)!);
 	if (newNames.length > 0) await writeHiddenSkills("global", AGENT_DIR, hidden);

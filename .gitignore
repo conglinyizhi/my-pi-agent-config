@@ -21,6 +21,8 @@ skill-vault/*
 !skill-vault/clyzhi/
 skill-states.json
 skillful-discovery-state.json
+# skillful 显隐设置独立 toml，避免写 settings.json/tracked.json 引起仓库变动
+skillful-settings.toml
 .pi-sync-state.json
 *.log
 models-store.json
