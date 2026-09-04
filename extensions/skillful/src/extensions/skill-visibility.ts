@@ -128,7 +128,7 @@ class VisibilitySelector implements Component {
 		const visibleCount = allNames.filter((name) => !this.hidden.has(name)).length;
 
 		lines.push(this.theme.fg("accent", this.theme.bold("skillful · 模型可见性")));
-		lines.push(this.theme.fg("dim", `可见 ${visibleCount}/${allNames.length} · Space 切换 · v 全部可见 · h 全部隐藏 · Enter 保存 · Esc 放弃`));
+		lines.push(truncateToWidth(this.theme.fg("dim", `可见 ${visibleCount}/${allNames.length} · Space 切换 · v 全部可见 · h 全部隐藏 · Enter 保存 · Esc 放弃`), width));
 		lines.push("");
 		for (let i = 0; i < visible.length; i++) {
 			const absolute = this.scroll + i;
