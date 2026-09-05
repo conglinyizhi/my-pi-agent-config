@@ -1,9 +1,12 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+const BACK_LABEL = "← 返回上一级";
+
 /**
- * 让用户从【已配置认证】的模型里挑一个，用于决策卡片分析。
- * 返回选中的模型；用户取消或无可用模型时返回 undefined。
+ * 两级选择器：先选供应商（provider），再选该供应商下的具体模型。
+ * 第二级列表末尾提供一个“返回上一级”的特殊项跳回供应商列表。
+ * 返回选中的模型；用户取消时返回 undefined。
  */
 export async function pickModel(
   ctx: ExtensionContext,
@@ -18,18 +21,37 @@ export async function pickModel(
     return undefined;
   }
 
-  if (ctx.hasUI) {
-    const labels = available.map(
-      (m) => `${m.provider}/${m.id} — ${m.name ?? m.id}`,
-    );
-    const chosen = await ctx.ui.select("选择决策卡片分析模型：", labels);
-    if (chosen === undefined) {
-      return undefined;
-    }
-    const idx = labels.indexOf(chosen);
-    return idx >= 0 ? available[idx] : undefined;
+  // 无 UI（print/json/rpc 无交互）时直接取第一个可用的
+  if (!ctx.hasUI) {
+    return available[0];
   }
 
-  // 无 UI（print/json/rpc 无交互）时用第一个可用的
-  return available[0];
+  // 按供应商分组，保持稳定顺序
+  const providers = Array.from(new Set(available.map((m) => m.provider))).sort();
+
+  // 外层循环：选供应商
+  for (;;) {
+    const provLabels = providers.map((p) => {
+      const count = available.filter((m) => m.provider === p).length;
+      return `${p}（${count} 个模型）`;
+    });
+    const chosenProv = await ctx.ui.select("选择供应商：", provLabels);
+    if (chosenProv === undefined) return undefined; // 用户取消
+    const prov = providers[provLabels.indexOf(chosenProv)];
+    if (!prov) continue;
+
+    // 内层循环：选该供应商下的模型，可返回上一级
+    const models = available.filter((m) => m.provider === prov);
+    for (;;) {
+      const modelLabels = models.map(
+        (m) => `${m.id} — ${m.name && m.name !== m.id ? m.name : ""}`.trim(),
+      );
+      const items = [...modelLabels, BACK_LABEL];
+      const chosen = await ctx.ui.select(`【${prov}】选择模型：`, items);
+      if (chosen === undefined) return undefined; // 用户取消
+      if (chosen === BACK_LABEL) break; // 返回供应商列表
+      const idx = modelLabels.indexOf(chosen);
+      if (idx >= 0) return models[idx];
+    }
+  }
 }
