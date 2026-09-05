@@ -23,39 +23,10 @@ export interface CardResult {
   decisions: Decision[];
 }
 
-/** 贪心但安全地解析模型返回的 JSON：去掉 ```fence、截取首尾花括号、容错空数组。 */
-export function parseCardJson(raw: string): CardResult {
-  let text = raw.trim();
-
-  // 去掉可能的 ```json ... ``` 围栏
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) text = fenced[1].trim();
-
-  // 截取第一个 { 到最后一个 }
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    text = text.slice(start, end + 1);
-  }
-
-  try {
-    const obj = JSON.parse(text);
-    const decisions = Array.isArray(obj.decisions)
-      ? obj.decisions
-          .filter((d: unknown): d is Record<string, unknown> => !!d && typeof d === "object")
-          .map(normalizeDecision)
-          .filter((d: Decision | null): d is Decision => !!d)
-      : [];
-    return {
-      title: typeof obj.title === "string" ? obj.title : undefined,
-      summary: typeof obj.summary === "string" ? obj.summary : undefined,
-      decisions,
-    };
-  } catch {
-    // 解析彻底失败：退化为一条"原始文本"卡片，不丢信息
-    return { decisions: [] };
-  }
-}
+/** 模型对“是否真的有决策内容”的判定结果：要么有卡片，要么无需决策（带理由）。 */
+export type DecisionCheck =
+  | { hasDecision: true; cards: CardResult }
+  | { hasDecision: false; reason: string };
 
 function normalizeDecision(raw: Record<string, unknown>): Decision | null {
   if (typeof raw.question !== "string" || !raw.question.trim()) {
@@ -85,15 +56,96 @@ function normalizeDecision(raw: Record<string, unknown>): Decision | null {
   };
 }
 
+/**
+ * 解析模型返回，判定是否真的需要决策。
+ * - 工具调用形式：{"tool":"no_decision","args":{"reason":"..."}} → 无需决策
+ * - 严格 JSON：{"hasDecision":false,"reason":"..."} → 无需决策
+ * - 其它（含 decisions 或 hasDecision true）→ 有决策，解析卡片
+ * - 完全解析不出来 → 保守当作有决策（不丢信息，走原有 fallback）
+ */
+export function parseDecisionCheck(raw: string): DecisionCheck {
+  let text = raw.trim();
+
+  // 去掉 ```json fence
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) text = fenced[1].trim();
+
+  // 截取第一个 { 到最后一个 }
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    text = text.slice(start, end + 1);
+  }
+
+  let obj: unknown;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    // 无法解析出明确结果 → 保守按有决策处理
+    return { hasDecision: true, cards: { decisions: [] } };
+  }
+
+  if (!obj || typeof obj !== "object") {
+    return { hasDecision: true, cards: { decisions: [] } };
+  }
+  const o = obj as Record<string, unknown>;
+
+  // 工具调用形式：no_decision 带 reason
+  if (o.tool === "no_decision") {
+    const args = (o.args ?? {}) as Record<string, unknown>;
+    const reason =
+      typeof args.reason === "string" && args.reason.trim()
+        ? args.reason.trim()
+        : "该消息无需用户决策";
+    return { hasDecision: false, reason };
+  }
+
+  // 严格 JSON：hasDecision 为 false
+  if (o.hasDecision === false) {
+    const reason =
+      typeof o.reason === "string" && o.reason.trim()
+        ? o.reason.trim()
+        : "该消息无需用户决策";
+    return { hasDecision: false, reason };
+  }
+
+  // 有决策：解析卡片
+  const decisions = Array.isArray(o.decisions)
+    ? o.decisions
+        .filter((d: unknown): d is Record<string, unknown> => !!d && typeof d === "object")
+        .map(normalizeDecision)
+        .filter((d: Decision | null): d is Decision => !!d)
+    : [];
+  return {
+    hasDecision: true,
+    cards: {
+      title: typeof o.title === "string" ? o.title : undefined,
+      summary: typeof o.summary === "string" ? o.summary : undefined,
+      decisions,
+    },
+  };
+}
+
+/** 兼容旧调用：返回决策卡片。无决策或解析失败时返回空 decisions。 */
+export function parseCardJson(raw: string): CardResult {
+  const result = parseDecisionCheck(raw);
+  return result.hasDecision ? result.cards : { decisions: [] };
+}
+
 function buildPrompt(md: string): string {
   return [
     "下面是技术对话中最后一条 AI 助手回复的 Markdown 原文。",
-    "任务：仅提取这条消息里【需要用户拍板决定的问题】，例如需要用户选择/确认/批准/权衡的决策点。",
+    "任务：先判断这条消息里是否真的有【需要用户拍板决定的问题】（例如需要用户选择/确认/批准/权衡）。",
     "不要总结全文，不要列待办，不要提没有真正要求用户决定的内容。",
-    "如果消息里没有任何需要用户决策的点，返回 {\"decisions\": []}。",
     "",
-    "只返回一个 JSON 对象，禁止 markdown 围栏、禁止任何解释文字。JSON 结构：",
+    "若【没有任何内容需要用户决策】（例如这只是一条通知/状态更新/纯陈述），请调用工具 no_decision 来报告：",
+    '  no_decision 的参数：reason 字符串，说明为什么不需要用户决策（例如：这只是一条完成通知）',
+    '  工具调用形式：{"tool": "no_decision", "args": {"reason": "..."}}',
+    '  若你所在的环境不支持调用工具，则直接返回严格 JSON：{"hasDecision": false, "reason": "..."}',
+    "",
+    "若【确实有需要用户决策的内容】，请返回如下 JSON（禁止 markdown 围栏、禁止任何解释文字）：",
     "{",
+    '  "hasDecision": true,',
     '  "title": "整条消息的简短标题（给页面用）",',
     '  "summary": "一句中文概览：这条消息在说什么",',
     '  "decisions": [',
@@ -119,7 +171,7 @@ function buildPrompt(md: string): string {
 }
 
 /**
- * 用指定模型分析最后一条 AI 消息，提炼决策卡片。
+ * 用指定模型分析最后一条 AI 消息，判定是否需要决策并提炼卡片。
  * 模型无认证或调用失败时抛出 Error，由调用方兜底。
  */
 export async function extractDecisions(
@@ -127,7 +179,7 @@ export async function extractDecisions(
   model: Model<Api>,
   md: string,
   signal?: AbortSignal,
-): Promise<CardResult> {
+): Promise<DecisionCheck> {
   const prompt = buildPrompt(md.slice(0, 60_000));
 
   // 解析该模型的认证信息（API key / headers / env），供 compat.complete 使用。
@@ -165,5 +217,5 @@ export async function extractDecisions(
     .map((c) => c.text)
     .join("\n");
 
-  return parseCardJson(raw);
+  return parseDecisionCheck(raw);
 }

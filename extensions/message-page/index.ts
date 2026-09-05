@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { markdownToHtml } from "./src/markdown.ts";
-import { extractDecisions, type CardResult } from "./src/cards.ts";
+import { extractDecisions, type DecisionCheck } from "./src/cards.ts";
 import { pickModel } from "./src/model.ts";
 import { renderPage, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
 import { openInBrowser } from "./src/open.ts";
@@ -123,16 +123,28 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("正在用大模型提炼决策卡片…", "info");
       }
 
-      let cards: CardResult = { decisions: [] };
+      let check: DecisionCheck;
       try {
-        cards = await extractDecisions(ctx, model, message, ctx.signal);
+        check = await extractDecisions(ctx, model, message, ctx.signal);
       } catch (err) {
         if (ctx.hasUI) {
           ctx.ui.notify(`决策卡片分析失败：${(err as Error).message}`, "warning");
         }
-        // 失败时仍渲染原文，不让整个命令报废
-        cards = { decisions: [] };
+        // 失败时保守处理：仍渲染原文，不让整个命令报废
+        check = { hasDecision: true, cards: { decisions: [] } };
       }
+
+      // 模型判定无需用户决策 → 不生成 HTML，直接提示
+      if (!check.hasDecision) {
+        const reason = check.reason;
+        if (ctx.hasUI) {
+          ctx.ui.notify(`这条消息不需要你决策：${reason}`, "info");
+        } else {
+          process.stdout.write(`[gen-page-use-latest-msg] 无需生成页面：${reason}\n`);
+        }
+        return;
+      }
+      const cards = check.cards;
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在渲染网页…", "info");

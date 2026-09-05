@@ -4,7 +4,7 @@
  */
 import { markdownToHtml, loadHighlightCss } from "./src/markdown.ts";
 import { renderPage, templateNames, type PageData } from "./src/templates.ts";
-import { parseCardJson } from "./src/cards.ts";
+import { parseCardJson, parseDecisionCheck } from "./src/cards.ts";
 
 const SAMPLE_MD = [
   "# 重构方案讨论",
@@ -108,6 +108,20 @@ check("坏 JSON 不抛", true);
 const open = parseCardJson('{"decisions":[{"priority":"high","question":"q","options":["a","b"],"recommendation":"r","reasoning":"w"}]}');
 check("正常单卡", open.decisions.length === 1 && open.decisions[0].priority === "high");
 check("缺 question 被过滤", parseCardJson('{"decisions":[{"priority":"high"},{"question":"ok","priority":"low"}]}').decisions.length === 1);
+
+console.log("\n== parseDecisionCheck 判定 ==");
+const dc = parseDecisionCheck('{"tool":"no_decision","args":{"reason":"这只是一条完成通知"}}');
+check("工具报告无决策", dc.hasDecision === false && dc.reason === "这只是一条完成通知");
+const dc2 = parseDecisionCheck('{"hasDecision":false,"reason":"无关紧要"}');
+check("严格JSON无决策", dc2.hasDecision === false && dc2.reason === "无关紧要");
+const dc3 = parseDecisionCheck('{"hasDecision":true,"decisions":[{"question":"q","priority":"high"}]}');
+check("有决策解析卡片", dc3.hasDecision === true && dc3.cards.decisions.length === 1);
+const dc4 = parseDecisionCheck('{"title":"t","decisions":[{"question":"q"}]}');
+check("旧格式视为有决策", dc4.hasDecision === true && dc4.cards.decisions.length === 1);
+const dc5 = parseDecisionCheck('```json\n{"hasDecision":false,"reason":"x"}\n```');
+check("fence内无决策", dc5.hasDecision === false);
+const dc6 = parseDecisionCheck("不是 json 的文本");
+check("坏JSON保守作为有决策", dc6.hasDecision === true && dc6.cards.decisions.length === 0);
 
 console.log(`\n${failures === 0 ? "全部通过 ✅" : `存在 ${failures} 处失败 ❌`}`);
 process.exit(failures === 0 ? 0 : 1);
