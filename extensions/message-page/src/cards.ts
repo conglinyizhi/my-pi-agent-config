@@ -11,6 +11,10 @@ export interface Decision {
   options: string[];
   recommendation: string;
   reasoning: string;
+  /** 可选：该决策在原文中对应的原句/片段，用于网页里锚点高亮定位 */
+  source?: string;
+  /** “我无法决策”：选中该选项时展开的详细说明。要求大段落而非小段落 */
+  cannotDecide?: string;
 }
 
 export interface CardResult {
@@ -64,12 +68,20 @@ function normalizeDecision(raw: Record<string, unknown>): Decision | null {
   const options = Array.isArray(raw.options)
     ? raw.options.filter((o): o is string => typeof o === "string").slice(0, 6)
     : [];
+  const source =
+    typeof raw.source === "string" && raw.source.trim() ? raw.source.trim() : undefined;
+  const cannotDecide =
+    typeof raw.cannotDecide === "string" && raw.cannotDecide.trim()
+      ? raw.cannotDecide.trim()
+      : undefined;
   return {
     priority,
     question: raw.question,
     options,
     recommendation: typeof raw.recommendation === "string" ? raw.recommendation : "",
     reasoning: typeof raw.reasoning === "string" ? raw.reasoning : "",
+    source,
+    cannotDecide,
   };
 }
 
@@ -90,12 +102,15 @@ function buildPrompt(md: string): string {
     '      "question": "需要拍板的问题（一句话）",',
     '      "options": ["选项1", "选项2"],   // 2~4 个；如果只是开放问题可留空数组',
     '      "recommendation": "建议选哪个（若消息里有倾向；没有则留空字符串）",',
-    '      "reasoning": "简短理由（中文）"',
+    '      "reasoning": "简短理由（中文）",',
+    '      "source": "可选：原文中与之对应的原句，尽量原样引用，用于网页锚点高亮定位",',
+    '      "cannotDecide": "可选：当用户可能选“我无法决策”时，写一段详细说明（为什么暂时难以拍板、还缺什么信息、有什么权衡）",',
     "    }",
     "  ]",
     "}",
     "",
     "规则：question/options/recommendation/reasoning 用中文写，简洁；priority 反映这条决策的紧迫或重要程度。",
+    "cannotDecide 要用大段落（1~3 段连贯文字）而不是逐条小段落或列表来写，以节省页面纵向空间；只有消息里确实体现出用户可能缺少信息才能决定时，才提供该字段，否则省略。",
     "",
     "<message>",
     md,
