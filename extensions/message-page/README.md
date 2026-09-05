@@ -19,7 +19,10 @@
 /gen-page-use-latest-msg                 # 默认 clean 模板，弹选择器挑模型
 /gen-page-use-latest-msg cards           # 指定 cards 模板
 /gen-page-use-latest-msg paper --model openai/gpt-5.2   # 指定模板 + 指定模型（跳过模型选择）
+/gen-page-use-latest-msg go              # 强制生成：即使消息里已有结论/建议，也当需拍板，禁止判为无需决策
 ```
+
+`go` 用于消息看起来已给出建议/方案、但用户仍需要就“是否采纳”拍板的情况。
 
 - 模板参数：`clean` / `cards` / `paper`
 - 模型参数：`--model provider/model`（不填则每次都弹模型选择器）

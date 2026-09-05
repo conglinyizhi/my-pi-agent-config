@@ -170,17 +170,55 @@ function buildPrompt(md: string): string {
   ].join("\n");
 }
 
+/** 强制生成模式：即使消息看似已有结论/建议，也当作需拍板的决策点，禁止判为无需决策。 */
+function buildForcePrompt(md: string): string {
+  return [
+    "下面是技术对话中最后一条 AI 助手回复的 Markdown 原文。",
+    "任务：这是【强制生成】模式。即使消息里已经给出了结论、建议、方案或明确的推荐，也要把它视为【需要用户拍板】的决策点（例如“是否采纳该方案 / 是否按此执行 / 是否确认该方向”），并提炼成决策卡片。",
+    "【禁止】返回 hasDecision:false，也【禁止】调用 no_decision；无论如何至少提炼一条需要用户确认的决策。",
+    "不要把“消息里已有建议”当作无需决策的依据——用户仍需要对“是否采纳”拍板。",
+    "",
+    "请返回如下 JSON（禁止 markdown 围栏、禁止任何解释文字）：",
+    "{",
+    '  "hasDecision": true,',
+    '  "title": "整条消息的简短标题（给页面用）",',
+    '  "summary": "一句中文概览：这条消息在说什么",',
+    '  "decisions": [',
+    "    {",
+    '      "priority": "high" | "medium" | "low",',
+    '      "question": "需要拍板的问题（一句话）",',
+    '      "options": ["选项1", "选项2"],   // 2~4 个；如果只是开放问题可留空数组',
+    '      "recommendation": "建议选哪个（若消息里有倾向；没有则留空字符串）",',
+    '      "reasoning": "简短理由（中文）",',
+    '      "source": "可选：原文中与之对应的原句，尽量原样引用，用于网页锚点高亮定位",',
+    '      "cannotDecide": "可选：当用户可能选“我无法决策”时，写一段详细说明（为什么暂时难以拍板、还缺什么信息、有什么权衡）",',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "规则：question/options/recommendation/reasoning 用中文写，简洁；priority 反映这条决策的紧迫或重要程度。",
+    "cannotDecide 要用大段落（1~3 段连贯文字）而不是逐条小段落或列表来写，以节省页面纵向空间；只有消息里确实体现出用户可能缺少信息才能决定时，才提供该字段，否则省略。",
+    "",
+    "<message>",
+    md,
+    "</message>",
+  ].join("\n");
+}
+
 /**
  * 用指定模型分析最后一条 AI 消息，判定是否需要决策并提炼卡片。
  * 模型无认证或调用失败时抛出 Error，由调用方兜底。
+ * force 为 true 时是强制生成模式：禁止判定“无需决策”，无论如何都提炼卡片。
  */
 export async function extractDecisions(
   ctx: ExtensionContext,
   model: Model<Api>,
   md: string,
   signal?: AbortSignal,
+  force = false,
 ): Promise<DecisionCheck> {
-  const prompt = buildPrompt(md.slice(0, 60_000));
+  const builder = force ? buildForcePrompt : buildPrompt;
+  const prompt = builder(md.slice(0, 60_000));
 
   // 解析该模型的认证信息（API key / headers / env），供 compat.complete 使用。
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);

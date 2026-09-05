@@ -44,9 +44,10 @@ function lastAssistantMessage(entries: SessionEntry[]): string {
   return last;
 }
 
-function parseArgs(args: string): { template: TemplateName; modelSpec?: string } {
+function parseArgs(args: string): { template: TemplateName; modelSpec?: string; force: boolean } {
   let template: TemplateName = "clean";
   let modelSpec: string | undefined;
+  let force = false;
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
@@ -55,11 +56,13 @@ function parseArgs(args: string): { template: TemplateName; modelSpec?: string }
       i++;
     } else if (t.startsWith("--model=")) {
       modelSpec = t.slice("--model=".length);
+    } else if (t === "go") {
+      force = true;
     } else if ((TEMPLATE_SET as string[]).includes(t)) {
       template = t as TemplateName;
     }
   }
-  return { template, modelSpec };
+  return { template, modelSpec, force };
 }
 
 function resolveModelFromSpec(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
@@ -81,17 +84,18 @@ function slugify(title: string | undefined, fallback: string): string {
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("gen-page-use-latest-msg", {
     description:
-      "把最后一条 AI 消息渲染成网页（markdown + 代码高亮 + 决策卡片）。用法：/gen-page-use-latest-msg [模板] [--model provider/model]",
+      "把最后一条 AI 消息渲染成网页（markdown + 代码高亮 + 决策卡片）。用法：/gen-page-use-latest-msg [模板] [go] [--model provider/model]",
     getArgumentCompletions: (prefix) => {
       const items = [
         ...TEMPLATE_SET.map((t) => ({ value: t, label: `模板: ${t}` })),
         { value: "--model", label: "--model provider/model" },
+        { value: "go", label: "强制生成（go）" },
       ];
       const filtered = items.filter((i) => i.value.startsWith(prefix));
       return filtered.length > 0 ? filtered : null;
     },
     handler: async (args, ctx) => {
-      const { template, modelSpec } = parseArgs(args);
+      const { template, modelSpec, force } = parseArgs(args);
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在取最后一条 AI 消息…", "info");
@@ -129,7 +133,7 @@ export default function (pi: ExtensionAPI) {
 
       let check: DecisionCheck;
       try {
-        check = await extractDecisions(ctx, model, message, ctx.signal);
+        check = await extractDecisions(ctx, model, message, ctx.signal, force);
       } catch (err) {
         if (ctx.hasUI) {
           ctx.ui.notify(`决策卡片分析失败：${(err as Error).message}`, "warning");
@@ -138,8 +142,8 @@ export default function (pi: ExtensionAPI) {
         check = { hasDecision: true, cards: { decisions: [] } };
       }
 
-      // 模型判定无需用户决策 → 不生成 HTML，直接提示
-      if (!check.hasDecision) {
+      // 非强制模式下，模型判定无需用户决策 → 不生成 HTML，直接提示
+      if (!check.hasDecision && !force) {
         const reason = check.reason;
         if (ctx.hasUI) {
           ctx.ui.notify(`这条消息不需要你决策：${reason}`, "info");
@@ -148,7 +152,8 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
-      const cards = check.cards;
+      // go 模式：即使模型判无决策，也强制生成页面
+      const cards = check.hasDecision ? check.cards : { decisions: [] };
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在渲染网页…", "info");
