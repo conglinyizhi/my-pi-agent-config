@@ -21,8 +21,9 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SubagentUsage, TimelineEvent } from "../../lib/subagent-run.ts";
+import type { CapabilityRequest } from "../../lib/subagent-capability.ts";
 
-export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout";
+export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
 export interface WorkerRun {
   id: string;
@@ -39,6 +40,8 @@ export interface WorkerRun {
   stderr?: string;
   /** 有界 per-worker 执行轨迹（实时更新；终态保留最终 timeline） */
   timeline?: TimelineEvent[];
+  /** worker 等待主进程审批的能力请求 */
+  capabilityRequest?: CapabilityRequest;
 }
 
 /** 合并写最大延迟：GUI 1s 轮询周期内必定收到新状态 */
@@ -48,6 +51,7 @@ export const COALESCE_DELAY_MS = 250;
 const IMMEDIATE_STATUSES: ReadonlySet<WorkerStatus> = new Set([
   "starting",
   "success",
+  "needs_approval",
   "failed",
   "aborted",
   "timeout",

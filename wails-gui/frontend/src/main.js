@@ -1,5 +1,4 @@
 import { createApp } from "vue";
-import SetupView from "./views/SetupView.vue";
 import SubagentsView from "./views/SubagentsView.vue";
 import RoutingView from "./views/RoutingView.vue";
 import GateView from "./views/GateView.vue";
@@ -7,7 +6,6 @@ import EditorView from "./views/EditorView.vue";
 
 // 窗口路由壳 —— 按 windowName 选视图
 const views = {
-  setup: SetupView,
   subagents: SubagentsView,
   routing: RoutingView,
   gate: GateView,
@@ -26,5 +24,5 @@ window.addEventListener("error", (e) => showFatal(e.message || String(e.error ||
 window.addEventListener("unhandledrejection", (e) => showFatal(e.reason?.message || String(e.reason || "未知 Promise 错误")));
 
 const winName = await window.go.main.App.GetWindowName();
-const View = views[winName] || SetupView;
+const View = views[winName] || GateView;
 createApp(View).mount("#app");

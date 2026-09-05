@@ -5,7 +5,8 @@
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
 | `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
-| `gate.ts` | 危险 bash 命令审批（规则引擎 + 白名单豁免 + LLM 预审 + GUI/TUI） | `pi.on("tool_call"/"session_start")` |
+| `subagent-bash-guard.ts` | worker 无 UI bash 防线：硬拒绝或生成 capability request | `pi.registerTool("bash")`（仅 PI_SUBAGENT） |
+| `gate.ts` | 启动时依赖检测；交互式 bash 审批已内聚到 `bash-guard.ts` | `pi.on("session_start")` |
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
 | `paths.ts` | 目录白/黑名单（GUI 动态维护，sandbox-paths.json） | gate/guard/allow 内部调用 |
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
@@ -14,7 +15,7 @@
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
-注意：subagent 子进程只经 `lib/subagent-run.ts` 以 `--extension` 单独加载 `guard.ts`，不加载 gate/allow（子进程 bash 已限 worktree、无 UI 无法审批）。
+注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程复用现有 gate GUI/TUI 审批，批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network grant 由 `scripts/network-block-run.c` 编译出的 seccomp runner 执行：未批准的 worker bash 无法创建 IPv4/IPv6 socket；Unix socket 保留。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -22,6 +23,7 @@
 sandbox-permissions/
 ├── index.ts             # 合成入口（方案 B：真融合）
 ├── guard.ts             # 敏感路径黑名单拦截
+├── subagent-bash-guard.ts # worker 无 UI bash 覆盖 + capability request
 ├── guard.test.ts
 ├── yolo.ts              # /yolo 会话级沙箱墙开关（全部降零）
 ├── yolo.test.ts
@@ -54,7 +56,18 @@ node --experimental-strip-types extensions/sandbox-permissions/rule-engine.test.
 node --experimental-strip-types extensions/sandbox-permissions/inline-script.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/helpers.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/llm-review.test.ts
+node --experimental-strip-types lib/subagent-capability.test.ts
+node --experimental-strip-types lib/subagent-env.test.ts
 ```
+
+network seccomp runner（Linux）构建：
+
+```bash
+cc -O2 -Wall -Wextra -o scripts/vendor/network-block-run scripts/network-block-run.c -lseccomp
+chmod 755 scripts/vendor/network-block-run
+```
+
+runner 缺失时 worker 网络墙 fail-closed（退出码 125），不会裸跑。
 
 ## gate 规则引擎（原 permission-gate）
 

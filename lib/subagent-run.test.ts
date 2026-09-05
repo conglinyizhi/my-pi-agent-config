@@ -24,6 +24,7 @@ import {
   TIMELINE_MAX_FIELD,
   type TimelineEvent,
 } from "./subagent-run.ts";
+import { commandDigest } from "./subagent-capability.ts";
 import {
   SUPPLEMENT_MESSAGE_PREFIX,
   encodeSupplementMessage,
@@ -648,6 +649,63 @@ describe("TimelineBuilder role 过滤（user/toolResult 不进轨迹）", () => 
     assert.strictEqual(ev.text, "前半后半");
     assert.strictEqual(ev.final, true);
     assert(!JSON.stringify(tl.events).includes("穿插输入"));
+  });
+});
+
+describe("runSubagent capability request", () => {
+  it("批准请求后只重启一次，并把精确 grant 传给下一轮", async () => {
+    const seen: Array<unknown> = [];
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async (opts) => {
+        seen.push(opts.capabilityGrants);
+        n++;
+        if (n === 1) {
+          return {
+            task: "t", exitCode: 143, messages: [], stderr: "", stopReason: "aborted",
+            capabilityRequest: {
+              version: 1, requestId: "cap-1", capability: "network", command: "pnpm install x",
+              commandDigest: commandDigest("pnpm install x"), reason: "download", cwd: "/tmp", createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            timeline: [],
+          };
+        }
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+        };
+      },
+      onCapabilityRequest: async () => ({ capability: "network", commandDigest: commandDigest("pnpm install x") }),
+      sleep: async () => {},
+    });
+    assert.equal(n, 2);
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(seen[0], []);
+    assert.deepEqual(seen[1], [{ capability: "network", commandDigest: commandDigest("pnpm install x") }]);
+  });
+
+  it("拒绝请求时不自动重试", async () => {
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        return {
+          task: "t", exitCode: 143, messages: [], stderr: "", stopReason: "aborted",
+          capabilityRequest: {
+            version: 1, requestId: "cap-2", capability: "network", command: "curl x",
+            commandDigest: commandDigest("curl x"), reason: "network", cwd: "/tmp", createdAt: "2026-01-01T00:00:00.000Z",
+          },
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+        };
+      },
+      onCapabilityRequest: async () => undefined,
+      sleep: async () => {},
+    });
+    assert.equal(n, 1);
+    assert.equal(result.capabilityRequest?.requestId, "cap-2");
   });
 });
 

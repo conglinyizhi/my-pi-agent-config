@@ -37,6 +37,7 @@ import { homedir } from "node:os";
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 const VENDORED_LANDLOCK = join(AGENT_DIR, "scripts", "vendor", "landlock-run");
+const NETWORK_BLOCK_RUN = join(AGENT_DIR, "scripts", "vendor", "network-block-run");
 const SETTINGS_PATH = join(AGENT_DIR, "settings.json");
 const FAIL_EXIT = 125;
 
@@ -169,9 +170,26 @@ function runCommand(launcher, args, cwd) {
   });
 }
 
+/** worker 未获本次 network grant 时，通过 seccomp runner 禁止创建 IPv4/IPv6 socket。 */
+function workerNetworkBlocked() {
+  return process.platform === "linux"
+    && process.env.PI_SUBAGENT === "1"
+    && process.env.PI_SANDBOX_NETWORK_ALLOW !== "1";
+}
+
+function requireNetworkBlocker() {
+  if (workerNetworkBlocked() && !existsSync(NETWORK_BLOCK_RUN)) {
+    console.error(`sandbox-shell: 找不到 network-block-run（${NETWORK_BLOCK_RUN}），worker 网络墙 fail-closed。`);
+    process.exit(FAIL_EXIT);
+  }
+}
+
 /** 直接执行 bash（豁免命令 / 非沙箱平台 / 完全开放：文件系统不沙箱，但内存墙照常） */
 function execBash(command) {
-  return runCommand("bash", ["-c", command], process.cwd());
+  requireNetworkBlocker();
+  return workerNetworkBlocked()
+    ? runCommand(NETWORK_BLOCK_RUN, ["bash", "-c", command], process.cwd())
+    : runCommand("bash", ["-c", command], process.cwd());
 }
 
 /**
@@ -208,9 +226,13 @@ function buildGrants() {
   return grants;
 }
 
-/** 经 landlock-run 沙箱执行（bash 作为内层，解析照常） */
+/** 经 landlock-run 沙箱执行；worker 未获 network grant 时，内层再套 seccomp 网络墙。 */
 function execSandboxed(command, launcher) {
-  return runCommand(launcher, [...buildGrants(), "--", "bash", "-c", command], process.cwd());
+  requireNetworkBlocker();
+  const inner = workerNetworkBlocked()
+    ? [NETWORK_BLOCK_RUN, "bash", "-c", command]
+    : ["bash", "-c", command];
+  return runCommand(launcher, [...buildGrants(), "--", ...inner], process.cwd());
 }
 
 // ── 入口 ──
@@ -233,9 +255,9 @@ if (!platformSandboxed || process.env.PI_SANDBOX_DISABLE === "1") {
   await execBash(command);
 }
 
-// 2. 豁免：settings.sandboxExempt 前缀命中 → 文件系统完全权限开放（用户显式配置，信任该命令）；
-//    内存墙仍生效。
-const exempt = readSettings().sandboxExempt;
+// 2. 主 agent 可配置 sandboxExempt，但 worker 子进程永远不继承这条逃生口：
+//    worker 的额外能力必须走 capability request → 主对话审批，不能靠全局前缀绕过。
+const exempt = process.env.PI_SUBAGENT === "1" ? [] : readSettings().sandboxExempt;
 if (Array.isArray(exempt) && exempt.some((prefix) => command.trimStart().startsWith(prefix))) {
   await execBash(command);
 }

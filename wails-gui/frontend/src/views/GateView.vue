@@ -2,9 +2,10 @@
   <div v-if="ready" class="app">
     <header class="top-bar">
       <div class="top-left">
-        <h1 :class="{ 'h1-sa': isSandboxAllow }">{{ isSandboxAllow ? '🔓 跨沙箱请求（仅此一次）' : '⚠️ 危险命令审计' }}</h1>
+        <h1 :class="{ 'h1-sa': isSandboxAllow || isCapability }">{{ isSandboxAllow ? '🔓 跨沙箱请求（仅此一次）' : isCapability ? '🔐 subagent 能力请求' : '⚠️ 危险命令审计' }}</h1>
         <span v-if="taskId && !isSandboxAllow" class="task-badge">📋 {{ taskId }}</span>
         <span v-if="isSandboxAllow" data-name="sa-perm" class="perm-badge" :class="permission">{{ permLabel }}</span>
+        <span v-if="isCapability" data-name="capability" class="perm-badge write-paths">{{ capability }}</span>
       </div>
       <div v-if="!isSandboxAllow && highlights.length > 0" class="hl-nav">
         <span class="hl-count">{{ cur + 1 }} / {{ highlights.length }}</span>
@@ -16,6 +17,14 @@
     <pre ref="cmdBox" class="cmd-area" v-html="commandHtml" @mouseover="onHover" @mouseout="onLeave"></pre>
 
     <div v-if="tip" class="tooltip" :style="tipPos">⚠️ {{ tip }}</div>
+
+    <!-- subagent capability：只展示本次命令与能力边界，不提供扩权编辑入口 -->
+    <div v-if="isCapability" class="sa-info capability-info">
+      <div class="sa-row"><span class="sa-label">能力</span><span>{{ capability }}</span></div>
+      <div class="sa-row"><span class="sa-label">范围</span><span>{{ capabilityScope }}</span></div>
+      <div v-if="requestReason" class="sa-row"><span class="sa-label">理由</span><span class="sa-justification">{{ requestReason }}</span></div>
+      <div class="sa-row"><span class="sa-label">说明</span><span>只批准当前这条命令；worker 会在批准后重新启动，不会获得持续权限。</span></div>
+    </div>
 
     <!-- sandbox-allow：理由 + 可写路径 -->
     <div v-if="isSandboxAllow" class="sa-info">
@@ -52,7 +61,7 @@
     </div>
 
     <!-- 云端模型审核意见（仅 audit） -->
-    <div v-if="!isSandboxAllow && review" class="review-block">
+    <div v-if="!isSandboxAllow && !isCapability && review" class="review-block">
       <div class="review-header">
         🤖 云端模型审核
         <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
@@ -63,10 +72,10 @@
     </div>
 
     <!-- 规则列表（仅 audit） -->
-    <div v-if="!isSandboxAllow" @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
+    <div v-if="!isSandboxAllow && !isCapability" @click="showRules=!showRules" class="collapse-header" title="点击展开/收起规则">
       {{ showRules ? '▼' : '▶' }} {{ rules.length }} 条规则匹配
     </div>
-    <div v-if="!isSandboxAllow && showRules" class="collapse-body">
+    <div v-if="!isSandboxAllow && !isCapability && showRules" class="collapse-body">
       <div v-for="(r,i) in rules" :key="i" class="rule-row">
         <code class="rule-pattern">{{ r.name }}</code>
         <span v-if="r.matched && r.matched.length" class="rule-matched">{{ r.matched.join(' ') }}</span>
@@ -97,15 +106,15 @@
       <template v-else>
         <button data-name="action-deny" @click="denyDirect" class="btn btn-deny">🚫 拒绝</button>
         <button data-name="action-deny-reason" @click="openDialog" class="btn btn-warn">📝 拒绝并说明理由</button>
-        <button data-name="action-allow" @click="respond('allow')" class="btn btn-allow">✅ 放行</button>
+        <button data-name="action-allow" @click="respond('allow')" class="btn btn-allow">{{ isCapability ? '✅ 允许本次命令' : '✅ 放行' }}</button>
       </template>
     </footer>
 
     <!-- 拒绝理由对话框（audit + sandbox-allow） -->
     <div v-if="dlg" @click.self="dlg=false" class="overlay">
       <div class="dialog">
-        <h2 class="dialog-title">{{ isSandboxAllow ? '拒绝理由' : '审核意见' }}</h2>
-        <template v-if="!isSandboxAllow">
+        <h2 class="dialog-title">{{ isSandboxAllow ? '拒绝理由' : isCapability ? '拒绝理由' : '审核意见' }}</h2>
+        <template v-if="!isSandboxAllow && !isCapability">
           <div v-for="(r,i) in rules" :key="i" @click="tog(i)" class="dialog-rule" :class="{ flagged: flg.has(i) }">
             <input data-name="rule-check" type="checkbox" :checked="flg.has(i)" class="dialog-check">
             <code class="rule-pattern">{{ r.name }}</code>
@@ -144,6 +153,9 @@ const kind = ref("");
 const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
+const capability = ref("");
+const capabilityScope = ref("");
+const requestReason = ref("");
 const timeout = ref(undefined);
 const memoryMb = ref(undefined);
 const DEFAULT_MEMORY_MB = 1024;
@@ -164,6 +176,7 @@ const showRules = ref(false);
 const cmdBox = ref(null);
 
 const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
+const isCapability = computed(() => kind.value === "capability");
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写"
 );
@@ -286,6 +299,9 @@ onMounted(async () => {
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
+  capability.value = data.capability || "";
+  capabilityScope.value = data.scope || "";
+  requestReason.value = data.requestReason || "";
   timeout.value = data.timeout;
   memoryMb.value = data.memoryMb || undefined;
   candidatePaths.value = data.candidatePaths || [];

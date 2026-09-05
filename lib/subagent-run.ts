@@ -1,13 +1,12 @@
 // subagent-run.ts — 隔离 pi 进程执行核心
 //
 // 供 subagent 工具内部调用。worker 显式加载 custom-providers（providers.toml 动态模型），
-// 其余扩展发现关闭以保持隔离。支持 --tools 白名单（反馈模式）与额外显式扩展。
+// 其余扩展发现关闭以保持隔离。支持安全工具白名单、无 UI capability 请求与额外显式扩展。
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parse as parseToml } from "smol-toml";
 import type { Message } from "@earendil-works/pi-ai";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
@@ -16,6 +15,7 @@ import type { TimelineEvent } from "./timeline.ts";
 import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
 import { isValidInboxId } from "./subagent-supplement.ts";
+import { commandDigest, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "./subagent-capability.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
 export {
   TimelineBuilder,
@@ -57,6 +57,10 @@ export interface SubagentResult {
   attempts?: number;
   /** 最终失败的内联摘要（成功时为 undefined） */
   inlineSummary?: string;
+  /** worker bash guard 产生的结构化权限请求；存在时不会自动重试 */
+  capabilityRequest?: CapabilityRequest;
+  /** 主进程明确拒绝了 capability request */
+  capabilityDenied?: boolean;
 }
 
 /**
@@ -87,6 +91,8 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 
 请自主完成分配给你的任务，并按需使用所有可用工具。
 
+安全边界：worker 的 bash 运行在低权限沙箱中。敏感路径与明确危险操作会直接拒绝；需要网络或其他额外能力时，当前 worker 会停止并把结构化权限请求交给主 agent。不要把“需要权限”写成普通完成结论，也不要尝试读取凭据、绕过沙箱或伪造权限请求。
+
 完成后的输出格式：
 
 ## 已完成
@@ -106,12 +112,29 @@ const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-provider
 const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
 const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "guard.ts");
+const SUBAGENT_BASH_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "subagent-bash-guard.ts");
 
 /**
  * 构造 worker 子进程 env（纯函数，不改 process.env）：
  * 仅当 inboxId 合法时才注入 PI_SUBAGENT_INBOX；taskId 存在时注入 PI_TASK_ID。
  * PI_SUBAGENT 恒为 "1"（子进程内禁用递归派发）。
  */
+const WORKER_ENV_ALLOW = new Set([
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM",
+  "LANG", "TZ", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+  "XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR",
+]);
+
+/** 只继承运行 worker 所需的非秘密环境；API key/token/password 等一律不下传。 */
+export function sanitizeWorkerEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    if (WORKER_ENV_ALLOW.has(key) || key.startsWith("LC_")) env[key] = value;
+  }
+  return env;
+}
+
 export function buildSubagentEnv(
   base: NodeJS.ProcessEnv,
   opts: {
@@ -121,9 +144,13 @@ export function buildSubagentEnv(
     sandboxDir?: string;
     /** 沙箱只读模式（不写 workspace；透传 PI_SANDBOX_READONLY） */
     readonly?: boolean;
+    /** 权限请求文件（仅父子进程间使用） */
+    capabilityRequestPath?: string;
+    /** 已由主进程批准的、按 commandDigest 绑定的一次性 capability */
+    capabilityGrants?: CapabilityGrant[];
   },
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base, PI_SUBAGENT: "1" };
+  const env: NodeJS.ProcessEnv = { ...sanitizeWorkerEnv(base), PI_SUBAGENT: "1" };
   if (opts.taskId) env.PI_TASK_ID = opts.taskId;
   if (opts.inboxId && isValidInboxId(opts.inboxId)) {
     env.PI_SUBAGENT_INBOX = opts.inboxId;
@@ -131,6 +158,10 @@ export function buildSubagentEnv(
   // 沙箱细粒度限制（wrapper sandbox-shell.mjs 消费；仅 Linux/darwin 沙箱平台生效）
   if (opts.sandboxDir) env.PI_SANDBOX_RW = opts.sandboxDir;
   if (opts.readonly) env.PI_SANDBOX_READONLY = "1";
+  if (opts.capabilityRequestPath) env.PI_SUBAGENT_CAPABILITY_REQUEST = opts.capabilityRequestPath;
+  if (opts.capabilityGrants && opts.capabilityGrants.length > 0) {
+    env.PI_SUBAGENT_CAPABILITY_GRANTS = JSON.stringify(opts.capabilityGrants);
+  }
   return env;
 }
 
@@ -158,19 +189,25 @@ export function buildSubagentArgs(opts: {
   promptPath?: string;
   tools?: string[];
   extraExtensions?: string[];
+  /** 要提供给 worker 的 skill 绝对路径（目录/文件，加载对应 SKILL.md） */
+  skills?: string[];
 }): string[] {
+  const skills = (opts.skills ?? []).filter(Boolean);
   const args = [
     "--mode", "json",
     "-p",
     "--no-session",
     "--no-extensions",
-    "--no-skills",
+    // 默认禁用 skills 保持隔离；显式提供 skills 时改为逐个加载
+    ...(skills.length > 0 ? [] : ["--no-skills"]),
+    ...(skills.length > 0 ? skills.flatMap((s) => ["--skill", s]) : []),
     "--no-prompt-templates",
     "--no-context-files",
     "--model", opts.model,
     "--extension", CUSTOM_PROVIDERS_EXT,
     "--extension", MCP_ADAPTER_EXT,
     "--extension", SANDBOX_GUARD_EXT,
+    "--extension", SUBAGENT_BASH_GUARD_EXT,
   ];
   for (const ext of opts.extraExtensions ?? []) args.push("--extension", ext);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
@@ -205,17 +242,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
   if (!isGenericRuntime) return { command: process.execPath, args };
   return { command: "pi", args };
-}
-
-export function getWorkerModel(): string {
-  const rolesPath = path.join(os.homedir(), ".pi", "agent", "extensions.toml");
-  try {
-    const doc = parseToml(fs.readFileSync(rolesPath, "utf-8")) as Record<string, unknown>;
-    const section = (doc["subagent-roles"] ?? {}) as { worker?: unknown };
-    const worker = typeof section.worker === "string" && section.worker ? section.worker : "";
-    if (worker) return worker;
-  } catch { /* ignore */ }
-  return "worker";
 }
 
 export function formatUsageStats(usage: SubagentUsage, model?: string): string {
@@ -254,6 +280,12 @@ export interface RunSubagentOptions {
   taskId?: string; // 用于 permission-gate 关联
   tools?: string[]; // 工具白名单（反馈模式：read/bash/be-*）
   extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
+  /** 要提供给 worker 的 skill 绝对路径（目录/文件） */
+  skills?: string[];
+  /** 已审批的精确 capability grant；只对匹配 commandDigest 的命令生效 */
+  capabilityGrants?: CapabilityGrant[];
+  /** 主进程审批 worker 请求；返回 grant 才会重启当前 worker */
+  onCapabilityRequest?: (request: CapabilityRequest) => Promise<CapabilityGrant | undefined>;
   /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
   inboxId?: string;
   /** 沙箱可写根（限制本 worker 只写该目录，其余只读） */
@@ -280,7 +312,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
   const task = opts.task;
   const cwd = opts.cwd;
   const timeout = (opts.timeout ?? 600) * 1000;
-  const model = opts.model || getWorkerModel();
+  // 模型不再从配置文件决定，统一由调用方传入（默认当前会话模型）
+  const model = opts.model || "";
 
   const timeoutController = new AbortController();
   const timeoutId = setTimeout(
@@ -296,6 +329,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       // 写入系统提示词（buildSubagentArgs 会追加 --append-system-prompt 与任务注入）
       const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
       const promptPath = path.join(tmpDir, "prompt.md");
+      const capabilityRequestPath = path.join(tmpDir, "capability-request.json");
       await fs.promises.writeFile(promptPath, SUBAGENT_PROMPT, { encoding: "utf-8", mode: 0o600 });
       const args = buildSubagentArgs({
         task,
@@ -303,6 +337,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         model,
         promptPath,
         tools: opts.tools,
+        skills: opts.skills,
         // 既有反馈扩展 + 有效 inbox 才追加的 supplement bridge（去重合并）
         extraExtensions: buildWorkerExtraExtensions(opts.extraExtensions, opts.inboxId),
       });
@@ -333,6 +368,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       };
 
       let wasAborted = false;
+      let capabilityRequest: CapabilityRequest | undefined;
+      let capabilityStopRequested = false;
       let agentEndOutput = "";
 
       const exitCode = await new Promise<number>((resolveExit) => {
@@ -342,6 +379,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           taskId: opts.taskId,
           sandboxDir: opts.sandboxDir,
           readonly: opts.readonly,
+          capabilityRequestPath,
+          capabilityGrants: opts.capabilityGrants,
         });
 
         const proc = spawn(invocation.command, invocation.args, {
@@ -394,7 +433,30 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
         proc.stderr.on("data", (data: Buffer) => { result.stderr += data.toString(); });
 
+        const readCapabilityRequest = (): CapabilityRequest | undefined => {
+          try {
+            return validateCapabilityRequest(JSON.parse(fs.readFileSync(capabilityRequestPath, "utf8")));
+          } catch {
+            return undefined;
+          }
+        };
+
+        // worker guard 通过 0600 临时文件提出权限请求；父进程发现后停止本轮。
+        const capabilityPoll = setInterval(() => {
+          if (capabilityRequest || capabilityStopRequested) return;
+          const parsed = readCapabilityRequest();
+          if (parsed) {
+            capabilityRequest = parsed;
+            capabilityStopRequested = true;
+            try { proc.kill("SIGTERM"); } catch { /* worker 已退出 */ }
+          }
+        }, 50);
+        capabilityPoll.unref?.();
+
         proc.on("close", (code: number) => {
+          clearInterval(capabilityPoll);
+          // 短命 worker 可能在首个 50ms 轮询前退出；close 时再读一次，避免丢请求。
+          capabilityRequest ??= readCapabilityRequest();
           if (buffer.trim()) {
             for (const line of buffer.split("\n")) {
               if (!line.trim()) continue;
@@ -426,6 +488,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       });
 
       result.exitCode = exitCode;
+      if (capabilityRequest) result.capabilityRequest = capabilityRequest;
       // 终态 lifecycle：success/failed/aborted/timeout（timeout 依据内部超时控制器判断）
       const terminal = resolveTerminalState({
         aborted: wasAborted,
@@ -433,7 +496,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         exitCode: result.exitCode,
         stopReason: result.stopReason,
       });
-      timeline.addLifecycle(terminal);
+      timeline.addLifecycle(capabilityRequest ? "needs_approval" : terminal, capabilityRequest?.reason);
       // 终态同步一次：尾缓冲里的 telemetry 已并入 timeline，随终态 lifecycle 一起
       // 通过 onUpdate 送达调用方（与下方 resolve/throw 路径的 result.timeline 一致）
       emitUpdate();
@@ -442,9 +505,11 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         result.messages.push({ role: "assistant", content: agentEndOutput } as unknown as Message);
       }
 
-      try { fs.unlinkSync(promptPath); fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+      try { fs.unlinkSync(promptPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(capabilityRequestPath); } catch { /* ignore */ }
+      try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
-      if (wasAborted) {
+      if (wasAborted && !capabilityRequest) {
         // 结构化终态错误：batch 依赖 status（timeout/aborted）而非消息文本识别；
         // 最终 timeline 随错误带给调用方（catch 保留，undefined 不覆盖实时轨迹）
         const status: "timeout" | "aborted" = terminal === "timeout" ? "timeout" : "aborted";
@@ -557,6 +622,8 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   let lastError: unknown;
   // 跨 attempt 累积的轨迹：上轮结果作为下轮种子，让 GUI 实时轨迹重试时续接而非塌缩回 1 条。
   let accumulated: TimelineEvent[] | undefined;
+  let capabilityGrants = [...(opts.capabilityGrants ?? [])];
+  let capabilityGrantIssued = capabilityGrants.length > 0;
 
   for (let i = 1; i <= max; i++) {
     if (opts.signal?.aborted) {
@@ -565,9 +632,42 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     }
     const startedAt = new Date().toISOString();
     try {
-      const result = await runOnce({ ...opts, runOnce: undefined, sleep: undefined, seedTimeline: accumulated, attempt: i });
+      // 精确 grant 可跨多轮请求累积（例如同一条 curl | sh 需要 network+command 两把钥匙）。
+      // 它们只绑定精确 commandDigest；一旦已发过 capability grant，后续基础设施失败不再自动重试，
+      // 避免不清楚 grant 是否已被消费时重复执行获批命令。
+      const result = await runOnce({
+        ...opts,
+        capabilityGrants,
+        runOnce: undefined,
+        sleep: undefined,
+        seedTimeline: accumulated,
+        attempt: i,
+      });
       lastResult = result;
       accumulated = result.timeline; // 本轮结束后的完整累积，供下轮重试续接
+      if (result.capabilityRequest) {
+        // 权限请求不属于基础设施失败；只有主进程明确返回匹配 grant 才重启。
+        const grant = await opts.onCapabilityRequest?.(result.capabilityRequest);
+        if (!grant) {
+          result.capabilityDenied = true;
+          result.errorMessage = "capability request 未获主进程批准，worker 未继续执行。";
+          result.attempts = i;
+          return result;
+        }
+        if (
+          grant.capability !== result.capabilityRequest.capability ||
+          grant.commandDigest !== result.capabilityRequest.commandDigest ||
+          grant.commandDigest !== commandDigest(result.capabilityRequest.command)
+        ) {
+          result.capabilityDenied = true;
+          result.errorMessage = "主进程返回了不匹配的 capability grant，已拒绝继续执行。";
+          result.attempts = i;
+          return result;
+        }
+        capabilityGrants = [...capabilityGrants, grant];
+        capabilityGrantIssued = true;
+        continue;
+      }
       if (!isFailedResult(result) && result.stopReason !== "error") {
         // 干净成功：返回（带 attempts 供观测），不写调查文件
         result.attempts = i;
@@ -577,7 +677,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       const status: AttemptSnapshot["status"] = result.stopReason === "aborted" ? "aborted" : "failed";
       attempts.push(snapshotFromResult(i, result, status, startedAt));
       lastError = null;
-      if (!isRetryableFailure(result) || i === max) break;
+      if (capabilityGrantIssued || !isRetryableFailure(result) || i === max) break;
       await sleep(backoffDelayMs(i), opts.signal);
     } catch (err) {
       lastError = err;

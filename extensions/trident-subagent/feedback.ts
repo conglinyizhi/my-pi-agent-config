@@ -24,6 +24,15 @@ export function writeFeedbackState(enabled: boolean): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify({ enabled }, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 
+const DEFAULT_WORKER_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+
+/** 普通 worker 也使用安全白名单：排除 web_search/mcp 等可绕过 bash 网络墙的工具。 */
+export function buildSafeWorkerTools(active: string[]): string[] {
+  return active
+    .filter((name) => DEFAULT_WORKER_TOOLS.has(name) || name.startsWith("be-"))
+    .sort();
+}
+
 export function buildToolsFromNames(active: string[]): { tools?: string[]; reason?: string } {
   const beTools = active.filter((t) => t.startsWith("be-")).sort();
   if (beTools.length === 0) {

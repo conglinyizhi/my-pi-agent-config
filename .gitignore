@@ -56,6 +56,7 @@ minicpm5-deploy/
 .go-cache/
 .go-cache/
 scripts/vendor/landlock-run
+scripts/vendor/network-block-run
 
 # 审核模型池（供应商配置/API key 不入库）
 extensions/sandbox-permissions/review-pool.toml

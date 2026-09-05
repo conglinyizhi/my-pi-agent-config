@@ -57,9 +57,6 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 	}
 	base := map[string]interface{}{"responseFile": a.responseFile}
 	switch a.windowName {
-	case "setup":
-		base["models"] = req["models"]
-		base["roles"] = req["roles"]
 	case "subagents":
 		base["feedback"] = req["feedback"]
 		base["workers"] = req["workers"]
@@ -79,6 +76,10 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["timeout"] = req["timeout"]
 		// 内存上限（MB；nil 时前端按缺省展示）：与 timeout 正交，超出即终止进程组
 		base["memoryMb"] = req["memoryMb"]
+		// subagent capability 请求（kind=capability）：只批准精确当前命令，不提供路径升权。
+		base["capability"] = req["capability"]
+		base["scope"] = req["scope"]
+		base["requestReason"] = req["requestReason"]
 		// 目录白/黑名单候选：writePaths + 命令中提取的路径（GUI 逐个加入名单）
 		base["candidatePaths"] = req["candidatePaths"]
 		base["persistentRoots"] = req["persistentRoots"]

@@ -516,10 +516,10 @@ function backToAgents() {
 
 // ── 展示辅助 ──
 function statusIcon(s) {
-  return { starting: "…", running: "▶", success: "✓", failed: "✗", aborted: "■", timeout: "⏱" }[s] || "○";
+  return { starting: "…", running: "▶", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱" }[s] || "○";
 }
 function statusLabel(s) {
-  return { starting: "启动中", running: "执行中", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
+  return { starting: "启动中", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
 }
 function fmt(iso) {
   if (!iso) return "-";
@@ -543,7 +543,7 @@ function usageText(u) {
 }
 
 function lifecycleLabel(s) {
-  return { starting: "启动", running: "执行中", success: "成功", failed: "失败", aborted: "中止", timeout: "超时", truncated: "历史截断" }[s] || s;
+  return { starting: "启动", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时", truncated: "历史截断" }[s] || s;
 }
 function eventIcon(ev) {
   if (ev.type === "assistant") return ev.final ? "💬" : "…";
@@ -554,7 +554,7 @@ function eventIcon(ev) {
   }
   if (ev.type === "terminal") return ev.stream === "stderr" ? "✗" : "▸";
   if (ev.type === "supplement") return "✉";
-  const m = { starting: "●", running: "●", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", truncated: "…" };
+  const m = { starting: "●", running: "●", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", truncated: "…" };
   return m[ev.state] || "●";
 }
 function eventColor(ev) {
@@ -562,7 +562,7 @@ function eventColor(ev) {
   if (ev.type === "tool") return ev.ok === false ? "#f7768e" : ev.ok === true ? "#9ece6a" : "#e0af68";
   if (ev.type === "terminal") return ev.stream === "stderr" ? "#f7768e" : "#a9b1d6";
   if (ev.type === "supplement") return "#7dcfff";
-  const m = { starting: "#7aa2f7", running: "#9ece6a", success: "#9ece6a", failed: "#f7768e", aborted: "#e0af68", timeout: "#e0af68", truncated: "#565f89" };
+  const m = { starting: "#7aa2f7", running: "#9ece6a", needs_approval: "#c792ea", success: "#9ece6a", failed: "#f7768e", aborted: "#e0af68", timeout: "#e0af68", truncated: "#565f89" };
   return m[ev.state] || "#565f89";
 }
 function eventTitle(ev) {

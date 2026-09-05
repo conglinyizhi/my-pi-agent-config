@@ -40,13 +40,10 @@ blacklist = [
 ]
 
 # ─────────────────────────────────────────────────────────────
-# subagent 模型角色路由（原 providers.roles.toml）
-# worker = 子代理（subagent）默认模型；oc = 原 trident 主代理角色（当前仅
-# trident-subagent 扩展使用，该扩展处于 disabled 状态，启用时需适配本文件）
+# subagent 模型：不再从配置文件决定，直接复用当前会话模型（ctx.model）。
+# 旧的角色路由（subagent-roles / providers.roles.toml）已废弃：oc 是原三叉戟
+# 主代理角色的旧设定，已移除；subagent 只有一种（worker），无角色区分。
 # ─────────────────────────────────────────────────────────────
-[subagent-roles]
-worker = "deepseek/deepseek-v4-flash"
-oc = "tokenflux/deepseek-v4-flash"
 
 # ─────────────────────────────────────────────────────────────
 # tool-checker：外部 CLI 工具检测（原 extensions/tool-checker/tools.toml）

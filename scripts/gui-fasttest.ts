@@ -224,20 +224,25 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
     },
   },
   {
-    name: "setup",
-    windowName: "setup",
-    request: {
-      models: [{ value: "test/test-model", name: "Test Model" }],
-      roles: { oc: "test/test-model", worker: "test/test-model" },
-    },
-  },
-  {
     name: "gate",
     windowName: "gate",
     request: {
       command: "rm -rf /tmp/test",
       taskId: "test-task-001",
       rules: [{ name: "rm-recursive", tip: "危险删除操作", autoReject: false, matched: ["rm", "-rf"] }],
+    },
+  },
+  {
+    name: "gate-capability",
+    windowName: "gate",
+    request: {
+      kind: "capability",
+      command: "pnpm install marked",
+      taskId: "batch-test-w1",
+      capability: "network",
+      scope: "访问网络或远程包源",
+      requestReason: "worker 需要下载任务声明的依赖",
+      rules: [],
     },
   },
   {

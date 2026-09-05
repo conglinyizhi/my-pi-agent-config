@@ -13,10 +13,11 @@ import {
   type SubagentUsage,
   type TimelineEvent,
 } from "../../lib/subagent-run.ts";
+import type { CapabilityGrant, CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { updateWorker } from "./status.ts";
 
-export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout";
+export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
 /**
  * 把 runSubagent 抛出的错误分类为可识别终态（timeout | aborted）。
@@ -75,6 +76,8 @@ export interface BatchItemResult {
   investigationPath?: string;
   /** 实际尝试次数（含首次；仅成功/失败结果携带，超时/中止时调查文件内有计数） */
   attempts?: number;
+  /** worker 请求的额外能力；拒绝或 GUI 不可用时作为终态返回 */
+  capabilityRequest?: CapabilityRequest;
 }
 
 export interface RunBatchOptions {
@@ -83,6 +86,8 @@ export interface RunBatchOptions {
   signal?: AbortSignal;
   tools?: string[];
   extraExtensions?: string[];
+  /** 要提供给 worker 的 skill 绝对路径（目录/文件） */
+  skills?: string[];
   taskId?: string;
   timeout?: number;
   /**
@@ -94,6 +99,8 @@ export interface RunBatchOptions {
   sandboxDir?: string;
   /** 沙箱只读模式（不写 workspace） */
   readonly?: boolean;
+  /** 主进程审批 worker 的能力请求；返回精确 grant 才会重启当前 worker */
+  onCapabilityRequest?: (request: CapabilityRequest, workerId: string) => Promise<CapabilityGrant | undefined>;
 }
 
 /**
@@ -152,9 +159,20 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           signal: opts.signal,
           tools: opts.tools,
           extraExtensions: opts.extraExtensions,
+          skills: opts.skills,
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
           sandboxDir: opts.sandboxDir,
           readonly: opts.readonly,
+          onCapabilityRequest: opts.onCapabilityRequest
+            ? (request) => {
+                updateWorker(id, {
+                  status: "needs_approval",
+                  capabilityRequest: request,
+                  output: `等待主 agent 审批：${request.capability}（${request.scope}）`,
+                });
+                return opts.onCapabilityRequest!(request, id);
+              }
+            : undefined,
           inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
           timeout: opts.timeout ?? 600,
           onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
@@ -167,26 +185,38 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
         });
 
         const failed = isFailedResult(result);
-        const status: BatchItemStatus = failed ? "failed" : "success";
+        const status: BatchItemStatus = result.capabilityRequest
+          ? result.capabilityDenied ? "failed" : "needs_approval"
+          : failed ? "failed" : "success";
         updateWorker(id, {
           status,
           finishedAt: new Date().toISOString(),
           usage: result.usage,
           stderr: result.stderr.slice(-4000),
-          output: getResultOutput(result).slice(-8000),
+          output: result.capabilityRequest
+            ? result.capabilityDenied
+              ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+              : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+            : getResultOutput(result).slice(-8000),
           // 终态更新保留最终 timeline
           timeline: [...result.timeline],
+          capabilityRequest: result.capabilityRequest,
         });
         return {
           index,
           status,
           exitCode: result.exitCode,
-          output: result.inlineSummary ?? getResultOutput(result),
+          output: result.capabilityRequest
+            ? result.capabilityDenied
+              ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+              : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+            : result.inlineSummary ?? getResultOutput(result),
           stderr: result.stderr,
           errorMessage: result.errorMessage,
           usage: result.usage,
           investigationPath: result.investigationPath,
           attempts: result.attempts,
+          capabilityRequest: result.capabilityRequest,
         };
       } catch (err) {
         // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判

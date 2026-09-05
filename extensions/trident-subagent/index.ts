@@ -1,40 +1,84 @@
-// trident-subagent — 同步 subagent 派发 + 反馈模式开关 + 模型路由配置
+// trident-subagent — 同步 subagent 派发 + 反馈模式开关
 //
-// subagent({ task: string | string[] })：主 agent 整理好完整任务说明后调用，
+// subagent({ task: string | string[], skills?: string[] })：主 agent 整理好完整任务说明后调用，
 // 同步等待全部 worker 返航（success/failed/aborted/timeout 逐项汇报）。
+// 模型直接用当前会话模型（ctx.model），不再从配置文件决定；skills 可选，把指定 skill 加载给 worker。
 // /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
 // /gui:subagents：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-import { runGuiWindow, launchGuiWindow, findGuiBinary } from "../../lib/gui-runner.ts";
-import { getWorkerModel } from "../../lib/subagent-run.ts";
-import { readFeedbackState, writeFeedbackState, buildToolsFromNames } from "./feedback.ts";
+import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
+import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildToolsFromNames } from "./feedback.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
+import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
-const ROLES_PATH = path.join(os.homedir(), ".pi", "agent", "providers.roles.toml");
+const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
+let capabilityApprovalTail: Promise<void> = Promise.resolve();
 
-function parseRolesToml(content: string): Record<string, string> {
-  const roles: Record<string, string> = {};
-  let inRoles = false;
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "[roles]") { inRoles = true; continue; }
-    if (inRoles && trimmed.startsWith("[")) break;
-    if (!inRoles) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-    if (key && value) roles[key] = value;
+function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
+  const run = capabilityApprovalTail.then(work, work);
+  capabilityApprovalTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function approveCapability(
+  request: CapabilityRequest,
+  ctx: ExtensionContext,
+  signal: AbortSignal | undefined,
+): Promise<CapabilityGrant | undefined> {
+  const validated = validateCapabilityRequest(request);
+  if (!validated || !isWorkerApprovalCapability(validated.capability)) return undefined;
+  const result = await runGuiWindow(
+    "gate",
+    {
+      kind: "capability",
+      command: request.command,
+      taskId: request.taskId,
+      capability: request.capability,
+      scope: request.scope,
+      requestReason: request.reason,
+      rules: [],
+    },
+    { timeoutMs: CAPABILITY_GUI_TIMEOUT_MS, signal },
+  );
+  let allow = result.ok && result.data?.action === "allow";
+  if (!allow && (!result.ok || result.data?.action !== "deny") && ctx?.hasUI) {
+    const choice = await ctx.ui.select(
+      `⚠️ subagent 请求额外能力：${request.capability}\n\n${request.scope ?? ""}\n${request.reason}\n\n命令：${request.command}`,
+      ["✅ 允许本次命令", "❌ 拒绝"],
+    );
+    allow = choice?.includes("允许") ?? false;
   }
-  return roles;
+  if (!allow) return undefined;
+  return { capability: request.capability, commandDigest: commandDigest(request.command) };
+}
+
+// 把 skill 名解析成绝对路径（目录含 SKILL.md）：在 ~/.pi/agent/skills 下按名匹配，含一层子目录
+function resolveSkillPaths(names: string[]): string[] {
+  const root = path.join(os.homedir(), ".pi", "agent", "skills");
+  const out: string[] = [];
+  for (const name of names) {
+    const found = findSkillDir(root, name);
+    if (found) out.push(found);
+  }
+  return out;
+}
+
+function findSkillDir(root: string, name: string): string | undefined {
+  if (fs.existsSync(path.join(root, name, "SKILL.md"))) return path.join(root, name);
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const p = path.join(root, entry.name, name, "SKILL.md");
+    if (fs.existsSync(p)) return path.join(root, entry.name, name);
+  }
+  return undefined;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -65,15 +109,29 @@ export default function (pi: ExtensionAPI) {
         Type.String({ description: "单个完整任务说明" }),
         Type.Array(Type.String(), { description: "多个完整任务说明，并行执行" }),
       ]),
+      skills: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "可选：要提供给 worker 的 skill 名（如 \"moonbit-orientation\"），按名在 ~/.pi/agent/skills 下解析并加载给 worker；不传则 worker 不加载任何 skill",
+        }),
+      ),
+      sandbox_profile: Type.Optional(
+        Type.Union([
+          Type.Literal("readonly"),
+          Type.Literal("worktree"),
+        ], {
+          description:
+            "worker 沙箱档位：readonly=默认只读 workspace；worktree=只能写 sandbox_dir。未指定时，有 sandbox_dir 则按 worktree，否则按 readonly。",
+        }),
+      ),
       sandbox_dir: Type.Optional(
         Type.String({
           description:
-            "沙箱限制：worker 只能写该绝对路径（及其子目录），工程其余部分只读。用于 worktree/隔离目录场景——例如只允许 worker 改动某个子目录，防止碰其他文件。",
+            "worktree 档位必填的绝对路径：worker 只能写该目录及其子目录，工程其余部分只读。",
         }),
       ),
       readonly: Type.Optional(
         Type.Boolean({
-          description: "沙箱只读模式：worker 不写任何 workspace（仅 /tmp 可写临时文件）。",
+          description: "兼容字段：true 强制 readonly；安全默认是不传 sandbox_dir 时自动 readonly。",
         }),
       ),
     }),
@@ -83,9 +141,35 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "错误：任务列表为空。" }], details: { error: "empty_batch" } };
       }
 
-      const workerModel = getWorkerModel();
+      // 模型不再从配置文件决定：直接用当前会话模型作为 subagent 模型
+      const workerModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
       const feedbackOn = readFeedbackState();
-      const toolCfg = feedbackOn ? buildToolsFromNames(pi.getActiveTools()) : {};
+      const profile = params.sandbox_profile
+        ?? (params.sandbox_dir ? "worktree" : "readonly");
+      if (profile === "worktree" && !params.sandbox_dir) {
+        return {
+          content: [{ type: "text", text: "错误：sandbox_profile=worktree 必须同时提供 sandbox_dir。" }],
+          details: { error: "missing_sandbox_dir" },
+        };
+      }
+      const workerReadonly = profile === "readonly" || params.readonly === true;
+      const activeTools = pi.getActiveTools();
+      const safeTools = buildSafeWorkerTools(activeTools);
+      if (!safeTools.includes("bash") || !safeTools.includes("read")) {
+        return {
+          content: [{ type: "text", text: "错误：当前活跃工具集缺少 worker 必需的 read/bash，拒绝启动未受限的 worker。" }],
+          details: { error: "missing_safe_worker_tools" },
+        };
+      }
+      const toolCfg = feedbackOn
+        ? buildToolsFromNames(activeTools)
+        : { tools: safeTools };
+      if (!toolCfg.tools || !toolCfg.tools.includes("bash") || !toolCfg.tools.includes("read")) {
+        return {
+          content: [{ type: "text", text: "错误：反馈模式的安全工具白名单不可用，拒绝启动 worker。" }],
+          details: { error: "invalid_feedback_tools" },
+        };
+      }
 
       // batch-scoped inbox id：`batch-${base36 timestamp}-${compact randomUUID}-w${i+1}`
       // 只含 [A-Za-z0-9_-]（base36 小写 + 32 位 hex + 分隔符），长度 ~50 << 128；
@@ -116,12 +200,18 @@ export default function (pi: ExtensionAPI) {
         results = await runBatch(tasks, {
           cwd: ctx.cwd,
           sandboxDir: params.sandbox_dir,
-          readonly: params.readonly,
+          readonly: workerReadonly,
           model: workerModel,
           signal,
+          skills: resolveSkillPaths(params.skills ?? []),
           tools: toolCfg.tools,
           extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
           taskId: batchTaskId,
+          onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
+            request,
+            ctx,
+            signal,
+          )),
           // 与 runs 一一对应：每个 worker 拿到本批分配的唯一 inbox id
           workerInboxIds: runs.map((r) => r.inboxId),
         });
@@ -149,19 +239,23 @@ export default function (pi: ExtensionAPI) {
         const head = `#${r.index + 1} ${r.status.toUpperCase()}`;
         const meta = r.exitCode !== undefined ? ` exit=${r.exitCode}` : "";
         const err = r.errorMessage ? ` error=${r.errorMessage.slice(0, 300)}` : "";
+        const capability = r.capabilityRequest
+          ? `\n  needs_approval: ${r.capabilityRequest.capability} — ${r.capabilityRequest.scope}\n  command: ${r.capabilityRequest.command.slice(0, 500)}`
+          : "";
         const stderr = r.stderr.trim() ? `\n  stderr: ${r.stderr.trim().slice(0, 500)}` : "";
         // inlineSummary 通常已含 investigation 路径；未含才补，避免重复
         const inv = r.investigationPath && !r.output.includes(r.investigationPath)
           ? `\n  investigation: ${r.investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」`
           : "";
-        return `${head}${meta}${err}${stderr}${inv}\n  ${r.output.slice(0, 800)}`;
+        return `${head}${meta}${err}${capability}${stderr}${inv}\n  ${r.output.slice(0, 800)}`;
       });
 
-      const failedCount = results.filter((r) => r.status !== "success").length;
+      const failedCount = results.filter((r) => r.status === "failed" || r.status === "aborted" || r.status === "timeout").length;
+      const approvalCount = results.filter((r) => r.status === "needs_approval").length;
       onUpdate?.({
         content: [{
           type: "text",
-          text: `${tasks.length} 个 subagent 已全部返航（成功 ${tasks.length - failedCount} / 失败 ${failedCount}）`,
+          text: `${tasks.length} 个 subagent 已全部返航（成功 ${tasks.length - failedCount - approvalCount} / 失败 ${failedCount} / 等待权限 ${approvalCount}）`,
         }],
         details: { phase: "done", results },
       });
@@ -169,7 +263,7 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{
           type: "text",
-          text: `subagent 全部返航（${tasks.length - failedCount}/${tasks.length} 成功）：\n\n${lines.join("\n\n")}`,
+          text: `subagent 全部返航（${tasks.length - failedCount - approvalCount}/${tasks.length} 成功，失败 ${failedCount}，等待权限 ${approvalCount}）：\n\n${lines.join("\n\n")}`,
         }],
         details: { results },
       };
@@ -228,112 +322,4 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ═══════════════════════════
-  // /trident-models — 查看/切换模型路由
-  // ═══════════════════════════
-
-  pi.registerCommand("trident-models", {
-    description: "查看/切换三叉戟模型路由配置",
-    handler: async (args, ctx) => {
-      if (!fs.existsSync(ROLES_PATH)) {
-        ctx.ui.notify("providers.roles.toml 不存在。", "warning");
-        return;
-      }
-
-      const content = fs.readFileSync(ROLES_PATH, "utf-8");
-      const roles = parseRolesToml(content);
-
-      if (args) {
-        const parts = args.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const [role, model] = [parts[0], parts.slice(1).join(" ")];
-          if (roles[role] !== undefined) {
-            const newContent = content.replace(
-              new RegExp(`^${role}\\s*=\\s*.*$`, "m"),
-              `${role} = "${model}"`,
-            );
-            fs.writeFileSync(ROLES_PATH, newContent, "utf-8");
-            ctx.ui.notify(`${role} → ${model}`, "info");
-          } else {
-            ctx.ui.notify(`未知角色：${role}。可用：${Object.keys(roles).join(", ")}`, "error");
-          }
-        }
-        return;
-      }
-
-      const lines = ["当前模型路由："];
-      for (const [role, model] of Object.entries(roles)) {
-        lines.push(`  ${role} → ${model}`);
-      }
-      ctx.ui.notify(lines.join("\n"), "info");
-    },
-  });
-
-  // ═══════════════════════════
-  // /gui:trident-setup — GUI 选模型
-  // ═══════════════════════════
-
-  pi.registerCommand("gui:trident-setup", {
-    description: "GUI：选择模型配置三叉戟路由",
-    handler: async (_args, ctx) => {
-      if (!findGuiBinary()) {
-        ctx.ui.notify("未找到 wails-gui，请先构建", "error");
-        return;
-      }
-
-      const examplePath = path.join(os.homedir(), ".pi", "agent", "providers.roles.example.toml");
-
-      const allModels = ctx.modelRegistry.getAll();
-      if (allModels.length === 0) {
-        ctx.ui.notify("未找到可用模型。请先配置 providers。", "error");
-        return;
-      }
-
-      const models = allModels.map((m) => ({
-        value: `${m.provider}/${m.id}`,
-        name: m.name || m.id,
-      }));
-
-      let roles: Record<string, string> = {};
-      try {
-        if (fs.existsSync(ROLES_PATH)) {
-          roles = parseRolesToml(fs.readFileSync(ROLES_PATH, "utf-8"));
-        } else if (fs.existsSync(examplePath)) {
-          roles = parseRolesToml(fs.readFileSync(examplePath, "utf-8"));
-        }
-      } catch {}
-
-      ctx.ui.notify("正在启动模型选择器...", "info");
-
-      const result = await runGuiWindow("setup", { models, roles }, { timeoutMs: 120_000 });
-
-      if (!result.ok || result.data?.cancelled) {
-        ctx.ui.notify("已取消。", "warning");
-        return;
-      }
-
-      if (!result.data.roles) {
-        ctx.ui.notify("无效的响应。", "error");
-        return;
-      }
-
-      let toml = "# 三叉戟模型路由配置\n# 由 /gui:trident-setup 生成\n\n[roles]\n";
-      for (const role of ["oc", "worker"]) {
-        if (result.data.roles[role]) {
-          toml += `${role} = "${result.data.roles[role]}"\n`;
-        }
-      }
-
-      try {
-        if (fs.existsSync(ROLES_PATH)) {
-          const original = fs.readFileSync(ROLES_PATH, "utf-8");
-          const workersMatch = original.match(/\[workers\.\w+\][\s\S]*/);
-          if (workersMatch) toml += "\n" + workersMatch[0];
-        }
-      } catch {}
-
-      fs.writeFileSync(ROLES_PATH, toml, "utf-8");
-      ctx.ui.notify("配置已保存到 providers.roles.toml，/reload 生效", "info");
-    },
-  });
 }

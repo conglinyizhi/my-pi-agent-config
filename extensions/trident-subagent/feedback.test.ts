@@ -8,12 +8,20 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { buildToolsFromNames, readFeedbackState, writeFeedbackState } from "./feedback.ts";
+import { buildSafeWorkerTools, buildToolsFromNames, readFeedbackState, writeFeedbackState } from "./feedback.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 
 describe("feedback mode", () => {
+  it("普通 worker 只保留文件/bash/be-*，排除联网与 MCP 工具", () => {
+    const tools = buildSafeWorkerTools([
+      "read", "write", "edit", "bash", "grep", "find", "ls",
+      "be-read", "web_search_agent", "mcp", "mcpScript", "subagent",
+    ]);
+    assert.deepStrictEqual(tools, ["bash", "be-read", "edit", "find", "grep", "ls", "read", "write"]);
+  });
+
   it("从活跃工具名构造白名单（read + bash + be-*）", () => {
     const r = buildToolsFromNames(["read", "bash", "be-read", "be-replace", "edit", "write", "be-insert"]);
     assert.deepStrictEqual(r.tools, ["read", "bash", "be-insert", "be-read", "be-replace"]);
