@@ -65,3 +65,6 @@ extensions/opencode-free/models.json
 
 # wails-gui 根目录构建产物
 wails-gui/wails-gui
+
+# message-page 本机偏好（上次选择的模型，不入库）
+message-page-model.toml

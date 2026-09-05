@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readLastModel } from "./prefs.ts";
 
 const BACK_LABEL = "← 返回上一级";
 
@@ -26,6 +27,13 @@ export async function pickModel(
     return available[0];
   }
 
+  // 上次选择的模型（若仍可用且已认证，则作为快捷项）
+  const last = await readLastModel();
+  const lastModel = last
+    ? available.find((m) => m.provider === last.provider && m.id === last.id)
+    : undefined;
+  const lastLabel = lastModel ? `上次选择：${lastModel.provider}/${lastModel.id}` : undefined;
+
   // 按供应商分组，保持稳定顺序
   const providers = Array.from(new Set(available.map((m) => m.provider))).sort();
 
@@ -35,8 +43,13 @@ export async function pickModel(
       const count = available.filter((m) => m.provider === p).length;
       return `${p}（${count} 个模型）`;
     });
-    const chosenProv = await ctx.ui.select("选择供应商：", provLabels);
+    // 把“上次选择”放在列表首位，选中即一键用它
+    const labels = lastLabel ? [lastLabel, ...provLabels] : provLabels;
+    const chosenProv = await ctx.ui.select("选择供应商：", labels);
     if (chosenProv === undefined) return undefined; // 用户取消
+    if (lastLabel && chosenProv === lastLabel && lastModel) {
+      return lastModel; // 一键用上次选择
+    }
     const prov = providers[provLabels.indexOf(chosenProv)];
     if (!prov) continue;
 

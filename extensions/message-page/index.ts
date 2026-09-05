@@ -6,6 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { markdownToHtml } from "./src/markdown.ts";
 import { extractDecisions, type DecisionCheck } from "./src/cards.ts";
 import { pickModel } from "./src/model.ts";
+import { writeLastModel } from "./src/prefs.ts";
 import { renderPage, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
 import { openInBrowser } from "./src/open.ts";
 
@@ -118,6 +119,9 @@ export default function (pi: ExtensionAPI) {
         model = await pickModel(ctx);
         if (!model) return;
       }
+
+      // 记录本次选择的模型，供下次“上次选择”快捷项使用（--model 与选择器都算）
+      await writeLastModel(model.provider, model.id);
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在用大模型提炼决策卡片…", "info");
