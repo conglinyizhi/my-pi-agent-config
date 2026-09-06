@@ -18,6 +18,7 @@ export type SelectableModel = Model<Api>;
 export const DEFAULT_MODEL_SCOPE = "default";
 export const MODEL_SELECTION_SCOPE = "model-selection";
 export const MESSAGE_PAGE_SCOPE = "message-page";
+export const SUBAGENT_MODEL_SCOPE = "subagent";
 
 export interface LastModel {
   provider: string;
@@ -25,6 +26,8 @@ export interface LastModel {
 }
 
 export interface ScopedModelPreferences {
+  /** 该功能实际采用的独立默认模型；未设置时由调用方回退。 */
+  selected?: LastModel;
   recent: LastModel[];
   pinned: LastModel[];
 }
@@ -53,6 +56,7 @@ const PIN_SELECT_LABEL = "选择这个置顶模型";
 const PIN_UNPIN_SCOPE_LABEL = "取消当前功能置顶";
 const PIN_UNPIN_GLOBAL_LABEL = "取消所有功能置顶";
 const PIN_BACK_LABEL = "返回上一级";
+const CLEAR_SELECTED_MODEL_LABEL = "恢复继承当前 session 模型";
 
 function modelKey(model: LastModel): string {
   return `${model.provider}/${model.id}`;
@@ -78,15 +82,19 @@ function parseModelList(value: unknown): LastModel[] {
 
 function normalizeScope(value: unknown): ScopedModelPreferences {
   const obj = (value && typeof value === "object" ? value : {}) as {
+    selected?: unknown;
     recent?: unknown;
     last?: unknown;
     pinned?: unknown;
   };
+  const selected = parseStoredModel(obj.selected)
+    ?? (typeof obj.selected === "string" ? parseModelSpec(obj.selected) : undefined);
   const legacyLast = parseStoredModel(obj.last)
     ?? (typeof obj.last === "string" ? parseModelSpec(obj.last) : undefined);
   const recent = parseModelList(obj.recent);
   if (legacyLast && !recent.some((model) => modelKey(model) === modelKey(legacyLast))) recent.unshift(legacyLast);
   return {
+    selected,
     recent: recent.slice(0, MAX_RECENT_MODELS),
     pinned: parseModelList(obj.pinned),
   };
@@ -132,17 +140,15 @@ function normalizePreferences(value: unknown): ModelPreferences {
 }
 
 function scopePreferences(preferences: ModelPreferences, scope: string): ScopedModelPreferences {
-  // 旧 root 格式被归入 default；新 scope 尚未写入时允许继承一次旧偏好。
-  // 新 scope 一旦形成自己的记录，之后便完全隔离。
-  return preferences.scopes[scope]
-    ?? (scope !== DEFAULT_MODEL_SCOPE ? preferences.scopes[DEFAULT_MODEL_SCOPE] : undefined)
-    ?? { recent: [], pinned: [] };
+  // 每个插件 scope 必须真正隔离；旧 root 偏好只归入 default，不向新插件串入。
+  return preferences.scopes[scope] ?? { recent: [], pinned: [] };
 }
 
 function serializedPreferences(preferences: ModelPreferences): Record<string, unknown> {
   const scopes: Record<string, unknown> = {};
   for (const [scope, entry] of Object.entries(preferences.scopes)) {
     scopes[scope] = {
+      ...(entry.selected ? { selected: modelKey(entry.selected) } : {}),
       recent: entry.recent.slice(0, MAX_RECENT_MODELS).map(modelKey),
       pinned: entry.pinned.map(modelKey),
     };
@@ -206,12 +212,52 @@ export async function readLastModel(scope = DEFAULT_MODEL_SCOPE): Promise<LastMo
   return (await readScopedModelPreferences(scope)).recent[0];
 }
 
+export async function readSelectedModel(scope: string): Promise<LastModel | undefined> {
+  return (await readScopedModelPreferences(scope)).selected;
+}
+
+export type PreferredModelSpec = {
+  spec: string;
+  source: "explicit" | "scoped-default" | "session";
+};
+
+/** 只决定优先级，不解析 registry：显式参数 > 功能独立默认 > 当前 session。 */
+export function preferredModelSpec(
+  explicitSpec: string | undefined,
+  scopedSelected: LastModel | undefined,
+  sessionSpec: string | undefined,
+): PreferredModelSpec | undefined {
+  if (explicitSpec !== undefined) return { spec: explicitSpec.trim(), source: "explicit" };
+  if (scopedSelected) return { spec: modelKey(scopedSelected), source: "scoped-default" };
+  if (sessionSpec) return { spec: sessionSpec, source: "session" };
+  return undefined;
+}
+
+export function withSelectedModel(
+  preferences: ModelPreferences,
+  scope: string,
+  model?: LastModel,
+): ModelPreferences {
+  const next = clonePreferences(preferences);
+  const current = scopePreferences(next, scope);
+  next.scopes[scope] = { ...current, selected: model };
+  return next;
+}
+
+/** 设置或清除某功能的独立默认模型，不影响 recent / pinned。 */
+export function writeSelectedModel(scope: string, model?: LastModel): Promise<void> {
+  return enqueuePreferenceWrite(async () => {
+    const preferences = withSelectedModel(await readModelPreferencesFile(), scope, model);
+    await writeModelPreferencesFile(preferences);
+  });
+}
+
 function clonePreferences(preferences: ModelPreferences): ModelPreferences {
   return {
     globalPinned: [...preferences.globalPinned],
     scopes: Object.fromEntries(Object.entries(preferences.scopes).map(([scope, entry]) => [
       scope,
-      { recent: [...entry.recent], pinned: [...entry.pinned] },
+      { selected: entry.selected, recent: [...entry.recent], pinned: [...entry.pinned] },
     ])),
   };
 }
@@ -540,9 +586,11 @@ export async function pickModel(
   return choice.model;
 }
 
+export type ModelSelectionFailureReason = "cancelled" | "invalid_spec" | "not_found" | "unauthenticated";
+
 export type ModelSelectionResult =
   | { ok: true; model: SelectableModel; pinScope?: "scope" | "global" }
-  | { ok: false; reason: "cancelled" | "invalid_spec" | "not_found" | "unauthenticated" };
+  | { ok: false; reason: ModelSelectionFailureReason };
 
 /** 解析并验证一个显式 provider/model；不打开模型列表。 */
 export function resolveConfiguredModel(ctx: ExtensionContext, spec: string): ModelSelectionResult {
@@ -590,6 +638,42 @@ export async function selectModel(
     await recordModelSelection(selected.model.provider, selected.model.id, scope);
   }
   return { ok: true, model: selected.model, pinScope: selected.pinScope };
+}
+
+export type ScopedDefaultModelSelectionResult =
+  | { ok: true; action: "selected"; model: SelectableModel }
+  | { ok: true; action: "inherit" }
+  | { ok: false; reason: ModelSelectionFailureReason };
+
+/**
+ * 为某功能选择独立默认模型。无显式 spec 时，选择器顶部可恢复继承 fallbackLabel。
+ * 本函数只写 scope.selected 和该 scope 的选择偏好，不修改当前 session。
+ */
+export async function selectScopedDefaultModel(
+  ctx: ExtensionContext,
+  scope: string,
+  spec?: string,
+  fallbackLabel = "当前 session 模型",
+): Promise<ScopedDefaultModelSelectionResult> {
+  if (!spec?.trim() && ctx.hasUI) {
+    const current = await readSelectedModel(scope);
+    const first = await ctx.ui.select(
+      current
+        ? `当前独立模型：${modelKey(current)}。选择操作：`
+        : `当前未设置独立模型，将继承${fallbackLabel}。选择操作：`,
+      ["选择或更换独立模型", CLEAR_SELECTED_MODEL_LABEL, CANCEL_LABEL],
+    );
+    if (first === CLEAR_SELECTED_MODEL_LABEL) {
+      await writeSelectedModel(scope, undefined);
+      return { ok: true, action: "inherit" };
+    }
+    if (first !== "选择或更换独立模型") return { ok: false, reason: "cancelled" };
+  }
+
+  const selected = await selectModel(ctx, spec, { scope });
+  if (!selected.ok) return selected;
+  await writeSelectedModel(scope, { provider: selected.model.provider, id: selected.model.id });
+  return { ok: true, action: "selected", model: selected.model };
 }
 
 /**

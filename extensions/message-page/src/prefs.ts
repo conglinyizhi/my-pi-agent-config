@@ -6,8 +6,11 @@ export {
   readLastModel,
   readModelPreferences,
   readScopedModelPreferences,
+  readSelectedModel,
+  selectScopedDefaultModel,
   unpinModel,
   writeLastModel,
   writeModelPreferences,
+  writeSelectedModel,
 } from "../../../lib/model-selection.ts";
-export type { LastModel, ModelPreferences, ScopedModelPreferences } from "../../../lib/model-selection.ts";
+export type { LastModel, ModelPreferences, ScopedDefaultModelSelectionResult, ScopedModelPreferences } from "../../../lib/model-selection.ts";

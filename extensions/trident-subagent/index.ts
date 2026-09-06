@@ -2,7 +2,8 @@
 //
 // subagent({ task: string | Brief | (string | Brief)[], skills?: string[] })：主 agent 整理好完整任务简报后调用，
 // 同步等待全部 worker 返航（success/failed/aborted/timeout 逐项汇报）。
-// 模型直接用当前会话模型（ctx.model），也可按本次调用用 model 覆盖；skills 可按简报逐 worker 指定。
+// 默认模型优先级：显式 model > subagent 独立默认 > 当前会话模型；可由用户命令设置独立默认。
+// skills 可按简报逐 worker 指定。
 // /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
 // /gui:subagents：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
@@ -17,7 +18,14 @@ import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildTools
 import { runBatch, type BatchItemResult } from "./batch.ts";
 import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
-import { resolveConfiguredModel, modelLabel } from "../../lib/model-selection.ts";
+import {
+  SUBAGENT_MODEL_SCOPE,
+  modelLabel,
+  preferredModelSpec,
+  readSelectedModel,
+  resolveConfiguredModel,
+  selectScopedDefaultModel,
+} from "../../lib/model-selection.ts";
 import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
@@ -98,6 +106,36 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ═══════════════════════════
+  // subagent model — 用户侧独立 worker 模型设置
+  // ═══════════════════════════
+
+  const workerModelCommand = {
+    description: "选择、切换或恢复 subagent 默认 worker 模型（不改变当前 session）：[provider/model]",
+    handler: async (args: string, ctx: ExtensionContext) => {
+      const result = await selectScopedDefaultModel(
+        ctx,
+        SUBAGENT_MODEL_SCOPE,
+        args.trim() || undefined,
+        "当前 session 模型",
+      );
+      if (!ctx.hasUI) return;
+      if (!result.ok) {
+        if (result.reason !== "cancelled") ctx.ui.notify("subagent 默认模型选择失败，请检查 provider/model 和认证。", "warning");
+        return;
+      }
+      if (result.action === "inherit") {
+        ctx.ui.notify("subagent 已恢复继承当前 session 模型", "info");
+      } else {
+        ctx.ui.notify(`subagent 默认 worker 模型：${modelLabel(result.model)}（不改变当前 session）`, "info");
+      }
+    },
+  };
+  pi.registerCommand("subagent:select-default-worker-model", workerModelCommand);
+  pi.registerCommand("subagent:change-default-worker-model", workerModelCommand);
+  pi.registerCommand("subagent:switch-default-worker-model", workerModelCommand);
+  pi.registerCommand("subagent:select-change-switch-default-worker-model", workerModelCommand);
+
+  // ═══════════════════════════
   // subagent — 唯一派发入口（同步并发）
   // ═══════════════════════════
 
@@ -111,7 +149,7 @@ export default function (pi: ExtensionAPI) {
       "不要把用户原话原封不动转发；先整理成 worker 可直接执行的完整简报。",
       "复杂任务优先传结构化 task：objective 必填；context 写已知现状；constraints 写边界；required_files 写必看文件；skills 只填确实需要的 skill；acceptance 写可验证标准；output_format 写回报格式。",
       "如果多个任务互相独立，传结构化对象数组并行执行；每项都要自洽，不能依赖主 agent 中途补背景。",
-      "可选 model 参数使用 provider/model 覆盖本次 worker 模型；不传时继承当前主 session 模型。只影响本次 worker，不修改主 session。",
+      "模型优先级是：显式 model 参数 > 用户通过 /subagent:select-change-switch-default-worker-model 设置的独立默认 > 当前主 session 模型。显式参数只影响本次 worker；独立默认不修改主 session。",
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
       "工具同步阻塞直到所有 worker 结束；一个失败不终止其他 worker，逐项汇报。",
@@ -150,7 +188,7 @@ export default function (pi: ExtensionAPI) {
       ),
       model: Type.Optional(
         Type.String({
-          description: "可选：worker 使用的已注册模型，格式 provider/model；不传则继承当前主 session 模型。",
+          description: "可选：worker 使用的已注册模型，格式 provider/model；不传时按独立默认 worker 模型，再回退到当前主 session 模型。",
         }),
       ),
     }),
@@ -164,20 +202,30 @@ export default function (pi: ExtensionAPI) {
       const tasks = normalized.map((brief) => brief.task);
       const workerSkills = normalized.map((brief) => resolveSkillPaths(brief.skills));
 
-      // 模型不再从配置文件决定：直接用当前会话模型作为 subagent 模型
-      let workerModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
-      if (params.model !== undefined) {
-        const requestedModel = typeof params.model === "string" ? params.model.trim() : "";
-        const selected = requestedModel
-          ? resolveConfiguredModel(ctx, requestedModel)
-          : { ok: false as const, reason: "invalid_spec" as const };
+      const scopedDefault = await readSelectedModel(SUBAGENT_MODEL_SCOPE);
+      const sessionModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+      const preferred = preferredModelSpec(
+        params.model,
+        scopedDefault,
+        sessionModel,
+      );
+      let workerModel = "";
+      if (preferred) {
+        const selected = resolveConfiguredModel(ctx, preferred.spec);
         if (!selected.ok) {
+          const source = preferred.source === "scoped-default" ? "subagent 独立默认" : "worker";
           const reason = selected.reason === "unauthenticated"
-            ? `worker 模型未配置认证：${requestedModel}`
-            : `找不到 worker 模型 ${requestedModel || "（空）"}。请使用已注册的 provider/model。`;
+            ? `${source}模型未配置认证：${preferred.spec}`
+            : selected.reason === "invalid_spec"
+              ? `${source}模型格式无效：${preferred.spec || "（空）"}`
+              : `找不到${source}模型 ${preferred.spec}。请使用已注册的 provider/model。`;
           return {
             content: [{ type: "text", text: `错误：${reason}` }],
-            details: { error: `worker_model_${selected.reason}`, model: requestedModel },
+            details: {
+              error: `worker_model_${selected.reason}`,
+              model: preferred.spec,
+              source: preferred.source,
+            },
           };
         }
         workerModel = modelLabel(selected.model);

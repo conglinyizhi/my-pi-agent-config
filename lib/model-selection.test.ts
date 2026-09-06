@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   getAvailableModels,
   orderAvailableModelsForPreferences,
+  preferredModelSpec,
   pinnedModelActionOptions,
   selectModel,
   parseModelSpec,
@@ -10,6 +11,7 @@ import {
   setCurrentSessionModel,
   withPinnedModel,
   withRecordedModel,
+  withSelectedModel,
   withUnpinnedModel,
   type ModelPreferences,
 } from "./model-selection.ts";
@@ -93,6 +95,7 @@ describe("model selection shared utilities", () => {
     preferences = withPinnedModel(preferences, { provider: "alpha", id: "slow" }, "tool-a", "scope");
     preferences = withRecordedModel(preferences, { provider: "beta", id: "vision" }, "tool-b");
     assert.deepEqual(preferences.scopes["tool-a"], {
+      selected: undefined,
       recent: [{ provider: "alpha", id: "fast" }],
       pinned: [{ provider: "alpha", id: "slow" }],
     });
@@ -106,8 +109,8 @@ describe("model selection shared utilities", () => {
     let preferences: ModelPreferences = {
       globalPinned: [],
       scopes: {
-        "tool-a": { recent: [{ provider: "beta", id: "vision" }], pinned: [] },
-        "tool-b": { recent: [{ provider: "beta", id: "vision" }], pinned: [] },
+        "tool-a": { selected: undefined, recent: [{ provider: "beta", id: "vision" }], pinned: [] },
+        "tool-b": { selected: undefined, recent: [{ provider: "beta", id: "vision" }], pinned: [] },
       },
     };
     preferences = withPinnedModel(preferences, { provider: "beta", id: "vision" }, "tool-a", "global");
@@ -116,6 +119,30 @@ describe("model selection shared utilities", () => {
     assert.deepEqual(preferences.scopes["tool-b"].recent, []);
     preferences = withUnpinnedModel(preferences, { provider: "beta", id: "vision" }, "tool-a", "global");
     assert.deepEqual(preferences.globalPinned, []);
+  });
+
+  it("uses explicit worker model before scoped default before session model", () => {
+    assert.deepEqual(preferredModelSpec("explicit/model", { provider: "saved", id: "model" }, "session/model"), {
+      spec: "explicit/model", source: "explicit",
+    });
+    assert.deepEqual(preferredModelSpec(undefined, { provider: "saved", id: "model" }, "session/model"), {
+      spec: "saved/model", source: "scoped-default",
+    });
+    assert.deepEqual(preferredModelSpec(undefined, undefined, "session/model"), {
+      spec: "session/model", source: "session",
+    });
+  });
+
+  it("stores an independent selected model without changing recent or pinned", () => {
+    const initial: ModelPreferences = {
+      globalPinned: [],
+      scopes: { "tool-a": { selected: undefined, recent: [], pinned: [] } },
+    };
+    const selected = withSelectedModel(initial, "tool-a", { provider: "alpha", id: "fast" });
+    assert.deepEqual(selected.scopes["tool-a"].selected, { provider: "alpha", id: "fast" });
+    assert.deepEqual(selected.scopes["tool-a"].recent, []);
+    const inherited = withSelectedModel(selected, "tool-a");
+    assert.equal(inherited.scopes["tool-a"].selected, undefined);
   });
 
   it("offers select, matching unpin actions, and back for pinned models", () => {

@@ -39,6 +39,15 @@ const model = selected.model;
 
 不要自行读写 TOML，也不要省略 scope；共享库负责确认、置顶、取消置顶、最近列表去重和原子写入。
 
+subagent 有额外的独立默认 worker 模型入口：
+
+```text
+/subagent:select-change-switch-default-worker-model
+/subagent:select-default-worker-model provider/model
+```
+
+其模型优先级是：显式 `subagent.model` > 独立默认 > 当前 session。独立默认保存在 `[scopes.subagent].selected`，选择器内可选择“恢复继承当前 session 模型”；该操作不修改当前 session。
+
 重要语义：
 
 - 只调用 pi 的 `setModel`，覆盖当前 session；
