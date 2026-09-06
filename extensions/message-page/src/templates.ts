@@ -31,7 +31,7 @@ function escapeHtml(s: string): string {
 /** 给原文顶层 block 生成 src-N 锚点 id，供“更多决策信息”跳转定位。 */
 function addAnchors(html: string): string {
   let n = 0;
-  return html.replace(/<(h1|h2|h3|h4|h5|p|pre|blockquote|table|ul|ol|div)([^>]*)>/g, (m, tag, attrs) => {
+  return html.replace(/<(h1|h2|h3|h4|h5|pre|p|blockquote|table|ul|ol|div)([^<>]*)>/g, (m, tag, attrs) => {
     if (/\bid=/.test(attrs)) return m;
     return `<${tag} id="src-${n++}"${attrs}>`;
   });
