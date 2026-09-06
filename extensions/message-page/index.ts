@@ -7,7 +7,7 @@ import { markdownToHtml } from "./src/markdown.ts";
 import { extractDecisions, type DecisionCheck } from "./src/cards.ts";
 import { pickModel } from "./src/model.ts";
 import { writeLastModel } from "./src/prefs.ts";
-import { renderPage, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
+import { renderPage, splitMarkdownByHeadings, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
 import { openInBrowser } from "./src/open.ts";
 
 const OUTPUT_DIR = join(homedir(), ".pi", "message-pages");
@@ -84,7 +84,7 @@ function slugify(title: string | undefined, fallback: string): string {
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("gen-page-use-latest-msg", {
     description:
-      "把最后一条 AI 消息渲染成网页（markdown + 代码高亮 + 决策卡片）。用法：/gen-page-use-latest-msg [模板] [go] [--model provider/model]",
+      "把最后一条 AI 消息渲染成网页（markdown + 代码高亮 + 决策卡片 + 折叠大纲）。用法：/gen-page-use-latest-msg [模板] [go] [--model provider/model]",
     getArgumentCompletions: (prefix) => {
       const items = [
         ...TEMPLATE_SET.map((t) => ({ value: t, label: `模板: ${t}` })),
@@ -142,8 +142,11 @@ export default function (pi: ExtensionAPI) {
         check = { hasDecision: true, cards: { decisions: [] } };
       }
 
-      // 非强制模式下，模型判定无需用户决策 → 不生成 HTML，直接提示
-      if (!check.hasDecision && !force) {
+      // 模型提炼的分区摘要大纲（有决策时在 cards.sections；无决策长文也可能有）
+      const sections = check.hasDecision ? check.cards.sections : check.sections;
+
+      // 非强制模式：无决策且没有可折叠大纲 → 视为无需决策，不生成 HTML
+      if (!check.hasDecision && !force && (!sections || sections.length < 2)) {
         const reason = check.reason;
         if (ctx.hasUI) {
           ctx.ui.notify(`这条消息不需要你决策：${reason}`, "info");
@@ -153,7 +156,9 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       // go 模式：即使模型判无决策，也强制生成页面
-      const cards = check.hasDecision ? check.cards : { decisions: [] };
+      const cardResult = check.hasDecision
+        ? check.cards
+        : { decisions: [], sections: sections ?? [] };
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在渲染网页…", "info");
@@ -161,10 +166,19 @@ export default function (pi: ExtensionAPI) {
 
       const bodyHtml = markdownToHtml(message);
 
+      // 按标题切分原文成折叠分区；仅当有清晰结构（≥2 块）或模型给了大纲时才用大纲
+      const parts = splitMarkdownByHeadings(message);
+      const hasOutline = parts.length >= 2 || (sections && sections.length >= 2);
+      const blocks: { title?: string; bodyHtml: string }[] | undefined = hasOutline
+        ? parts.map((p) => ({ title: p.heading, bodyHtml: markdownToHtml(p.bodyMd) }))
+        : undefined;
+
       const data: PageData = {
-        title: cards.title,
-        summary: cards.summary,
-        decisions: cards.decisions,
+        title: cardResult.title,
+        summary: cardResult.summary,
+        decisions: cardResult.decisions,
+        sections,
+        blocks,
         bodyHtml,
         modelLabel: `${model.provider}/${model.id}`,
         timestamp: Date.now(),
@@ -173,13 +187,13 @@ export default function (pi: ExtensionAPI) {
       const html = renderPage(data);
 
       await mkdir(OUTPUT_DIR, { recursive: true });
-      const slug = slugify(cards.title, "last-ai-message");
+      const slug = slugify(cardResult.title, "last-ai-message");
       const filename = `${Date.now()}_${slug}.html`;
       const filePath = join(OUTPUT_DIR, filename);
       await writeFile(filePath, html, "utf8");
 
       const opened = await openInBrowser(pi, filePath);
-      const cardCount = cards.decisions.length;
+      const cardCount = cardResult.decisions.length;
 
       if (ctx.hasUI) {
         ctx.ui.notify(

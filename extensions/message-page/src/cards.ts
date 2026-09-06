@@ -17,16 +17,24 @@ export interface Decision {
   cannotDecide?: string;
 }
 
+/** 原文某个板块的折叠摘要大纲：heading 精炼标题 + gist 一句话概括。 */
+export interface SectionGist {
+  heading: string;
+  gist: string;
+}
+
 export interface CardResult {
   title?: string;
   summary?: string;
   decisions: Decision[];
+  /** 原文的分区摘要大纲，供页面做“先看核心、点开看细节”的折叠导航 */
+  sections?: SectionGist[];
 }
 
 /** 模型对“是否真的有决策内容”的判定结果：要么有卡片，要么无需决策（带理由）。 */
 export type DecisionCheck =
   | { hasDecision: true; cards: CardResult }
-  | { hasDecision: false; reason: string };
+  | { hasDecision: false; reason: string; sections?: SectionGist[] };
 
 function normalizeDecision(raw: Record<string, unknown>): Decision | null {
   if (typeof raw.question !== "string" || !raw.question.trim()) {
@@ -54,6 +62,21 @@ function normalizeDecision(raw: Record<string, unknown>): Decision | null {
     source,
     cannotDecide,
   };
+}
+
+/** 解析模型输出的 sections 大纲：heading + gist 都非空才保留，最多 8 个。 */
+function normalizeSections(raw: unknown): SectionGist[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SectionGist[] = [];
+  for (const item of raw) {
+    if (out.length >= 8) break;
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const heading = typeof o.heading === "string" ? o.heading.trim() : "";
+    const gist = typeof o.gist === "string" ? o.gist.trim() : "";
+    if (heading && gist) out.push({ heading, gist });
+  }
+  return out;
 }
 
 /**
@@ -97,7 +120,7 @@ export function parseDecisionCheck(raw: string): DecisionCheck {
       typeof args.reason === "string" && args.reason.trim()
         ? args.reason.trim()
         : "该消息无需用户决策";
-    return { hasDecision: false, reason };
+    return { hasDecision: false, reason, sections: normalizeSections(o.sections) };
   }
 
   // 严格 JSON：hasDecision 为 false
@@ -106,7 +129,7 @@ export function parseDecisionCheck(raw: string): DecisionCheck {
       typeof o.reason === "string" && o.reason.trim()
         ? o.reason.trim()
         : "该消息无需用户决策";
-    return { hasDecision: false, reason };
+    return { hasDecision: false, reason, sections: normalizeSections(o.sections) };
   }
 
   // 有决策：解析卡片
@@ -122,6 +145,7 @@ export function parseDecisionCheck(raw: string): DecisionCheck {
       title: typeof o.title === "string" ? o.title : undefined,
       summary: typeof o.summary === "string" ? o.summary : undefined,
       decisions,
+      sections: normalizeSections(o.sections),
     },
   };
 }
@@ -142,6 +166,7 @@ function buildPrompt(md: string): string {
     '  no_decision 的参数：reason 字符串，说明为什么不需要用户决策（例如：这只是一条完成通知）',
     '  工具调用形式：{"tool": "no_decision", "args": {"reason": "..."}}',
     '  若你所在的环境不支持调用工具，则直接返回严格 JSON：{"hasDecision": false, "reason": "..."}',
+    "  若消息较长、有清晰结构分区，即便无需用户决策，也请同时附上 sections 大纲（供页面折叠阅读）；这种情况 hasDecision/reason 仍按实返回。",
     "",
     "若【确实有需要用户决策的内容】，请返回如下 JSON（禁止 markdown 围栏、禁止任何解释文字）：",
     "{",
@@ -159,9 +184,16 @@ function buildPrompt(md: string): string {
     '      "cannotDecide": "可选：当用户可能选“我无法决策”时，写一段详细说明（为什么暂时难以拍板、还缺什么信息、有什么权衡）",',
     "    }",
     "  ]",
+    '  "sections": [',
+    "    {",
+    '      "heading": "板块标题（精炼，≤12字）",',
+    '      "gist": "一句话概括这一板块在说什么（中文；可含最关键的代号/命令/结论）",',
+    "    }",
+    "  ]",
     "}",
     "",
     "规则：question/options/recommendation/reasoning 用中文写，简洁；priority 反映这条决策的紧迫或重要程度。",
+    "sections 是可选的原文分区摘要大纲（2~6 个，按原文内容顺序），用于页面做“先看核心、点开看细节”的折叠导航：heading 精炼、gist 用一句话概括这一板块的核心；若消息很短、没有清晰分区，可省略 sections。",
     "cannotDecide 要用大段落（1~3 段连贯文字）而不是逐条小段落或列表来写，以节省页面纵向空间；只有消息里确实体现出用户可能缺少信息才能决定时，才提供该字段，否则省略。",
     "",
     "<message>",
@@ -194,9 +226,16 @@ function buildForcePrompt(md: string): string {
     '      "cannotDecide": "可选：当用户可能选“我无法决策”时，写一段详细说明（为什么暂时难以拍板、还缺什么信息、有什么权衡）",',
     "    }",
     "  ]",
+    '  "sections": [',
+    "    {",
+    '      "heading": "板块标题（精炼，≤12字）",',
+    '      "gist": "一句话概括这一板块在说什么（中文；可含最关键的代号/命令/结论）",',
+    "    }",
+    "  ]",
     "}",
     "",
     "规则：question/options/recommendation/reasoning 用中文写，简洁；priority 反映这条决策的紧迫或重要程度。",
+    "sections 是可选的原文分区摘要大纲（2~6 个，按原文内容顺序），用于页面做“先看核心、点开看细节”的折叠导航：heading 精炼、gist 用一句话概括这一板块的核心；若消息很短、没有清晰分区，可省略 sections。",
     "cannotDecide 要用大段落（1~3 段连贯文字）而不是逐条小段落或列表来写，以节省页面纵向空间；只有消息里确实体现出用户可能缺少信息才能决定时，才提供该字段，否则省略。",
     "",
     "<message>",

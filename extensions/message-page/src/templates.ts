@@ -1,16 +1,50 @@
 import { loadHighlightCss, type HighlightTheme } from "./markdown.ts";
-import type { Decision, DecisionPriority } from "./cards.ts";
+import type { Decision, DecisionPriority, SectionGist } from "./cards.ts";
 
 export type TemplateName = "clean" | "cards" | "paper";
+
+export interface BodyBlock {
+  /** 该分区的标题（来自原文标题或模型 heading） */
+  title?: string;
+  /** 该分区的原文渲染后 HTML */
+  bodyHtml: string;
+}
 
 export interface PageData {
   title?: string;
   summary?: string;
   decisions: Decision[];
+  /** 整篇原文的渲染 HTML（无分区时平铺用） */
   bodyHtml: string;
+  /** 模型提炼的分区摘要大纲，用于折叠导航 */
+  sections?: SectionGist[];
+  /** 按标题切分后的原文分区（折叠大纲的骨架） */
+  blocks?: BodyBlock[];
   modelLabel: string;
   timestamp: number;
   template: TemplateName;
+}
+
+/** 按 markdown 顶层标题(1~3级)把原文切成区块，标题作为该区块 heading。 */
+export function splitMarkdownByHeadings(md: string): { heading?: string; bodyMd: string }[] {
+  const lines = md.split("\n");
+  const parts: { heading?: string; bodyMd: string }[] = [];
+  let current: { heading?: string; bodyMd: string[] } = { bodyMd: [] };
+  for (const line of lines) {
+    const m = line.match(/^(#{1,3})\s+(.+)$/);
+    if (m) {
+      if (current.bodyMd.length) {
+        parts.push({ heading: current.heading, bodyMd: current.bodyMd.join("\n") });
+        current = { bodyMd: [] };
+      }
+      current.heading = m[2].replace(/[#*_>]/g, "").trim();
+    } else {
+      current.bodyMd.push(line);
+    }
+  }
+  if (current.bodyMd.length) parts.push({ heading: current.heading, bodyMd: current.bodyMd.join("\n") });
+  if (parts.length === 0) parts.push({ bodyMd: md });
+  return parts;
 }
 
 const PRIORITY: Record<DecisionPriority, { label: string; cls: string }> = {
@@ -28,13 +62,17 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/** 给原文顶层 block 生成 src-N 锚点 id，供“更多决策信息”跳转定位。 */
-function addAnchors(html: string): string {
-  let n = 0;
-  return html.replace(/<(h1|h2|h3|h4|h5|pre|p|blockquote|table|ul|ol|div)([^<>]*)>/g, (m, tag, attrs) => {
+/** 给原文顶层 block 生成 src-N 锚点 id，供“更多决策信息”跳转定位。
+ * 注意 alternation 顺序：`pre` 必须在 `p` 之前，否则 `<pre>` 会被误判成
+ * tag=`p` + attrs=`re`，破坏代码块结构（开 `<p>` 闭 `</pre>`）。
+ * 属性用 `[^<>]` 匹配，避免把相邻标签吞进 attrs。 */
+function addAnchors(html: string, startN = 0): { html: string; count: number } {
+  let n = startN;
+  const out = html.replace(/<(h1|h2|h3|h4|h5|pre|p|blockquote|table|ul|ol|div)([^<>]*)>/g, (m, tag, attrs) => {
     if (/\bid=/.test(attrs)) return m;
     return `<${tag} id="src-${n++}"${attrs}>`;
   });
+  return { html: out, count: n - startN };
 }
 
 /** 提取用于锚点匹配的搜索词：优先 source，否则取 question 去标点。 */
@@ -94,10 +132,45 @@ function decisionCards(decisions: Decision[]): string {
   return `<div class="cards">${cards.join("")}</div>`;
 }
 
+/** 折叠大纲：决策块 + 各原文分区，默认收起。 */
+function renderOutline(
+  blocks: BodyBlock[],
+  sections: SectionGist[],
+  decHtml: string,
+  exportBox: string,
+  decCount: number,
+): string {
+  let acc = 0;
+  const decBlock =
+    decCount > 0
+      ? `<details class="ol ol-dec">
+          <summary class="ol-head">
+            <span class="ol-title">需要你拍板 (${decCount})</span>
+            <span class="ol-gist">有 ${decCount} 个问题需要你确认</span>
+          </summary>
+          <div class="ol-body">${decHtml}${exportBox}</div>
+        </details>`
+      : "";
+  const parts = blocks.map((b, i) => {
+    const a = addAnchors(b.bodyHtml, acc);
+    acc = a.count;
+    const gist = sections[i]?.gist;
+    const title = b.title || sections[i]?.heading || `第 ${i + 1} 部分`;
+    return `<details class="ol">
+      <summary class="ol-head">
+        <span class="ol-title">${escapeHtml(title)}</span>
+        <span class="ol-gist">${gist ? escapeHtml(gist) : "点开查看原文"}</span>
+      </summary>
+      <div class="ol-body"><div class="markdown-body">${a.html}</div></div>
+    </details>`;
+  });
+  return `<section class="outline">${decBlock}${parts.join("")}</section>`;
+}
+
 const INTERACTION_JS = `
 (function(){
   var cards = Array.prototype.slice.call(document.querySelectorAll('.dcard'));
-  var body = document.getElementById('markdown-body');
+  var body = document.querySelector('.outline, #markdown-body');
 
   // 点击选项 → 选中；点已选的可取消；随时可改选（不永久锁定）
   document.addEventListener('click', function(e){
@@ -182,6 +255,8 @@ const INTERACTION_JS = `
       target = body.querySelector('[id^="src-"]');
     }
     if(target){
+      var det = target.closest('details');
+      if(det) det.open = true;
       target.scrollIntoView({behavior:'smooth', block:'center'});
       target.classList.add('flash-highlight');
     }
@@ -259,12 +334,12 @@ const INTERACTION_JS = `
 `;
 
 function shell(
-  { title, summary, decisions, bodyHtml, modelLabel, timestamp, template }: PageData,
+  { title, summary, decisions, bodyHtml, sections, blocks, modelLabel, timestamp, template }: PageData,
   css: string,
 ): string {
   const pageTitle = title ? escapeHtml(title) : "最后一条 AI 消息";
   const timeLabel = new Date(timestamp).toLocaleString("zh-CN");
-  const anchoredBody = addAnchors(bodyHtml);
+  const anchoredBody = addAnchors(bodyHtml).html;
   const decHtml = decisionCards(decisions);
   const exportBox =
     decisions.length > 0
@@ -284,6 +359,17 @@ function shell(
     ? `<p class="summary">${escapeHtml(summary)}</p>`
     : "";
 
+  // 折叠大纲模式：有按标题切分的分区（或模型给了 sections）就优先用大纲，
+  // 决策块并入第一个折叠区，原文各分区各自可折叠，默认全收起。
+  const useOutline = (blocks && blocks.length > 0) || (sections && sections.length > 0);
+  const mainBody = useOutline
+    ? renderOutline(blocks ?? [], sections ?? [], decHtml, exportBox, decisions.length)
+    : `${decSection}
+      <section class="body">
+        <div class="section-label">原文</div>
+        <div class="markdown-body" id="markdown-body">${anchoredBody}</div>
+      </section>`;
+
   return `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -302,11 +388,7 @@ function shell(
       ${summaryBlock}
     </header>
     <main>
-      ${decSection}
-      <section class="body">
-        <div class="section-label">原文</div>
-        <div class="markdown-body" id="markdown-body">${anchoredBody}</div>
-      </section>
+      ${mainBody}
     </main>
     <footer class="foot">— 由 message-page 插件生成 · 决策卡片由大模型提炼，仅供参考 —</footer>
   </div>
@@ -391,6 +473,18 @@ body{margin:0;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering
 .markdown-body th,.markdown-body td{padding:6px 10px;border:1px solid;text-align:left}
 .markdown-body img{max-width:100%;border-radius:8px}
 .markdown-body hr{border:0;border-top:1px solid;margin:2em 0}
+/* 折叠大纲 */
+.outline{display:flex;flex-direction:column;gap:10px}
+details.ol{border:1px solid var(--card-border);border-radius:12px;background:var(--card-bg);overflow:hidden}
+details.ol>summary.ol-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;list-style:none;user-select:none}
+details.ol>summary.ol-head::-webkit-details-marker{display:none}
+details.ol .ol-head::before{content:'';width:9px;height:9px;flex:none;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(-45deg);transition:transform .15s;margin-right:4px}
+details.ol[open]>summary.ol-head::before{transform:rotate(45deg)}
+.ol-title{font-weight:650;font-size:15px;color:var(--fg)}
+.ol-dec .ol-title{color:var(--p-high)}
+.ol-gist{font-size:13px;color:var(--muted);flex:1;text-align:right}
+details.ol>div.ol-body{padding:2px 16px 16px}
+details.ol>div.ol-body>.markdown-body{padding-bottom:8px}
 `;
 
 const MAIN_BODY = `
