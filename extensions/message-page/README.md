@@ -57,7 +57,7 @@
 - `index.ts` — `/gen-page-use-latest-msg` 命令入口
 - `src/markdown.ts` — markdown → HTML + 代码高亮
 - `src/cards.ts` — 决策卡片生成（大模型 + JSON 解析）
-- `src/model.ts` — 模型选择
+- `src/model.ts` — 兼容导出；通用模型选择在 `../../lib/model-selection.ts`
 - `src/templates.ts` — 三套 HTML 模板
 - `src/open.ts` — 浏览器打开
 - `test-render.mts` — 独立渲染回归测试（`tsx extensions/message-page/test-render.mts`）
@@ -67,3 +67,4 @@
 - 扩展通过 `~/.pi/agent/node_modules` 解析 pi / pi-ai 依赖（与仓库其他扩展一致）。
 - 决策卡片用 `@earendil-works/pi-ai/compat` 的 `complete` + `ctx.modelRegistry.getApiKeyAndHeaders` 做嵌套 LLM 调用。
 - 不修改系统提示词 / 工具集，符合 KV 缓存稳定前缀要求。
+- 当前模型选择能力由 `extensions/model-selection` 提供；`/model:select` 与 `set_session_model` 只覆盖当前 session，不修改默认模型配置。

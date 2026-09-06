@@ -5,8 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { markdownToHtml } from "./src/markdown.ts";
 import { extractDecisions, type DecisionCheck } from "./src/cards.ts";
-import { pickModel } from "./src/model.ts";
-import { writeLastModel } from "./src/prefs.ts";
+import { pickModel, resolveModel, writeLastModel } from "../../lib/model-selection.ts";
 import { renderPage, splitMarkdownByHeadings, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
 import { openInBrowser } from "./src/open.ts";
 
@@ -65,14 +64,6 @@ function parseArgs(args: string): { template: TemplateName; modelSpec?: string; 
   return { template, modelSpec, force };
 }
 
-function resolveModelFromSpec(ctx: ExtensionCommandContext, spec: string): Model<Api> | undefined {
-  const slash = spec.indexOf("/");
-  if (slash < 0) return undefined;
-  const provider = spec.slice(0, slash);
-  const id = spec.slice(slash + 1);
-  return ctx.modelRegistry.find(provider, id);
-}
-
 function slugify(title: string | undefined, fallback: string): string {
   const base = (title ?? fallback)
     .replace(/[^\w\u4e00-\u9fa5-]+/g, "-")
@@ -110,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 
       let model: Model<Api> | undefined;
       if (modelSpec) {
-        model = resolveModelFromSpec(ctx, modelSpec);
+        model = resolveModel(ctx, modelSpec);
         if (!model) {
           if (ctx.hasUI) ctx.ui.notify(`模型解析失败：${modelSpec}`, "warning");
           return;

@@ -30,13 +30,15 @@ pi
 
 **session-browse** — 跨 workdir 浏览与恢复历史 session。`/sessions` 命令列出所有对话，选中即切过去。
 
-**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel / chain 三种模式。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
+**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。可选 `model: provider/model` 覆盖本次 worker 模型；不传则继承当前主 session 模型。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
 
 **confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
 **plan-mode** — 注册了 `/plan` 命令。切到计划模式后只读探索不乱改，先想清楚再动手。计划生成后桌面通知带音效提醒确认；产出的计划步骤与 todo_write 共用同一份存储（`/dsh-todos` 查看）。
 
 **custom-providers** — `/provider fast-add` 快速加模型供应商，`/provider reload` 重载配置。
+
+**model-selection** — `/model:select [provider/model]` 与 `set_session_model`：选择并设置当前 session 模型，不修改 `settings.json` 的默认模型；subagent 可用同一 registry 选择已认证模型。
 
 **stream-monitor** — 偷偷盯着流式响应，变慢了你能察觉。
 

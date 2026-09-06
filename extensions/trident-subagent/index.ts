@@ -17,6 +17,7 @@ import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildTools
 import { runBatch, type BatchItemResult } from "./batch.ts";
 import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
+import { resolveConfiguredModel, modelLabel } from "../../lib/model-selection.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
@@ -98,6 +99,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "subagent 是支线任务执行系统。参数必须是你自己整理好的完整任务说明（含目标、约束、验收标准），不是用户原始发言。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则你自己动手。",
+      "可选 model 参数使用 provider/model 覆盖 worker 模型；不传时 worker 继承当前主 session 模型。它只影响本次 worker，不会修改主 session。",
       "需要并行多个独立任务时传数组，全部并行启动。",
       "工具会同步阻塞直到所有 worker 结束：一个失败不终止其他 worker，逐个在结果里汇报。",
       "运行期间可用 /gui:subagents 查看每个 worker 的实时详情。",
@@ -134,6 +136,11 @@ export default function (pi: ExtensionAPI) {
           description: "兼容字段：true 强制 readonly；安全默认是不传 sandbox_dir 时自动 readonly。",
         }),
       ),
+      model: Type.Optional(
+        Type.String({
+          description: "可选：worker 使用的已注册模型，格式 provider/model；不传则继承当前主 session 模型。",
+        }),
+      ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const tasks: string[] = Array.isArray(params.task) ? params.task : [params.task];
@@ -142,7 +149,29 @@ export default function (pi: ExtensionAPI) {
       }
 
       // 模型不再从配置文件决定：直接用当前会话模型作为 subagent 模型
-      const workerModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+      let workerModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+      if (params.model !== undefined) {
+        const requestedModel = typeof params.model === "string" ? params.model.trim() : "";
+        const selected = requestedModel
+          ? resolveConfiguredModel(ctx, requestedModel)
+          : { ok: false as const, reason: "invalid_spec" as const };
+        if (!selected.ok) {
+          const reason = selected.reason === "unauthenticated"
+            ? `worker 模型未配置认证：${requestedModel}`
+            : `找不到 worker 模型 ${requestedModel || "（空）"}。请使用已注册的 provider/model。`;
+          return {
+            content: [{ type: "text", text: `错误：${reason}` }],
+            details: { error: `worker_model_${selected.reason}`, model: requestedModel },
+          };
+        }
+        workerModel = modelLabel(selected.model);
+      }
+      if (!workerModel) {
+        return {
+          content: [{ type: "text", text: "错误：当前 session 没有可用模型，无法启动 worker。请先设置当前 session 模型。" }],
+          details: { error: "missing_worker_model" },
+        };
+      }
       const feedbackOn = readFeedbackState();
       const profile = params.sandbox_profile
         ?? (params.sandbox_dir ? "worktree" : "readonly");
