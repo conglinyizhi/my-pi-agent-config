@@ -17,11 +17,13 @@
 - 消息数
 - 名称 / 首条用户消息
 
+另外会把 **cwd 等于当前目录** 的 session 用 `●` 高亮（交互列表里为绿色，文本列表里加 `(当前目录)` 标记），方便一眼定位「我在当前目录的历史 session」。
+
 ## 命令
 
 | 命令 | 作用 |
 |------|------|
-| `/sessions` | 交互选择并 `switchSession` |
+| `/sessions` | 交互选择并 `switchSession`（当前目录 session 用 `●` 高亮） |
 | `/sessions 15` | 只显示最近 15 条 |
 | `/sessions shin` | 按关键词过滤（cwd/名称/首条/全文 AND） |
 | `/sessions list` | 只看文本列表，不切换 |
@@ -50,12 +52,14 @@
 - `SessionManager.listAll()` —— 官方跨项目枚举，已按 `modified` 降序
 - `modified` 取自 session 内最后一条 message 的活动时间（非仅 mtime）
 - TUI：`SelectList` + `DynamicBorder`；Enter → `ctx.switchSession(path)`
+- **当前目录高亮**：以 `ctx.sessionManager.getCwd()` 为基准，用 `theme.fg("success", …)` 给匹配 cwd 的 session 的 label/description 上色（主题缺该 token 时回退为纯文本 `●` 标记）
 
 ## 与内置 `/resume` 对照
 
 | | `/resume` | `/sessions` |
 |--|-----------|-------------|
 | 默认范围 | 当前目录 | **全部 workdir** |
+| 高亮当前目录 | 天然仅当前目录 | **`●` 高亮 + `(当前目录)` 标注** |
 | 时间显示 | 相对（`3h`） | **绝对 + 相对** |
 | 文本导出 | 无 | `/sessions list` |
 | LLM 工具 | 无 | `list_sessions` |

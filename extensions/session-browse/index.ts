@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
+import * as nodePath from "node:path";
 import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,18 @@ function shortenPath(path: string): string {
   const home = homedir();
   if (path.startsWith(home)) return `~${path.slice(home.length)}`;
   return path;
+}
+
+/** 归一化目录路径以比较（resolve 尾部斜杠 / 相对路径差异）。 */
+function normalizeDir(dir?: string | null): string {
+  if (!dir) return "";
+  return nodePath.resolve(dir);
+}
+
+/** 判断两个 cwd 是否指向同一目录，用于高亮当前目录的 session。 */
+function isSameDir(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  return normalizeDir(a) === normalizeDir(b);
 }
 
 /** 相对时间：3m / 2h / 1d … */
@@ -129,7 +142,7 @@ async function loadSessions(filter?: string, limit?: number): Promise<SessionInf
   return typeof limit === "number" ? filtered.slice(0, Math.max(1, limit)) : filtered;
 }
 
-function formatTextList(sessions: SessionInfo[], filter?: string): string {
+function formatTextList(sessions: SessionInfo[], filter: string | undefined, currentCwd: string): string {
   if (sessions.length === 0) {
     return filter
       ? `没有匹配 "${filter}" 的 session。`
@@ -144,13 +157,16 @@ function formatTextList(sessions: SessionInfo[], filter?: string): string {
     const n = String(i + 1).padStart(2, " ");
     const abs = formatAbsolute(s.modified);
     const rel = formatRelative(s.modified).padStart(4, " ");
-    return `${n}. [${abs} | ${rel}] ${sessionTitle(s)}
-    cwd: ${shortenPath(s.cwd || "")}
+    const isCurrent = isSameDir(s.cwd, currentCwd);
+    const marker = isCurrent ? "● " : "  ";
+    const cwdLine = `cwd: ${shortenPath(s.cwd || "")}${isCurrent ? "  (当前目录)" : ""}`;
+    return `${n}. [${abs} | ${rel}] ${marker}${sessionTitle(s)}
+    ${cwdLine}
     file: ${s.path}
     id: ${s.id} · msgs: ${s.messageCount}`;
   });
 
-  return `${header}\n${lines.join("\n\n")}`;
+  return `${header}（● = 当前目录 ${shortenPath(currentCwd)}）\n\n${lines.join("\n\n")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,19 +208,36 @@ async function showTextOverlay(ctx: ExtensionCommandContext, text: string): Prom
 async function pickSession(
   ctx: ExtensionCommandContext,
   sessions: SessionInfo[],
+  currentCwd: string,
 ): Promise<string | null> {
   if (sessions.length === 0) {
     ctx.ui.notify("没有可选择的 session", "warning");
     return null;
   }
 
-  const items: SelectItem[] = sessions.map((s) => ({
-    value: s.path,
-    label: sessionTitle(s),
-    description: sessionDescription(s),
-  }));
-
   return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+    // 主题可能缺 success token，回退为纯文本标记，避免崩溃。
+    const highlight = (text: string): string => {
+      try {
+        return theme.fg("success", text);
+      } catch {
+        return text;
+      }
+    };
+
+    const items: SelectItem[] = sessions.map((s) => {
+      const title = sessionTitle(s);
+      const desc = sessionDescription(s);
+      if (isSameDir(s.cwd, currentCwd)) {
+        return {
+          value: s.path,
+          label: highlight(`● ${title}`),
+          description: `${desc} · ${highlight("当前目录")}`,
+        };
+      }
+      return { value: s.path, label: title, description: desc };
+    });
+
     const container = new Container();
     container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
     container.addChild(
@@ -220,6 +253,14 @@ async function pickSession(
         theme.fg(
           "dim",
           "label = 名称/首条消息 · 右侧 = 绝对时间 (相对) · cwd · 消息数",
+        ),
+      ),
+    );
+    container.addChild(
+      new Text(
+        theme.fg(
+          "dim",
+          `● = 当前目录 · 当前 cwd: ${currentCwd ? shortenPath(currentCwd) : "(unknown)"}`,
         ),
       ),
     );
@@ -259,6 +300,7 @@ async function pickSession(
 
 async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const { listOnly, limit, filter } = parseArgs(args);
+  const currentCwd = ctx.sessionManager.getCwd() || process.cwd();
 
   ctx.ui.setStatus("session-browse", "加载全部 session…");
   let sessions: SessionInfo[];
@@ -276,11 +318,11 @@ async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext)
   ctx.ui.setStatus("session-browse", undefined);
 
   if (listOnly || ctx.mode !== "tui") {
-    await showTextOverlay(ctx, formatTextList(sessions, filter));
+    await showTextOverlay(ctx, formatTextList(sessions, filter, currentCwd));
     return;
   }
 
-  const chosen = await pickSession(ctx, sessions);
+  const chosen = await pickSession(ctx, sessions, currentCwd);
   if (!chosen) {
     ctx.ui.notify("已取消", "info");
     return;
