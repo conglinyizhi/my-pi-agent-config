@@ -86,8 +86,10 @@ export interface RunBatchOptions {
   signal?: AbortSignal;
   tools?: string[];
   extraExtensions?: string[];
-  /** 要提供给 worker 的 skill 绝对路径（目录/文件） */
+  /** 所有 worker 共用的 skill 绝对路径（兼容旧调用） */
   skills?: string[];
+  /** 每个 worker 独立的 skill 绝对路径；缺省回退到 skills */
+  workerSkills?: string[][];
   taskId?: string;
   timeout?: number;
   /**
@@ -159,7 +161,7 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
           signal: opts.signal,
           tools: opts.tools,
           extraExtensions: opts.extraExtensions,
-          skills: opts.skills,
+          skills: opts.workerSkills?.[index] ?? opts.skills,
           taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
           sandboxDir: opts.sandboxDir,
           readonly: opts.readonly,

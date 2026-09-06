@@ -67,4 +67,4 @@
 - 扩展通过 `~/.pi/agent/node_modules` 解析 pi / pi-ai 依赖（与仓库其他扩展一致）。
 - 决策卡片用 `@earendil-works/pi-ai/compat` 的 `complete` + `ctx.modelRegistry.getApiKeyAndHeaders` 做嵌套 LLM 调用。
 - 不修改系统提示词 / 工具集，符合 KV 缓存稳定前缀要求。
-- 当前模型选择能力由 `extensions/model-selection` 提供；`/model:select` 与 `set_session_model` 只覆盖当前 session，不修改默认模型配置。
+- 当前模型选择能力由 `extensions/model-selection` 提供；所有使用该库的插件共享 `~/.pi/agent/model-selection.toml`，但 `message-page` 使用独立 scope 保存最多 4 条最近模型和局部置顶，也能使用全局置顶；用户可用 `/model:select-current-session-model` 等命令切换当前 session，不修改默认模型配置；选择后需要确认，也可选择当前功能或所有功能置顶；不向模型暴露模型选择工具。

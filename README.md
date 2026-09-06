@@ -30,7 +30,7 @@ pi
 
 **session-browse** — 跨 workdir 浏览与恢复历史 session。`/sessions` 命令列出所有对话，选中即切过去。
 
-**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。可选 `model: provider/model` 覆盖本次 worker 模型；不传则继承当前主 session 模型。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
+**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。复杂任务可传结构化简报：`objective`、`context`、`constraints`、`required_files`、`skills`、`acceptance`、`output_format`，让 worker 一次拿齐背景与验收标准；可选 `model: provider/model` 覆盖本次 worker 模型，不传则继承当前主 session 模型。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
 
 **confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
@@ -38,7 +38,7 @@ pi
 
 **custom-providers** — `/provider fast-add` 快速加模型供应商，`/provider reload` 重载配置。
 
-**model-selection** — `/model:select [provider/model]` 与 `set_session_model`：选择并设置当前 session 模型，不修改 `settings.json` 的默认模型；subagent 可用同一 registry 选择已认证模型。
+**model-selection** — `/model:select-current-session-model [provider/model]`、`/model:change-current-session-model [provider/model]` 与 `/model:switch-current-session-model [provider/model]`：用户主动选择并设置当前 session 模型。所有使用该库的插件共享 `~/.pi/agent/model-selection.toml`，按功能 scope 分别记录最多 4 条 `recent` 和局部 `pinned`，另有所有功能共用的全局置顶；选择后可确认、当前功能置顶或所有功能置顶，点击置顶模型时也可取消对应置顶或返回上一级。不向模型暴露选择工具，也不修改 `settings.json` 的默认模型。subagent 未指定 `model` 时仍继承当前 session；显式传入时只覆盖本次 worker。
 
 **stream-monitor** — 偷偷盯着流式响应，变慢了你能察觉。
 

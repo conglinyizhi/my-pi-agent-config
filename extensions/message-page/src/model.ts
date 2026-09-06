@@ -1,8 +1,14 @@
 // message-page/src/model.ts — 兼容入口
 // 模型选择已抽离到 lib/model-selection.ts；保留此导出避免旧引用断裂。
 export {
+  DEFAULT_MODEL_SCOPE,
+  MAX_RECENT_MODELS,
+  MESSAGE_PAGE_SCOPE,
+  MODEL_SELECTION_SCOPE,
   getAvailableModels,
   modelLabel,
+  orderAvailableModelsForPreferences,
+  pinnedModelActionOptions,
   parseModelSpec,
   pickModel,
   readLastModel,
@@ -11,9 +17,21 @@ export {
   selectModel,
   setCurrentSessionModel,
   writeLastModel,
+  readModelPreferences,
+  writeModelPreferences,
+  pinModel,
+  unpinModel,
+  recordModelSelection,
+  readScopedModelPreferences,
+  withPinnedModel,
+  withRecordedModel,
+  withUnpinnedModel,
 } from "../../../lib/model-selection.ts";
 export type {
   LastModel,
+  ModelPreferences,
+  ModelSelection,
   ModelSelectionResult,
+  ScopedModelPreferences,
   SelectableModel,
 } from "../../../lib/model-selection.ts";

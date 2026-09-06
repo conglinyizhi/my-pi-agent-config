@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { markdownToHtml } from "./src/markdown.ts";
 import { extractDecisions, type DecisionCheck } from "./src/cards.ts";
-import { pickModel, resolveModel, writeLastModel } from "../../lib/model-selection.ts";
+import { MESSAGE_PAGE_SCOPE, selectModel } from "../../lib/model-selection.ts";
 import { renderPage, splitMarkdownByHeadings, templateNames, type PageData, type TemplateName } from "./src/templates.ts";
 import { openInBrowser } from "./src/open.ts";
 
@@ -99,24 +99,19 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      let model: Model<Api> | undefined;
-      if (modelSpec) {
-        model = resolveModel(ctx, modelSpec);
-        if (!model) {
-          if (ctx.hasUI) ctx.ui.notify(`模型解析失败：${modelSpec}`, "warning");
-          return;
+      const selected = await selectModel(ctx, modelSpec, { scope: MESSAGE_PAGE_SCOPE });
+      if (!selected.ok) {
+        if (ctx.hasUI && selected.reason !== "cancelled") {
+          const message = selected.reason === "unauthenticated"
+            ? `模型未配置认证：${modelSpec ?? "未知模型"}`
+            : selected.reason === "not_found"
+              ? `模型解析失败：${modelSpec ?? "未知模型"}`
+              : "模型格式无效，请使用 provider/model";
+          ctx.ui.notify(message, "warning");
         }
-        if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
-          if (ctx.hasUI) ctx.ui.notify(`模型未配置认证：${model.id}`, "warning");
-          return;
-        }
-      } else {
-        model = await pickModel(ctx);
-        if (!model) return;
+        return;
       }
-
-      // 记录本次选择的模型，供下次“上次选择”快捷项使用（--model 与选择器都算）
-      await writeLastModel(model.provider, model.id);
+      const model: Model<Api> = selected.model;
 
       if (ctx.hasUI) {
         ctx.ui.notify("正在用大模型提炼决策卡片…", "info");

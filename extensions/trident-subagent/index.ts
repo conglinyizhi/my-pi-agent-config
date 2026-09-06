@@ -1,8 +1,8 @@
 // trident-subagent — 同步 subagent 派发 + 反馈模式开关
 //
-// subagent({ task: string | string[], skills?: string[] })：主 agent 整理好完整任务说明后调用，
+// subagent({ task: string | Brief | (string | Brief)[], skills?: string[] })：主 agent 整理好完整任务简报后调用，
 // 同步等待全部 worker 返航（success/failed/aborted/timeout 逐项汇报）。
-// 模型直接用当前会话模型（ctx.model），不再从配置文件决定；skills 可选，把指定 skill 加载给 worker。
+// 模型直接用当前会话模型（ctx.model），也可按本次调用用 model 覆盖；skills 可按简报逐 worker 指定。
 // /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
 // /gui:subagents：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
@@ -18,6 +18,7 @@ import { runBatch, type BatchItemResult } from "./batch.ts";
 import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
 import { resolveConfiguredModel, modelLabel } from "../../lib/model-selection.ts";
+import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
@@ -86,6 +87,16 @@ export default function (pi: ExtensionAPI) {
   // 子进程内不注册派发工具，防递归
   if (process.env.PI_SUBAGENT) return;
 
+  const briefSchema = Type.Object({
+    objective: Type.String({ description: "必须：worker 要完成的具体目标，不要只写调查主题。" }),
+    context: Type.Optional(Type.String({ description: "必要背景、已知现状、已有结论或用户约束。" })),
+    constraints: Type.Optional(Type.Array(Type.String(), { description: "必须遵守的边界、不可改动项、权限或兼容性要求。" })),
+    required_files: Type.Optional(Type.Array(Type.String(), { description: "worker 必须先阅读的文件、目录、日志或设计文档。" })),
+    skills: Type.Optional(Type.Array(Type.String(), { description: "本 worker 专用 skill 名；只加载完成任务确实需要的 skill。" })),
+    acceptance: Type.Optional(Type.Array(Type.String(), { description: "可验证的验收标准、测试命令或交付物。" })),
+    output_format: Type.Optional(Type.String({ description: "期望 worker 最终回报的结构，例如结论、改动、测试、风险。" })),
+  });
+
   // ═══════════════════════════
   // subagent — 唯一派发入口（同步并发）
   // ═══════════════════════════
@@ -94,22 +105,23 @@ export default function (pi: ExtensionAPI) {
     name: "subagent",
     label: "Dispatch Subagent",
     description:
-      "将已经由主 agent 整理好的完整任务说明派给一个或多个隔离 worker 子进程执行。同步等待：所有 worker 都进入终态（成功/失败/中止/超时）才返回。支持单个字符串（单 worker）或字符串数组（并行多 worker）。",
-    promptSnippet: "Dispatch side-quests to worker subagents and wait for all results",
+      "将完整任务简报派给一个或多个隔离 worker。复杂任务请显式传 objective、context、constraints、required_files、skills、acceptance、output_format；同步等待所有 worker 进入终态后返回。",
+    promptSnippet: "Dispatch side-quests with complete context, required files, skills, acceptance criteria, and wait for all results",
     promptGuidelines: [
-      "subagent 是支线任务执行系统。参数必须是你自己整理好的完整任务说明（含目标、约束、验收标准），不是用户原始发言。",
-      "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则你自己动手。",
-      "可选 model 参数使用 provider/model 覆盖 worker 模型；不传时 worker 继承当前主 session 模型。它只影响本次 worker，不会修改主 session。",
-      "需要并行多个独立任务时传数组，全部并行启动。",
-      "工具会同步阻塞直到所有 worker 结束：一个失败不终止其他 worker，逐个在结果里汇报。",
-      "运行期间可用 /gui:subagents 查看每个 worker 的实时详情。",
-      "反馈模式开启时 worker 只能用 read/bash/be-* 工具（/subagent:feedback 查看状态）。",
-      "失败项若带 investigation 路径：先 read 该文件的「读档指引」与「最终结论」，以磁盘现状为准，勿假设 worker 无副作用；勿整文件灌回上下文。",
+      "不要把用户原话原封不动转发；先整理成 worker 可直接执行的完整简报。",
+      "复杂任务优先传结构化 task：objective 必填；context 写已知现状；constraints 写边界；required_files 写必看文件；skills 只填确实需要的 skill；acceptance 写可验证标准；output_format 写回报格式。",
+      "如果多个任务互相独立，传结构化对象数组并行执行；每项都要自洽，不能依赖主 agent 中途补背景。",
+      "可选 model 参数使用 provider/model 覆盖本次 worker 模型；不传时继承当前主 session 模型。只影响本次 worker，不修改主 session。",
+      "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
+      "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
+      "工具同步阻塞直到所有 worker 结束；一个失败不终止其他 worker，逐项汇报。",
+      "运行期间可用 /gui:subagents 查看实时详情；失败 investigation 路径先读「读档指引」与「最终结论」。",
     ],
     parameters: Type.Object({
       task: Type.Union([
-        Type.String({ description: "单个完整任务说明" }),
-        Type.Array(Type.String(), { description: "多个完整任务说明，并行执行" }),
+        Type.String({ description: "兼容：单个完整任务说明；复杂任务应使用结构化简报。" }),
+        briefSchema,
+        Type.Array(Type.Union([Type.String(), briefSchema]), { description: "多个独立任务简报，并行执行；每项都应包含完整上下文与验收标准。" }),
       ]),
       skills: Type.Optional(
         Type.Array(Type.String(), {
@@ -143,10 +155,14 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const tasks: string[] = Array.isArray(params.task) ? params.task : [params.task];
-      if (tasks.length === 0) {
+      const rawTasks: Array<string | WorkerBriefInput> = Array.isArray(params.task) ? params.task : [params.task];
+      if (rawTasks.length === 0) {
         return { content: [{ type: "text", text: "错误：任务列表为空。" }], details: { error: "empty_batch" } };
       }
+
+      const normalized = rawTasks.map((task) => normalizeWorkerBrief(task, params.skills ?? []));
+      const tasks = normalized.map((brief) => brief.task);
+      const workerSkills = normalized.map((brief) => resolveSkillPaths(brief.skills));
 
       // 模型不再从配置文件决定：直接用当前会话模型作为 subagent 模型
       let workerModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
@@ -233,6 +249,7 @@ export default function (pi: ExtensionAPI) {
           model: workerModel,
           signal,
           skills: resolveSkillPaths(params.skills ?? []),
+          workerSkills,
           tools: toolCfg.tools,
           extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
           taskId: batchTaskId,

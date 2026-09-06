@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   getAvailableModels,
+  orderAvailableModelsForPreferences,
+  pinnedModelActionOptions,
+  selectModel,
   parseModelSpec,
   resolveModel,
   setCurrentSessionModel,
+  withPinnedModel,
+  withRecordedModel,
+  withUnpinnedModel,
+  type ModelPreferences,
 } from "./model-selection.ts";
 
 const models = [
@@ -13,9 +20,13 @@ const models = [
   { provider: "beta", id: "vision", name: "Vision", maxTokens: 1 },
 ];
 
-function context(authenticated: Set<string> = new Set(["alpha/fast", "alpha/slow", "beta/vision"])) {
+function context(
+  authenticated: Set<string> = new Set(["alpha/fast", "alpha/slow", "beta/vision"]),
+  ui?: { select: (message: string, options: string[]) => Promise<string | undefined> },
+) {
   return {
-    hasUI: false,
+    hasUI: ui !== undefined,
+    ui,
     modelRegistry: {
       getAll: () => models,
       find: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
@@ -43,12 +54,102 @@ describe("model selection shared utilities", () => {
     assert.equal(resolveModel(context(), "missing/fast"), undefined);
   });
 
+  it("orders scoped pins, global pins, then recent models", () => {
+    const ordered = orderAvailableModelsForPreferences(models as any, {
+      globalPinned: [{ provider: "beta", id: "vision" }],
+      scopes: {
+        default: {
+          pinned: [{ provider: "alpha", id: "slow" }],
+          recent: [{ provider: "alpha", id: "fast" }],
+        },
+      },
+    });
+    assert.deepEqual(ordered.map((model) => `${model.provider}/${model.id}`), [
+      "alpha/slow",
+      "beta/vision",
+      "alpha/fast",
+    ]);
+  });
+
+  it("keeps four recent models per scope and excludes pinned models", () => {
+    let preferences: ModelPreferences = { globalPinned: [], scopes: {} };
+    for (const id of ["one", "two", "three", "four", "five"]) {
+      preferences = withRecordedModel(preferences, { provider: "alpha", id }, "tool-a");
+    }
+    assert.deepEqual(preferences.scopes["tool-a"].recent.map((model) => model.id), [
+      "five", "four", "three", "two",
+    ]);
+
+    preferences = withPinnedModel(preferences, { provider: "alpha", id: "four" }, "tool-a", "scope");
+    assert.deepEqual(preferences.scopes["tool-a"].pinned.map((model) => model.id), ["four"]);
+    assert.deepEqual(preferences.scopes["tool-a"].recent.map((model) => model.id), ["five", "three", "two"]);
+    preferences = withRecordedModel(preferences, { provider: "alpha", id: "four" }, "tool-a");
+    assert.deepEqual(preferences.scopes["tool-a"].recent.map((model) => model.id), ["five", "three", "two"]);
+  });
+
+  it("keeps scoped recent and pins isolated between plugins", () => {
+    let preferences: ModelPreferences = { globalPinned: [], scopes: {} };
+    preferences = withRecordedModel(preferences, { provider: "alpha", id: "fast" }, "tool-a");
+    preferences = withPinnedModel(preferences, { provider: "alpha", id: "slow" }, "tool-a", "scope");
+    preferences = withRecordedModel(preferences, { provider: "beta", id: "vision" }, "tool-b");
+    assert.deepEqual(preferences.scopes["tool-a"], {
+      recent: [{ provider: "alpha", id: "fast" }],
+      pinned: [{ provider: "alpha", id: "slow" }],
+    });
+    assert.deepEqual(preferences.scopes["tool-b"], {
+      recent: [{ provider: "beta", id: "vision" }],
+      pinned: [],
+    });
+  });
+
+  it("global pins are visible to all scopes and can be unpinned independently", () => {
+    let preferences: ModelPreferences = {
+      globalPinned: [],
+      scopes: {
+        "tool-a": { recent: [{ provider: "beta", id: "vision" }], pinned: [] },
+        "tool-b": { recent: [{ provider: "beta", id: "vision" }], pinned: [] },
+      },
+    };
+    preferences = withPinnedModel(preferences, { provider: "beta", id: "vision" }, "tool-a", "global");
+    assert.deepEqual(preferences.globalPinned, [{ provider: "beta", id: "vision" }]);
+    assert.deepEqual(preferences.scopes["tool-a"].recent, []);
+    assert.deepEqual(preferences.scopes["tool-b"].recent, []);
+    preferences = withUnpinnedModel(preferences, { provider: "beta", id: "vision" }, "tool-a", "global");
+    assert.deepEqual(preferences.globalPinned, []);
+  });
+
+  it("offers select, matching unpin actions, and back for pinned models", () => {
+    assert.deepEqual(pinnedModelActionOptions({ scope: true, global: false }), [
+      "选择这个置顶模型", "取消当前功能置顶", "返回上一级",
+    ]);
+    assert.deepEqual(pinnedModelActionOptions({ scope: true, global: true }), [
+      "选择这个置顶模型", "取消当前功能置顶", "取消所有功能置顶", "返回上一级",
+    ]);
+  });
+
+  it("requires confirmation for an explicit model and cancels before session change", async () => {
+    const selected: string[] = [];
+    const result = await selectModel(
+      context(new Set(["beta/vision"]), {
+        select: async (message, options) => {
+          selected.push(`${message} :: ${options.join("|")}`);
+          return "取消";
+        },
+      }),
+      "beta/vision",
+    );
+    assert.deepEqual(result, { ok: false, reason: "cancelled" });
+    assert.match(selected[0], /确认使用模型：beta\/vision/);
+    assert.match(selected[0], /确认使用\|当前功能置顶并确认\|所有功能置顶并确认\|取消/);
+  });
+
   it("sets only the current session model and does not persist a default", async () => {
     const selected: unknown[] = [];
     const result = await setCurrentSessionModel(
       { setModel: async (model: unknown) => { selected.push(model); return true; } } as any,
       context(),
       "beta/vision",
+      { persistLastModel: false },
     );
     assert.equal(result.ok, true);
     assert.equal(selected.length, 1);
