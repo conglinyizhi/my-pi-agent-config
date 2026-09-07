@@ -9,12 +9,12 @@ disable-model-invocation: true
 ## 架构
 
 所有 GUI 窗口由**单一 Wails 二进制** `wails-gui` 提供（Go + WebKitGTK 4.1，Vue 3 前端）。
-2026 年已从 Electron 全量迁移（6 个窗口），旧 Electron 链（gui-kit.mjs / rsbuild / esbuild / build:gui-*）已删除。
+2026 年已从 Electron 全量迁移，旧 Electron 链（gui-kit.mjs / rsbuild / esbuild / build:gui-*）已删除。
 
 - `wails-gui/main.go` — 窗口配置表（windowName → 标题 / 尺寸）
 - `wails-gui/app.go` — Go 侧方法：`GetInitData`（按窗口分支）/ `GetWindowName` / `SaveResponse` / `MarkReady` / `OpenFile` / `LoadReasons` / `SaveReason`
 - `wails-gui/frontend/src/main.js` — 窗口路由壳（windowName → 视图）+ 全局错误兜底
-- `wails-gui/frontend/src/views/*.vue` — 6 个窗口视图
+- `wails-gui/frontend/src/views/*.vue` — 当前 GUI 窗口视图
 - extension 侧用 `lib/gui-runner.ts` 启动窗口（替代 Electron spawn + 轮询）
 
 ## 目录结构
@@ -26,9 +26,12 @@ wails-gui/
 └── frontend/
     ├── index.html         ← body 必须 margin:0（防 WebKitGTK 白边）
     └── src/
-        ├── main.js        ← 窗口路由壳 + window error 兜底（防白板）
+        ├── main.js        ← 创建 Wails platform adapter、窗口路由壳与全局错误兜底
+        ├── platform/      ← 平台接口与 Wails adapter；未来浏览器壳在此实现 HTTP/SSE adapter
+        ├── domain/        ← 不依赖 Vue、DOM、Wails 的领域纯逻辑与 Node 测试
+        ├── components/    ← 可复用领域展示组件（不得直接访问平台 binding）
         ├── gui-theme.css  ← 共享样式（顶部有全局 box-sizing:border-box）
-        └── views/         ← 5 个窗口视图
+        └── views/         ← 4 个窗口页面编排（不得直接访问 window.go / window.runtime）
 lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + runGuiWindow）
 ```
 
@@ -36,11 +39,10 @@ lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + ru
 
 | windowName | 视图 | 调用方 |
 |---|---|---|
-| setup | SetupView | extensions/trident-subagent（/gui:trident-setup）|
-| subagents | SubagentsView | extensions/trident-subagent（/gui:subagents）|
-| routing | RoutingView | extensions/trident-routing |
+| subagents | SubagentsView | extensions/trident-subagent（/subagent:gui；/gui:subagents 为兼容别名）|
+| routing | RoutingView | extensions/trident-routing（/routing:gui；/gui:scan-todo 为兼容别名）|
 | gate | GateView | extensions/sandbox-permissions（gate/allow） |
-| editor | EditorView | extensions/editor |
+| editor | EditorView | extensions/editor（/editor:gui；/prompt-edit-gui 为兼容别名） |
 
 ## extension 侧调用
 
@@ -55,6 +57,18 @@ const result = await runGuiWindow("gate", { command, taskId, rules }, { timeoutM
 // result = { ok, data?, reason?: "timeout" | "aborted" | "exited" | "unavailable" }
 // ok=false 时按 reason 区分语义：aborted/unavailable → 回退 TUI；timeout/exited → 视为取消
 ```
+
+## 浏览器 mock shell
+
+`wails-gui/frontend/browser.html` 是 Wails 外的独立 Vite 入口，以静态 fixture 和 `platform/browser.js` 挂载同一组 View，用于验证 Vue/domain 层不依赖 Wails binding。它不是权限或 agent 后端；未来 Web 服务以 HTTP/SSE adapter 替换 mock 的接口实现。
+
+```bash
+cd ~/.pi/agent/wails-gui/frontend
+pnpm build:browser
+# browser.html?view=gate|subagents|routing|editor
+```
+
+浏览器入口不得从 `platform/index.js` 导入（那里导出 Wails adapter）；应直接导入 `platform/context.js` 与 `platform/browser.js`，避免静态打包 Wails generated binding。
 
 ## 构建
 
@@ -73,6 +87,10 @@ wails build -tags webkit2_41
 ```bash
 pnpm test:gui   # node scripts/gui-fasttest.ts —— 并行启动 6 窗口，等 .ready/.error sidecar 判定渲染就绪
 ```
+
+## 前端平台边界
+
+Vue 页面通过 `usePlatform()` 使用 `platform.session`、`platform.capabilities`、`platform.gate`、`platform.subagents`；领域组件应通过 props/emits 接收数据与上报操作，不得直接导入 Wails generated binding 或访问 `window.go` / `window.runtime`。`domain/` 只放不依赖 Vue、DOM、Wails 的纯逻辑并配 Node 测试。当前 `platform/wails.js` 将接口映射到 Wails，未来浏览器壳只需提供同一接口的 HTTP/SSE 实现即可复用领域 UI。
 
 ## 协议（文件 JSON，沿用 Electron 时代设计）
 

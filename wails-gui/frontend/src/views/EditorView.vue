@@ -71,7 +71,7 @@
               @click="pickHistory(i)"
             >
               <span class="hist-num">#{{ i + 1 }}</span>
-              <span class="hist-preview">{{ item.slice(0, 60).replace(/\n/g, ' ') }}</span>
+              <span class="hist-preview">{{ historyPreview(item) }}</span>
             </div>
             <div v-if="clipHistory.length === 0" class="hist-empty">暂无历史</div>
           </div>
@@ -84,6 +84,10 @@
 <script setup>
 import "../gui-theme.css";
 import { ref, nextTick, onMounted } from "vue";
+import { usePlatform } from "../platform/index.js";
+import { historyPreview, insertTagAtSelection, insertTextAtSelection } from "../domain/editor/text.js";
+
+const platform = usePlatform();
 
 const ready = ref(false);
 const clipHistory = ref([]);
@@ -100,49 +104,28 @@ function getTextarea() {
   return editorRef.value;
 }
 
-function insertAtCursor(text) {
-  const ta = getTextarea();
-  if (!ta) {
-    editorText.value += text;
-    return;
-  }
-  const start = ta.selectionStart;
-  const end = ta.selectionEnd;
-  const before = editorText.value.slice(0, start);
-  const after = editorText.value.slice(end);
-  editorText.value = before + text + after;
+function applyTextChange(change) {
+  editorText.value = change.text;
   nextTick(() => {
-    ta.focus();
-    const pos = start + text.length;
-    ta.setSelectionRange(pos, pos);
+    const textarea = getTextarea();
+    textarea?.focus();
+    textarea?.setSelectionRange(change.selectionStart, change.selectionEnd);
   });
 }
 
+function insertAtCursor(text) {
+  const textarea = getTextarea();
+  const start = textarea?.selectionStart ?? editorText.value.length;
+  const end = textarea?.selectionEnd ?? start;
+  applyTextChange(insertTextAtSelection(editorText.value, text, start, end));
+}
+
 function insertTag(tag) {
-  if (!tag.trim()) return;
-  const tagName = tag.trim().replace(/[<>]/g, "");
-  const ta = getTextarea();
-  if (ta && ta.selectionStart !== ta.selectionEnd) {
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const selected = editorText.value.slice(start, end);
-    const wrapped = `<${tagName}>${selected}</${tagName}>`;
-    editorText.value =
-      editorText.value.slice(0, start) + wrapped + editorText.value.slice(end);
-    nextTick(() => {
-      ta.focus();
-      ta.setSelectionRange(start + wrapped.length, start + wrapped.length);
-    });
-  } else {
-    const inner = `\n\n`;
-    const text = `<${tagName}>${inner}</${tagName}>`;
-    insertAtCursor(text);
-    if (ta) {
-      const pos = ta.selectionStart;
-      const innerStart = pos - text.length + tagName.length + 2;
-      ta.setSelectionRange(innerStart, innerStart + 2);
-    }
-  }
+  const textarea = getTextarea();
+  const start = textarea?.selectionStart ?? editorText.value.length;
+  const end = textarea?.selectionEnd ?? start;
+  const change = insertTagAtSelection(editorText.value, tag, start, end);
+  if (change.changed) applyTextChange(change);
   customTag.value = "";
 }
 
@@ -158,8 +141,8 @@ function pickHistory(i) {
 }
 
 async function respond(payload) {
-  await window.go.main.App.SaveResponse(JSON.stringify(payload));
-  window.runtime.Quit();
+  await platform.session.submit(payload);
+  await platform.session.close();
 }
 
 function restoreToPi() {
@@ -172,10 +155,10 @@ function cancel() {
 }
 
 onMounted(async () => {
-  const data = await window.go.main.App.GetInitData();
+  const data = await platform.session.getInitData();
   clipHistory.value = data.clipHistory || [];
   ready.value = true;
-  await window.go.main.App.MarkReady();
+  await platform.session.markReady();
   nextTick(() => editorRef.value?.focus());
 });
 </script>

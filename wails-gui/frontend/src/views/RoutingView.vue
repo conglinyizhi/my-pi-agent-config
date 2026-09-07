@@ -62,6 +62,10 @@
 <script setup>
 import "../gui-theme.css";
 import { ref, computed, onMounted } from "vue";
+import { usePlatform } from "../platform/index.js";
+import { displayTodoPath, selectAllTodoIndices, selectedTodoItems, todoBasename, toggleTodoSelection } from "../domain/routing/todos.js";
+
+const platform = usePlatform();
 
 const ready = ref(false);
 const raw = ref([]);
@@ -78,47 +82,27 @@ const allSelected = computed(() => todos.value.length > 0 && selected.value.size
 function openDetail(item) { detailItem.value = item; }
 function closeDetail() { detailItem.value = null; }
 
-// 纯 JS 版 path.resolve（Linux 路径，替代 Node path）
-function resolvePath(p) {
-  if (p.startsWith("/")) return p;
-  const clean = p.replace(/^\.\//, "");
-  const stack = [];
-  for (const part of (cwd.value + "/" + clean).split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") { stack.pop(); continue; }
-    stack.push(part);
-  }
-  return "/" + stack.join("/");
-}
-function absDir(file) {
-  const abs = resolvePath(file);
-  if (abs.length <= 56) return abs;
-  return "…" + abs.slice(-55);
-}
-function basename(p) { const i = p.lastIndexOf('/'); return i >= 0 ? p.substring(i + 1) : p; }
+function absDir(file) { return displayTodoPath(file, cwd.value); }
+function basename(path) { return todoBasename(path); }
 
-function toggle(i) {
-  const s = selected.value;
-  s.has(i) ? s.delete(i) : s.add(i);
-  // Set 变更需触发响应（Vue3 reactive Set 需要整体替换或 ref 内部方法）
-  selected.value = new Set(s);
+function toggle(index) {
+  // 用新 Set 触发 Vue 响应，领域函数不变异传入选择集。
+  selected.value = toggleTodoSelection(selected.value, index);
 }
 function selectAll() {
-  if (allSelected.value) { selected.value = new Set(); }
-  else { selected.value = new Set(todos.value.map((_, i) => i)); }
+  selected.value = selectAllTodoIndices(todos.value, selected.value);
 }
 
 function locate(item) {
-  window.go.main.App.OpenFile(item.file, item.line);
+  platform.capabilities.openFile?.(item.file, item.line);
 }
 
 async function respond(payload) {
-  await window.go.main.App.SaveResponse(JSON.stringify(payload));
-  window.runtime.Quit();
+  await platform.session.submit(payload);
+  await platform.session.close();
 }
 function send() {
-  const indices = [...selected.value].sort((a,b)=>a-b);
-  const items = indices.map(i => todos.value[i]);
+  const items = selectedTodoItems(todos.value, selected.value);
   respond({ action: "send", todos: items, note: note.value });
 }
 function cancel() {
@@ -126,11 +110,11 @@ function cancel() {
 }
 
 onMounted(async () => {
-  const data = await window.go.main.App.GetInitData();
+  const data = await platform.session.getInitData();
   raw.value = data.todos || [];
   cwd.value = data.cwd || ".";
   ready.value = true;
-  await window.go.main.App.MarkReady();
+  await platform.session.markReady();
 });
 </script>
 

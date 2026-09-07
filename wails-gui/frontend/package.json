@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:browser": "vite build --config vite.browser.config.js",
     "preview": "vite preview",
     "test:subagent-reader": "node --test src/subagent-reader.test.js",
     "test:subagent-navigation": "node --test src/subagent-navigation.test.js"

@@ -3,6 +3,7 @@ import SubagentsView from "./views/SubagentsView.vue";
 import RoutingView from "./views/RoutingView.vue";
 import GateView from "./views/GateView.vue";
 import EditorView from "./views/EditorView.vue";
+import { createWailsPlatform, platformKey } from "./platform/index.js";
 
 // 窗口路由壳 —— 按 windowName 选视图
 const views = {
@@ -23,6 +24,7 @@ function showFatal(msg) {
 window.addEventListener("error", (e) => showFatal(e.message || String(e.error || "未知错误")));
 window.addEventListener("unhandledrejection", (e) => showFatal(e.reason?.message || String(e.reason || "未知 Promise 错误")));
 
-const winName = await window.go.main.App.GetWindowName();
+const platform = createWailsPlatform();
+const winName = await platform.session.getWindowName();
 const View = views[winName] || GateView;
-createApp(View).mount("#app");
+createApp(View).provide(platformKey, platform).mount("#app");
