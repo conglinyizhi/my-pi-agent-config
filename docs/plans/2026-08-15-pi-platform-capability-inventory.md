@@ -204,7 +204,7 @@ ResourcesDiscoverResult = { skillPaths?; promptPaths?; themePaths? }
 | **stream-monitor** | `extensions/stream-monitor/index.ts` | 命令 `/token-stream-stats`；事件 `message_update`(tok/s 测速) `message_end` `tool_execution_start/update/end`(工具耗时) `agent_end` `session_start/shutdown` | 无（内存统计，MAX_STATS=5 条响应） |
 | **custom-providers** | `extensions/custom-providers/{index,loader,detector,models,models-dev,provider-diff,fast-add,types}.ts` | 命令 `/provider:fast-add` `/provider:reload` `/provider:reload-online`；事件 `model_select` `session_start`；`pi.registerProvider()` 批量注册 providers.toml 模型 | `~/.pi/agent/providers.toml`（TOML 配置 + 在线刷新回写）；`models-store.json`；auth.json 读 key |
 | **sysinfo** | `extensions/sysinfo/index.ts` | 命令 `/sysinfo`（收集系统信息 → `sendUserMessage` 注入） | 无 |
-| **deepseek-search** | `extensions/deepseek-search/index.ts` | 工具 `web_search_agent`（DeepSeek Responses API 服务端 web_search 代理搜索） | 读 `auth.json` 的 `deepseek.key` |
+| **zhipu-search** | `extensions/zhipu-search/index.ts` | 工具 `web_search`（智谱 Web Search API 结构化搜索） | 读 `auth.json` 的 `zhipu.key` |
 | **trident-routing** | `extensions/trident-routing/{index,todo-scan}.ts` | 命令 `/homeport`(母港维修模式: 替换系统提示词) `/gui:scan-todo`；快捷键 ctrl+shift+t；事件 `session_start`(开场白 appendEntry + 工具集校准) `before_agent_start`(母港替换 systemPrompt)；`registerEntryRenderer("trident-greeting")` | `pi.appendEntry("trident-greeting")` 会话内 |
 | **tool-param-normalizer** | `extensions/tool-param-normalizer/index.ts` | 事件 `tool_call`(edit 参数别名归一化 old_str→oldText) `tool_result`(错误落盘日志) | `~/.pi/agent/tool-errors.log` |
 | **be-error-recorder** | `extensions/be-error-recorder/index.ts` | 事件 `tool_result`(仅反馈模式 worker 显式加载；be-* 失败追加记录) | `~/.pi/subagent-be-errors.jsonl` |

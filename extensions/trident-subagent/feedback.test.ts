@@ -17,7 +17,7 @@ describe("feedback mode", () => {
   it("普通 worker 只保留文件/bash/be-*，排除联网与 MCP 工具", () => {
     const tools = buildSafeWorkerTools([
       "read", "write", "edit", "bash", "grep", "find", "ls",
-      "be-read", "web_search_agent", "mcp", "mcpScript", "subagent",
+      "be-read", "web_search", "mcp", "mcpScript", "subagent",
     ]);
     assert.deepStrictEqual(tools, ["bash", "be-read", "edit", "find", "grep", "ls", "read", "write"]);
   });
