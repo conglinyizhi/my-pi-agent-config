@@ -1,8 +1,8 @@
 // lib/gui-runner.ts — 统一 GUI 启动器（Wails 版，替代 Electron spawn + 轮询）
 //
 // 两个入口：
-//   runGuiWindow    — 启动并等待响应文件（gate/setup/routing/editor 等需要结果的窗口）
-//   launchGuiWindow — 只启动不等待（/gui:subagents 实时监视窗口，异步拉起后立即返回）
+//   runGuiWindow    — 启动并等待响应文件（gate/routing/editor 等需要结果的窗口）
+//   launchGuiWindow — 只启动不等待（/subagent:gui 实时监视窗口，异步拉起后立即返回）
 //
 // runGuiWindow 用法：
 //   import { runGuiWindow, findGuiBinary } from "#lib/gui-runner";

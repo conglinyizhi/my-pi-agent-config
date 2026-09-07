@@ -7,7 +7,7 @@
 
 | 文件 | 能力 | 注册 |
 |------|------|------|
-| `editor-gui.ts` | `/prompt-edit-gui` Wails GUI 编辑器，读历史队列 `~/.pi/agent/queue/cliphist.json` | `registerCommand` |
+| `editor-gui.ts` | `/editor:gui` Wails GUI 编辑器，读历史队列 `~/.pi/agent/queue/cliphist.json`（`/prompt-edit-gui` 为兼容别名） | `registerCommand` |
 | `editor-margin.ts` | 圆角边框 + 可配边距的输入编辑器 | `session_start` → `setEditorComponent` |
 | `ctrl-c-safety.ts` | Ctrl+C 保存当前输入到历史队列（editor-gui 读取） | `registerShortcut` |
 | `external-editor-shortcuts.ts` | Ctrl+O 打开工作目录、`/open-editor` 打开文件/目录 | `registerShortcut` + `registerCommand` |

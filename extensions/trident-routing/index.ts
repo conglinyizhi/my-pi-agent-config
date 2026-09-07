@@ -189,33 +189,43 @@ export default function (pi: ExtensionAPI) {
     if (ctx.hasUI) await refreshTodos(ctx);
   });
 
-  pi.registerCommand("gui:scan-todo", {
+
+  const scanTodoGuiHandler = async (_args: string, ctx: any) => {
+    if (!ctx.hasUI) return;
+    // GUI 是用户主动启动的：强制扫描（~ 目录也不跳过），且不设超时
+    await refreshTodos(ctx, { force: true, timeout: 0 });
+    if (todoState.status !== "done") { ctx.ui.notify("TODO 扫描失败", "error"); return; }
+
+    const todos = todoState.items;
+    if (todos.length === 0) { ctx.ui.notify("没有 TODO", "info"); return; }
+
+    // 启动 Wails GUI
+    if (!findGuiBinary()) { ctx.ui.notify("未找到 wails-gui，请先构建", "error"); return; }
+
+    const result = await runGuiWindow("routing", { todos, cwd: ctx.cwd }, { timeoutMs: 300_000 });
+
+    if (!result.ok || result.data?.action === "cancel" || !result.data?.todos?.length) return;
+
+    const itemsBlock = result.data.todos.map((item: { file: string; line: number; text: string }) =>
+      `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");
+    let msg = `处理以下 TODO:\n\n${itemsBlock}`;
+    if (result.data.note) msg += `\n\n补充: ${result.data.note}`;
+    pi.sendUserMessage(msg);
+    ctx.ui.notify(`已发送 ${result.data.todos.length} 个 TODO`, "info");
+  };
+
+  pi.registerCommand("routing:gui", {
     description: "打开 TODO 调度 GUI：选中、定位文件、补充说明后发送",
-    handler: async (_args: string, ctx: any) => {
-      if (!ctx.hasUI) return;
-      // GUI 是用户主动启动的：强制扫描（~ 目录也不跳过），且不设超时
-      await refreshTodos(ctx, { force: true, timeout: 0 });
-      if (todoState.status !== "done") { ctx.ui.notify("TODO 扫描失败", "error"); return; }
-
-      const todos = todoState.items;
-      if (todos.length === 0) { ctx.ui.notify("没有 TODO", "info"); return; }
-
-      // 启动 Wails GUI
-      if (!findGuiBinary()) { ctx.ui.notify("未找到 wails-gui，请先构建", "error"); return; }
-
-      const result = await runGuiWindow("routing", { todos, cwd: ctx.cwd }, { timeoutMs: 300_000 });
-
-      if (!result.ok || result.data?.action === "cancel" || !result.data?.todos?.length) return;
-
-      const itemsBlock = result.data.todos.map((item: { file: string; line: number; text: string }) =>
-        `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");
-      let msg = `处理以下 TODO:\n\n${itemsBlock}`;
-      if (result.data.note) msg += `\n\n补充: ${result.data.note}`;
-      pi.sendUserMessage(msg);
-      ctx.ui.notify(`已发送 ${result.data.todos.length} 个 TODO`, "info");
-    },
+    handler: scanTodoGuiHandler,
   });
 
+  pi.registerCommand("gui:scan-todo", {
+    description: "兼容别名：打开 TODO 调度 GUI（请改用 /routing:gui）",
+    handler: async (args, ctx) => {
+      ctx.ui.notify("/gui:scan-todo 已废弃，请使用 /routing:gui", "warning");
+      return scanTodoGuiHandler(args, ctx);
+    },
+  });
   pi.registerShortcut("ctrl+shift+t", {
     description: "刷新 TODO 列表",
     handler: async (ctx) => { if (ctx.hasUI) await refreshTodos(ctx); },

@@ -30,7 +30,7 @@ pi
 
 **session-browse** — 跨 workdir 浏览与恢复历史 session。`/sessions` 命令列出所有对话，选中即切过去。
 
-**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。复杂任务可传结构化简报：`objective`、`context`、`constraints`、`required_files`、`skills`、`acceptance`、`output_format`，让 worker 一次拿齐背景与验收标准；模型优先级为显式 `model: provider/model` > 用户通过 `/subagent:select-change-switch-default-worker-model` 设置的独立 worker 默认 > 当前 session。独立默认不改变当前 session，选择器内可恢复继承。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。
+**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。复杂任务可传结构化简报：`objective`、`context`、`constraints`、`required_files`、`skills`、`acceptance`、`output_format`，让 worker 一次拿齐背景与验收标准；模型优先级为显式 `model: provider/model` > 用户通过 `/subagent:select-change-switch-default-worker-model` 设置的独立 worker 默认 > 当前 session。独立默认不改变当前 session，选择器内可恢复继承。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。实时监视使用 `/subagent:gui`。
 
 **confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
@@ -59,11 +59,11 @@ pi
 
 **talk-sleep** — `/talk-sleep [备注]` 暂存当前对话，换台电脑 `pi --resume` 继续聊。
 
-**todo-scanner** — 扫描项目中的 TODO 注释，`/todos` 或 Ctrl+Shift+T 查看。
+**todo-scanner** — 扫描项目中的 TODO 注释，`/todos` 或 Ctrl+Shift+T 查看；TODO 调度 GUI 使用 `/routing:gui`（`/gui:scan-todo` 为兼容别名）。
 
 **tool-checker** — 注册工具检测器，用于调试工具是否正常工作。（开发用）
 
-**editor** — 编辑器能力四合一：`/prompt-edit-gui`（Wails GUI，读 Ctrl+C 历史）、圆角边距输入框、Ctrl+C 历史保存（`cliphist.json`）、外部编辑器（Ctrl+O / `/open-editor`）。
+**editor** — 编辑器能力四合一：`/editor:gui`（Wails GUI，读 Ctrl+C 历史；`/prompt-edit-gui` 为兼容别名）、圆角边距输入框、Ctrl+C 历史保存（`cliphist.json`）、外部编辑器（Ctrl+O / `/open-editor`）。
 
 **prompt-sections** — DSH 风格的有序段系统提示词组装（A/B 测试，对照 v0.1.0 tag）。`/prompt-sections on|off|status` 开关，`/prompt-sections-preview` 预览装配结果。plan-mode / skill-boot(原 skill-kit) / tool-checker / trident-routing 母港已迁移为段（order 约定：-100 身份 / 0 默认 / 50 策略 / 100-199 工具指导）。详见 `extensions/prompt-sections/README.md`。
 

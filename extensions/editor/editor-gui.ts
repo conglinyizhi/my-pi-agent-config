@@ -17,35 +17,45 @@ function loadHistory(): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+	const promptEditGuiHandler = async (args: string, ctx: any) => {
+		if (!findGuiBinary()) {
+			ctx.ui.notify("未找到 wails-gui。请先构建：cd wails-gui && wails build -tags webkit2_41", "error");
+			return;
+		}
+
+		// 构建请求
+		const clipHistory = loadHistory();
+		const request: any = { clipHistory, file: null };
+
+		// 如果有参数作为文件路径
+		if (args && args.trim()) {
+			const absPath = path.resolve(ctx.cwd, args.trim());
+			if (fs.existsSync(absPath)) request.file = absPath;
+		}
+
+		ctx.ui.notify("正在启动提示词编辑工具...", "info");
+
+		const result = await runGuiWindow("editor", request, { timeoutMs: 300000 });
+		if (!result.ok || result.data?.cancelled) {
+			return;
+		}
+
+		if (result.data.action === "restore" && result.data.text) {
+			ctx.ui.setEditorText(result.data.text);
+			ctx.ui.notify("内容已恢复到输入框", "info");
+		}
+	};
+
+	pi.registerCommand("editor:gui", {
+		description: "打开提示词编辑 GUI（查看 Ctrl+C 历史 / 编辑文件）",
+		handler: promptEditGuiHandler,
+	});
+
 	pi.registerCommand("prompt-edit-gui", {
-		description: "提示词编辑工具（查看 Ctrl+C 历史 / 编辑文件）",
+		description: "兼容别名：打开提示词编辑 GUI（请改用 /editor:gui）",
 		handler: async (args, ctx) => {
-			if (!findGuiBinary()) {
-				ctx.ui.notify("未找到 wails-gui。请先构建：cd wails-gui && wails build -tags webkit2_41", "error");
-				return;
-			}
-
-			// 构建请求
-			const clipHistory = loadHistory();
-			const request: any = { clipHistory, file: null };
-
-			// 如果有参数作为文件路径
-			if (args && args.trim()) {
-				const absPath = path.resolve(ctx.cwd, args.trim());
-				if (fs.existsSync(absPath)) request.file = absPath;
-			}
-
-			ctx.ui.notify("正在启动提示词编辑工具...", "info");
-
-			const result = await runGuiWindow("editor", request, { timeoutMs: 300000 });
-			if (!result.ok || result.data?.cancelled) {
-				return;
-			}
-
-			if (result.data.action === "restore" && result.data.text) {
-				ctx.ui.setEditorText(result.data.text);
-				ctx.ui.notify("内容已恢复到输入框", "info");
-			}
+			ctx.ui.notify("/prompt-edit-gui 已废弃，请使用 /editor:gui", "warning");
+			return promptEditGuiHandler(args, ctx);
 		},
 	});
 }

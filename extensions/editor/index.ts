@@ -1,7 +1,7 @@
 // editor — 编辑器相关能力四合一：GUI 编辑器、圆角输入框、Ctrl+C 历史、外部编辑器
 //
 // 子模块（各自 default export，注册到同一 pi 实例）：
-//   editor-gui.ts                /prompt-edit-gui（Wails GUI 编辑器，读 cliphist 历史）
+//   editor-gui.ts                /editor:gui（Wails GUI 编辑器，读 cliphist 历史；旧命令保留兼容别名）
 //   editor-margin.ts             圆角边框输入编辑器（session_start 时 setEditorComponent）
 //   ctrl-c-safety.ts             Ctrl+C 保存历史到 cliphist（editor-gui 读取）
 //   external-editor-shortcuts.ts Ctrl+O + /open-editor 外部编辑器
