@@ -246,6 +246,12 @@ gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录�
 
 `allowDirs` 是长期生效的**可写根 + sandbox-allow 信任根**：普通 bash 会把它们作为常驻 `--rw` 根；`sandbox-allow` 的 `write-paths` 请求若完全落在其中，可免重复审批。它不改变当前用户的系统身份，也不能绕过 `autoReject` 硬拒绝规则。
 
+### Subagent 自动审核
+
+worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`subagent-bash-guard` 以本地规则自动批准并仅为该精确命令开启网络：包管理器的 `install/add/update/remove/ci`、`git clone/fetch/pull/submodule add|update`，以及不写文件、不上传、非管道执行的 `curl`/`wget`。这减少依赖安装和只读拉取的重复弹窗。
+
+以下情况**不会**自动批准，仍按 capability request 交给父会话人工审核或直接拒绝：`git push`、包发布、上传/POST、下载后执行（如 `curl | sh`）、重定向、命令替换/变量等动态 shell 构造，以及任何命中危险命令规则的操作。worker 自动审核不调用 LLM：子进程环境不携带审核模型凭据；未知网络命令 fail-closed 回退人工审核。
+
 当前 session 的目录授权只存在内存，不写入上述文件：
 
 - **本 session 可写**：后续普通 bash 可写该目录，但 `sandbox-allow` 仍需审批

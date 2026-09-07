@@ -115,6 +115,61 @@ export function consumeMatchingGrant(command: string, capability: CapabilityName
   return true;
 }
 
+/**
+ * 子 agent 的本地网络自动审核。
+ *
+ * 只允许可枚举的开发期拉取命令，且命令必须是单段静态 shell 调用：
+ * 包管理器依赖操作、git 的只读同步，以及不落盘/不执行的 curl、wget。
+ * 任何重定向、管道、命令替换、动态变量、远端写入或未知参数都回退人工审批。
+ * 这不是通用的网络白名单；新命令先人工审核，确认安全后再显式加入。
+ */
+export function isWorkerNetworkAutoApproved(command: string): boolean {
+  const text = command.trim();
+  if (!text || /(?:&&|\|\||[;|`<>\n]|\$(?:[A-Za-z_]|\{|\())/.test(text)) return false;
+
+  // 只处理简单 token；带引号的参数可以安全传递，但不允许引号内嵌 shell 控制字符。
+  const tokens = text.match(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g);
+  if (!tokens?.length) return false;
+  const unquote = (token: string) => token.replace(/^(?:"|')|(?:"|')$/g, "");
+  const args = tokens.map(unquote);
+  let index = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[index] ?? "")) index++;
+  const executable = (args[index] ?? "").split("/").pop()?.toLowerCase();
+  const rest = args.slice(index + 1);
+
+  // 远端写入/发布永远不属于自动放行集合，即使调用方分类出现遗漏也要二次卡住。
+  if (/\b(?:publish|push)\b/i.test(rest.join(" "))) return false;
+
+  if (["pnpm", "npm", "yarn", "bun"].includes(executable ?? "")) {
+    return ["install", "add", "update", "remove", "ci"].includes((rest[0] ?? "").toLowerCase());
+  }
+  if (["uv", "pip", "pip3", "poetry", "go", "cargo"].includes(executable ?? "")) {
+    const operation = executable === "uv" ? `${rest[0] ?? ""} ${rest[1] ?? ""}`.toLowerCase() : (rest[0] ?? "").toLowerCase();
+    return ["pip install", "install", "add", "update", "get", "fetch"].includes(operation);
+  }
+  if (executable === "git") {
+    return ["clone", "fetch", "pull"].includes((rest[0] ?? "").toLowerCase()) ||
+      (rest[0] === "submodule" && ["add", "update"].includes((rest[1] ?? "").toLowerCase()));
+  }
+  if (executable === "curl" || executable === "wget") {
+    // 下载后写文件、提交数据、指定非 GET 方法都留给人工/LLM 兜底；只允许读到 stdout。
+    return !rest.some((arg, i) =>
+      ["-o", "-O", "--output", "--remote-name", "-d", "--data", "--data-raw", "-F", "--form", "-T", "--upload-file"].includes(arg) ||
+      ((arg === "-X" || arg === "--request") && (rest[i + 1] ?? "").toUpperCase() !== "GET"),
+    );
+  }
+  return false;
+}
+
+/** 规则未覆盖时，只有纯只读的远端元数据查询才允许交给父会话的 LLM 复核。 */
+export function isWorkerNetworkLlmReviewable(command: string): boolean {
+  const text = command.trim();
+  if (!text || /(?:&&|\|\||[;|`<>\n]|\$(?:[A-Za-z_]|\{|\()|\b(?:push|publish|upload|--upload-file|--data|--form|post|put|patch|delete)\b)/i.test(text)) return false;
+  const tokens = text.split(/\s+/);
+  const executable = (tokens[0] ?? "").split("/").pop()?.toLowerCase();
+  return executable === "git" && tokens[1]?.toLowerCase() === "ls-remote";
+}
+
 export function isWorkerApprovalCapability(capability: CapabilityName): boolean {
   // 当前只把 network 与普通命令风险交给主对话审批；publish/read-secrets 不开放。
   return capability === "network" || capability === "command";

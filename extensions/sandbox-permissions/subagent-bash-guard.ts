@@ -13,6 +13,7 @@ import {
   consumeMatchingGrant,
   hasMatchingGrant,
   isWorkerApprovalCapability,
+  isWorkerNetworkAutoApproved,
   makeCapabilityRequest,
   parseCapabilityGrants,
   requestedCapability,
@@ -83,8 +84,11 @@ export default function (pi: ExtensionAPI): void {
 
       // 一条命令可能同时需要 network 与 command 两把钥匙（例如 curl | sh）。
       // 这里只检查，不提前消费；所有必需 grant 齐全后才在执行前一次性消费。
+      // 明确列出的工作区开发期拉取命令不再上报父级弹窗；仍受 Landlock、
+      // 精确命令解析和下方 command 风险检查约束。其余网络请求保持一次性 grant 流程。
+      const networkAutoApproved = requested?.capability === "network" && isWorkerNetworkAutoApproved(command);
       const networkGranted = requested?.capability === "network"
-        ? hasMatchingGrant(command, "network", grants)
+        ? networkAutoApproved || hasMatchingGrant(command, "network", grants)
         : false;
       const commandRisk = !verdict.allow;
       const commandGranted = commandRisk ? hasMatchingGrant(command, "command", grants) : true;
@@ -120,7 +124,9 @@ export default function (pi: ExtensionAPI): void {
       }
 
       if (requested?.capability === "network") {
-        consumeMatchingGrant(command, "network", grants);
+        // 自动审核与人工 grant 都只对当前精确 command 生效；spawnHook 仅为本次
+        // 进程注入网络开关，后续命令必须重新经过审核。
+        if (!networkAutoApproved) consumeMatchingGrant(command, "network", grants);
         networkApproved.add(commandDigest(command));
       }
       if (commandRisk) consumeMatchingGrant(command, "command", grants);

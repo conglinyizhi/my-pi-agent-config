@@ -16,7 +16,8 @@ import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildToolsFromNames } from "./feedback.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
-import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
+import { commandDigest, isWorkerApprovalCapability, isWorkerNetworkLlmReviewable, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
+import { createReviewCache, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
 import {
   SUBAGENT_MODEL_SCOPE,
@@ -31,6 +32,7 @@ import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
+const capabilityReviewCache = createReviewCache();
 
 function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
   const run = capabilityApprovalTail.then(work, work);
@@ -45,6 +47,21 @@ async function approveCapability(
 ): Promise<CapabilityGrant | undefined> {
   const validated = validateCapabilityRequest(request);
   if (!validated || !isWorkerApprovalCapability(validated.capability)) return undefined;
+
+  // 规则集合故意很窄：本地规则未涵盖的只读 git 元数据查询，才让父会话的
+  // 审核模型复核。审核不可用或结论非 safe 时继续走人工闸门，绝不静默放行。
+  const reviewConfig = loadLlmReviewConfig();
+  if (validated.capability === "network" && isWorkerNetworkLlmReviewable(validated.command) && reviewConfig.enabled) {
+    try {
+      const review = await reviewCommand(pi, ctx, validated.command, [], signal, capabilityReviewCache, reviewConfig);
+      if (review.verdict === "safe" && reviewConfig.mode === "auto") {
+        return { capability: validated.capability, commandDigest: commandDigest(validated.command) };
+      }
+    } catch {
+      // fail-closed：审核异常保持原人工确认链路。
+    }
+  }
+
   const result = await runGuiWindow(
     "gate",
     {
