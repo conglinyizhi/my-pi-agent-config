@@ -69,3 +69,6 @@ wails-gui/wails-gui
 
 # message-page 本机偏好（上次选择的模型，不入库）
 message-page-model.toml
+
+# 模型选择偏好（本机运行时状态，不入库）
+model-selection.toml
