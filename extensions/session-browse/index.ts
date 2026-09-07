@@ -1,11 +1,12 @@
 // 跨 workdir 浏览 / 筛选历史 session，按最后活动时间排序，可选 resume
 //
 // 用法：
-//   /sessions                  交互选择（默认 All，显示绝对时间 + cwd）
-//   /sessions 10               只看最近 10 条
-//   /sessions shin             过滤 cwd / 名称 / 首条消息
-//   /sessions list             纯文本列表（不切换）
-//   /sessions list 20 shin     文本 + 条数 + 过滤
+//   /session-switch                   交互选择（默认 All，显示绝对时间 + cwd）
+//   /session-switch 10               只看最近 10 条
+//   /session-switch shin             过滤 cwd / 名称 / 首条消息
+//   /session-switch list             纯文本列表（不切换）
+//   /session-switch list 20 shin     文本 + 条数 + 过滤
+//   /session-switch:fast-fork        从当前 session 当前位置 fork 出一个新 session 继续对话
 //
 // 也注册 list_sessions 工具，方便 LLM 在对话里直接列最近 session。
 
@@ -268,7 +269,7 @@ async function pickSession(
       new Text(
         theme.fg(
           "dim",
-          "过滤请用命令参数：/sessions <关键词> · /sessions list 20 tmp",
+          "过滤请用命令参数：/session-switch <关键词> · /session-switch list 20 tmp",
         ),
       ),
     );
@@ -455,16 +456,50 @@ ${r.snippet}
 
 export default function (pi: ExtensionAPI) {
   const desc =
-    "跨 workdir 浏览 session（按最后活动时间）。用法: /sessions [list] [N] [filter]";
+    "跨 workdir 浏览 session（按最后活动时间）。用法: /session-switch [list] [N] [filter]";
 
-  pi.registerCommand("sessions", {
+  pi.registerCommand("session-switch", {
     description: desc,
     handler: (args, ctx) => handleSessionsCommand(args, ctx),
   });
 
   pi.registerCommand("find-session", {
-    description: "同 /sessions：跨 workdir 按最后活动时间查找 session",
+    description: "同 /session-switch：跨 workdir 按最后活动时间查找 session",
     handler: (args, ctx) => handleSessionsCommand(args, ctx),
+  });
+
+  // /session-switch:fast-fork
+  // 从当前 session 当前位置（leaf）fork 出一个新 session 文件继续后续对话。
+  // 用 position: "at" 复制当前 active path，保留全部上下文，不向编辑器回填历史 prompt。
+  pi.registerCommand("session-switch:fast-fork", {
+    description: "从当前 session fork 出一个新 session 继续对话（复制当前上下文到新 session 文件）",
+    handler: async (_args, ctx) => {
+      const leafId = ctx.sessionManager.getLeafId();
+      if (!leafId) {
+        ctx.ui.notify("当前 session 没有可 fork 的入口（空会话）", "warning");
+        return;
+      }
+
+      ctx.ui.setStatus("session-browse", "fork session…");
+      try {
+        const result = await ctx.fork(leafId, {
+          position: "at",
+          withSession: async (newCtx) => {
+            newCtx.ui.notify("已 fork 到新 session，可继续对话", "info");
+          },
+        });
+        if (result.cancelled) {
+          ctx.ui.notify("fork 被取消", "warning");
+        }
+      } catch (err) {
+        ctx.ui.notify(
+          `fork 失败: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+      } finally {
+        ctx.ui.setStatus("session-browse", undefined);
+      }
+    },
   });
 
 }

@@ -23,11 +23,12 @@
 
 | 命令 | 作用 |
 |------|------|
-| `/sessions` | 交互选择并 `switchSession`（当前目录 session 用 `●` 高亮） |
-| `/sessions 15` | 只显示最近 15 条 |
-| `/sessions shin` | 按关键词过滤（cwd/名称/首条/全文 AND） |
-| `/sessions list` | 只看文本列表，不切换 |
-| `/sessions list 20 tmp` | 文本 + 条数 + 过滤 |
+| `/session-switch` | 交互选择并 `switchSession`（当前目录 session 用 `●` 高亮） |
+| `/session-switch 15` | 只显示最近 15 条 |
+| `/session-switch shin` | 按关键词过滤（cwd/名称/首条/全文 AND） |
+| `/session-switch list` | 只看文本列表，不切换 |
+| `/session-switch list 20 tmp` | 文本 + 条数 + 过滤 |
+| `/session-switch:fast-fork` | 从当前 session 当前位置 `fork` 出一个新 session 文件继续对话 |
 | `/find-session …` | 同上别名 |
 
 ## 工具（LLM）
@@ -56,18 +57,24 @@
 
 ## 与内置 `/resume` 对照
 
-| | `/resume` | `/sessions` |
+| | `/resume` | `/session-switch` |
 |--|-----------|-------------|
 | 默认范围 | 当前目录 | **全部 workdir** |
 | 高亮当前目录 | 天然仅当前目录 | **`●` 高亮 + `(当前目录)` 标注** |
 | 时间显示 | 相对（`3h`） | **绝对 + 相对** |
-| 文本导出 | 无 | `/sessions list` |
+| 文本导出 | 无 | `/session-switch list` |
 | LLM 工具 | 无 | `list_sessions` |
+
+`/session-switch:fast-fork`：以当前 `ctx.sessionManager.getLeafId()` 为入口，
+用 `ctx.fork(leafId, { position: "at", withSession })` 把当前 active path 复制成一个新 session 文件，
+切入后即可在 fork 出的分支里继续对话，不会改动原 session 文件。
 
 停电抢救推荐路径：
 
 ```text
-/sessions list 20
+/session-switch list 20
 # 或交互：
-/sessions
+/session-switch
+# 想开新分支继续：
+/session-switch:fast-fork
 ```
