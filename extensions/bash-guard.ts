@@ -160,10 +160,20 @@ export default function (pi: ExtensionAPI) {
 
 					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式；GUI 优先，TUI 回退）──
 					const decision = await humanConfirm(ctx!, command, verdict.rules, verdict.reason, review, toolCallId, signal);
+					const auditEntry = {
+						command,
+						rules: verdict.rules.map((rule) => ({ name: rule.name, matched: rule.matched })),
+						...(review ? { review: { verdict: review.verdict, reason: review.reason } } : {}),
+						...(decision.comment ? { comment: decision.comment } : {}),
+						ts: Date.now(),
+					};
 					if (!decision.ok) {
+						pi.appendEntry("bash-audit", { ...auditEntry, outcome: "denied" });
 						const userNote = decision.comment ? `（用户理由：${decision.comment}）` : "";
 						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}${userNote}` }], details: {} as BashToolDetails };
 					}
+					// 仅记录真实出现过的人工闸门决策；自动放行仍保持静默，避免会话噪声。
+					pi.appendEntry("bash-audit", { ...auditEntry, outcome: "approved" });
 				} else {
 					// 无 rules 但 allow=false（黑名单/内联脚本），直接拦
 					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
