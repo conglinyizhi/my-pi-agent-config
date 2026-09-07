@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -182,7 +181,9 @@ func withSupplementLock(root, inboxID string, fn func() error) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timed out after %s waiting for queue lock", supplementLockTimeout)
 		}
-		time.Sleep(time.Duration(10+rand.IntN(20)) * time.Millisecond)
+		// 用时间戳扰动退避，避免依赖 math/rand/v2；随机性不是锁正确性的前提。
+		jitter := time.Duration(time.Now().UnixNano()%20) * time.Millisecond
+		time.Sleep((10 * time.Millisecond) + jitter)
 	}
 	defer os.RemoveAll(lockDir)
 	return fn()

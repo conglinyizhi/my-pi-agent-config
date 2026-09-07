@@ -5,7 +5,7 @@
 // 默认模型优先级：显式 model > subagent 独立默认 > 当前会话模型；可由用户命令设置独立默认。
 // skills 可按简报逐 worker 指定。
 // /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
-// /gui:subagents：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
+// /subagent:gui：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildToolsFromNames } from "./feedback.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
+import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, isWorkerNetworkLlmReviewable, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { createReviewCache, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
@@ -28,6 +29,7 @@ import {
   selectScopedDefaultModel,
 } from "../../lib/model-selection.ts";
 import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
+import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
 
 const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
@@ -170,7 +172,7 @@ export default function (pi: ExtensionAPI) {
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
       "工具同步阻塞直到所有 worker 结束；一个失败不终止其他 worker，逐项汇报。",
-      "运行期间可用 /gui:subagents 查看实时详情；失败 investigation 路径先读「读档指引」与「最终结论」。",
+      "运行期间可用 /subagent:gui 查看实时详情；失败 investigation 路径先读「读档指引」与「最终结论」。",
     ],
     parameters: Type.Object({
       task: Type.Union([
@@ -297,10 +299,27 @@ export default function (pi: ExtensionAPI) {
       beginBatch(runs);
 
       const batchTaskId = `batch-${Date.now().toString(36)}`;
+      // 永久本地诊断档案：只保存父进程可验证的可见轨迹和 prompt 重建输入。
+      // Pi 尚无官方 API 回传 worker 最终 resolved system prompt，绝不通过 payload
+      // 截获或其他旁路伪造/采集隐藏上下文。
+      beginDiagnostics({
+        batchId: batchTaskId,
+        createdAt: new Date().toISOString(),
+        cwd: ctx.cwd,
+        model: workerModel,
+        workerPrompt: SUBAGENT_PROMPT,
+        systemPrompt: {
+          kind: "reconstructable-input",
+          stableInstruction: SUBAGENT_PROMPT,
+          skillPaths: workerSkills,
+          tools: toolCfg.tools,
+          extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : [],
+        },
+      });
       onUpdate?.({
         content: [{
           type: "text",
-          text: `已启动 ${tasks.length} 个 subagent，主线等待全部完成；/gui:subagents 查看实时详情${feedbackOn ? "（反馈模式）" : ""}`,
+          text: `已启动 ${tasks.length} 个 subagent，主线等待全部完成；/subagent:gui 查看实时详情${feedbackOn ? "（反馈模式）" : ""}`,
         }],
         details: { phase: "running" },
       });
@@ -344,6 +363,7 @@ export default function (pi: ExtensionAPI) {
       } finally {
         // 挂起合并写显式落盘（终态已立即写，此处兜底，确保进程结束前不丢状态）
         flushStatusFile();
+        clearDiagnosticsContext();
       }
 
       const lines = results.map((r) => {
@@ -411,26 +431,36 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+
   // ═══════════════════════════
-  // /gui:subagents — 异步启动实时监视窗口
+  // /subagent:gui — 异步启动实时监视窗口
   // ═══════════════════════════
 
-  pi.registerCommand("gui:subagents", {
-    description: "GUI：异步启动实时监视窗口（不阻塞命令；反馈开关由窗口内直接持久化）",
-    handler: async (_args, ctx) => {
-      // 非阻塞拉起：不等待 response / 窗口关闭，反馈开关由 GUI 内 SaveSubagentFeedback 持久化
-      const result = launchGuiWindow("subagents", {
-        feedback: readFeedbackState(),
-        workers: getSnapshot(),
-      });
+  const subagentsGuiHandler = async (_args: string, ctx: ExtensionContext) => {
+    // 非阻塞拉起：不等待 response / 窗口关闭，反馈开关由 GUI 内 SaveSubagentFeedback 持久化
+    const result = launchGuiWindow("subagents", {
+      feedback: readFeedbackState(),
+      workers: getSnapshot(),
+    });
 
-      if (!result.ok) {
-        ctx.ui.notify(
-          result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
-          "error",
-        );
-      }
-    },
+    if (!result.ok) {
+      ctx.ui.notify(
+        result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
+        "error",
+      );
+    }
+  };
+
+  pi.registerCommand("subagent:gui", {
+    description: "打开 subagent 实时监视 GUI（不阻塞命令；反馈开关由窗口内直接持久化）",
+    handler: subagentsGuiHandler,
   });
 
+  pi.registerCommand("gui:subagents", {
+    description: "兼容别名：打开 subagent 实时监视 GUI（请改用 /subagent:gui）",
+    handler: async (args, ctx) => {
+      ctx.ui.notify("/gui:subagents 已废弃，请使用 /subagent:gui", "warning");
+      return subagentsGuiHandler(args, ctx);
+    },
+  });
 }

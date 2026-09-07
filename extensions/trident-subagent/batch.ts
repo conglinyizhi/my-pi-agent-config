@@ -183,6 +183,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
             stderr: r.stderr.slice(-4000),
             // 每次实时解析更新都传 timeline 快照（复制，避免共享同一数组引用）
             timeline: [...r.timeline],
+            visibleConversation: [...r.visibleConversation],
+            archiveTimeline: [...r.archiveTimeline],
           }),
         });
 
@@ -202,6 +204,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
             : getResultOutput(result).slice(-8000),
           // 终态更新保留最终 timeline
           timeline: [...result.timeline],
+          visibleConversation: [...result.visibleConversation],
+          archiveTimeline: [...result.archiveTimeline],
           capabilityRequest: result.capabilityRequest,
         });
         return {

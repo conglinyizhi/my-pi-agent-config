@@ -40,10 +40,35 @@ export interface SubagentUsage {
   turns: number;
 }
 
+export interface VisibleWorkerMessage {
+  /** 显式任务文本或 assistant 可见文本；不含 thinking/CoT 与 tool result 原始 payload。 */
+  role: "user" | "assistant";
+  content: string;
+  ts: string;
+}
+
+export interface VisibleArchiveEvent {
+  id: string;
+  type: "assistant" | "tool" | "lifecycle";
+  ts: string;
+  tool?: string;
+  args?: string;
+  preview?: string;
+  result?: string;
+  ok?: boolean;
+  text?: string;
+  state?: string;
+  message?: string;
+}
+
 export interface SubagentResult {
   task: string;
   exitCode: number;
   messages: Message[];
+  /** 本次运行可安全展示的来回文本；供本地诊断档案永久保存。 */
+  visibleConversation: VisibleWorkerMessage[];
+  /** 不受实时 timeline 条数上限影响的可见工具/assistant 事件档案。 */
+  archiveTimeline: VisibleArchiveEvent[];
   stderr: string;
   usage: SubagentUsage;
   model?: string;
@@ -352,18 +377,35 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         "starting",
         attempt > 1 ? `worker 重试（第 ${attempt} 次尝试）` : "worker 启动",
       );
+      const archiveTimeline = new TimelineBuilder({
+        seedEvents: [],
+        attempt,
+        maxEntries: Number.MAX_SAFE_INTEGER,
+        maxText: Number.MAX_SAFE_INTEGER,
+        maxField: Number.MAX_SAFE_INTEGER,
+      });
+      archiveTimeline.addLifecycle("starting", attempt > 1 ? `worker 重试（第 ${attempt} 次尝试）` : "worker 启动");
 
       const result: SubagentResult = {
         task,
         exitCode: 0,
         messages: [],
+        visibleConversation: [{ role: "user", content: task, ts: new Date().toISOString() }],
+        archiveTimeline: [],
         stderr: "",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         model,
         timeline: timeline.events,
       };
 
+      // 独立的无限（相对当前进程寿命）可见归档轨迹；实时 timeline 仍有 500 条保护。
+      const syncArchiveTimeline = () => {
+        result.archiveTimeline = archiveTimeline.events
+          .filter((event) => event.type !== "supplement")
+          .map((event) => ({ ...event } as VisibleArchiveEvent));
+      };
       const emitUpdate = () => {
+        syncArchiveTimeline();
         opts.onUpdate?.(result);
       };
 
@@ -400,7 +442,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           buffer = lines.pop() || "";
           for (const line of lines) {
             if (!line.trim()) continue;
-            if (timeline.handleLine(line)) emitUpdate();
+            const archiveChanged = archiveTimeline.handleLine(line);
+            if (timeline.handleLine(line) || archiveChanged) emitUpdate();
             let event: { type?: string; message?: unknown };
             try { event = JSON.parse(line); } catch { continue; }
 
@@ -408,6 +451,11 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
               const msg = event.message as Message;
               result.messages.push(msg);
               if (msg.role === "assistant") {
+                const visible = getFinalOutput([msg as unknown as { role: string; content: string | ContentPartLike[] }]);
+                if (visible) {
+                  const ts = new Date().toISOString();
+                  result.visibleConversation.push({ role: "assistant", content: visible, ts });
+                }
                 result.usage.turns++;
                 const usage = msg.usage;
                 if (usage) {
@@ -461,6 +509,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
             for (const line of buffer.split("\n")) {
               if (!line.trim()) continue;
               timeline.handleLine(line);
+              archiveTimeline.handleLine(line);
               let event: { type?: string; message?: unknown };
               try { event = JSON.parse(line); } catch { continue; }
               if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
@@ -497,6 +546,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         stopReason: result.stopReason,
       });
       timeline.addLifecycle(capabilityRequest ? "needs_approval" : terminal, capabilityRequest?.reason);
+      archiveTimeline.addLifecycle(capabilityRequest ? "needs_approval" : terminal, capabilityRequest?.reason);
       // 终态同步一次：尾缓冲里的 telemetry 已并入 timeline，随终态 lifecycle 一起
       // 通过 onUpdate 送达调用方（与下方 resolve/throw 路径的 result.timeline 一致）
       emitUpdate();
@@ -729,6 +779,8 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     task: opts.task,
     exitCode: 1,
     messages: [],
+    visibleConversation: [{ role: "user", content: opts.task, ts: new Date().toISOString() }],
+    archiveTimeline: [],
     stderr: "",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
     timeline: [],

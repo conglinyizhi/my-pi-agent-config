@@ -20,8 +20,9 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SubagentUsage, TimelineEvent } from "../../lib/subagent-run.ts";
+import type { SubagentUsage, TimelineEvent, VisibleArchiveEvent, VisibleWorkerMessage } from "../../lib/subagent-run.ts";
 import type { CapabilityRequest } from "../../lib/subagent-capability.ts";
+import { archiveDiagnostics } from "./diagnostics.ts";
 
 export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
@@ -34,12 +35,17 @@ export interface WorkerRun {
   status: WorkerStatus;
   startedAt: string;
   finishedAt?: string;
+  /** 最近一次可观察 worker 事件/状态更新；用于 GUI 无事件时长分级。 */
+  lastActivityAt?: string;
   pid?: number;
   usage?: SubagentUsage;
   output?: string;
   stderr?: string;
   /** 有界 per-worker 执行轨迹（实时更新；终态保留最终 timeline） */
   timeline?: TimelineEvent[];
+  /** 任务与 assistant 可见文本的完整来回；隐藏 reasoning 不在此字段。 */
+  visibleConversation?: VisibleWorkerMessage[];
+  archiveTimeline?: VisibleArchiveEvent[];
   /** worker 等待主进程审批的能力请求 */
   capabilityRequest?: CapabilityRequest;
 }
@@ -126,6 +132,7 @@ function writeNow(): void {
   } catch {
     /* GUI 不可用不影响调度 */
   }
+  archiveDiagnostics(snapshot);
 }
 
 /** 合并写：已有挂起定时器则复用，否则排一个（延迟上限 COALESCE_DELAY_MS） */
@@ -145,6 +152,8 @@ export function beginBatch(runs: WorkerRun[]): void {
 export function updateWorker(id: string, patch: Partial<WorkerRun>): void {
   const w = snapshot.find((r) => r.id === id);
   if (!w) return;
+  // 任意真实状态/遥测补丁都更新活动时间；UI 据此只提示，不自动终止 worker。
+  if (patch.lastActivityAt === undefined) patch.lastActivityAt = io.now();
   Object.assign(w, patch);
   // 启动/终态必须立即落盘；其余实时增量合并写入（有界延迟）
   if (patch.status !== undefined && IMMEDIATE_STATUSES.has(patch.status)) {

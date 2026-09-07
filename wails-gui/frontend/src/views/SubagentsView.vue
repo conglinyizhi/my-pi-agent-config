@@ -1,37 +1,32 @@
 <template>
   <div v-if="ready" class="app">
     <!-- 层级 1：Agent 列表（全窗口） -->
-    <section v-if="viewLevel === 'agents'" data-name="agent-list" class="agents-view">
-      <header class="agents-header">
-        <div class="agents-title-row">
-          <h1>Subagent 批次</h1>
-          <span class="count-badge">{{ workers.length }}</span>
+    <WorkerList
+      v-if="viewLevel === 'agents'"
+      :workers="workers"
+      :selected-id="selectedId"
+      :feedback="feedback"
+      :feedback-note="feedbackNote"
+      :status-icon="statusIcon"
+      :status-label="statusLabel"
+      :activity-state="activityState"
+      @select="select"
+      @toggle-feedback="toggleFeedback"
+    />
+    <button v-if="viewLevel === 'agents'" class="diagnostics-btn" @click="loadDiagnostics">本地诊断档案</button>
+    <div v-if="diagnosticsOpen" class="diagnostics-overlay" @click.self="diagnosticsOpen = false">
+      <section class="diagnostics-panel">
+        <header><strong>本地诊断档案</strong><button @click="diagnosticsOpen = false">关闭</button></header>
+        <p>永久保留在本机；包含可见轨迹与 prompt 重建输入，不包含隐藏 reasoning。</p>
+        <input v-model="diagnosticQuery" class="diagnostic-search" placeholder="筛选 batch ID / 模型…" />
+        <div v-for="entry in filteredDiagnostics" :key="entry.batchId" class="diagnostic-item">
+          <button class="diagnostic-row" @click="openDiagnostic(entry.batchId)"><span>{{ entry.batchId }}</span><span>{{ entry.model }} · {{ entry.workers }} worker · {{ fmt(entry.updatedAt) }}</span></button>
+          <button class="diagnostic-delete" @click="deleteDiagnostic(entry.batchId)">删除</button>
         </div>
-        <label class="feedback-toggle" data-name="feedback-toggle-wrap">
-          <input type="checkbox" data-name="feedback-toggle" :checked="feedback" @change="toggleFeedback" />
-          <span>反馈模式（新 worker 仅 read/bash/be-*）</span>
-        </label>
-        <p v-if="feedbackNote" class="note">{{ feedbackNote }}</p>
-      </header>
-
-      <div class="worker-list">
-        <div
-          v-for="w in workers"
-          :key="w.id"
-          data-name="agent-item"
-          :class="['agent-item', { active: selectedId === w.id }]"
-          @click="select(w.id)"
-        >
-          <span class="status-icon">{{ statusIcon(w.status) }}</span>
-          <div class="worker-info">
-            <div class="worker-title">{{ w.task.slice(0, 40) }}</div>
-            <div class="worker-id">{{ w.id }} · {{ statusLabel(w.status) }}</div>
-          </div>
-          <span class="row-chevron">›</span>
-        </div>
-        <div v-if="workers.length === 0" class="empty-list">暂无运行中的批次</div>
-      </div>
-    </section>
+        <div v-if="diagnostics.length === 0" class="empty-list">暂无本地诊断档案</div>
+        <pre v-if="diagnosticDocument" class="diagnostic-document">{{ diagnosticDocument }}</pre>
+      </section>
+    </div>
 
     <!-- 层级 2：选中 worker 的全宽时间线 -->
     <section v-else-if="viewLevel === 'timeline'" data-name="event-list" class="timeline-view">
@@ -82,55 +77,15 @@
       </header>
 
       <div ref="detailViewport" class="detail-body">
-        <template v-if="currentEvent">
-          <template v-if="currentEvent.type === 'tool'">
-            <div v-if="currentEvent.args !== undefined" class="detail-field">
-              <label>参数</label>
-              <pre>{{ currentEvent.args }}</pre>
-            </div>
-            <div v-if="currentEvent.preview !== undefined" class="detail-field">
-              <label>增量输出</label>
-              <pre>{{ currentEvent.preview }}</pre>
-            </div>
-            <div v-if="currentEvent.result !== undefined" class="detail-field">
-              <label>最终结果</label>
-              <pre :class="{ err: currentEvent.ok === false }">{{ currentEvent.result }}</pre>
-            </div>
-            <div v-if="currentEvent.ok !== undefined" class="detail-field inline">
-              <label>状态</label>
-              <span :class="currentEvent.ok ? 'ok' : 'err'">{{ currentEvent.ok ? "成功" : "失败" }}</span>
-            </div>
-          </template>
-
-          <template v-else-if="currentEvent.type === 'assistant'">
-            <div class="detail-field">
-              <label>助手回复{{ currentEvent.final ? "（已结束）" : "（流式中）" }}</label>
-              <pre class="assistant-text">{{ currentEvent.text || "（空）" }}</pre>
-            </div>
-          </template>
-
-          <template v-else-if="currentEvent.type === 'terminal'">
-            <div class="detail-field">
-              <label>{{ currentEvent.stream === "stderr" ? "stderr 原文" : "终端输出原文" }}</label>
-              <pre :class="{ err: currentEvent.stream === 'stderr' }">{{ currentEvent.text || "（空）" }}</pre>
-            </div>
-          </template>
-
-          <template v-else-if="currentEvent.type === 'supplement'">
-            <div class="detail-field">
-              <label>Supplement sent to worker</label>
-              <pre class="supplement-text">{{ currentEvent.text || "（空）" }}</pre>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="detail-field">
-              <label>生命周期</label>
-              <pre>{{ currentEvent.state }} {{ currentEvent.message || "" }}</pre>
-            </div>
-          </template>
-        </template>
-        <div v-else class="empty-detail">该事件已不存在</div>
+        <EventDetailContent :event="currentEvent" />
+        <section v-if="selected?.visibleConversation?.length" class="conversation-panel">
+          <h3>可见往返</h3>
+          <p>任务输入与 assistant 可见文本；隐藏 reasoning 不采集。</p>
+          <article v-for="(message, index) in selected.visibleConversation" :key="`${message.ts}-${index}`" :class="['conversation-message', `conversation-${message.role}`]">
+            <header>{{ message.role === "user" ? "任务输入" : "Assistant" }} · {{ fmt(message.ts) }}</header>
+            <pre>{{ message.content }}</pre>
+          </article>
+        </section>
       </div>
 
       <!-- 补充指令 composer：active（蓝）/ terminal（灰）两种模式，队列行在下方 -->
@@ -211,7 +166,13 @@ import "../gui-theme.css";
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { readerEvents, eventIndex, adjacentEventId } from "../subagent-reader.js";
 import { reconcileNavigation, shouldFollowTimeline } from "../subagent-navigation.js";
-import { ClipboardSetText } from "../../wailsjs/runtime/runtime.js";
+import { usePlatform } from "../platform/index.js";
+import { buildMainAgentHandoff, isActiveWorkerStatus, pendingSupplements as getPendingSupplements, workerSupplements } from "../domain/subagent/supplements.js";
+import WorkerList from "../components/subagent/WorkerList.vue";
+import EventDetailContent from "../components/subagent/EventDetailContent.vue";
+import { activityState } from "../domain/subagent/activity.js";
+
+const platform = usePlatform();
 
 // 虚拟滚动常量：固定行高是行距数学的唯一基准
 const ROW_H = 40; // 每行固定高度（px）
@@ -221,6 +182,15 @@ const ready = ref(false);
 const workers = ref([]);
 const feedback = ref(false);
 const feedbackNote = ref("");
+const diagnosticsOpen = ref(false);
+const diagnostics = ref([]);
+const diagnosticDocument = ref("");
+const diagnosticQuery = ref("");
+const filteredDiagnostics = computed(() => {
+  const query = diagnosticQuery.value.trim().toLowerCase();
+  if (!query) return diagnostics.value;
+  return diagnostics.value.filter((entry) => `${entry.batchId} ${entry.model}`.toLowerCase().includes(query));
+});
 
 // ── 三级页面栈状态 ──
 const viewLevel = ref("agents"); // "agents" | "timeline" | "event"
@@ -250,27 +220,22 @@ const copyFeedback = ref("");
 const copyFeedbackKind = ref("ok");
 let feedbackTimer = null;
 
-function isActiveStatus(s) {
-  return s === "starting" || s === "running";
-}
-
 const selectedWorkerTerminal = computed(() => {
   const w = selected.value;
-  return !!w && !isActiveStatus(w.status);
+  return !!w && !isActiveWorkerStatus(w.status);
 });
 
 // worker active：生命周期 active 且带有效 inboxId 才可 enqueue。
 const selectedWorkerActive = computed(() => {
   const w = selected.value;
-  return !!w && !!w.inboxId && isActiveStatus(w.status);
+  return !!w && !!w.inboxId && isActiveWorkerStatus(w.status);
 });
 
 // 队列条目来自轮询富化后的 selected.supplements（缺失/损坏已由 Go 降级为 []）。
 const supplements = computed(() => {
-  const w = selected.value;
-  return w && Array.isArray(w.supplements) ? w.supplements : [];
+  return workerSupplements(selected.value);
 });
-const pendingSupplements = computed(() => supplements.value.filter((e) => e && e.state === "pending"));
+const pendingSupplements = computed(() => pendingSupplementsForWorker(selected.value));
 
 const draftNonBlank = computed(() => {
   const w = selected.value;
@@ -317,7 +282,7 @@ async function queueSupplement() {
     return;
   }
   try {
-    await window.go.main.App.QueueSubagentSupplement(w.inboxId, text);
+    await platform.subagents.queueSupplement(w.inboxId, text);
     supplementDrafts[w.id] = "";
     flashQueue("ok", "已入队，等待 worker 领取");
   } catch (e) {
@@ -330,7 +295,7 @@ async function withdrawEntry(entry) {
   const w = selected.value;
   if (!w || !w.inboxId) return;
   try {
-    await window.go.main.App.WithdrawSubagentSupplement(w.inboxId, entry.id);
+    await platform.subagents.withdrawSupplement(w.inboxId, entry.id);
     flashQueue("ok", "已撤回");
   } catch (e) {
     flashQueue("err", String((e && e.message) || e));
@@ -342,7 +307,7 @@ async function mergePending() {
   const w = selected.value;
   if (!w || !w.inboxId || pendingSupplements.value.length < 2) return;
   try {
-    await window.go.main.App.MergeSubagentSupplements(w.inboxId);
+    await platform.subagents.mergeSupplements(w.inboxId);
     flashQueue("ok", "已合并全部 pending");
   } catch (e) {
     flashQueue("err", String((e && e.message) || e));
@@ -350,17 +315,13 @@ async function mergePending() {
 }
 
 // terminal：草稿 + 全部 pending（FIFO，排除 handoff）拼成剪贴板文本。
+function pendingSupplementsForWorker(worker) {
+  return getPendingSupplements(worker);
+}
+
 function buildCopyText() {
-  const w = selected.value;
-  if (!w) return "";
-  const parts = [];
-  const draft = (supplementDrafts[w.id] || "").trim();
-  if (draft) parts.push(draft);
-  pendingSupplements.value.forEach((e, i) => {
-    if (i > 0) parts.push(`--- Supplement ${i + 1} ---`);
-    parts.push(e.text);
-  });
-  return parts.join("\n\n");
+  const worker = selected.value;
+  return buildMainAgentHandoff(worker, worker ? supplementDrafts[worker.id] : "");
 }
 async function copyForMainAgent() {
   const text = buildCopyText();
@@ -369,7 +330,7 @@ async function copyForMainAgent() {
     return;
   }
   try {
-    const ok = await ClipboardSetText(text);
+    const ok = await platform.capabilities.copyText(text);
     flashCopy(ok === false ? "err" : "ok", ok === false ? "复制失败" : "已复制到剪贴板");
   } catch (e) {
     flashCopy("err", "复制失败：" + String((e && e.message) || e));
@@ -598,7 +559,7 @@ function detailTitle(ev) {
 // 这里只保留 DOM 相关副作用（unbind / restore scroll / follow / measure）。
 async function poll() {
   try {
-    const raw = await window.go.main.App.GetSubagentStatus();
+    const raw = await platform.subagents.getStatus();
     const data = JSON.parse(raw);
     if (!Array.isArray(data.workers)) return;
 
@@ -651,22 +612,39 @@ async function poll() {
   }
 }
 
+async function loadDiagnostics() {
+  diagnosticsOpen.value = true;
+  diagnosticDocument.value = "";
+  try { diagnostics.value = await platform.subagents.getDiagnostics(); } catch { diagnostics.value = []; }
+}
+async function openDiagnostic(batchId) {
+  try { diagnosticDocument.value = await platform.subagents.getDiagnostic(batchId); } catch { diagnosticDocument.value = ""; }
+}
+async function deleteDiagnostic(batchId) {
+  if (!window.confirm(`删除本地诊断档案 ${batchId}？此操作不可恢复。`)) return;
+  try {
+    await platform.subagents.deleteDiagnostic(batchId);
+    diagnostics.value = diagnostics.value.filter((entry) => entry.batchId !== batchId);
+    diagnosticDocument.value = "";
+  } catch { /* 保留当前列表，用户可重试 */ }
+}
+
 async function toggleFeedback(e) {
   const next = e.target.checked;
   try {
-    await window.go.main.App.SaveSubagentFeedback(next);
+    await platform.subagents.saveFeedback(next);
     feedback.value = next;
     feedbackNote.value = next ? "仅影响新启动的 worker；运行中的不受影响。" : "";
   } catch { /* 写失败保持原状 */ }
 }
 
 onMounted(async () => {
-  const init = await window.go.main.App.GetInitData();
+  const init = await platform.session.getInitData();
   workers.value = init.workers || [];
   feedback.value = !!init.feedback;
   feedbackNote.value = feedback.value ? "仅影响新启动的 worker；运行中的不受影响。" : "";
   ready.value = true;
-  await window.go.main.App.MarkReady();
+  await platform.session.markReady();
   await nextTick();
   // 初始为 agents 层时 viewport 为 null（bind 内为空操作）；防御性绑定，保证
   // 若初始即 timeline 也正确挂载观察。
@@ -682,28 +660,17 @@ onUnmounted(() => {
 <style scoped>
 /* ── 布局（对齐 ManagerView 配色骨架） ── */
 .app { height: 100vh; background: #1a1a2e; color: #e0e0e0; display: flex; flex-direction: column; }
+.diagnostics-btn { position: fixed; right: 12px; bottom: 12px; z-index: 10; background: #16213e; border: 1px solid #2a2a4a; color: #a9b1d6; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 11px; }
+.diagnostics-overlay { position: fixed; inset: 0; z-index: 30; background: #0009; display: flex; justify-content: center; align-items: center; }
+.diagnostics-panel { width: min(900px, 92vw); max-height: 82vh; overflow: auto; background: #1a1a2e; border: 1px solid #3a3a5a; border-radius: 8px; padding: 14px; }
+.diagnostics-panel header { display: flex; justify-content: space-between; align-items: center; }
+.diagnostics-panel p { color: #888; font-size: 11px; }
+.diagnostic-search { width: 100%; margin: 4px 0 8px; padding: 7px 8px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 4px; color: #c0caf5; font-size: 11px; }
+.diagnostic-item { display: flex; gap: 6px; margin: 4px 0; }
+.diagnostic-row { flex: 1; display: flex; justify-content: space-between; gap: 12px; text-align: left; padding: 8px; background: #0d0d1a; color: #c0caf5; border: 1px solid #2a2a4a; border-radius: 4px; cursor: pointer; font-size: 11px; }
+.diagnostic-delete { border: 1px solid #f7768e66; color: #f7768e; background: transparent; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; }
+.diagnostic-document { white-space: pre-wrap; word-break: break-word; background: #0d0d1a; border: 1px solid #2a2a4a; padding: 10px; font-size: 11px; color: #c0caf5; }
 section { min-height: 0; }
-
-/* ── 层级 1：Agent 列表 ── */
-.agents-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.agents-header { padding: 10px 14px; border-bottom: 1px solid #2a2a4a; }
-.agents-title-row { display: flex; justify-content: space-between; align-items: center; }
-.agents-title-row h1 { font-size: 14px; color: #7aa2f7; margin: 0; }
-.count-badge { font-size: 11px; color: #565f89; }
-.feedback-toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: #a9b1d6; cursor: pointer; }
-.feedback-toggle input { accent-color: #e0af68; cursor: pointer; }
-.note { font-size: 10px; color: #565f89; margin: 6px 0 0; line-height: 1.4; }
-
-.worker-list { flex: 1; overflow-y: auto; }
-.agent-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #1a1a3e; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
-.agent-item:hover { background: #16213e; }
-.agent-item.active { background: #1a2a4a; border-left-color: #7aa2f7; }
-.status-icon { font-size: 14px; flex-shrink: 0; }
-.worker-info { flex: 1; min-width: 0; }
-.worker-title { font-size: 12px; font-weight: 500; line-height: 1.3; word-break: break-word; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.worker-id { font-size: 10px; color: #565f89; }
-.row-chevron { color: #565f89; font-size: 14px; flex-shrink: 0; }
-.empty-list { padding: 20px; text-align: center; color: #565f89; font-size: 13px; }
 
 /* ── 顶部栏（层级 2 / 3 共用） ── */
 .top-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #2a2a4a; flex-shrink: 0; }
@@ -730,22 +697,20 @@ section { min-height: 0; }
 /* ── 层级 3：事件详情 ── */
 .event-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .detail-body { flex: 1; overflow-y: auto; min-height: 0; padding: 14px 16px 72px; }
-.detail-field { margin-bottom: 14px; }
-.detail-field label { display: block; font-size: 10px; color: #565f89; text-transform: uppercase; margin-bottom: 4px; }
-.detail-field pre { margin: 0; background: #0d0d1a; border: 1px solid #16162a; border-radius: 4px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #c0caf5; }
-.detail-field pre.err { color: #f7768e; }
-.detail-field .ok { color: #9ece6a; font-size: 12px; }
-.detail-field .err { color: #f7768e; font-size: 12px; }
-.assistant-text { max-height: none; }
-
+.conversation-panel { border-top: 1px solid #2a2a4a; margin-top: 18px; padding-top: 12px; }
+.conversation-panel h3 { margin: 0; font-size: 12px; color: #7dcfff; }
+.conversation-panel > p { margin: 4px 0 8px; color: #565f89; font-size: 10px; }
+.conversation-message { margin: 8px 0; border-left: 3px solid #565f89; background: #0d0d1a; }
+.conversation-message.conversation-user { border-left-color: #e0af68; }
+.conversation-message.conversation-assistant { border-left-color: #7aa2f7; }
+.conversation-message header { padding: 4px 8px; color: #a9b1d6; font-size: 10px; }
+.conversation-message pre { margin: 0; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; color: #c0caf5; font-size: 11px; }
 /* 固定底栏：flex 兄弟节点，detail-body 滚动时保持原位 */
 .detail-bar { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-top: 1px solid #2a2a4a; background: #1a1a2e; }
 .nav-btn { border: 1px solid #2a2a4a; background: transparent; color: #a9b1d6; font-size: 12px; border-radius: 4px; padding: 5px 12px; cursor: pointer; }
 .nav-btn:hover:not(:disabled) { background: #16213e; color: #c0caf5; }
 .nav-btn:disabled { opacity: 0.4; cursor: default; }
 .event-position { font-size: 11px; color: #565f89; font-family: monospace; }
-
-.empty-detail { padding: 20px; text-align: center; color: #565f89; font-size: 13px; }
 
 /* ── 补充指令 composer（层级 3，detail-body 与 detail-bar 之间） ──
    颜色语义：蓝=active 动作、琥珀=queued/pending、灰=terminal/copy；无卡片嵌套。 */
@@ -779,5 +744,4 @@ section { min-height: 0; }
 .comp-entry-state { flex-shrink: 0; font-size: 10px; color: #565f89; }
 .comp-merge-row { justify-content: flex-end; }
 .comp-merge-count { font-size: 10px; color: #565f89; }
-.supplement-text { color: #7dcfff; }
 </style>

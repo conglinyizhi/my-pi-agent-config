@@ -77,6 +77,9 @@ export interface TimelineBuilderOptions {
   now?: () => string;
   /** 条数上限（测试注入；默认 TIMELINE_MAX_ENTRIES） */
   maxEntries?: number;
+  /** 诊断档案可覆盖默认文本/字段截断上限；实时 timeline 不传则保持有界。 */
+  maxText?: number;
+  maxField?: number;
   /**
    * 上一轮 attempt 累积的历史事件：重试时以此为种子续接，避免 timeline 塌缩回 1 条。
    * seed 已由上一轮 trim 到有界，构造时原样接入（元素只读，新事件继续 append）。
@@ -101,12 +104,16 @@ export class TimelineBuilder {
   private seq = 0;
   private readonly now: () => string;
   private readonly maxEntries: number;
+  private readonly maxText: number;
+  private readonly maxField: number;
   /** attempt 编号：合成 id 的命名空间，避免跨重试 seq 复位撞号 */
   private readonly attempt: number;
 
   constructor(opts: TimelineBuilderOptions = {}) {
     this.now = opts.now ?? (() => new Date().toISOString());
     this.maxEntries = opts.maxEntries ?? TIMELINE_MAX_ENTRIES;
+    this.maxText = opts.maxText ?? TIMELINE_MAX_TEXT;
+    this.maxField = opts.maxField ?? TIMELINE_MAX_FIELD;
     this.attempt = opts.attempt ?? 1;
     // 种子历史：直接接入上轮 accumulated events（已有界）；不进 active 追踪，
     // 新 attempt 的流式事件从头解析新进程输出，历史事件均已完结不再变异。
@@ -154,7 +161,7 @@ export class TimelineBuilder {
       type: "lifecycle",
       ts: this.now(),
       state,
-      message: message ? truncate(message, TIMELINE_MAX_FIELD) : undefined,
+      message: message ? truncate(message, this.maxField) : undefined,
     });
   }
 
@@ -180,7 +187,7 @@ export class TimelineBuilder {
         id,
         type: "assistant",
         ts: this.now(),
-        text: truncate(extractVisibleText(msg.content), TIMELINE_MAX_TEXT),
+        text: truncate(extractVisibleText(msg.content), this.maxText),
         final: false,
       };
       this.activeAssistant = rec;
@@ -195,7 +202,7 @@ export class TimelineBuilder {
         id: this.synId(`supplement-${decoded.id}`),
         type: "supplement",
         ts: this.now(),
-        text: truncate(decoded.text, TIMELINE_MAX_TEXT),
+        text: truncate(decoded.text, this.maxText),
         supplementId: decoded.id,
       });
     }
@@ -228,7 +235,7 @@ export class TimelineBuilder {
       this.push(rec);
     }
     const full = extractVisibleText(msg.content);
-    if (full) rec.text = truncate(full, TIMELINE_MAX_TEXT);
+    if (full) rec.text = truncate(full, this.maxText);
     rec.final = true;
     this.activeAssistant = undefined;
     this.dirty = true;
@@ -245,8 +252,8 @@ export class TimelineBuilder {
   private appendText(rec: TimelineEvent, delta: string): boolean {
     if (!delta) return false;
     const cur = rec.text ?? "";
-    if (cur.length >= TIMELINE_MAX_TEXT) return false; // 已达上限，停止累积
-    rec.text = truncate(cur + delta, TIMELINE_MAX_TEXT);
+    if (cur.length >= this.maxText) return false; // 已达上限，停止累积
+    rec.text = truncate(cur + delta, this.maxText);
     return true;
   }
 
@@ -261,7 +268,7 @@ export class TimelineBuilder {
       type: "tool",
       ts: this.now(),
       tool: typeof ev.toolName === "string" ? ev.toolName : "unknown",
-      args: safeSerialize(ev.args, TIMELINE_MAX_FIELD),
+      args: safeSerialize(ev.args, this.maxField),
     };
     this.activeTools.set(callId, rec);
     this.push(rec);
@@ -271,7 +278,7 @@ export class TimelineBuilder {
     if (typeof ev.toolCallId !== "string" || !ev.toolCallId) return;
     const rec = this.activeTools.get(ev.toolCallId);
     if (!rec) return;
-    rec.preview = safeSerialize(ev.partialResult ?? ev.args, TIMELINE_MAX_FIELD);
+    rec.preview = safeSerialize(ev.partialResult ?? ev.args, this.maxField);
     this.dirty = true; // 原地更新预览 → 报告变化
   }
 
@@ -289,7 +296,7 @@ export class TimelineBuilder {
       this.activeTools.set(ev.toolCallId, rec);
       this.push(rec);
     }
-    rec.result = safeSerialize(ev.result, TIMELINE_MAX_FIELD);
+    rec.result = safeSerialize(ev.result, this.maxField);
     rec.ok = ev.isError !== true;
     this.activeTools.delete(ev.toolCallId);
     this.dirty = true; // 原地写结果/状态 → 报告变化
