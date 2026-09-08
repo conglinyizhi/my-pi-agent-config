@@ -17,8 +17,10 @@ import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildToolsFromNames } from "./feedback.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
-import { commandDigest, isWorkerApprovalCapability, isWorkerNetworkLlmReviewable, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "../../lib/subagent-capability.ts";
-import { createReviewCache, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
+import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
+import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
+import { checkCommand } from "../../lib/sandbox-check.ts";
+import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
 import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
 import {
   SUBAGENT_MODEL_SCOPE,
@@ -43,50 +45,63 @@ function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
 }
 
 async function approveCapability(
+  pi: ExtensionAPI,
   request: CapabilityRequest,
   ctx: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<CapabilityGrant | undefined> {
+): Promise<CapabilityApproval | undefined> {
   const validated = validateCapabilityRequest(request);
   if (!validated || !isWorkerApprovalCapability(validated.capability)) return undefined;
 
-  // 规则集合故意很窄：本地规则未涵盖的只读 git 元数据查询，才让父会话的
-  // 审核模型复核。审核不可用或结论非 safe 时继续走人工闸门，绝不静默放行。
+  // 所有 worker 能力请求先过审核模型（与主会话 bash 审批链一致）：
+  // safe + auto 直接放行；risky/dangerous/error/无意见一律回退人工弹窗。
+  // 审核调用异常按 error 处理（fail-closed），绝不静默放行。
   const reviewConfig = loadLlmReviewConfig();
-  if (validated.capability === "network" && isWorkerNetworkLlmReviewable(validated.command) && reviewConfig.enabled) {
-    try {
-      const review = await reviewCommand(pi, ctx, validated.command, [], signal, capabilityReviewCache, reviewConfig);
-      if (review.verdict === "safe" && reviewConfig.mode === "auto") {
-        return { capability: validated.capability, commandDigest: commandDigest(validated.command) };
-      }
-    } catch {
-      // fail-closed：审核异常保持原人工确认链路。
-    }
+  let rules: TokenRule[] = [];
+  let review: CapabilityReview;
+  try {
+    rules = checkCommand(validated.command, { cwd: validated.cwd }).rules ?? [];
+    review = await reviewCommand(pi, ctx, validated.command, rules, signal, capabilityReviewCache, reviewConfig);
+  } catch {
+    review = { verdict: "error", reason: "审核调用异常，回退人工确认", suggestion: "" };
+  }
+
+  const grant: CapabilityGrant = {
+    capability: validated.capability,
+    commandDigest: commandDigest(validated.command),
+  };
+
+  if (!needsHumanApproval(review, reviewConfig.mode)) {
+    return { grant, review };
   }
 
   const result = await runGuiWindow(
     "gate",
     {
       kind: "capability",
-      command: request.command,
-      taskId: request.taskId,
-      capability: request.capability,
-      scope: request.scope,
-      requestReason: request.reason,
-      rules: [],
+      command: validated.command,
+      taskId: validated.taskId,
+      capability: validated.capability,
+      scope: validated.scope,
+      requestReason: validated.reason,
+      rules,
+      review,
     },
     { timeoutMs: CAPABILITY_GUI_TIMEOUT_MS, signal },
   );
   let allow = result.ok && result.data?.action === "allow";
   if (!allow && (!result.ok || result.data?.action !== "deny") && ctx?.hasUI) {
+    // TUI 回退也带审核简报，人工确认前能看到模型意见
+    const reviewNote = review.reason || review.suggestion || review.opinion
+      ? `\n\n${formatReviewNote(review)}`
+      : "";
     const choice = await ctx.ui.select(
-      `⚠️ subagent 请求额外能力：${request.capability}\n\n${request.scope ?? ""}\n${request.reason}\n\n命令：${request.command}`,
+      `⚠️ subagent 请求额外能力：${validated.capability}\n\n${validated.scope ?? ""}\n${validated.reason}${reviewNote}\n\n命令：${validated.command}`,
       ["✅ 允许本次命令", "❌ 拒绝"],
     );
     allow = choice?.includes("允许") ?? false;
   }
-  if (!allow) return undefined;
-  return { capability: request.capability, commandDigest: commandDigest(request.command) };
+  return allow ? { grant, review } : { review };
 }
 
 // 把 skill 名解析成绝对路径（目录含 SKILL.md）：在 ~/.pi/agent/skills 下按名匹配，含一层子目录
@@ -338,6 +353,7 @@ export default function (pi: ExtensionAPI) {
           extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
           taskId: batchTaskId,
           onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
+            pi,
             request,
             ctx,
             signal,
@@ -370,8 +386,9 @@ export default function (pi: ExtensionAPI) {
         const head = `#${r.index + 1} ${r.status.toUpperCase()}`;
         const meta = r.exitCode !== undefined ? ` exit=${r.exitCode}` : "";
         const err = r.errorMessage ? ` error=${r.errorMessage.slice(0, 300)}` : "";
+        const reviewBrief = r.capabilityReview ? `\n  简报: ${formatReviewNote(r.capabilityReview)}` : "";
         const capability = r.capabilityRequest
-          ? `\n  needs_approval: ${r.capabilityRequest.capability} — ${r.capabilityRequest.scope}\n  command: ${r.capabilityRequest.command.slice(0, 500)}`
+          ? `\n  needs_approval: ${r.capabilityRequest.capability} — ${r.capabilityRequest.scope}\n  command: ${r.capabilityRequest.command.slice(0, 500)}${reviewBrief}`
           : "";
         const stderr = r.stderr.trim() ? `\n  stderr: ${r.stderr.trim().slice(0, 500)}` : "";
         // inlineSummary 通常已含 investigation 路径；未含才补，避免重复

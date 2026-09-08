@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { Message } from "@earendil-works/pi-ai";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
 import { TimelineBuilder, resolveTerminalState } from "./timeline.ts";
@@ -15,7 +16,7 @@ import type { TimelineEvent } from "./timeline.ts";
 import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
 import { isValidInboxId } from "./subagent-supplement.ts";
-import { commandDigest, validateCapabilityRequest, type CapabilityGrant, type CapabilityRequest } from "./subagent-capability.ts";
+import { commandDigest, buildCapabilityDecision, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "./subagent-capability.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
 export {
   TimelineBuilder,
@@ -86,6 +87,8 @@ export interface SubagentResult {
   capabilityRequest?: CapabilityRequest;
   /** 主进程明确拒绝了 capability request */
   capabilityDenied?: boolean;
+  /** 本次 capability 请求的审核模型意见（供主 agent 回报；无审核/未请求时 undefined） */
+  capabilityReview?: CapabilityReview;
 }
 
 /**
@@ -132,7 +135,8 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 
 主 agent 需要知道的事项。`;
 
-const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+// 与 pi 自身的 agent dir 保持一致（PI_CODING_AGENT_DIR 可覆盖）；worker 子进程据此加载扩展
+const AGENT_DIR = getAgentDir();
 const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
 const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
@@ -171,6 +175,8 @@ export function buildSubagentEnv(
     readonly?: boolean;
     /** 权限请求文件（仅父子进程间使用） */
     capabilityRequestPath?: string;
+    /** 权限响应文件：worker 阻塞等待父进程写回决策 */
+    capabilityResponsePath?: string;
     /** 已由主进程批准的、按 commandDigest 绑定的一次性 capability */
     capabilityGrants?: CapabilityGrant[];
   },
@@ -184,6 +190,7 @@ export function buildSubagentEnv(
   if (opts.sandboxDir) env.PI_SANDBOX_RW = opts.sandboxDir;
   if (opts.readonly) env.PI_SANDBOX_READONLY = "1";
   if (opts.capabilityRequestPath) env.PI_SUBAGENT_CAPABILITY_REQUEST = opts.capabilityRequestPath;
+  if (opts.capabilityResponsePath) env.PI_SUBAGENT_CAPABILITY_RESPONSE = opts.capabilityResponsePath;
   if (opts.capabilityGrants && opts.capabilityGrants.length > 0) {
     env.PI_SUBAGENT_CAPABILITY_GRANTS = JSON.stringify(opts.capabilityGrants);
   }
@@ -309,8 +316,8 @@ export interface RunSubagentOptions {
   skills?: string[];
   /** 已审批的精确 capability grant；只对匹配 commandDigest 的命令生效 */
   capabilityGrants?: CapabilityGrant[];
-  /** 主进程审批 worker 请求；返回 grant 才会重启当前 worker */
-  onCapabilityRequest?: (request: CapabilityRequest) => Promise<CapabilityGrant | undefined>;
+  /** 主进程审批 worker 请求；返回 grant 才会重启当前 worker，review 作为审核意见透传 */
+  onCapabilityRequest?: (request: CapabilityRequest) => Promise<CapabilityApproval | undefined>;
   /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
   inboxId?: string;
   /** 沙箱可写根（限制本 worker 只写该目录，其余只读） */
@@ -329,6 +336,18 @@ export interface RunSubagentOptions {
   attempt?: number;
 }
 
+/** 原子写审批决策：tmp + rename，worker 读到的永远是完整 JSON */
+function writeCapabilityDecision(
+  path: string,
+  request: CapabilityRequest,
+  approval: CapabilityApproval | undefined,
+): void {
+  const decision = buildCapabilityDecision(request, approval);
+  const tmp = `${path}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(decision), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, path);
+}
+
 /**
  * 默认单次执行：spawn 隔离 pi 进程并收集结果（原 runSubagent 本体）。
  * 重试循环的每次 attempt 调用它；每次调用自带全新 timeline 与超时控制器。
@@ -336,15 +355,34 @@ export interface RunSubagentOptions {
 export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult> {
   const task = opts.task;
   const cwd = opts.cwd;
-  const timeout = (opts.timeout ?? 600) * 1000;
+  const timeoutSeconds = opts.timeout ?? 600;
   // 模型不再从配置文件决定，统一由调用方传入（默认当前会话模型）
   const model = opts.model || "";
 
   const timeoutController = new AbortController();
-  const timeoutId = setTimeout(
-    () => timeoutController.abort(new Error(`Subagent 超时（${opts.timeout ?? 600}s）`)),
-    timeout,
+  const timeoutError = () => new Error(`Subagent 超时（${timeoutSeconds}s）`);
+  let remainingTimeoutMs = timeoutSeconds * 1000;
+  let timeoutId: NodeJS.Timeout | undefined = setTimeout(
+    () => timeoutController.abort(timeoutError()),
+    remainingTimeoutMs,
   );
+  // 审批等待不计入 worker 总超时：发现请求时暂停计时，审批结束后接着算剩余时间
+  let timeoutPausedAt: number | undefined;
+  const pauseTimeout = () => {
+    if (timeoutPausedAt !== undefined) return;
+    timeoutPausedAt = Date.now();
+    if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
+  };
+  const resumeTimeout = () => {
+    if (timeoutPausedAt === undefined) return;
+    remainingTimeoutMs -= Date.now() - timeoutPausedAt;
+    timeoutPausedAt = undefined;
+    if (remainingTimeoutMs <= 0) {
+      timeoutController.abort(timeoutError());
+      return;
+    }
+    timeoutId = setTimeout(() => timeoutController.abort(timeoutError()), remainingTimeoutMs);
+  };
   const combinedSignal = opts.signal
     ? AbortSignal.any([opts.signal, timeoutController.signal])
     : timeoutController.signal;
@@ -355,6 +393,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
       const promptPath = path.join(tmpDir, "prompt.md");
       const capabilityRequestPath = path.join(tmpDir, "capability-request.json");
+      const capabilityResponsePath = path.join(tmpDir, "capability-response.json");
       await fs.promises.writeFile(promptPath, SUBAGENT_PROMPT, { encoding: "utf-8", mode: 0o600 });
       const args = buildSubagentArgs({
         task,
@@ -411,7 +450,10 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       let wasAborted = false;
       let capabilityRequest: CapabilityRequest | undefined;
-      let capabilityStopRequested = false;
+      // 审批进行中：防止 capabilityPoll 重复处理同一请求
+      let approvalInFlight = false;
+      // 最近一次审核意见：随终态结果带回主 agent（供回报简报）
+      let lastCapabilityReview: CapabilityReview | undefined;
       let agentEndOutput = "";
 
       const exitCode = await new Promise<number>((resolveExit) => {
@@ -422,6 +464,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           sandboxDir: opts.sandboxDir,
           readonly: opts.readonly,
           capabilityRequestPath,
+          capabilityResponsePath,
           capabilityGrants: opts.capabilityGrants,
         });
 
@@ -489,15 +532,33 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           }
         };
 
-        // worker guard 通过 0600 临时文件提出权限请求；父进程发现后停止本轮。
+        // worker guard 写请求后阻塞等待响应；父进程审批后原子写回决策，不 kill worker。
+        // 审批期间暂停 worker 总超时（权限申请不该吃掉执行预算）。
         const capabilityPoll = setInterval(() => {
-          if (capabilityRequest || capabilityStopRequested) return;
+          if (approvalInFlight) return;
           const parsed = readCapabilityRequest();
-          if (parsed) {
-            capabilityRequest = parsed;
-            capabilityStopRequested = true;
-            try { proc.kill("SIGTERM"); } catch { /* worker 已退出 */ }
-          }
+          if (!parsed) return;
+          approvalInFlight = true;
+          capabilityRequest = parsed;
+          pauseTimeout();
+          void (async () => {
+            let approval: CapabilityApproval | undefined;
+            try {
+              approval = await opts.onCapabilityRequest?.(parsed);
+            } catch {
+              approval = undefined;
+            }
+            try {
+              writeCapabilityDecision(capabilityResponsePath, parsed, approval);
+            } catch {
+              // 写失败：worker 侧靠健康检查/超时按拒绝处理，不放行
+            }
+            try { fs.unlinkSync(capabilityRequestPath); } catch { /* ignore */ }
+            if (approval?.review) lastCapabilityReview = approval.review;
+            capabilityRequest = undefined;
+            approvalInFlight = false;
+            resumeTimeout();
+          })();
         }, 50);
         capabilityPoll.unref?.();
 
@@ -538,6 +599,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       result.exitCode = exitCode;
       if (capabilityRequest) result.capabilityRequest = capabilityRequest;
+      if (lastCapabilityReview) result.capabilityReview = lastCapabilityReview;
       // 终态 lifecycle：success/failed/aborted/timeout（timeout 依据内部超时控制器判断）
       const terminal = resolveTerminalState({
         aborted: wasAborted,
@@ -557,6 +619,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       try { fs.unlinkSync(promptPath); } catch { /* ignore */ }
       try { fs.unlinkSync(capabilityRequestPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(capabilityResponsePath); } catch { /* ignore */ }
       try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
       if (wasAborted && !capabilityRequest) {
@@ -572,10 +635,10 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
       resolve(result);
     } catch (err) {
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       reject(err);
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
     }
   });
 }
@@ -674,12 +737,21 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   let accumulated: TimelineEvent[] | undefined;
   let capabilityGrants = [...(opts.capabilityGrants ?? [])];
   let capabilityGrantIssued = capabilityGrants.length > 0;
+  // 最后一次审核意见：进入最终失败终态时（批准后基础设施失败 / 超时 / 中止）随结果带回；
+  // 被拒绝时已在下方单独写入 capabilityReview，不依赖这个兜底。
+  let lastApprovalReview: CapabilityReview | undefined;
+  // 失败预算（failureCount）只被可重试的基础设施失败消耗：capability 审批与随之而来的
+  // worker 重启不占次数（审批是正交路径，不该吃掉网络抖动的重试额度）。
+  // round 是总轮次，用于 timeline 命名空间与 attempt 记录，capability 重启也递增。
+  let failureCount = 0;
+  let round = 0;
 
-  for (let i = 1; i <= max; i++) {
+  while (true) {
     if (opts.signal?.aborted) {
       lastError = new SubagentError("aborted", "Subagent 已中止");
       break;
     }
+    round++;
     const startedAt = new Date().toISOString();
     try {
       // 精确 grant 可跨多轮请求累积（例如同一条 curl | sh 需要 network+command 两把钥匙）。
@@ -691,17 +763,20 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         runOnce: undefined,
         sleep: undefined,
         seedTimeline: accumulated,
-        attempt: i,
+        attempt: round,
       });
       lastResult = result;
       accumulated = result.timeline; // 本轮结束后的完整累积，供下轮重试续接
       if (result.capabilityRequest) {
         // 权限请求不属于基础设施失败；只有主进程明确返回匹配 grant 才重启。
-        const grant = await opts.onCapabilityRequest?.(result.capabilityRequest);
+        const approval = await opts.onCapabilityRequest?.(result.capabilityRequest);
+        if (approval?.review) lastApprovalReview = approval.review;
+        const grant = approval?.grant;
         if (!grant) {
           result.capabilityDenied = true;
+          result.capabilityReview = approval?.review;
           result.errorMessage = "capability request 未获主进程批准，worker 未继续执行。";
-          result.attempts = i;
+          result.attempts = round;
           return result;
         }
         if (
@@ -711,7 +786,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         ) {
           result.capabilityDenied = true;
           result.errorMessage = "主进程返回了不匹配的 capability grant，已拒绝继续执行。";
-          result.attempts = i;
+          result.attempts = round;
           return result;
         }
         capabilityGrants = [...capabilityGrants, grant];
@@ -720,24 +795,26 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       }
       if (!isFailedResult(result) && result.stopReason !== "error") {
         // 干净成功：返回（带 attempts 供观测），不写调查文件
-        result.attempts = i;
+        result.attempts = round;
         return result;
       }
-      // 失败结果（可重试或不可重试）
+      // 失败结果（可重试或不可重试）：只有这里消耗失败预算
+      failureCount++;
       const status: AttemptSnapshot["status"] = result.stopReason === "aborted" ? "aborted" : "failed";
-      attempts.push(snapshotFromResult(i, result, status, startedAt));
+      attempts.push(snapshotFromResult(round, result, status, startedAt));
       lastError = null;
-      if (capabilityGrantIssued || !isRetryableFailure(result) || i === max) break;
-      await sleep(backoffDelayMs(i), opts.signal);
+      if (capabilityGrantIssued || !isRetryableFailure(result) || failureCount >= max) break;
+      await sleep(backoffDelayMs(failureCount), opts.signal);
     } catch (err) {
       lastError = err;
       const status: AttemptSnapshot["status"] = err instanceof SubagentError ? err.status : "aborted";
       const timeline = err instanceof SubagentError ? err.timeline : undefined;
       if (timeline) accumulated = timeline; // 超时/中止也携最终轨迹，重试前续接
-      attempts.push(snapshotFromError(i, err, status, timeline, startedAt));
-      if (!isRetryableFailure(err) || i === max) break;
+      failureCount++;
+      attempts.push(snapshotFromError(round, err, status, timeline, startedAt));
+      if (!isRetryableFailure(err) || failureCount >= max) break;
       try {
-        await sleep(backoffDelayMs(i), opts.signal);
+        await sleep(backoffDelayMs(failureCount), opts.signal);
       } catch (sleepErr) {
         // 退避期间被外部中止
         lastError = sleepErr;
@@ -788,5 +865,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   failed.investigationPath = investigationPath;
   failed.attempts = attempts.length || 1;
   failed.inlineSummary = inlineSummary;
+  // 重试耗尽（每轮都获批并重启）时，把最后一次审核意见带回终态结果
+  if (!failed.capabilityReview) failed.capabilityReview = lastApprovalReview;
   return failed;
 }

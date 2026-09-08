@@ -12,6 +12,116 @@ export interface CapabilityGrant {
   commandDigest: string;
 }
 
+/**
+ * 审核模型对 capability 请求的结论。
+ * 结构与 extensions/sandbox-permissions/llm-review.ts 的 ReviewResult 兼容，
+ * 但定义在 lib 内，避免 lib 反向依赖 extensions。
+ */
+export interface CapabilityReview {
+  verdict: "safe" | "risky" | "dangerous" | "error";
+  reason: string;
+  suggestion: string;
+  opinion?: string;
+}
+
+/** 一次 capability 审批结果：grant 存在=放行；review 是审核意见（可能缺失） */
+export interface CapabilityApproval {
+  grant?: CapabilityGrant;
+  review?: CapabilityReview;
+}
+
+/**
+ * 父进程写回 worker 的审批决策（capability 响应文件内容）。
+ *
+ * worker 在 bash 工具里阻塞等待该决策：allow 就继续执行本条命令，
+ * deny 就把 comment/review 作为工具结果返回给模型——不 kill worker，不丢上下文。
+ */
+export interface CapabilityDecision {
+  requestId: string;
+  action: "allow" | "deny";
+  review?: CapabilityReview;
+  comment?: string;
+}
+
+/** 校验响应文件内容：requestId 必须匹配当前请求，action 必须是 allow/deny */
+export function validateCapabilityDecision(value: unknown, requestId: string): CapabilityDecision | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const d = value as Record<string, unknown>;
+  if (d.requestId !== requestId) return undefined;
+  if (d.action !== "allow" && d.action !== "deny") return undefined;
+  const decision: CapabilityDecision = { requestId, action: d.action };
+  if (typeof d.comment === "string") decision.comment = d.comment;
+  const review = d.review as CapabilityReview | undefined;
+  if (
+    review && typeof review === "object" &&
+    ["safe", "risky", "dangerous", "error"].includes(String(review.verdict))
+  ) {
+    decision.review = review;
+  }
+  return decision;
+}
+
+/** 把审批结果转成写回 worker 的决策：有 grant 才 allow，否则 deny 并附审核意见 */
+export function buildCapabilityDecision(
+  request: CapabilityRequest,
+  approval: CapabilityApproval | undefined,
+): CapabilityDecision {
+  const allow = Boolean(approval?.grant);
+  const decision: CapabilityDecision = {
+    requestId: request.requestId,
+    action: allow ? "allow" : "deny",
+  };
+  if (approval?.review) decision.review = approval.review;
+  if (!allow) decision.comment = approval?.review?.reason || "未获批准";
+  return decision;
+}
+
+export interface CapabilityWaitOptions {
+  /** 读一次响应文件内容（不存在/半截返回 undefined） */
+  readDecision: () => unknown;
+  /** 父进程是否还活着 */
+  parentAlive: () => boolean;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  /** 等待上限，默认对齐父进程 gate 窗口 1h + 宽限 */
+  timeoutMs?: number;
+  /** 健康检查间隔，默认 100s */
+  healthMs?: number;
+  /** 轮询间隔，默认 100ms */
+  pollMs?: number;
+}
+
+/**
+ * 在工具调用内阻塞等待父进程决策（worker 侧）。
+ *
+ * 轮询响应文件；每 healthMs 检查一次父进程存活；超时/失联都按 deny 返回——
+ * 绝不静默放行，也不会让 worker 无限干等。
+ */
+export async function waitForCapabilityDecision(
+  requestId: string,
+  opts: CapabilityWaitOptions,
+): Promise<CapabilityDecision> {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const timeoutMs = opts.timeoutMs ?? 3_600_000 + 60_000;
+  const healthMs = opts.healthMs ?? 100_000;
+  const pollMs = opts.pollMs ?? 100;
+  const deadline = now() + timeoutMs;
+  let lastHealth = now();
+  while (now() < deadline) {
+    const decision = validateCapabilityDecision(opts.readDecision(), requestId);
+    if (decision) return decision;
+    if (now() - lastHealth >= healthMs) {
+      lastHealth = now();
+      if (!opts.parentAlive()) {
+        return { requestId, action: "deny", comment: "审批通道失联（父进程已退出）" };
+      }
+    }
+    await sleep(pollMs);
+  }
+  return { requestId, action: "deny", comment: "审批等待超时" };
+}
+
 export interface CapabilityRequest {
   version: 1;
   requestId: string;
@@ -161,18 +271,23 @@ export function isWorkerNetworkAutoApproved(command: string): boolean {
   return false;
 }
 
-/** 规则未覆盖时，只有纯只读的远端元数据查询才允许交给父会话的 LLM 复核。 */
-export function isWorkerNetworkLlmReviewable(command: string): boolean {
-  const text = command.trim();
-  if (!text || /(?:&&|\|\||[;|`<>\n]|\$(?:[A-Za-z_]|\{|\()|\b(?:push|publish|upload|--upload-file|--data|--form|post|put|patch|delete)\b)/i.test(text)) return false;
-  const tokens = text.split(/\s+/);
-  const executable = (tokens[0] ?? "").split("/").pop()?.toLowerCase();
-  return executable === "git" && tokens[1]?.toLowerCase() === "ls-remote";
-}
-
 export function isWorkerApprovalCapability(capability: CapabilityName): boolean {
   // 当前只把 network 与普通命令风险交给主对话审批；publish/read-secrets 不开放。
   return capability === "network" || capability === "command";
+}
+
+/**
+ * 是否需要人工弹窗确认。
+ *
+ * 与主会话 bash 审批链一致：审核判 safe 且配置为 auto 才自动放行；
+ * 其余（risky/dangerous/error、无审核意见、strict 模式）一律人工确认——fail-closed，
+ * 绝不因为审核缺失或异常而静默放行。
+ */
+export function needsHumanApproval(
+  review: CapabilityReview | undefined,
+  mode: "auto" | "strict",
+): boolean {
+  return !(review?.verdict === "safe" && mode === "auto");
 }
 
 export function parseCapabilityGrants(raw: string | undefined): CapabilityGrant[] {

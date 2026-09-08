@@ -677,7 +677,10 @@ describe("runSubagent capability request", () => {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
         };
       },
-      onCapabilityRequest: async () => ({ capability: "network", commandDigest: commandDigest("pnpm install x") }),
+      onCapabilityRequest: async () => ({
+        grant: { capability: "network", commandDigest: commandDigest("pnpm install x") },
+        review: { verdict: "safe", reason: "静态包拉取", suggestion: "" },
+      }),
       sleep: async () => {},
     });
     assert.equal(n, 2);
@@ -701,11 +704,85 @@ describe("runSubagent capability request", () => {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
         };
       },
-      onCapabilityRequest: async () => undefined,
+      onCapabilityRequest: async () => ({
+        review: { verdict: "dangerous", reason: "远端写入", suggestion: "去掉 git push" },
+      }),
       sleep: async () => {},
     });
     assert.equal(n, 1);
     assert.equal(result.capabilityRequest?.requestId, "cap-2");
+    assert.equal(result.capabilityDenied, true);
+    // 审核简报随拒绝终态透传，主 agent 回报能看到模型意见
+    assert.equal(result.capabilityReview?.verdict, "dangerous");
+    assert.equal(result.capabilityReview?.suggestion, "去掉 git push");
+  });
+
+  it("capability 审批重启不消耗失败预算", async () => {
+    let rounds = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        rounds++;
+        if (rounds <= 8) {
+          return {
+            task: "t", exitCode: 143, messages: [], stderr: "", stopReason: "aborted",
+            visibleConversation: [], archiveTimeline: [],
+            capabilityRequest: {
+              version: 1, requestId: `cap-${rounds}`, capability: "command", command: "find . -exec sh -c x",
+              commandDigest: commandDigest("find . -exec sh -c x"), reason: "danger", cwd: "/tmp", createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+          };
+        }
+        return {
+          task: "t", exitCode: 0, messages: [], stderr: "",
+          visibleConversation: [], archiveTimeline: [],
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+        };
+      },
+      // 每轮都批准并重启；超过 SUBAGENT_MAX_ATTEMPTS(6) 轮仍应继续，不吃失败预算
+      onCapabilityRequest: async (request) => ({
+        grant: { capability: request.capability, commandDigest: request.commandDigest },
+        review: { verdict: "safe", reason: "只读排查", suggestion: "" },
+      }),
+      sleep: async () => {},
+    });
+    assert.equal(rounds, 9);
+    assert.equal(result.exitCode, 0);
+  });
+
+  it("批准后基础设施失败：终态带上一次审核简报", async () => {
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        if (n === 1) {
+          return {
+            task: "t", exitCode: 143, messages: [], stderr: "", stopReason: "aborted",
+            visibleConversation: [], archiveTimeline: [],
+            capabilityRequest: {
+              version: 1, requestId: "cap-4", capability: "command", command: "find . -exec sh -c x",
+              commandDigest: commandDigest("find . -exec sh -c x"), reason: "danger", cwd: "/tmp", createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+          };
+        }
+        return {
+          task: "t", exitCode: 1, messages: [], stderr: "boom", stopReason: "error",
+          visibleConversation: [], archiveTimeline: [],
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+        };
+      },
+      onCapabilityRequest: async (request) => ({
+        grant: { capability: request.capability, commandDigest: request.commandDigest },
+        review: { verdict: "risky", reason: "动态构造", suggestion: "改用 find -print" },
+      }),
+      sleep: async () => {},
+    });
+    assert.equal(n, 2);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.capabilityReview?.verdict, "risky");
   });
 });
 

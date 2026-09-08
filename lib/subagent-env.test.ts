@@ -17,11 +17,12 @@ test("worker environment drops credentials and unrelated host variables", () => 
 test("worker environment adds isolation markers after sanitization", () => {
   const env = buildSubagentEnv(
     { PATH: "/usr/bin", API_TOKEN: "secret" },
-    { readonly: true, taskId: "task-1", capabilityRequestPath: "/tmp/request.json" },
+    { readonly: true, taskId: "task-1", capabilityRequestPath: "/tmp/request.json", capabilityResponsePath: "/tmp/response.json" },
   );
   assert.equal(env.PI_SUBAGENT, "1");
   assert.equal(env.PI_SANDBOX_READONLY, "1");
   assert.equal(env.PI_TASK_ID, "task-1");
   assert.equal(env.PI_SUBAGENT_CAPABILITY_REQUEST, "/tmp/request.json");
+  assert.equal(env.PI_SUBAGENT_CAPABILITY_RESPONSE, "/tmp/response.json");
   assert.equal(env.API_TOKEN, undefined);
 });
