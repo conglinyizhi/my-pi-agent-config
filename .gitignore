@@ -72,3 +72,6 @@ message-page-model.toml
 
 # 模型选择偏好（本机运行时状态，不入库）
 model-selection.toml
+
+# 本机临时备忘（subagent 审批链路排查笔记，不入库）
+warn.txt
