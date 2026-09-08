@@ -20,6 +20,7 @@ import { parse, stringify } from "smol-toml";
 import { findProviderMatches, type DeletableProvider } from "./fast-del.ts";
 import { isProtected } from "./model-protection.ts";
 import { vimSelect } from "../../lib/vim-select.ts";
+import { promptWithPreview } from "../../lib/prompt-with-preview.ts";
 import { formatTokens } from "./provider-diff.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
@@ -273,20 +274,44 @@ export function parseNumberInput(raw: string): number | null {
   return plain;
 }
 
-/** 数字输入：支持 K / M / 万 这类单位和千位分隔符；输入「清除」清空字段；留空或非法取消 */
+/** 给数字加千位分隔符：1000000 → 1,000,000（科学计数法不硬插逗号） */
+export function formatWithSeparators(value: number): string {
+  const text = String(value);
+  if (/[eE]/.test(text)) return text;
+  const [intPart, fracPart] = text.split(".");
+  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fracPart ? `${grouped}.${fracPart}` : grouped;
+}
+
+/**
+ * 数字输入框下面那行实时预览：把 1M / 512K / 100万 换算成具体值，
+ * 顺带标量级（1,000,000（1.0M））。返回 null 表示不显示这一行。
+ */
+export function numberPreview(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (isClearKeyword(trimmed)) return "清空这个配置项";
+  const parsed = parseNumberInput(trimmed);
+  if (parsed === null) return "看不懂这个写法，可以写 1000000 / 1M / 512K / 100万";
+  const formatted = formatWithSeparators(parsed);
+  return parsed >= 10000 ? `${formatted}（${formatTokens(parsed)}）` : formatted;
+}
+
+/** 数字输入：支持 K / M / 万 这类单位和千位分隔符，下面实时显示换算结果；输入「清除」清空字段 */
 async function inputNumber(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: number } | { type: "clear" } | null> {
-  const raw = await ctx.ui.input(
-    fieldPrompt(
+  const raw = await promptWithPreview(ctx, {
+    title: fieldPrompt(
       field,
       current,
       "填数字修改：可以直接写 1000000，也可以写 1M / 512K / 1.5M / 100万，千位分隔符（_ 或 ,）也认；填「清除」清空；留空取消",
     ),
-    current === undefined || current === null ? "" : String(current),
-  );
+    initial: current === undefined || current === null ? "" : String(current),
+    preview: numberPreview,
+  });
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
@@ -299,20 +324,20 @@ async function inputNumber(
   return { type: "set", value: n };
 }
 
-/** 文本输入：预填当前值；输入「清除」清空（非必填字段）；留空取消 */
+/** 文本输入：预填当前值方便改；输入「清除」清空（非必填字段）；留空取消 */
 async function inputString(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: string } | { type: "clear" } | null> {
-  const raw = await ctx.ui.input(
-    fieldPrompt(
+  const raw = await promptWithPreview(ctx, {
+    title: fieldPrompt(
       field,
       current,
       field.required ? "填内容修改；留空取消" : "填内容修改；填「清除」清空这个配置项；留空取消",
     ),
-    current === undefined || current === null ? "" : String(current),
-  );
+    initial: current === undefined || current === null ? "" : String(current),
+  });
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
@@ -424,8 +449,7 @@ export async function editFieldOn(
   target: Record<string, unknown>,
   field: FieldDef,
 ): Promise<boolean> {
-  const container = fieldContainer(target, field.section);
-  const current = container[field.key];
+  const current = getFieldValue(target, field);
 
   let result:
     | { type: "set"; value: string | number | boolean | string[] }
@@ -459,9 +483,14 @@ export async function editFieldOn(
   if (!result) return false;
   if (result.type === "clear") {
     if (field.required) return false;
-    delete container[field.key];
+    // 清除不创建子块，免得取消一次就在 TOML 里多一个空表
+    const existing = field.section ? target[field.section] : target;
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) return false;
+    delete (existing as Record<string, unknown>)[field.key];
     return true;
   }
+  // 只有真要写值时才创建 compat / defaults 子块
+  const container = fieldContainer(target, field.section);
   // 数组值（如 do_not / input）要用序列化比较，否则重选同一个组合也会算成改动
   if (JSON.stringify(container[field.key] ?? null) === JSON.stringify(result.value)) return false;
   container[field.key] = result.value;
@@ -568,13 +597,15 @@ export async function modelFieldsMenu(
   let protectionTouched = false;
 
   while (true) {
-    const options = MODEL_FIELDS.map(f =>
-      `${f.label} — ${fmtValue(getFieldValue(model, f))}`,
-    );
-    if (allowDelete) options.push("🗑 删除此模型");
-    options.push("↩ 返回");
+    // 行尾的英文别名就是 TOML 字段名，看到它就知道 / 过滤可以敲英文
+    const rows = MODEL_FIELDS.map(field => ({
+      label: `${field.label} — ${fmtValue(getFieldValue(model, field))}`,
+      alias: field.key,
+    }));
+    if (allowDelete) rows.push({ label: "🗑 删除此模型", alias: "delete" });
+    rows.push({ label: "↩ 返回", alias: "back" });
 
-    const choice = await vimSelect(ctx, title, options);
+    const choice = await vimSelect(ctx, title, rows);
     if (!choice || choice === "↩ 返回") return;
 
     if (choice === "🗑 删除此模型") {
@@ -594,7 +625,7 @@ export async function modelFieldsMenu(
       return;
     }
 
-    const idx = options.indexOf(choice);
+    const idx = rows.findIndex(row => row.label === choice);
     const field = MODEL_FIELDS[idx];
     if (!field) continue;
     if (field.key === "do_not") protectionTouched = true;
@@ -705,15 +736,16 @@ async function providerEditMenu(
 ): Promise<boolean> {
   let dirty = false;
   while (true) {
-    const options = PROVIDER_FIELDS.map(f =>
-      `${f.label} — ${fmtValue(getFieldValue(provider, f))}`,
-    );
-    options.push("↩ 返回");
+    const rows = PROVIDER_FIELDS.map(field => ({
+      label: `${field.label} — ${fmtValue(getFieldValue(provider, field))}`,
+      alias: field.key,
+    }));
+    rows.push({ label: "↩ 返回", alias: "back" });
 
-    const choice = await vimSelect(ctx, `供应商 "${provider.id}" 配置：`, options);
+    const choice = await vimSelect(ctx, `供应商 "${provider.id}" 配置：`, rows);
     if (!choice || choice === "↩ 返回") return dirty;
 
-    const idx = options.indexOf(choice);
+    const idx = rows.findIndex(row => row.label === choice);
     const field = PROVIDER_FIELDS[idx];
     if (!field) continue;
     if (await editFieldOn(ctx, provider, field)) {

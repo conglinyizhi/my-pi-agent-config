@@ -4,8 +4,10 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
   applyVimKey,
   filterOptions,
+  normalizeOptions,
   parseVimKey,
   vimSelect,
+  type VimSelectOption,
   type VimState,
 } from "./vim-select.ts";
 
@@ -103,6 +105,40 @@ describe("filterOptions", () => {
   });
 });
 
+describe("英文别名", () => {
+  it("字符串与对象两种写法都能归一化", () => {
+    const items = normalizeOptions([
+      "纯字符串",
+      { label: "思考返回格式 — 未设置", alias: "thinking" },
+      { label: "展示名", value: "返回值", alias: "alias" },
+    ]);
+    assert.deepStrictEqual(items[0], { label: "纯字符串", value: "纯字符串", searchText: "纯字符串" });
+    assert.strictEqual(items[1].value, "思考返回格式 — 未设置");
+    assert.strictEqual(items[1].searchText, "思考返回格式 — 未设置 thinking");
+    assert.strictEqual(items[2].value, "返回值");
+    assert.strictEqual(items[2].searchText, "展示名 返回值 alias");
+  });
+
+  it("可以敲英文别名过滤，返回值仍是选项本身", async () => {
+    const ui = await mount([
+      { label: "上下文窗口 — 1000000", alias: "context" },
+      { label: "思考返回格式 — 未设置", alias: "thinking" },
+      { label: "历史消息需带思考 — 未设置", alias: "reasoning-content" },
+      { label: "工具参数流式下发 — 未设置", alias: "stream" },
+      { label: "最大输出 — 384000", alias: "max" },
+      { label: "名称 — 未设置", alias: "name" },
+    ]);
+
+    assert.match(ui.render(), /thinking/); // 别名显示在行尾，用户能看见
+    ui.input("/");
+    for (const ch of "thinking") ui.input(ch);
+    ui.input("\r");
+    assert.match(ui.render(), /\/ thinking/);
+    ui.input("\r");
+    assert.strictEqual(ui.selected(), "思考返回格式 — 未设置");
+  });
+});
+
 const theme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
@@ -115,7 +151,7 @@ interface Harness {
 }
 
 /** 用假 tui/theme 驱动 ctx.ui.custom 的 factory，拿到组件本体做按键与渲染断言。 */
-async function mount(options: string[]): Promise<Harness> {
+async function mount(options: VimSelectOption[]): Promise<Harness> {
   let component: { handleInput(data: string): void; render(width: number): string[] } | undefined;
   let selected: string | undefined;
   const ctx = {

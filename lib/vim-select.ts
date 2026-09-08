@@ -2,8 +2,11 @@
 //
 // 用法：
 //   vimSelect(ctx, "选择模型", options)
+//   vimSelect(ctx, "模型参数", [{ label: "思考返回格式 — 未设置", alias: "thinking" }])
 //
 // TUI 模式下支持计数前缀（如 8j / 3k）、j/k 或方向键移动、/ 进入模糊过滤。
+// 选项可以带英文别名（alias）：别名会以淡色附在行尾，也会进入过滤词，
+// 所以中文菜单也能用 / thinking 这样直接敲英文。
 // 过滤模式中可直接输入文字，Enter 保留过滤结果并退出过滤，Esc 清空过滤并退出。
 // 短列表和非 TUI 模式继续使用内置选择器。
 
@@ -26,8 +29,18 @@ export interface VimSelectOptions {
   hint?: string;
   /** 不超过该数量时退回内置选择器。 */
   nativeThreshold?: number;
-  /** 模糊搜索使用的文本，默认使用选项本身。 */
-  searchText?: (option: string) => string;
+}
+
+/** 选项：纯字符串，或带英文别名的对象 */
+export type VimSelectOption = string | VimSelectItem;
+
+export interface VimSelectItem {
+  /** 展示文本 */
+  label: string;
+  /** 返回给调用方的值，默认等于 label */
+  value?: string;
+  /** 模糊过滤用的英文别名，淡色显示在行尾，不参与返回值 */
+  alias?: string;
 }
 
 export type VimKey =
@@ -149,8 +162,34 @@ export function filterOptions(
   return fuzzyFilter(options, query, searchText);
 }
 
-function asItems(options: string[]) {
-  return options.map(option => ({ value: option, label: option }));
+interface NormalizedItem {
+  label: string;
+  value: string;
+  alias?: string;
+  /** 模糊匹配用的合并文本：展示名 + 返回值 + 别名 */
+  searchText: string;
+}
+
+/** 把字符串 / 对象选项统一成内部结构 */
+export function normalizeOptions(options: VimSelectOption[]): NormalizedItem[] {
+  return options.map(option => {
+    if (typeof option === "string") {
+      return { label: option, value: option, searchText: option };
+    }
+    const value = option.value ?? option.label;
+    return {
+      label: option.label,
+      value,
+      alias: option.alias,
+      // value 通常等于 label，去重后再拼，避免重复匹配权重
+      searchText: [...new Set([option.label, value, option.alias].filter(Boolean))].join(" "),
+    };
+  });
+}
+
+function filterItems(items: NormalizedItem[], query: string): NormalizedItem[] {
+  if (!query.trim()) return items.slice();
+  return fuzzyFilter(items, query, item => item.searchText);
 }
 
 /**
@@ -159,34 +198,49 @@ function asItems(options: string[]) {
 export async function vimSelect(
   ctx: ExtensionCommandContext,
   title: string,
-  options: string[],
+  options: VimSelectOption[],
   opts: VimSelectOptions = {},
 ): Promise<string | undefined> {
   const nativeThreshold = opts.nativeThreshold ?? 5;
   if (ctx.mode !== "tui" || options.length <= nativeThreshold) {
-    return ctx.ui.select(title, options);
+    return ctx.ui.select(title, options.map(option => (typeof option === "string" ? option : option.label)));
   }
 
   const maxVisible = Math.max(1, opts.maxVisible ?? 14);
-  const searchText = opts.searchText ?? (option => option);
-  const defaultHint = "8j/8k 计数跳转 · / 过滤 · Enter 选中 · Esc 取消";
+  const items = normalizeOptions(options);
+  const hasAlias = items.some(item => item.alias);
+  const defaultHint = hasAlias
+    ? "8j/8k 跳转 · / 过滤（中文或行尾英文别名） · Enter 选中 · Esc 取消"
+    : "8j/8k 计数跳转 · / 过滤 · Enter 选中 · Esc 取消";
 
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const container = new Container();
     let state: VimState = { count: null, filterMode: false, query: "" };
-    let filtered = filterOptions(options, state.query, searchText);
+    let filtered = filterItems(items, state.query);
     let selectedIndex = 0;
-    let selectList = new SelectList(asItems(filtered), maxVisible, getSelectListTheme());
 
-    selectList.onSelect = item => done(item.value);
-    selectList.onCancel = () => done(undefined);
+    /** 行尾的淡色别名：写进 label，避开 SelectList 的副列宽度限制 */
+    const toSelectItems = (list: NormalizedItem[]) =>
+      list.map(item => ({
+        value: item.value,
+        label: item.alias ? `${item.label}${theme.fg("dim", `  ${item.alias}`)}` : item.label,
+      }));
+
+    const buildSelectList = () => {
+      const list = new SelectList(toSelectItems(filtered), maxVisible, getSelectListTheme());
+      list.onSelect = item => done(item.value);
+      list.onCancel = () => done(undefined);
+      return list;
+    };
+
+    let selectList = buildSelectList();
+
+    const confirm = (item: NormalizedItem) => done(item.value);
 
     const rebuildSelectList = () => {
-      filtered = filterOptions(options, state.query, searchText);
+      filtered = filterItems(items, state.query);
       selectedIndex = 0;
-      selectList = new SelectList(asItems(filtered), maxVisible, getSelectListTheme());
-      selectList.onSelect = item => done(item.value);
-      selectList.onCancel = () => done(undefined);
+      selectList = buildSelectList();
     };
 
     const renderChrome = () => {
@@ -235,7 +289,7 @@ export async function vimSelect(
         }
         if (result.effect.type === "confirm") {
           const item = filtered[selectedIndex];
-          if (item !== undefined) selectList.onSelect?.({ value: item, label: item });
+          if (item !== undefined) confirm(item);
           return;
         }
         if (result.effect.type === "move") {

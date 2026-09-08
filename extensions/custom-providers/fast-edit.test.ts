@@ -4,8 +4,10 @@ import {
   DEFAULT_RELOAD_PROTECTION,
   ensureReloadProtection,
   fmtValue,
+  formatWithSeparators,
   MODE_CHOICES,
   MODEL_FIELDS,
+  numberPreview,
   parseNumberInput,
   reloadProtectionNotice,
   THINKING_FORMAT_CHOICES,
@@ -98,6 +100,32 @@ describe("选项式字段", () => {
     assert.deepStrictEqual(MODE_CHOICES.map(c => c.value), [["text"], ["text", "image"], ["image"], null]);
     const field = MODEL_FIELDS.find(f => f.key === "input")!;
     assert.strictEqual(field.kind, "modes");
+  });
+});
+
+describe("数字预览", () => {
+  it("加千位分隔符", () => {
+    assert.strictEqual(formatWithSeparators(1000000), "1,000,000");
+    assert.strictEqual(formatWithSeparators(384000), "384,000");
+    assert.strictEqual(formatWithSeparators(1500), "1,500");
+    assert.strictEqual(formatWithSeparators(999), "999");
+    assert.strictEqual(formatWithSeparators(0.242), "0.242");
+    assert.strictEqual(formatWithSeparators(2e-7), "2e-7");
+  });
+
+  it("输入 1M 就能看到 1,000,000", () => {
+    assert.strictEqual(numberPreview("1M"), "1,000,000（1.0M）");
+    assert.strictEqual(numberPreview("512K"), "512,000（512K）");
+    assert.strictEqual(numberPreview("1_000_000"), "1,000,000（1.0M）");
+    assert.strictEqual(numberPreview("100万"), "1,000,000（1.0M）");
+    assert.strictEqual(numberPreview("4096"), "4,096");
+    assert.strictEqual(numberPreview("0.242"), "0.242");
+  });
+
+  it("空输入不显示，非法输入与清除有提示", () => {
+    assert.strictEqual(numberPreview("  "), null);
+    assert.match(numberPreview("abc")!, /看不懂/);
+    assert.match(numberPreview("清除")!, /清空/);
   });
 });
 
