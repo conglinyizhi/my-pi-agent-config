@@ -13,13 +13,21 @@
 import type { ExtensionAPI, ExtensionCommandContext, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
   DynamicBorder,
+  getAgentDir,
   getSelectListTheme,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import * as nodePath from "node:path";
+import { join } from "node:path";
 import { Type } from "typebox";
+import { LazySessionSource } from "./lazy-sessions.ts";
+
+/** 首屏解析多少条，以及每次往下翻再多解析多少条 */
+const SESSION_BATCH = 30;
+/** 光标离已加载末尾这么近时，提前加载下一批 */
+const PREFETCH_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------
 // 格式化
@@ -208,10 +216,11 @@ async function showTextOverlay(ctx: ExtensionCommandContext, text: string): Prom
 
 async function pickSession(
   ctx: ExtensionCommandContext,
-  sessions: SessionInfo[],
+  source: LazySessionSource,
   currentCwd: string,
+  filter?: string,
 ): Promise<string | null> {
-  if (sessions.length === 0) {
+  if (source.sessions.length === 0) {
     ctx.ui.notify("没有可选择的 session", "warning");
     return null;
   }
@@ -226,63 +235,107 @@ async function pickSession(
       }
     };
 
-    const items: SelectItem[] = sessions.map((s) => {
-      const title = sessionTitle(s);
-      const desc = sessionDescription(s);
-      if (isSameDir(s.cwd, currentCwd)) {
-        return {
-          value: s.path,
-          label: highlight(`● ${title}`),
-          description: `${desc} · ${highlight("当前目录")}`,
-        };
-      }
-      return { value: s.path, label: title, description: desc };
-    });
+    const toItems = (): SelectItem[] =>
+      source.sessions.map((s) => {
+        const title = sessionTitle(s);
+        const desc = sessionDescription(s);
+        if (isSameDir(s.cwd, currentCwd)) {
+          return {
+            value: s.path,
+            label: highlight(`● ${title}`),
+            description: `${desc} · ${highlight("当前目录")}`,
+          };
+        }
+        return { value: s.path, label: title, description: desc };
+      });
+
+    const buildList = (): SelectList => {
+      const items = toItems();
+      const list = new SelectList(items, Math.min(Math.max(items.length, 1), 14), getSelectListTheme());
+      list.onSelect = (item) => done(item.value);
+      list.onCancel = () => done(null);
+      return list;
+    };
 
     const container = new Container();
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
-    container.addChild(
-      new Text(
-        theme.fg(
-          "accent",
-          theme.bold(`Sessions · All workdirs · ${sessions.length} 条（按最后活动）`),
-        ),
-      ),
-    );
-    container.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          "label = 名称/首条消息 · 右侧 = 绝对时间 (相对) · cwd · 消息数",
-        ),
-      ),
-    );
-    container.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          `● = 当前目录 · 当前 cwd: ${currentCwd ? shortenPath(currentCwd) : "(unknown)"}`,
-        ),
-      ),
-    );
-    container.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          "过滤请用命令参数：/session-switch <关键词> · /session-switch list 20 tmp",
-        ),
-      ),
-    );
+    let selectList = buildList();
+    let loading = false;
 
-    const selectList = new SelectList(items, Math.min(items.length, 14), getSelectListTheme());
-    selectList.onSelect = (item) => done(item.value);
-    selectList.onCancel = () => done(null);
-    container.addChild(selectList);
+    /** 底部状态：加载进度 + 是否还能往下翻 */
+    const footerText = (): string => {
+      const loaded = source.sessions.length;
+      const parts: string[] = [];
+      if (filter) {
+        parts.push(`已加载 ${loaded} 条匹配`);
+        parts.push(`已扫描 ${source.scannedFiles}/${source.totalFiles} 个文件`);
+      } else {
+        parts.push(`已加载 ${loaded}/${source.totalFiles}`);
+      }
+      if (loading) parts.push("正在加载更多…");
+      else if (source.hasMore) parts.push("继续向下翻加载更多");
+      return `↑↓ 选择 · Enter 恢复 · Esc 取消 · ${parts.join(" · ")}`;
+    };
 
-    container.addChild(
-      new Text(theme.fg("dim", "↑↓ 选择 · Enter 恢复该 session · Esc 取消")),
-    );
-    container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    const renderChrome = () => {
+      container.clear();
+      container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+      container.addChild(
+        new Text(theme.fg("accent", theme.bold("Sessions · All workdirs（按最后活动）")), 1, 0),
+      );
+      container.addChild(
+        new Text(
+          theme.fg("dim", "label = 名称/首条消息 · 右侧 = 绝对时间 (相对) · cwd · 消息数"),
+          1,
+          0,
+        ),
+      );
+      container.addChild(
+        new Text(
+          theme.fg(
+            "dim",
+            `● = 当前目录 · 当前 cwd: ${currentCwd ? shortenPath(currentCwd) : "(unknown)"}`,
+          ),
+          1,
+          0,
+        ),
+      );
+      container.addChild(
+        new Text(
+          theme.fg("dim", "过滤请用命令参数：/session-switch <关键词> · /session-switch list 20 tmp"),
+          1,
+          0,
+        ),
+      );
+      container.addChild(selectList);
+      container.addChild(new Text(theme.fg("dim", footerText()), 1, 0));
+      container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+    };
+
+    /** 光标接近已加载末尾时再解析下一批，并把光标停在原选中项上 */
+    const maybeLoadMore = async () => {
+      if (loading || !source.hasMore) return;
+      const selected = selectList.getSelectedItem();
+      const index = selected ? source.sessions.findIndex((s) => s.path === selected.value) : 0;
+      if (index < source.sessions.length - PREFETCH_THRESHOLD) return;
+
+      loading = true;
+      renderChrome();
+      tui.requestRender();
+
+      const before = source.sessions.length;
+      await source.loadMore(SESSION_BATCH);
+      loading = false;
+
+      if (source.sessions.length !== before) {
+        selectList = buildList();
+        const restored = selected ? source.sessions.findIndex((s) => s.path === selected.value) : -1;
+        if (restored >= 0) selectList.setSelectedIndex(restored);
+      }
+      renderChrome();
+      tui.requestRender();
+    };
+
+    renderChrome();
 
     return {
       render(width: number) {
@@ -294,6 +347,7 @@ async function pickSession(
       handleInput(data: string) {
         selectList.handleInput(data);
         tui.requestRender();
+        void maybeLoadMore();
       },
     };
   });
@@ -303,11 +357,34 @@ async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext)
   const { listOnly, limit, filter } = parseArgs(args);
   const currentCwd = ctx.sessionManager.getCwd() || process.cwd();
 
-  ctx.ui.setStatus("session-browse", "加载全部 session…");
-  let sessions: SessionInfo[];
+  // 文本列表（或非 TUI）：一次性加载，默认只取 30 条
+  if (listOnly || ctx.mode !== "tui") {
+    ctx.ui.setStatus("session-browse", "加载 session…");
+    let sessions: SessionInfo[];
+    try {
+      sessions = await loadSessions(filter, limit ?? SESSION_BATCH);
+    } catch (err) {
+      ctx.ui.setStatus("session-browse", undefined);
+      ctx.ui.notify(
+        `加载 session 失败: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+      return;
+    }
+    ctx.ui.setStatus("session-browse", undefined);
+    await showTextOverlay(ctx, formatTextList(sessions, filter, currentCwd));
+    return;
+  }
+
+  // 交互模式：先只解析最近 SESSION_BATCH 条，往下翻时再解析下一批
+  ctx.ui.setStatus("session-browse", `加载最近 ${SESSION_BATCH} 条 session…`);
+  let source: LazySessionSource;
   try {
-    // 交互模式默认不截断；list 模式默认 30
-    sessions = await loadSessions(filter, limit ?? (listOnly ? 30 : undefined));
+    source = await LazySessionSource.create(join(getAgentDir(), "sessions"), {
+      match: (info) => matchSession(info, filter),
+      limit,
+    });
+    await source.loadMore(SESSION_BATCH);
   } catch (err) {
     ctx.ui.setStatus("session-browse", undefined);
     ctx.ui.notify(
@@ -318,12 +395,15 @@ async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext)
   }
   ctx.ui.setStatus("session-browse", undefined);
 
-  if (listOnly || ctx.mode !== "tui") {
-    await showTextOverlay(ctx, formatTextList(sessions, filter, currentCwd));
+  if (source.sessions.length === 0) {
+    ctx.ui.notify(
+      filter ? `没有匹配 "${filter}" 的 session` : "没有找到任何 session",
+      "info",
+    );
     return;
   }
 
-  const chosen = await pickSession(ctx, sessions, currentCwd);
+  const chosen = await pickSession(ctx, source, currentCwd, filter);
   if (!chosen) {
     ctx.ui.notify("已取消", "info");
     return;

@@ -23,7 +23,7 @@
 
 | 命令 | 作用 |
 |------|------|
-| `/session-switch` | 交互选择并 `switchSession`（当前目录 session 用 `●` 高亮） |
+| `/session-switch` | 交互选择并 `switchSession`（首屏最近 30 条，往下翻自动加载更多） |
 | `/session-switch 15` | 只显示最近 15 条 |
 | `/session-switch shin` | 按关键词过滤（cwd/名称/首条/全文 AND） |
 | `/session-switch list` | 只看文本列表，不切换 |
@@ -50,8 +50,15 @@
 
 ## 实现
 
-- `SessionManager.listAll()` —— 官方跨项目枚举，已按 `modified` 降序
-- `modified` 取自 session 内最后一条 message 的活动时间（非仅 mtime）
+- **懒加载**：`SessionManager.listAll()` 会把每个 `.jsonl` 整个读出来解析（算名称 / 首条消息 / 消息数），
+  几百个 session（本项目实测 326 个文件、385MB）要一两秒。交互模式改成：
+  - 先 `readdir` + `stat` 只拿文件名和修改时间（~15ms），按最后活动倒序
+  - 首屏只解析最近 **30 条**（~260ms），光标接近已加载末尾（差 5 条）时再解析下一批 30 条
+  - 底部状态栏显示 `已加载 30/326 · 继续向下翻加载更多`；带过滤时显示 `已加载 N 条匹配 · 已扫描 x/y 个文件`
+  - 带过滤时会一直扫描到凑够一批匹配或扫完所有文件，不会出现「空列表却还能往下翻」
+  - 解析出的 `SessionInfo` 与官方同形（名称取最后一条 `session_info`，`modified` 取最后一条消息活动时间，
+    回退到 header 时间 / mtime），所以格式化与高亮逻辑不用改
+- 文本列表（`/session-switch list`）仍一次性加载，默认只取 30 条
 - TUI：`SelectList` + `DynamicBorder`；Enter → `ctx.switchSession(path)`
 - **当前目录高亮**：以 `ctx.sessionManager.getCwd()` 为基准，用 `theme.fg("success", …)` 给匹配 cwd 的 session 的 label/description 上色（主题缺该 token 时回退为纯文本 `●` 标记）
 
