@@ -354,7 +354,8 @@ async function inputChoice(
   if (!field.required) options.push("清除（用默认值）");
   options.push("取消");
 
-  const selected = await ctx.ui.select(fieldPrompt(field, current), options);
+  // 候选表可能有十项出头（如思考返回格式），超过 5 项时 vimSelect 会自己接管
+  const selected = await vimSelect(ctx, fieldPrompt(field, current), options);
   if (!selected || selected === "取消") return null;
   if (selected.startsWith("清除")) return { type: "clear" };
   return { type: "set", value: selected.split(" — ")[0] };

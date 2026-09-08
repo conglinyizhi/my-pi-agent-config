@@ -63,10 +63,11 @@ export function parseVimKey(data: string): VimKey {
   if (matchesKey(data, "ctrl+u")) return { type: "clear-query" };
 
   // Kitty 键盘协议会把普通字符编码成 CSI-u；普通终端则直接给单字符。
+  // 只排掉控制字符，中文也能进过滤词（字段菜单的选项名就是中文）。
   const printable = data.length === 1 ? data : decodeKittyPrintable(data);
   if (printable && printable.length === 1) {
     const code = printable.codePointAt(0) ?? 0;
-    if (code >= 32 && code <= 126) return { type: "char", value: printable };
+    if (code >= 32 && code !== 127) return { type: "char", value: printable };
   }
   return { type: "ignore" };
 }

@@ -31,6 +31,12 @@ describe("parseVimKey", () => {
     assert.deepStrictEqual(key("\u007f"), { type: "backspace" });
     assert.deepStrictEqual(key("\u0015"), { type: "clear-query" });
   });
+
+  it("中文等非 ASCII 可打印字符也能当过滤词", () => {
+    assert.deepStrictEqual(key("思"), { type: "char", value: "思" });
+    assert.deepStrictEqual(key("（"), { type: "char", value: "（" });
+    assert.deepStrictEqual(key("\u0000"), { type: "ignore" });
+  });
 });
 
 describe("applyVimKey", () => {
