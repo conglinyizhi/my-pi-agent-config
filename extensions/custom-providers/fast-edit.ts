@@ -25,7 +25,7 @@ const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
 // ─── 字段定义 ───────────────────────────────────────
 
-type FieldKind = "string" | "number" | "bool" | "modes" | "api";
+type FieldKind = "string" | "number" | "bool" | "modes" | "api" | "protect";
 
 interface FieldDef {
   key: string;
@@ -67,6 +67,12 @@ const COMPAT_DESCS = {
 
 /** 模型级字段 */
 export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
+  {
+    key: "do_not",
+    label: "🛡 保护（reload-online 不覆盖 / 不删除）",
+    kind: "protect",
+    desc: "防止 /provider:reload-online 动这个模型：不拿在线元数据覆盖你改过的配置，供应商列表里没有它也不会删掉。你编辑或新建模型后 pi 会默认打开它。",
+  },
   { key: "name", label: "名称", kind: "string", desc: "模型列表里显示的名字；留空就直接用模型 ID。" },
   { key: "context_window", label: "上下文窗口", kind: "number", desc: "一次对话最多能装多少 token，历史消息和本次输出都算在内。" },
   { key: "max_tokens", label: "最大输出", kind: "number", desc: "单次回复最多生成多少 token。" },
@@ -115,9 +121,45 @@ const PROVIDER_FIELDS: FieldDef[] = withPath("", [
 export function fmtValue(v: unknown): string {
   if (v === undefined || v === null) return "未设置";
   if (typeof v === "boolean") return v ? "开启" : "关闭";
-  if (Array.isArray(v)) return v.join(", ");
+  if (Array.isArray(v)) {
+    // do_not 是保护动作列表，直接打印 remove/update 看不懂，转成白话
+    return isProtectActionList(v)
+      ? v.map(action => PROTECT_ACTION_LABELS[action as string]).join(" + ")
+      : v.join(", ");
+  }
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+/** do_not 取值 → 白话 */
+const PROTECT_ACTION_LABELS: Record<string, string> = {
+  remove: "不删除",
+  update: "不覆盖",
+  edit: "禁止手动改",
+};
+
+function isProtectActionList(v: unknown[]): boolean {
+  return v.length > 0 && v.every(item => typeof item === "string" && item in PROTECT_ACTION_LABELS);
+}
+
+/** 新建 / 编辑模型后默认加的 reload-online 保护 */
+export const DEFAULT_RELOAD_PROTECTION = ["remove", "update"];
+
+/**
+ * 用户改过或新建的模型，默认不让 reload-online 动它。
+ * 只在完全没有 do_not 配置时补默认值，已有配置（哪怕是别的组合）一律不覆盖。
+ * 返回是否真的补上了。
+ */
+export function ensureReloadProtection(model: Record<string, unknown>): boolean {
+  const existing = model.do_not;
+  if (Array.isArray(existing) && existing.length > 0) return false;
+  model.do_not = [...DEFAULT_RELOAD_PROTECTION];
+  return true;
+}
+
+/** 默认保护生效时的提示文案 */
+export function reloadProtectionNotice(modelId: string): string {
+  return `🛡 已默认保护模型 "${modelId}"：/provider:reload-online 不会覆盖它的配置，供应商列表里没有它也不会删。想改就选字段菜单第一行。`;
 }
 
 /**
@@ -251,6 +293,28 @@ async function inputModes(
   return { type: "set", value: modes };
 }
 
+/** 保护级别选项：值写入 do_not，null 表示清除 */
+const PROTECT_CHOICES: Array<{ label: string; value: string[] | null }> = [
+  { label: "🛡 保护：不覆盖配置 + 不删除模型（推荐）", value: ["remove", "update"] },
+  { label: "只防删除：在线列表里没有它也保留", value: ["remove"] },
+  { label: "只防覆盖：不拿在线元数据刷新本地配置", value: ["update"] },
+  { label: "不保护：reload-online 可以刷新或删除它", value: null },
+];
+
+/** 保护级别选择：写入 do_not 列表，或清除保护 */
+async function inputProtect(
+  ctx: ExtensionCommandContext,
+  field: FieldDef,
+  current: unknown,
+): Promise<{ type: "set"; value: string[] } | { type: "clear" } | null> {
+  const options = [...PROTECT_CHOICES.map(c => c.label), "取消"];
+  const choice = await ctx.ui.select(fieldPrompt(field, current), options);
+  if (!choice || choice === "取消") return null;
+  const picked = PROTECT_CHOICES[options.indexOf(choice)];
+  if (!picked) return null;
+  return picked.value === null ? { type: "clear" } : { type: "set", value: picked.value };
+}
+
 /** API 格式选择（供应商级）：选项里带上中文说明，值仍在开头 */
 async function inputApiFormat(
   ctx: ExtensionCommandContext,
@@ -302,6 +366,9 @@ export async function editFieldOn(
     case "api":
       result = await inputApiFormat(ctx, field, current);
       break;
+    case "protect":
+      result = await inputProtect(ctx, field, current);
+      break;
   }
 
   if (!result) return false;
@@ -310,7 +377,8 @@ export async function editFieldOn(
     delete container[field.key];
     return true;
   }
-  if (container[field.key] === result.value) return false;
+  // 数组值（如 do_not / input）要用序列化比较，否则重选同一个组合也会算成改动
+  if (JSON.stringify(container[field.key] ?? null) === JSON.stringify(result.value)) return false;
   container[field.key] = result.value;
   return true;
 }
@@ -411,6 +479,8 @@ export async function modelFieldsMenu(
 
   const allowDelete = menuOptions.allowDelete ?? true;
   const title = menuOptions.title ?? `模型 "${model.id}" 参数：`;
+  // 用户动过保护行之后就不再自动补默认保护，避免他想关掉又被加上
+  let protectionTouched = false;
 
   while (true) {
     const options = MODEL_FIELDS.map(f =>
@@ -442,8 +512,13 @@ export async function modelFieldsMenu(
     const idx = options.indexOf(choice);
     const field = MODEL_FIELDS[idx];
     if (!field) continue;
-    if (await editFieldOn(ctx, model, field)) {
-      ctx.ui.notify(`已更新 ${field.label}`, "info");
+    if (field.key === "do_not") protectionTouched = true;
+    const changed = await editFieldOn(ctx, model, field);
+    if (!changed) continue;
+    ctx.ui.notify(`已更新 ${field.label}`, "info");
+    // 改过其它字段后补上默认保护：reload-online 不再动这个模型
+    if (field.key !== "do_not" && !protectionTouched && ensureReloadProtection(model)) {
+      ctx.ui.notify(reloadProtectionNotice(String(model.id)), "info");
     }
   }
 }
@@ -523,6 +598,9 @@ async function addModelFlow(
   }
 
   const model: Record<string, unknown> = { id: modelId };
+  // 新建的模型默认受保护，菜单第一行会高亮成「保护」
+  ensureReloadProtection(model);
+  ctx.ui.notify(reloadProtectionNotice(modelId), "info");
   await modelEditMenu(ctx, provider, model);
 
   models.push(model);

@@ -27,6 +27,7 @@ import { parse, stringify } from "smol-toml";
 import { findProviderMatches, type DeletableProvider } from "./fast-del.ts";
 import {
   chooseProvider,
+  DEFAULT_RELOAD_PROTECTION,
   ensureModelsArray,
   modelFieldsMenu,
   type FastEditResult,
@@ -314,32 +315,33 @@ export async function fastEditWithCopyHandler(
     return null;
   }
 
-  // 6. do_not 继承（源模型有保护才问）
+  // 6. reload-online 保护：新模型默认受保护，不让在线刷新动用户刚建的模型
   const sourceDoNot = Array.isArray(source.model.do_not)
     ? source.model.do_not.filter((action): action is string => typeof action === "string")
     : [];
-  let doNot: string[] = [];
-  let doNotNote = "不继承";
+  const protectOptions = [
+    "🛡 默认保护：reload-online 不覆盖配置、不删除模型（推荐）",
+    "不保护：reload-online 可以刷新或删除它",
+  ];
   if (sourceDoNot.length > 0) {
-    const choice = await ctx.ui.select(
-      `源模型带 do_not 保护 [${sourceDoNot.join(", ")}]，新模型是否继承？`,
-      [
-        "不继承（新模型可自由编辑 / 被在线刷新）",
-        `继承 ["remove"]（防止在线刷新时被删除）`,
-        `完整继承 [${sourceDoNot.join(", ")}]`,
-      ],
-    );
-    if (!choice) {
-      ctx.ui.notify("已取消", "info");
-      return null;
-    }
-    if (choice.startsWith("继承")) {
-      doNot = ["remove"];
-      doNotNote = `继承 ["remove"]`;
-    } else if (choice.startsWith("完整继承")) {
-      doNot = [...sourceDoNot];
-      doNotNote = `完整继承 [${sourceDoNot.join(", ")}]`;
-    }
+    protectOptions.push(`完整继承源模型 [${sourceDoNot.join(", ")}]`);
+  }
+  const protectChoice = await ctx.ui.select(
+    `新模型 "${newId}" 要不要挡住 /provider:reload-online？\n默认挡住：不拿在线元数据覆盖它的配置，供应商列表里没有它也不会删。`,
+    protectOptions,
+  );
+  if (!protectChoice) {
+    ctx.ui.notify("已取消", "info");
+    return null;
+  }
+  let doNot: string[] = [...DEFAULT_RELOAD_PROTECTION];
+  let doNotNote = "🛡 默认保护（不覆盖 + 不删除）";
+  if (protectChoice.startsWith("不保护")) {
+    doNot = [];
+    doNotNote = "不保护";
+  } else if (protectChoice.startsWith("完整继承")) {
+    doNot = [...sourceDoNot];
+    doNotNote = `完整继承 [${sourceDoNot.join(", ")}]`;
   }
 
   // 7. 确认

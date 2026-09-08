@@ -36,6 +36,7 @@
   - `💾 保存并退出` —— 写回 `providers.toml` 并自动重新加载；`❌ 放弃修改` 不写盘
 - 所有修改先落在内存，统一保存；数字/文本字段预填当前值，输入 `clear` / `清除` 清空该字段（回退默认）
 - 菜单里的字段名用白话中文（如「历史消息需带思考」「工具参数流式下发」），选中后对话框里会给出这个开关到底管什么、以及对应的 TOML 路径；布尔值显示为「开启 / 关闭」
+- 菜单第一行是 `🛡 保护（reload-online 不覆盖 / 不删除）`。改过字段的模型与新增的模型会默认打开它并弹提示，挡住 `reload-online` 覆盖配置或删除模型；想放开就在这行选「不保护」。
 
 ### `/provider:fast-edit-with-copy`
 
@@ -46,7 +47,7 @@
   - 源模型可以是任意供应商下的模型（跨供应商复制），支持关键词过滤与 TUI 选择
 - **复刻规则**：除 `id` / 名称 / `do_not` / `cost_locked` 外逐字段深拷贝（含 `compat`、`input`、价格、`cot_replay`、`thinking_level_map` 等）
   - 新模型 ID 必填且不能与目标供应商下已有模型重名；名称默认回退为新 ID，可在微调菜单里改
-  - 源模型带 `do_not` 时会询问是否继承（不继承 / 只继承 `remove` / 完整继承）
+  - 复刻出的新模型会问要不要挡住 `reload-online`，默认 `do_not = ["remove", "update"]`（不覆盖配置、不删除模型）；源模型自带 `do_not` 时也可选完整继承
   - 源与目标供应商 `api` 格式不同时给出 compat 可能不适用的提示
 - **微调**：确认后进入与 `/provider:fast-edit` 相同的字段菜单，改完选「↩ 返回」即写盘；也可选「直接保存」跳过
 - 写盘后自动 reload，新模型立即可用
@@ -111,7 +112,8 @@ custom-providers/
 - **格式自动检测**：请求 `/models` 端点，根据响应结构判断 OpenAI/Anthropic
 - **配置持久化**：检测结果自动写回 providers.toml，下次启动直接使用
 - **reload 安全**：reload 时清理旧注册，避免重复注册
-- **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。`/provider:fast-edit-with-copy` 默认不继承 `do_not`，可选只继承 `remove` 或完整继承。
+- **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。
+- **默认保护**：`/provider:fast-edit` 里改过字段的模型、新建的模型，以及 `/provider:fast-edit-with-copy` 复刻出来的模型，都会默认补上 `do_not = ["remove", "update"]` 并弹一条提示；已有任何 `do_not` 配置的不动。字段菜单第一行 `🛡 保护` 可改保护级别或关掉。
 - **密钥管理**：通过 `../../lib/auth.ts` 获取 API key
 
 ### 依赖
