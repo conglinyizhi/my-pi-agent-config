@@ -35,60 +35,101 @@ interface FieldDef {
   section?: "defaults" | "compat";
   /** 必填字段（如 base_url）不可清除 */
   required?: boolean;
+  /** 白话说明：这个开关到底管什么、什么时候该开 */
+  desc?: string;
+  /** providers.toml 里的完整路径，编辑时回显便于对照 */
+  path: string;
 }
 
+type FieldSeed = Omit<FieldDef, "path">;
+
+/** 给一组字段补上 TOML 路径（prefix 为空表示供应商顶层） */
+function withPath(prefix: string, seeds: FieldSeed[]): FieldDef[] {
+  return seeds.map(seed => {
+    const sub = seed.section ? `${seed.section}.` : "";
+    return { ...seed, path: prefix ? `${prefix}.${sub}${seed.key}` : `${sub}${seed.key}` };
+  });
+}
+
+/**
+ * compat 子块的说明。这几个开关是 pi 和接口之间的兼容性补丁：
+ * 接口不按标准来时打开，能解决思维链丢失 / 请求报错这类问题。
+ */
+const COMPAT_DESCS = {
+  developerRole: "允许用 developer 角色下发系统指令（新版 OpenAI 风格）。接口不认时关掉，pi 会退回 system 角色。",
+  reasoningEffort: "接口接受 reasoning_effort 参数来调思考深度。不支持时开着会让请求报错。",
+  thinkingFormat: "思考过程用哪种字段格式返回。DeepSeek 系（含多数中转站）要填 deepseek，否则思维链会丢。",
+  adaptiveThinking: "让模型自己决定这一轮要不要思考，适用于会在思考/不思考之间自动切换的模型。",
+  thinkingAsText: "思考过程必须写在正文里，而不是单独的 reasoning 字段。中转站只透传正文时用得上。",
+  reasoningContent: "回传历史对话时，assistant 消息必须带上 reasoning_content，否则接口报错。DeepSeek 系常见。",
+  eagerToolStreaming: "工具调用的参数边生成边流式下发，能更早开始执行。接口不支持时关掉。",
+} as const;
+
 /** 模型级字段 */
-export const MODEL_FIELDS: FieldDef[] = [
-  { key: "name", label: "名称", kind: "string" },
-  { key: "context_window", label: "上下文窗口", kind: "number" },
-  { key: "max_tokens", label: "最大输出", kind: "number" },
-  { key: "cost_input", label: "输入价格", kind: "number" },
-  { key: "cost_output", label: "输出价格", kind: "number" },
-  { key: "cost_cache_read", label: "缓存读价格", kind: "number" },
-  { key: "cost_cache_write", label: "缓存写价格", kind: "number" },
-  { key: "reasoning", label: "推理", kind: "bool" },
-  { key: "input", label: "输入模态", kind: "modes" },
-  { key: "cot_replay", label: "CoT 回传", kind: "bool" },
-  { key: "cost_locked", label: "锁定价格", kind: "bool" },
-  { key: "supports_developer_role", label: "compat: developer role", kind: "bool", section: "compat" },
-  { key: "supports_reasoning_effort", label: "compat: reasoning effort", kind: "bool", section: "compat" },
-  { key: "thinking_format", label: "compat: thinking 格式", kind: "string", section: "compat" },
-  { key: "force_adaptive_thinking", label: "compat: 强制自适应思考", kind: "bool", section: "compat" },
-  { key: "requires_thinking_as_text", label: "compat: thinking 作为文本", kind: "bool", section: "compat" },
-  { key: "requires_reasoning_content_on_assistant_messages", label: "compat: assistant 消息需 reasoning content", kind: "bool", section: "compat" },
-  { key: "supports_eager_tool_input_streaming", label: "compat: 流式工具输入", kind: "bool", section: "compat" },
-];
+export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
+  { key: "name", label: "名称", kind: "string", desc: "模型列表里显示的名字；留空就直接用模型 ID。" },
+  { key: "context_window", label: "上下文窗口", kind: "number", desc: "一次对话最多能装多少 token，历史消息和本次输出都算在内。" },
+  { key: "max_tokens", label: "最大输出", kind: "number", desc: "单次回复最多生成多少 token。" },
+  { key: "cost_input", label: "输入价格", kind: "number", desc: "每百万输入 token 的单价，数字和 providers.toml 里保持一致，用来算花费。" },
+  { key: "cost_output", label: "输出价格", kind: "number", desc: "每百万输出 token 的单价。" },
+  { key: "cost_cache_read", label: "缓存读价格", kind: "number", desc: "命中提示词缓存时，读取那部分的单价。" },
+  { key: "cost_cache_write", label: "缓存写价格", kind: "number", desc: "把提示词写进缓存的单价。" },
+  { key: "reasoning", label: "推理", kind: "bool", desc: "这个模型会先输出思考过程再给答案；关掉就不请求思维链。" },
+  { key: "input", label: "输入模态", kind: "modes", desc: "能接受什么输入：text 是纯文字，image 是能读图。" },
+  { key: "cot_replay", label: "思维链回传", kind: "bool", desc: "把上一轮的思考过程带回对话历史。DeepSeek 系不开会丢思维链；等于一键打开「思考格式 + 历史带思考」。" },
+  { key: "cost_locked", label: "锁定价格", kind: "bool", desc: "锁住价格，/provider:reload-online 刷新在线数据时不会用在线价覆盖它。" },
+  { key: "supports_developer_role", label: "允许 developer 角色", kind: "bool", section: "compat", desc: COMPAT_DESCS.developerRole },
+  { key: "supports_reasoning_effort", label: "支持思考强度参数", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningEffort },
+  { key: "thinking_format", label: "思考返回格式", kind: "string", section: "compat", desc: COMPAT_DESCS.thinkingFormat },
+  { key: "force_adaptive_thinking", label: "强制自适应思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.adaptiveThinking },
+  { key: "requires_thinking_as_text", label: "思考需写进正文", kind: "bool", section: "compat", desc: COMPAT_DESCS.thinkingAsText },
+  { key: "requires_reasoning_content_on_assistant_messages", label: "历史消息需带思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningContent },
+  { key: "supports_eager_tool_input_streaming", label: "工具参数流式下发", kind: "bool", section: "compat", desc: COMPAT_DESCS.eagerToolStreaming },
+]);
 
 /** 供应商级字段（含 defaults / compat 子块） */
-const PROVIDER_FIELDS: FieldDef[] = [
-  { key: "api", label: "API 格式", kind: "api" },
-  { key: "base_url", label: "API 地址", kind: "string", required: true },
-  { key: "name", label: "显示名称", kind: "string" },
-  { key: "cot_replay", label: "CoT 回传（provider 级）", kind: "bool" },
-  { key: "context_window", label: "默认上下文窗口", kind: "number", section: "defaults" },
-  { key: "max_tokens", label: "默认最大输出", kind: "number", section: "defaults" },
-  { key: "input", label: "默认输入模态", kind: "modes", section: "defaults" },
-  { key: "reasoning", label: "默认推理", kind: "bool", section: "defaults" },
-  { key: "cost_input", label: "默认输入价格", kind: "number", section: "defaults" },
-  { key: "cost_output", label: "默认输出价格", kind: "number", section: "defaults" },
-  { key: "cost_cache_read", label: "默认缓存读价格", kind: "number", section: "defaults" },
-  { key: "cost_cache_write", label: "默认缓存写价格", kind: "number", section: "defaults" },
-  { key: "supports_developer_role", label: "compat: developer role", kind: "bool", section: "compat" },
-  { key: "supports_reasoning_effort", label: "compat: reasoning effort", kind: "bool", section: "compat" },
-  { key: "thinking_format", label: "compat: thinking 格式", kind: "string", section: "compat" },
-  { key: "force_adaptive_thinking", label: "compat: 强制自适应思考", kind: "bool", section: "compat" },
-  { key: "requires_thinking_as_text", label: "compat: thinking 作为文本", kind: "bool", section: "compat" },
-  { key: "requires_reasoning_content_on_assistant_messages", label: "compat: assistant 消息需 reasoning content", kind: "bool", section: "compat" },
-  { key: "supports_eager_tool_input_streaming", label: "compat: 流式工具输入", kind: "bool", section: "compat" },
-];
+const PROVIDER_FIELDS: FieldDef[] = withPath("", [
+  { key: "api", label: "API 格式", kind: "api", desc: "这家供应商走哪套接口协议。选错了会连不上或直接报错。" },
+  { key: "base_url", label: "API 地址", kind: "string", required: true, desc: "接口地址，通常以 /v1 结尾。" },
+  { key: "name", label: "显示名称", kind: "string", desc: "模型列表里显示的供应商名字；留空就用标识符。" },
+  { key: "cot_replay", label: "思维链回传（整家）", kind: "bool", desc: "对这家供应商下所有模型生效；某个模型单独设置了就以那个模型为准。" },
+  { key: "context_window", label: "默认上下文窗口", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "max_tokens", label: "默认最大输出", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "input", label: "默认输入模态", kind: "modes", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "reasoning", label: "默认推理", kind: "bool", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "cost_input", label: "默认输入价格", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "cost_output", label: "默认输出价格", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "cost_cache_read", label: "默认缓存读价格", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "cost_cache_write", label: "默认缓存写价格", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
+  { key: "supports_developer_role", label: "允许 developer 角色", kind: "bool", section: "compat", desc: COMPAT_DESCS.developerRole },
+  { key: "supports_reasoning_effort", label: "支持思考强度参数", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningEffort },
+  { key: "thinking_format", label: "思考返回格式", kind: "string", section: "compat", desc: COMPAT_DESCS.thinkingFormat },
+  { key: "force_adaptive_thinking", label: "强制自适应思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.adaptiveThinking },
+  { key: "requires_thinking_as_text", label: "思考需写进正文", kind: "bool", section: "compat", desc: COMPAT_DESCS.thinkingAsText },
+  { key: "requires_reasoning_content_on_assistant_messages", label: "历史消息需带思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningContent },
+  { key: "supports_eager_tool_input_streaming", label: "工具参数流式下发", kind: "bool", section: "compat", desc: COMPAT_DESCS.eagerToolStreaming },
+]);
 
 // ─── 小工具 ─────────────────────────────────────────
 
 export function fmtValue(v: unknown): string {
   if (v === undefined || v === null) return "未设置";
+  if (typeof v === "boolean") return v ? "开启" : "关闭";
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+/**
+ * 编辑对话框的标题：字段名 + 当前值 + 白话说明 + TOML 路径 + 操作提示。
+ * 说明写在这里，而不是菜单行上，菜单才能保持一行一项看得清。
+ */
+function fieldPrompt(field: FieldDef, current: unknown, how?: string): string {
+  const lines = [`${field.label}（当前: ${fmtValue(current)}）`];
+  if (field.desc) lines.push(field.desc);
+  lines.push(`对应配置项: ${field.path}`);
+  if (how) lines.push(how);
+  return lines.join("\n");
 }
 
 /** 定位字段容器：有 section 时返回（并创建）子块对象，否则返回 target 本身 */
@@ -118,20 +159,25 @@ export function getFieldValue(
 
 // ─── 交互辅助 ───────────────────────────────────────
 
-/** 数字输入：预填当前值；"clear"/"c" 清除字段；留空或非法取消 */
+/** 清除字段的输入关键词：中英文都收 */
+function isClearKeyword(text: string): boolean {
+  return /^(clear|c|清除|清空)$/i.test(text);
+}
+
+/** 数字输入：预填当前值；输入「清除」清空字段；留空或非法取消 */
 async function inputNumber(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: number } | { type: "clear" } | null> {
   const raw = await ctx.ui.input(
-    `${field.label}（当前: ${fmtValue(current)}；输入数字，输入 "clear" 清除该字段，留空取消）`,
+    fieldPrompt(field, current, "填数字修改；填「清除」清空这个配置项；留空取消"),
     current === undefined || current === null ? "" : String(current),
   );
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  if (/^clear$/i.test(trimmed) || trimmed === "c") return { type: "clear" };
+  if (isClearKeyword(trimmed)) return { type: "clear" };
   const n = Number(trimmed);
   if (Number.isNaN(n)) {
     ctx.ui.notify(`"${trimmed}" 不是有效数字，已取消本次修改`, "warning");
@@ -140,54 +186,62 @@ async function inputNumber(
   return { type: "set", value: n };
 }
 
-/** 文本输入：预填当前值；"clear" 清除（非必填字段）；留空取消 */
+/** 文本输入：预填当前值；输入「清除」清空（非必填字段）；留空取消 */
 async function inputString(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: string } | { type: "clear" } | null> {
   const raw = await ctx.ui.input(
-    `${field.label}（当前: ${fmtValue(current)}${field.required ? "" : '，输入 "clear" 清除该字段'}，留空取消）`,
+    fieldPrompt(
+      field,
+      current,
+      field.required ? "填内容修改；留空取消" : "填内容修改；填「清除」清空这个配置项；留空取消",
+    ),
     current === undefined || current === null ? "" : String(current),
   );
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  if (!field.required && (/^clear$/i.test(trimmed) || trimmed === "c")) {
+  if (!field.required && isClearKeyword(trimmed)) {
     return { type: "clear" };
   }
   return { type: "set", value: trimmed };
 }
 
-/** 布尔选择：true / false / 清除（未设置）/ 取消 */
+/** 布尔选择：开启 / 关闭 / 清除（未设置）/ 取消 */
 async function inputBool(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: boolean } | { type: "clear" } | null> {
   const choice = await ctx.ui.select(
-    `${field.label}（当前: ${fmtValue(current)}）`,
-    ["true", "false", "清除（未设置）", "取消"],
+    fieldPrompt(field, current),
+    ["开启", "关闭", "清除（恢复未设置）", "取消"],
   );
   if (!choice || choice === "取消") return null;
-  if (choice === "清除（未设置）") return { type: "clear" };
-  return { type: "set", value: choice === "true" };
+  if (choice.startsWith("清除")) return { type: "clear" };
+  return { type: "set", value: choice === "开启" };
 }
 
-/** 输入模态（input 字段）：逗号分隔 text/image；"clear" 清除；留空取消 */
+/** 输入模态（input 字段）：逗号分隔 text / image；输入「清除」清空；留空取消 */
 async function inputModes(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: string[] } | { type: "clear" } | null> {
   const raw = await ctx.ui.input(
-    `${field.label}（当前: ${fmtValue(current)}；text/image 逗号分隔，输入 "clear" 清除，留空取消）`,
+    fieldPrompt(
+      field,
+      current,
+      "填 text（纯文字）或 image（能读图），可以两个都填、用逗号隔开，例如 text, image；填「清除」清空；留空取消",
+    ),
     Array.isArray(current) ? current.join(", ") : "",
   );
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  if (/^clear$/i.test(trimmed) || trimmed === "c") return { type: "clear" };
+  if (isClearKeyword(trimmed)) return { type: "clear" };
   const modes = trimmed.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
   const invalid = modes.filter(m => m !== "text" && m !== "image");
   if (invalid.length > 0) {
@@ -197,24 +251,24 @@ async function inputModes(
   return { type: "set", value: modes };
 }
 
-/** API 格式选择（供应商级） */
+/** API 格式选择（供应商级）：选项里带上中文说明，值仍在开头 */
 async function inputApiFormat(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: string } | null> {
   const choice = await ctx.ui.select(
-    `${field.label}（当前: ${fmtValue(current)}）`,
+    fieldPrompt(field, current),
     [
-      "openai-old (Chat Completions，最通用)",
-      "openai-new (OpenAI Responses)",
-      "anthropic (Anthropic Messages)",
-      "auto (自动检测)",
+      "openai-old — 旧版 Chat Completions 接口，中转站和自建服务最通用",
+      "openai-new — 新版 OpenAI Responses 接口，官方 OpenAI / Azure 用这个",
+      "anthropic — Anthropic Messages 接口，Claude 系列用这个",
+      "auto — 自动检测，首次选中模型时再探测接口类型",
       "取消",
     ],
   );
   if (!choice || choice === "取消") return null;
-  const value = choice.split(" ")[0];
+  const value = choice.split(/\s+/)[0];
   return { type: "set", value };
 }
 
