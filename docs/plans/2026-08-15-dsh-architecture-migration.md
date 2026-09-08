@@ -73,7 +73,7 @@
 
 | DSH | pi 对应 | 判断 |
 |---|---|---|
-| `dsh-host-apiproxy`（RPC/事件网关） | pi RPC 模式（`rpc.md` JSON 协议）+ `wails-gui` | pi 的 Web 路线已在 `docs/plans/pi-web-unified-plan.md` 规划；DSH 的 Typert Remote 可作参考 |
+| `dsh-host-apiproxy`（RPC/事件网关） | pi RPC 模式（`rpc.md` JSON 协议）+ `wails-gui` | pi 的 Web 路线已在 `docs/plans/2026-08-17-pi-external-service.md` 规划（旧路线见 `docs/plans/backup/pi-web-unified-plan.md`）；DSH 的 Typert Remote 可作参考 |
 | `dsh-host-webserver` / `frontend-static` | Wails（`wails-gui/`） | 不迁移 |
 | `dsh-shell-env`（`DSH_*` 变量） | 无 | 可抄（改成 `PI_*`） |
 | `dsh-invariants`（包自检） | 无 | 可抄（轻量，开发期价值） |
@@ -130,7 +130,7 @@ spike 任务清单（建议在 `~/.pi/agent` 新建 `extensions/dsh-goal/`，参
 
 ### 4.4 可选路线：Web 表层
 
-如果「架构能力」包含 Web 客户端架构（DSH 的 gateway/connection/ui-plugin 体系），走 `docs/plans/pi-web-unified-plan.md` 已规划的 Wails 路线，参考点不是 Cordis 双面插件，而是：`dsh-host-apiproxy` 的 `RpcMethodMap` + 事件帧协议、`dsh-client-modules` 的惰性模块图思想、`session-projection` 帧（UI 只订阅投影不挂事件）。这条线是独立大工程，建议排在 4.3 的 1-6 之后。
+如果「架构能力」包含 Web 客户端架构（DSH 的 gateway/connection/ui-plugin 体系），走 `docs/plans/2026-08-17-pi-external-service.md` 已规划的 Wails/Vue 路线（旧路线见 `docs/plans/backup/pi-web-unified-plan.md`），参考点不是 Cordis 双面插件，而是：`dsh-host-apiproxy` 的 `RpcMethodMap` + 事件帧协议、`dsh-client-modules` 的惰性模块图思想、`session-projection` 帧（UI 只订阅投影不挂事件）。这条线是独立大工程，建议排在 4.3 的 1-6 之后。
 
 ---
 

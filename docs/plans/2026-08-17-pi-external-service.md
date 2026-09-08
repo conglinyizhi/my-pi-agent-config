@@ -1,9 +1,35 @@
-# pi 外部服务项目设计（草案）
+# pi 外部服务 / pi-web 统一设计（现行版）
 
-> 状态：草案 · 仅设计，未实现
-> 日期：2026-08-17
+> 状态：设计草案 · 未实现 · **暂缓**（2026-09 决定先搁置：体量太大且没找到合适的运行方式）
+> 合并自：`2026-08-17-pi-external-service`（主干）· `2026-08-15-pi-web-frontend-plan`（调研/选型/排期）· `pi-web-unified-plan`（已归档，保留其中仍然有效的结论）
 > 目标：给 pi coding agent 建一个「外部服务」，让任何设备上的终端/浏览器都能远程驱动
 > 三方：pi（agent）· Go 中间服务端 · 浏览器前端
+
+## 0. 文档沿革与取代关系
+
+同一个项目的三份计划，按时间演进如下。**本文是唯一现行版**，其余三份已归档到 `docs/plans/backup/`。
+
+| 日期 | 文档 | 当时结论 | 现状 |
+|---|---|---|---|
+| 07-30 | `backup/pi-web-gui-plan.md` | Vite+ 前端路线 | 已归档 |
+| 07-30 | `backup/pi-webd-server-plan.md` | pi-webd 服务端路线 | 已归档 |
+| 08-01 | `backup/pi-web-unified-plan.md` | 保留 pi-web **sessiond** + 自建 **pi-webd（Node/Fastify）** + Vue 3 重写前端 | **两处关键选择已被取代**（见下），其余结论并入本文 |
+| 08-15 | `backup/2026-08-15-pi-web-frontend-plan.md` | 官方 RPC 冒烟实测通过；Go bridge + Vue 3 + SQLite 索引；P0–P3 排期 | 内容并入本文 §2/§12/§13/§14 |
+| 08-17 | 本文 | 控制面/数据面切分、多进程、away 语义等 5 条拍板 | 现行版主干 |
+
+**被取代的两处（08-01 → 08-15/08-17）**：
+
+| 维度 | 旧路线（08-01） | 现行 |
+|---|---|---|
+| 会话通道 | 保留 pi-web 的 **sessiond**（Node，ws + `seq` 序号） | 官方 `pi --mode rpc`（stdio JSON-lines）——08-15 冒烟实测事件流全通（pi 0.84.1 / pi-server 0.84.2），无需自研会话层 |
+| 中间层 | 自建 **pi-webd**（Node 22+ / Fastify / socket.io） | **Go 单二进制**（spawn pi + WS + 静态资源 + SQLite），见 §2/§4 |
+
+**仍然有效的旧结论（已并入本文）**：
+
+- `ctx.ui.custom(factory)` 无法 Web 化（factory 是代码，不能序列化）→ 扩展富 UI 走「声明式数据 + 前端渲染」，见 §9
+- 4 处 `ctx.mode !== "tui"` 守卫**不改**（`ctx.hasUI` 在 RPC 下也是 true，改成 `!hasUI` 是错误方向），见 §9
+- TUI 与 Web **共享同一套提示词体系**（`buildSystemPrompt()` 无 mode 参数），人格/技能无双份管理
+- 前端复用 `wails-gui/frontend/src/views/*.vue` 的 Vue 源码（Electron 已全量迁移到 Wails），见 §13
 
 ## 1. 目标与非目标
 
@@ -32,6 +58,7 @@
 - **Go 中间层**是「协议适配器 + 有状态信使」：spawn 并持有 pi 子进程、session 注册表、鉴权、对话框队列、WS hub、数据面 socket server。
 - **pi 只认 stdin/stdout 的 JSON-lines RPC**（`pi --mode rpc`），不直接说 WebSocket。
 - **扩展跑在 pi 进程内**（完整 Node 环境），经数据面 socket 直连 Go。
+- 前端选型与组件清单见 §13，会话查询索引见 §12。
 
 ## 3. 通信边界：控制面 vs 数据面（核心决策）
 
@@ -166,6 +193,8 @@ RPC 的 `select/confirm/input/editor` **不传 `timeout` 就永久阻塞**，协
 
 具体面板机制（openPanel 之类）本阶段不建模、整体后置；坚持「通用原语 + 数据」，不做全组件序列化。
 
+> 4 处 `ctx.mode !== "tui"` 守卫（`external-editor-shortcuts` / `skill-kit` / `ask-question` / `session-browse`）**不改**：`ctx.hasUI` 在 RPC 下也是 `true`，改成 `!hasUI` 是错误方向；Web 下 `ctx.mode` 不是 `"tui"`，现有守卫行为正确。
+
 | 扩展 | TUI-only API | RPC 现状 | 迁移方向 |
 |---|---|---|---|
 | ask-question | `custom()` + mode 守卫 | 直接报错 | `custom()`→`select/input`（能过 RPC） |
@@ -201,9 +230,103 @@ RPC 的 `select/confirm/input/editor` **不传 `timeout` 就永久阻塞**，协
 4. **断线重连 = 服务端全量推送，无 version 握手**：浏览器不报版本；Socket.IO 每次 `connection`（含自动重连）Go 把当前最新快照 + 消息树整体推过去，幂等、无状态。status-bus 的 `version` 退化为进程内单调计数，不上线。
 5. **前端渲染器 = 前端职责**：渲染清单是给前端的需求文档，不是后端决策；数据层只发 key→value（对话框 payload / status / 遥测）。Web 用拟态实现对话框、选择器、复杂菜单（强于 TUI）。§9 表格即「数据契约清单」。
 
-## 12. 相关文档
+## 12. 会话查询与索引
 
-- `docs/plans/pi-web-unified-plan.md`：旧 pi-web 路线（sessiond + Fastify），与本项目互补；本项目自建 Go 层，不依赖 pi-web sessiond。
-- `docs/plans/backup/pi-web-gui-plan.md`：更早的 Vite+ 前端路线（已归档）。
-- `docs/plans/2026-08-15-pi-platform-capability-inventory.md`：`ctx.ui` 完整能力面与 RPC 退化现状。
-- `extensions/status-bus/README.md`：status-bus 的 JSON 契约与结构化状态草案（本文 §6 的来源）。
+控制面走 RPC，查询面走本地索引——两者分开，避免「列历史会话」这种事去解析大 JSONL。
+
+- pi 会话存储就是 JSONL（无 SQLite 驱动）
+- 中间层后台把 JSONL **增量索引进 SQLite**：FTS5 全文 + 会话树 + 消息
+- 前端会话列表 / 历史 / 搜索走 SQLite（快，且不整载大文件）
+- 长会话（实测有 105MB 量级的 JSONL）不整载：`get_entries` 分段 + 索引 + 虚拟列表
+- 选型：`modernc.org/sqlite`（纯 Go 无 CGO，本地单用户工具够用）
+
+> 与 §5 卡点 4 配合：目录枚举解决「有哪些会话」，索引解决「会话里有什么」。
+
+## 13. 前端与体验借鉴
+
+前端框架是前端职责（§11 决策 5），但既定事实是 **Vue 3**：`wails-gui/frontend` 已是 Vue 3 + Vite，可直接复用视图源码。
+
+### 13.1 选型
+
+| 层 | 选型 | 理由 |
+|---|---|---|
+| 框架 | Vue 3（Composition API + SFC）+ Vite + Pinia | 主力栈；wails-gui 已有源码 |
+| Markdown | markdown-it + highlight.js | 轻、成熟 |
+| 编辑器 | CodeMirror 6（P2，默认键位，vim 可选） | 中文 IME 好 |
+| UI 组件 | 自建核心组件 + 少量 naive-ui | 依赖少优先 |
+| 构建 | Vite（wails-gui 同栈，不再走 rsbuild） | — |
+
+### 13.2 组件清单（沿用 08-01 规划，按现行架构对齐）
+
+| 组件 | 说明 |
+|---|---|
+| `ChatView.vue` | 流式消息列表 |
+| `MessageBubble.vue` | 单条消息 |
+| `MarkdownRenderer.vue` | markdown + 代码块复制 |
+| `ToolExecutionCard.vue` | 工具调用 + diff 内嵌 |
+| `DiffViewer.vue` | unified diff 着色 |
+| `PromptEditor.vue` | 输入框 + 模型选择 |
+| `StatusBar.vue` | token 统计 + 状态栏（消费 status-bus 契约） |
+| `ExtensionDialogCard.vue` | 扩展对话框 / 面板底座 |
+
+Composables：`useSession` / `useChat` / `useModel` / `useStatus` / `useExtensionDialogs`
+
+### 13.3 偷 DSH 的体验（照抄体验，不抄代码）
+
+- thinking 块折叠（details + 状态）
+- 工具调用卡片（参数/结果折叠、失败红字）
+- 增量流式渲染（事件驱动 store + 虚拟列表）
+- `<system-reminder>` 特殊底色块（markdown 渲染时识别）
+- 状态栏：模型 / thinking / 缓存命中率（数据来自 usage）
+- 会话侧边栏（列表 / 树 / 切换）
+- 暗色主题 + 代码高亮
+
+**核心**：DSH 体验好 = 每个运行时事件都有视觉反馈。RPC 事件流天然支持同样映射，与框架无关。
+
+### 13.4 桌面 GUI → Web 面板迁移优先级
+
+permission-gate（P0）→ trident-routing（P0）→ editor-gui（P1）→ trident-queue gui（P1）→ gui-manager（P2）→ gui-review（P2）
+
+## 14. 分阶段路线（未启动）
+
+体量太大，暂缓；下面是可执行的切分，启动时按这个顺序。阶段划分沿用 08-15 的 P0–P3，验收点吸收 08-01 的并行策略。
+
+| 阶段 | 内容 | 预估 | 验收 |
+|---|---|---|---|
+| P0 | Go 中间层（spawn + WS + 静态资源 + 数据面 socket）+ Vue 壳（消息流含 thinking 折叠、输入框、abort、`get_entries` 恢复会话） | 1–2 天 | 浏览器完成一轮含工具调用的对话 |
+| P1 | 会话树/切换/分支、模型与 thinking 选择、状态栏（token/缓存命中率）、命令面板、扩展 UI 模态（select/confirm/input/editor/notify） | 3–5 天 | TUI 里的常用交互在 Web 端可用 |
+| P2 | 主题映射、Vue 插槽体系、CodeMirror 6、图片粘贴、SQLite 全文搜索、移动端 | 1–2 周 | 手机浏览器可用 |
+| P3 | 长会话虚拟列表、缓存友好（头部稳定 + append-only）、TUI/Web 双开 | — | 105MB 会话不卡 |
+
+并行提示（来自 08-01）：前端 MVP 可以在中间层完成前先跑（`vite dev` + proxy 直连 RPC），不要串行等待。
+
+### 14.1 目录结构
+
+```
+pi-web/
+├── bridge/          # Go：main.go + protocol.go + ws.go + sqlite.go
+├── web/             # Vue 3 + Vite
+│   └── src/
+│       ├── views/ components/ stores/ rpc/ markdown/
+└── shared/          # 协议类型（对齐 pi rpc-types）
+```
+
+## 15. 风险与对策
+
+| 风险 | 对策 |
+|---|---|
+| 扩展 UI 降级 | RPC 只转发 select/confirm/input/notify/setStatus/setWidget/setTitle/editor；`setFooter`/`setHeader`/`custom` overlay 在 Web 下失效 → P0 先用 permission-gate / plan-mode / goal 验证降级行为（§9 清单） |
+| 进程生命周期 | 中间层管 pi 子进程 spawn/重启/重连；浏览器断线恢复（P0 必做）。**未设计**：中间层自身崩溃时的孤儿 pi 收割、pi 重启后 in-flight turn / pending 对话框 / status-bus 的恢复语义 |
+| 增量合并器 | `message_update` 是 delta（已实测），需按 assistantMessageEvent 顺序合并 |
+| 长会话 | 105MB JSONL 不整载：`get_entries` 分段 + SQLite 索引 + 虚拟列表 |
+| 并发内存 | 每会话一个 pi 子进程 = N× 扩展实例 + N× Node 内存（§11 决策 1 的代价，已知并接受） |
+| 安全 | token 是第一条防线（agent 有 shell 权限）；数据面 socket 需 per-session 路径 + token + 可选 `SO_PEERCRED`（§10） |
+| 范围膨胀 | 服务端只做聊天 + 认证 + 代理，不做 projects/git/machines（08-01 教训） |
+
+## 16. 相关文档
+
+- `docs/plans/backup/pi-web-unified-plan.md`：旧 pi-web 路线（sessiond + Fastify），**已归档**；仍然有效的结论已并入本文 §0/§9/§13
+- `docs/plans/backup/2026-08-15-pi-web-frontend-plan.md`：08-15 调研原件，**已归档**；内容并入本文 §2/§12/§13/§14
+- `docs/plans/backup/pi-webd-server-plan.md`、`backup/pi-web-gui-plan.md`：更早的路线（已归档）
+- `docs/plans/2026-08-15-pi-platform-capability-inventory.md`：`ctx.ui` 完整能力面与 RPC 退化现状
+- `extensions/status-bus/README.md`：status-bus 的 JSON 契约与结构化状态草案（本文 §6 的来源）
