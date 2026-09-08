@@ -33,6 +33,7 @@ import {
   type ModelCandidate,
   type MatchedModel,
 } from "./models-dev.ts";
+import { vimSelect } from "../../lib/vim-select.ts";
 
 // ─── 类型 ───────────────────────────────────────────
 
@@ -361,7 +362,8 @@ async function showModelSelector(
     }
     options.push("✗ 无匹配 / 手动配置（使用默认值）");
 
-    const selected = await ctx.ui.select(
+    const selected = await vimSelect(
+      ctx,
       `模型 "${c.modelId}" 选择对应的配置：`,
       options,
     );
@@ -420,7 +422,8 @@ async function handleMultiKeyGrouping(
   options.push(`📦 新建分组（不同的 Key 或别名）`);
   options.push(`⏭  跳过`);
 
-  const choice = await ctx.ui.select(
+  const choice = await vimSelect(
+    ctx,
     `检测到同域名的 ${overlappingProviders.length} 个已有供应商：\n${overlappingProviders.map(p => `  • ${p.id} (${p.baseUrl})`).join("\n")}\n\n如何处理？`,
     options,
   );

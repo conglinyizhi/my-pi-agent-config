@@ -19,6 +19,7 @@ import { getAgentDir, type ExtensionCommandContext } from "@earendil-works/pi-co
 import { parse, stringify } from "smol-toml";
 import { findProviderMatches, type DeletableProvider } from "./fast-del.ts";
 import { isProtected } from "./model-protection.ts";
+import { vimSelect } from "../../lib/vim-select.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
@@ -294,7 +295,7 @@ export async function chooseProvider(
     const p = providers.find(pp => String(pp.id) === m.id);
     return p ? providerListLabel(p) : m.id;
   });
-  const selected = await ctx.ui.select(`找到 ${matches.length} 个匹配项，请选择供应商：`, labels);
+  const selected = await vimSelect(ctx, `找到 ${matches.length} 个匹配项，请选择供应商：`, labels);
   if (!selected) return null;
   const idx = labels.indexOf(selected);
   if (idx < 0) return null;
@@ -364,7 +365,7 @@ export async function modelFieldsMenu(
     if (allowDelete) options.push("🗑 删除此模型");
     options.push("↩ 返回");
 
-    const choice = await ctx.ui.select(title, options);
+    const choice = await vimSelect(ctx, title, options);
     if (!choice || choice === "↩ 返回") return;
 
     if (choice === "🗑 删除此模型") {
@@ -429,7 +430,7 @@ async function editModelFlow(
   });
   options.push("↩ 返回");
 
-  const choice = await ctx.ui.select(`选择 "${provider.id}" 下的模型（${models.length} 个）：`, options);
+  const choice = await vimSelect(ctx, `选择 "${provider.id}" 下的模型（${models.length} 个）：`, options);
   if (!choice || choice === "↩ 返回") return false;
 
   const idx = options.indexOf(choice);
@@ -492,7 +493,7 @@ async function providerEditMenu(
     );
     options.push("↩ 返回");
 
-    const choice = await ctx.ui.select(`供应商 "${provider.id}" 配置：`, options);
+    const choice = await vimSelect(ctx, `供应商 "${provider.id}" 配置：`, options);
     if (!choice || choice === "↩ 返回") return dirty;
 
     const idx = options.indexOf(choice);

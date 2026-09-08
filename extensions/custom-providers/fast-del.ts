@@ -7,6 +7,7 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
+import { vimSelect } from "../../lib/vim-select.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 const AUTH_PATH = `${getAgentDir()}/auth.json`;
@@ -70,7 +71,8 @@ async function chooseProvider(
 
   if (matches.length === 1) return matches[0];
 
-  const selected = await ctx.ui.select(
+  const selected = await vimSelect(
+    ctx,
     `找到 ${matches.length} 个匹配项，请选择要删除的供应商：`,
     matches.map(providerLabel),
   );

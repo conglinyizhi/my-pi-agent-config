@@ -32,6 +32,7 @@ import {
   type FastEditResult,
 } from "./fast-edit.ts";
 import { formatTokens } from "./provider-diff.ts";
+import { vimSelect } from "../../lib/vim-select.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
@@ -283,7 +284,7 @@ export async function fastEditWithCopyHandler(
     source = candidates[0];
   } else {
     const labels = candidates.map(entry => entry.label);
-    const selected = await ctx.ui.select(`选择源模型（${candidates.length} 个）：`, labels);
+    const selected = await vimSelect(ctx, `选择源模型（${candidates.length} 个）：`, labels);
     if (!selected) {
       ctx.ui.notify("已取消", "info");
       return null;

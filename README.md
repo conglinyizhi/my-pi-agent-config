@@ -36,7 +36,7 @@ pi
 
 **plan-mode** — 注册了 `/plan` 命令。切到计划模式后只读探索不乱改，先想清楚再动手。计划生成后桌面通知带音效提醒确认；产出的计划步骤与 todo_write 共用同一份存储（`/dsh-todos` 查看）。
 
-**custom-providers** — `/provider fast-add` 快速加模型供应商，`/provider reload` 重载配置；`/provider fast-edit` 交互改配置，`/provider fast-edit-with-copy` 复刻已有模型到别的供应商再微调。
+**custom-providers** — `/provider fast-add` 快速加模型供应商，`/provider reload` 重载配置；`/provider fast-edit` 交互改配置，`/provider fast-edit-with-copy` 复刻已有模型到别的供应商再微调。长列表用 `lib/vim-select.ts`：`8j` / `3k` 计数跳转、`/` 模糊过滤。
 
 **model-selection** — `/model:select-current-session-model [provider/model]`、`/model:change-current-session-model [provider/model]` 与 `/model:switch-current-session-model [provider/model]`：用户主动选择并设置当前 session 模型。所有使用该库的插件共享 `~/.pi/agent/model-selection.toml`，按功能 scope 分别记录最多 4 条 `recent` 和局部 `pinned`，另有所有功能共用的全局置顶；选择后可确认、当前功能置顶或所有功能置顶，点击置顶模型时也可取消对应置顶或返回上一级。不向模型暴露选择工具，也不修改 `settings.json` 的默认模型。subagent 未设置独立默认时继承当前 session；显式传入 `model` 时只覆盖本次 worker。
 
