@@ -20,12 +20,19 @@ import { parse, stringify } from "smol-toml";
 import { findProviderMatches, type DeletableProvider } from "./fast-del.ts";
 import { isProtected } from "./model-protection.ts";
 import { vimSelect } from "../../lib/vim-select.ts";
+import { formatTokens } from "./provider-diff.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
 // ─── 字段定义 ───────────────────────────────────────
 
-type FieldKind = "string" | "number" | "bool" | "modes" | "api" | "protect";
+type FieldKind = "string" | "number" | "bool" | "modes" | "api" | "protect" | "choice";
+
+/** 选项式字段的可选值 */
+export interface FieldChoice {
+  value: string;
+  label: string;
+}
 
 interface FieldDef {
   key: string;
@@ -39,6 +46,8 @@ interface FieldDef {
   desc?: string;
   /** providers.toml 里的完整路径，编辑时回显便于对照 */
   path: string;
+  /** kind = "choice" 时的候选值，不让用户手敲 */
+  choices?: FieldChoice[];
 }
 
 type FieldSeed = Omit<FieldDef, "path">;
@@ -65,6 +74,28 @@ const COMPAT_DESCS = {
   eagerToolStreaming: "工具调用的参数边生成边流式下发，能更早开始执行。接口不支持时关掉。",
 } as const;
 
+/** 思考返回格式（对应 pi-ai 的 thinkingFormat），不让用户手敲 */
+export const THINKING_FORMAT_CHOICES: FieldChoice[] = [
+  { value: "openai", label: "默认，用 reasoning_effort 传思考档位" },
+  { value: "deepseek", label: "DeepSeek 系（含多数中转）：thinking.type + reasoning_effort" },
+  { value: "openrouter", label: "OpenRouter：reasoning.effort" },
+  { value: "together", label: "Together：reasoning.enabled" },
+  { value: "zai", label: "z.ai / GLM：thinking.type" },
+  { value: "qwen", label: "通义千问：顶层 enable_thinking" },
+  { value: "qwen-chat-template", label: "通义千问：chat_template_kwargs.enable_thinking" },
+  { value: "chat-template", label: "自定义 chat_template_kwargs" },
+  { value: "string-thinking", label: "顶层 thinking 直接传字符串" },
+  { value: "ant-ling", label: "ant-ling：reasoning.effort" },
+];
+
+/** 输入模态：只有这三种非空组合，做成预设就不用敲 text, image 了 */
+export const MODE_CHOICES: Array<{ label: string; value: string[] | null }> = [
+  { label: "只看文字（text）", value: ["text"] },
+  { label: "文字 + 图片（text, image）", value: ["text", "image"] },
+  { label: "只看图片（image）", value: ["image"] },
+  { label: "清除（未设置，按默认 text）", value: null },
+];
+
 /** 模型级字段 */
 export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
   {
@@ -86,7 +117,7 @@ export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
   { key: "cost_locked", label: "锁定价格", kind: "bool", desc: "锁住价格，/provider:reload-online 刷新在线数据时不会用在线价覆盖它。" },
   { key: "supports_developer_role", label: "允许 developer 角色", kind: "bool", section: "compat", desc: COMPAT_DESCS.developerRole },
   { key: "supports_reasoning_effort", label: "支持思考强度参数", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningEffort },
-  { key: "thinking_format", label: "思考返回格式", kind: "string", section: "compat", desc: COMPAT_DESCS.thinkingFormat },
+  { key: "thinking_format", label: "思考返回格式", kind: "choice", section: "compat", desc: COMPAT_DESCS.thinkingFormat, choices: THINKING_FORMAT_CHOICES },
   { key: "force_adaptive_thinking", label: "强制自适应思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.adaptiveThinking },
   { key: "requires_thinking_as_text", label: "思考需写进正文", kind: "bool", section: "compat", desc: COMPAT_DESCS.thinkingAsText },
   { key: "requires_reasoning_content_on_assistant_messages", label: "历史消息需带思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningContent },
@@ -109,7 +140,7 @@ const PROVIDER_FIELDS: FieldDef[] = withPath("", [
   { key: "cost_cache_write", label: "默认缓存写价格", kind: "number", section: "defaults", desc: "没单独配置的模型继承这个值。" },
   { key: "supports_developer_role", label: "允许 developer 角色", kind: "bool", section: "compat", desc: COMPAT_DESCS.developerRole },
   { key: "supports_reasoning_effort", label: "支持思考强度参数", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningEffort },
-  { key: "thinking_format", label: "思考返回格式", kind: "string", section: "compat", desc: COMPAT_DESCS.thinkingFormat },
+  { key: "thinking_format", label: "思考返回格式", kind: "choice", section: "compat", desc: COMPAT_DESCS.thinkingFormat, choices: THINKING_FORMAT_CHOICES },
   { key: "force_adaptive_thinking", label: "强制自适应思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.adaptiveThinking },
   { key: "requires_thinking_as_text", label: "思考需写进正文", kind: "bool", section: "compat", desc: COMPAT_DESCS.thinkingAsText },
   { key: "requires_reasoning_content_on_assistant_messages", label: "历史消息需带思考", kind: "bool", section: "compat", desc: COMPAT_DESCS.reasoningContent },
@@ -126,6 +157,11 @@ export function fmtValue(v: unknown): string {
     return isProtectActionList(v)
       ? v.map(action => PROTECT_ACTION_LABELS[action as string]).join(" + ")
       : v.join(", ");
+  }
+  if (typeof v === "number") {
+    // 大整数（上下文 / 最大输出）顺带标上 1.0M / 384K，一眼能看出量级
+    if (Number.isInteger(v) && Math.abs(v) >= 10000) return `${v}（${formatTokens(v)}）`;
+    return String(v);
   }
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
@@ -206,23 +242,58 @@ function isClearKeyword(text: string): boolean {
   return /^(clear|c|清除|清空)$/i.test(text);
 }
 
-/** 数字输入：预填当前值；输入「清除」清空字段；留空或非法取消 */
+/** 数字后缀 → 倍数 */
+const NUMBER_UNITS: Record<string, number> = {
+  k: 1e3,
+  m: 1e6,
+  b: 1e9,
+  "万": 1e4,
+  "亿": 1e8,
+};
+
+/**
+ * 解析数字输入：支持 K / M / B（不分大小写）与万 / 亿后缀，
+ * 并容忍 _ , ， 和空格做千位分隔，例如 1000000 / 1_000_000 / 1,000,000 / 1M / 512K / 1.5M / 100万。
+ * 不带后缀时原样保留小数（价格要用，也收科学计数法如 2e-7），带后缀时取整；非法或负数返回 null。
+ */
+export function parseNumberInput(raw: string): number | null {
+  const cleaned = raw.replace(/[_,，\s]/g, "");
+  if (!cleaned) return null;
+
+  const withUnit = cleaned.match(/^(\d*\.?\d+)([kmb万亿])$/i);
+  if (withUnit) {
+    const value = Number(withUnit[1]);
+    const multiplier = NUMBER_UNITS[withUnit[2].toLowerCase()];
+    if (!Number.isFinite(value) || multiplier === undefined) return null;
+    return Math.round(value * multiplier);
+  }
+
+  const plain = Number(cleaned);
+  if (!Number.isFinite(plain) || plain < 0) return null;
+  return plain;
+}
+
+/** 数字输入：支持 K / M / 万 这类单位和千位分隔符；输入「清除」清空字段；留空或非法取消 */
 async function inputNumber(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: number } | { type: "clear" } | null> {
   const raw = await ctx.ui.input(
-    fieldPrompt(field, current, "填数字修改；填「清除」清空这个配置项；留空取消"),
+    fieldPrompt(
+      field,
+      current,
+      "填数字修改：可以直接写 1000000，也可以写 1M / 512K / 1.5M / 100万，千位分隔符（_ 或 ,）也认；填「清除」清空；留空取消",
+    ),
     current === undefined || current === null ? "" : String(current),
   );
   if (raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
   if (isClearKeyword(trimmed)) return { type: "clear" };
-  const n = Number(trimmed);
-  if (Number.isNaN(n)) {
-    ctx.ui.notify(`"${trimmed}" 不是有效数字，已取消本次修改`, "warning");
+  const n = parseNumberInput(trimmed);
+  if (n === null) {
+    ctx.ui.notify(`"${trimmed}" 看不懂，已取消本次修改（可以写 1000000、1_000_000、1M、512K、100万）`, "warning");
     return null;
   }
   return { type: "set", value: n };
@@ -266,31 +337,41 @@ async function inputBool(
   return { type: "set", value: choice === "开启" };
 }
 
-/** 输入模态（input 字段）：逗号分隔 text / image；输入「清除」清空；留空取消 */
+/** 选项式字段（kind = "choice"）：从候选值里选，不用手敲 */
+async function inputChoice(
+  ctx: ExtensionCommandContext,
+  field: FieldDef,
+  current: unknown,
+): Promise<{ type: "set"; value: string } | { type: "clear" } | null> {
+  const choices = field.choices ?? [];
+  const currentValue = typeof current === "string" ? current : undefined;
+  const options: string[] = [];
+  // 本地配了一个不在候选表里的值，先原样列出来，免得选一次就被改掉
+  if (currentValue && !choices.some(choice => choice.value === currentValue)) {
+    options.push(`${currentValue} — 当前值，保持不动`);
+  }
+  for (const choice of choices) options.push(`${choice.value} — ${choice.label}`);
+  if (!field.required) options.push("清除（用默认值）");
+  options.push("取消");
+
+  const selected = await ctx.ui.select(fieldPrompt(field, current), options);
+  if (!selected || selected === "取消") return null;
+  if (selected.startsWith("清除")) return { type: "clear" };
+  return { type: "set", value: selected.split(" — ")[0] };
+}
+
+/** 输入模态（input 字段）：预设的三种组合，不用敲 text, image */
 async function inputModes(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
 ): Promise<{ type: "set"; value: string[] } | { type: "clear" } | null> {
-  const raw = await ctx.ui.input(
-    fieldPrompt(
-      field,
-      current,
-      "填 text（纯文字）或 image（能读图），可以两个都填、用逗号隔开，例如 text, image；填「清除」清空；留空取消",
-    ),
-    Array.isArray(current) ? current.join(", ") : "",
-  );
-  if (raw === undefined) return null;
-  const trimmed = raw.trim();
-  if (trimmed === "") return null;
-  if (isClearKeyword(trimmed)) return { type: "clear" };
-  const modes = trimmed.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
-  const invalid = modes.filter(m => m !== "text" && m !== "image");
-  if (invalid.length > 0) {
-    ctx.ui.notify(`无效模态: ${invalid.join(", ")}（仅支持 text / image），已取消本次修改`, "warning");
-    return null;
-  }
-  return { type: "set", value: modes };
+  const options = MODE_CHOICES.map(choice => choice.label);
+  const selected = await ctx.ui.select(fieldPrompt(field, current), options);
+  if (!selected) return null;
+  const picked = MODE_CHOICES[options.indexOf(selected)];
+  if (!picked) return null;
+  return picked.value === null ? { type: "clear" } : { type: "set", value: picked.value };
 }
 
 /** 保护级别选项：值写入 do_not，null 表示清除 */
@@ -368,6 +449,9 @@ export async function editFieldOn(
       break;
     case "protect":
       result = await inputProtect(ctx, field, current);
+      break;
+    case "choice":
+      result = await inputChoice(ctx, field, current);
       break;
   }
 

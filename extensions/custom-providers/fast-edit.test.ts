@@ -4,8 +4,11 @@ import {
   DEFAULT_RELOAD_PROTECTION,
   ensureReloadProtection,
   fmtValue,
+  MODE_CHOICES,
   MODEL_FIELDS,
+  parseNumberInput,
   reloadProtectionNotice,
+  THINKING_FORMAT_CHOICES,
 } from "./fast-edit.ts";
 
 describe("fast-edit 字段展示", () => {
@@ -23,10 +26,78 @@ describe("fast-edit 字段展示", () => {
     assert.strictEqual(fmtValue([]), "");
   });
 
+  it("大整数顺带标出量级", () => {
+    assert.strictEqual(fmtValue(1000000), "1000000（1.0M）");
+    assert.strictEqual(fmtValue(384000), "384000（384K）");
+    assert.strictEqual(fmtValue(4096), "4096");
+    assert.strictEqual(fmtValue(0.242), "0.242");
+  });
+
   it("保护行排在模型字段菜单第一行", () => {
     assert.strictEqual(MODEL_FIELDS[0].key, "do_not");
     assert.match(MODEL_FIELDS[0].label, /🛡/);
     assert.strictEqual(MODEL_FIELDS[0].path, "models[].do_not");
+  });
+});
+
+describe("parseNumberInput", () => {
+  it("直接写数字、下划线、逗号都认", () => {
+    assert.strictEqual(parseNumberInput("1000000"), 1000000);
+    assert.strictEqual(parseNumberInput("1_000_000"), 1000000);
+    assert.strictEqual(parseNumberInput("1,000,000"), 1000000);
+    assert.strictEqual(parseNumberInput(" 1 000 000 "), 1000000);
+    assert.strictEqual(parseNumberInput("1，000，000"), 1000000);
+  });
+
+  it("K / M / B 与万 / 亿 后缀", () => {
+    assert.strictEqual(parseNumberInput("1M"), 1000000);
+    assert.strictEqual(parseNumberInput("1m"), 1000000);
+    assert.strictEqual(parseNumberInput("512K"), 512000);
+    assert.strictEqual(parseNumberInput("1.5M"), 1500000);
+    assert.strictEqual(parseNumberInput("2B"), 2000000000);
+    assert.strictEqual(parseNumberInput("100万"), 1000000);
+    assert.strictEqual(parseNumberInput("1亿"), 100000000);
+  });
+
+  it("不带后缀时保留小数（价格要用）", () => {
+    assert.strictEqual(parseNumberInput("0.242"), 0.242);
+    assert.strictEqual(parseNumberInput("2.178"), 2.178);
+    assert.strictEqual(parseNumberInput("2e-7"), 2e-7);
+  });
+
+  it("非法输入返回 null", () => {
+    assert.strictEqual(parseNumberInput(""), null);
+    assert.strictEqual(parseNumberInput("abc"), null);
+    assert.strictEqual(parseNumberInput("-5"), null);
+    assert.strictEqual(parseNumberInput("1M5"), null);
+    assert.strictEqual(parseNumberInput("1x"), null);
+  });
+});
+
+describe("选项式字段", () => {
+  it("思考返回格式给的是候选值，覆盖 pi-ai 的全部 thinkingFormat", () => {
+    const values = THINKING_FORMAT_CHOICES.map(c => c.value);
+    assert.deepStrictEqual(values, [
+      "openai",
+      "deepseek",
+      "openrouter",
+      "together",
+      "zai",
+      "qwen",
+      "qwen-chat-template",
+      "chat-template",
+      "string-thinking",
+      "ant-ling",
+    ]);
+    const field = MODEL_FIELDS.find(f => f.key === "thinking_format")!;
+    assert.strictEqual(field.kind, "choice");
+    assert.strictEqual(field.choices?.length, THINKING_FORMAT_CHOICES.length);
+  });
+
+  it("输入模态是三选一 + 清除，不用手敲", () => {
+    assert.deepStrictEqual(MODE_CHOICES.map(c => c.value), [["text"], ["text", "image"], ["image"], null]);
+    const field = MODEL_FIELDS.find(f => f.key === "input")!;
+    assert.strictEqual(field.kind, "modes");
   });
 });
 
