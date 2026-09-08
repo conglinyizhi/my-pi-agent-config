@@ -37,7 +37,7 @@ interface FieldDef {
 }
 
 /** 模型级字段 */
-const MODEL_FIELDS: FieldDef[] = [
+export const MODEL_FIELDS: FieldDef[] = [
   { key: "name", label: "名称", kind: "string" },
   { key: "context_window", label: "上下文窗口", kind: "number" },
   { key: "max_tokens", label: "最大输出", kind: "number" },
@@ -83,7 +83,7 @@ const PROVIDER_FIELDS: FieldDef[] = [
 
 // ─── 小工具 ─────────────────────────────────────────
 
-function fmtValue(v: unknown): string {
+export function fmtValue(v: unknown): string {
   if (v === undefined || v === null) return "未设置";
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return JSON.stringify(v);
@@ -106,7 +106,7 @@ function fieldContainer(
 }
 
 /** 读取字段当前值（含 section 定位） */
-function getFieldValue(
+export function getFieldValue(
   target: Record<string, unknown>,
   field: FieldDef,
 ): unknown {
@@ -218,7 +218,7 @@ async function inputApiFormat(
 }
 
 /** 统一字段编辑入口：按 kind 分发，应用修改到 target；返回是否发生修改 */
-async function editFieldOn(
+export async function editFieldOn(
   ctx: ExtensionCommandContext,
   target: Record<string, unknown>,
   field: FieldDef,
@@ -269,7 +269,7 @@ function providerListLabel(p: Record<string, unknown>): string {
   return `${id}${name}${baseUrl}`;
 }
 
-async function chooseProvider(
+export async function chooseProvider(
   ctx: ExtensionCommandContext,
   providers: Array<Record<string, unknown>>,
   query: string,
@@ -307,7 +307,7 @@ async function chooseProvider(
  * 确保 provider.models 是对象数组（可编辑）。
  * 字符串（逗号分隔 id）无损转数组；返回是否可用。
  */
-function ensureModelsArray(provider: Record<string, unknown>): Array<Record<string, unknown>> | null {
+export function ensureModelsArray(provider: Record<string, unknown>): Array<Record<string, unknown>> | null {
   const models = provider.models;
   if (Array.isArray(models)) {
     // 直接返回原数组：push / splice 要作用到 provider.models 上才能写回
@@ -332,24 +332,39 @@ function ensureModelsArray(provider: Record<string, unknown>): Array<Record<stri
   return null;
 }
 
-/** 模型参数编辑菜单（循环直到返回或删除） */
-async function modelEditMenu(
+export interface ModelFieldsMenuOptions {
+  /** 是否提供「删除此模型」选项（复制/新增未落盘模型时关闭） */
+  allowDelete?: boolean;
+  /** 菜单标题，默认 `模型 "<id>" 参数：` */
+  title?: string;
+}
+
+/**
+ * 模型字段编辑菜单（循环直到返回）。
+ * fast-edit 与 fast-edit-with-copy 共用，保证两处字段列表与交互一致。
+ */
+export async function modelFieldsMenu(
   ctx: ExtensionCommandContext,
   provider: Record<string, unknown>,
   model: Record<string, unknown>,
+  menuOptions: ModelFieldsMenuOptions = {},
 ): Promise<void> {
   if (isProtected(model, "edit")) {
     ctx.ui.notify(`模型 "${model.id}" 受 do_not.edit 保护，不能编辑或删除`, "warning");
     return;
   }
 
+  const allowDelete = menuOptions.allowDelete ?? true;
+  const title = menuOptions.title ?? `模型 "${model.id}" 参数：`;
+
   while (true) {
     const options = MODEL_FIELDS.map(f =>
       `${f.label} — ${fmtValue(getFieldValue(model, f))}`,
     );
-    options.push("🗑 删除此模型", "↩ 返回");
+    if (allowDelete) options.push("🗑 删除此模型");
+    options.push("↩ 返回");
 
-    const choice = await ctx.ui.select(`模型 "${model.id}" 参数：`, options);
+    const choice = await ctx.ui.select(title, options);
     if (!choice || choice === "↩ 返回") return;
 
     if (choice === "🗑 删除此模型") {
@@ -376,6 +391,15 @@ async function modelEditMenu(
       ctx.ui.notify(`已更新 ${field.label}`, "info");
     }
   }
+}
+
+/** 模型参数编辑菜单（含删除选项） */
+async function modelEditMenu(
+  ctx: ExtensionCommandContext,
+  provider: Record<string, unknown>,
+  model: Record<string, unknown>,
+): Promise<void> {
+  await modelFieldsMenu(ctx, provider, model, { allowDelete: true });
 }
 
 /** 编辑现有模型 */

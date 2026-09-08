@@ -11,6 +11,7 @@ import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } f
 import { fastAddHandler } from "./fast-add.ts";
 import { fastDelHandler } from "./fast-del.ts";
 import { fastEditHandler } from "./fast-edit.ts";
+import { fastEditWithCopyHandler } from "./fast-edit-with-copy.ts";
 import { isProtected, preserveProtectedUpdate } from "./model-protection.ts";
 
 const PLACEHOLDER_MODEL = "auto-detect";
@@ -75,6 +76,18 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
     description: "交互式编辑供应商/模型配置（API 切换、新增模型、模型微调）：/provider:fast-edit [供应商名]",
     handler: async (args, ctx) => {
       const result = await fastEditHandler(args, ctx);
+      if (!result?.changed) return;
+      await reloadProviders(ctx);
+      ctx.ui.notify(`✅ ${result.summary}`, "info");
+    },
+  });
+
+  // /provider:fast-edit-with-copy —— 复刻已有模型到指定供应商并微调
+  pi.registerCommand("provider:fast-edit-with-copy", {
+    description:
+      "复刻某个模型的配置到指定供应商并微调（如微调数据的测试模型）：/provider:fast-edit-with-copy [目标供应商] [源模型] [新模型ID]",
+    handler: async (args, ctx) => {
+      const result = await fastEditWithCopyHandler(args, ctx);
       if (!result?.changed) return;
       await reloadProviders(ctx);
       ctx.ui.notify(`✅ ${result.summary}`, "info");

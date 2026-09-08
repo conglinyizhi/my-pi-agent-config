@@ -36,6 +36,20 @@
   - `💾 保存并退出` —— 写回 `providers.toml` 并自动重新加载；`❌ 放弃修改` 不写盘
 - 所有修改先落在内存，统一保存；数字/文本字段预填当前值，输入 `clear` 清除该字段（回退默认）
 
+### `/provider:fast-edit-with-copy`
+
+复刻某个已有模型的配置到指定供应商，再微调——适合「微调数据的测试模型」这类只在母模型基础上改几个字段的场景。
+
+- **用法**：`/provider:fast-edit-with-copy [目标供应商] [源模型] [新模型ID]`
+  - 全空则逐步交互；单个参数命中供应商时当作目标，否则当作源模型关键词
+  - 源模型可以是任意供应商下的模型（跨供应商复制），支持关键词过滤与 TUI 选择
+- **复刻规则**：除 `id` / 名称 / `do_not` / `cost_locked` 外逐字段深拷贝（含 `compat`、`input`、价格、`cot_replay`、`thinking_level_map` 等）
+  - 新模型 ID 必填且不能与目标供应商下已有模型重名；名称默认回退为新 ID，可在微调菜单里改
+  - 源模型带 `do_not` 时会询问是否继承（不继承 / 只继承 `remove` / 完整继承）
+  - 源与目标供应商 `api` 格式不同时给出 compat 可能不适用的提示
+- **微调**：确认后进入与 `/provider:fast-edit` 相同的字段菜单，改完选「↩ 返回」即写盘；也可选「直接保存」跳过
+- 写盘后自动 reload，新模型立即可用
+
 ### `/provider:reload`
 
 重新加载 `~/.pi/agent/providers.toml`，热更新已注册的供应商。
@@ -58,6 +72,8 @@ custom-providers/
 ├── fast-add.ts              # /provider:fast-add 命令实现
 ├── fast-del.ts              # /provider:fast-del 和 /provider:fast-remove 命令实现
 ├── fast-edit.ts             # /provider:fast-edit 命令实现（交互式编辑供应商/模型）
+├── fast-edit-with-copy.ts   # /provider:fast-edit-with-copy 命令实现（复刻模型并微调）
+├── fast-edit-with-copy.test.ts  # 复刻逻辑测试
 ├── models-dev.ts            # 开发环境模型配置
 ├── models-dev-static.json   # 静态模型数据
 ├── loader.test.ts           # loader 测试
@@ -80,7 +96,7 @@ custom-providers/
 - **格式自动检测**：请求 `/models` 端点，根据响应结构判断 OpenAI/Anthropic
 - **配置持久化**：检测结果自动写回 providers.toml，下次启动直接使用
 - **reload 安全**：reload 时清理旧注册，避免重复注册
-- **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。
+- **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。`/provider:fast-edit-with-copy` 默认不继承 `do_not`，可选只继承 `remove` 或完整继承。
 - **密钥管理**：通过 `../../lib/auth.ts` 获取 API key
 
 ### 依赖
