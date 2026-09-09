@@ -76,6 +76,11 @@
 用 `ctx.fork(leafId, { position: "at", withSession })` 把当前 active path 复制成一个新 session 文件，
 切入后即可在 fork 出的分支里继续对话，不会改动原 session 文件。
 
+> **stale ctx 坑**：fork / switchSession 成功后旧 `ctx` 立即失效——pi 的 `ctx.ui` 是惰性 getter，
+> 连读一下都会抛 `stale after session replacement`。所以清 status / 通知这类收尾动作只能写在
+> `withSession(newCtx)` 里；确实要在旧 `ctx` 上做的（取消、替换前就失败的报错）统一走 `runOnOldCtx` 兜底。
+> 回归测试：`node --experimental-strip-types --test extensions/session-browse/stale-ctx.test.ts`
+
 停电抢救推荐路径：
 
 ```text

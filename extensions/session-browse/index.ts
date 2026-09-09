@@ -18,6 +18,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import * as nodePath from "node:path";
 import { join } from "node:path";
@@ -353,6 +354,30 @@ async function pickSession(
   });
 }
 
+/**
+ * session 替换（fork / switchSession / newSession）之后旧 ctx 即失效，
+ * 连读 `ctx.ui` 都会抛。这个 helper 让旧 ctx 上的收尾 UI 动作退化成日志，
+ * 不至于把一次成功的替换又报成插件错误。
+ */
+function runOnOldCtx(ctx: ExtensionCommandContext, action: (ctx: ExtensionCommandContext) => void): void {
+  try {
+    action(ctx);
+  } catch (err) {
+    logStaleCtx(`旧 ctx 已失效，跳过收尾 UI: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** 写进与 tool-param-normalizer 同一份错误日志，避免往 TUI 里写 console */
+function logStaleCtx(message: string): void {
+  try {
+    const dir = getAgentDir();
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "tool-errors.log"), `[${new Date().toISOString()}] [session-browse] ${message}\n`);
+  } catch {
+    /* 日志写入失败不应影响主流程 */
+  }
+}
+
 async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const { listOnly, limit, filter } = parseArgs(args);
   const currentCwd = ctx.sessionManager.getCwd() || process.cwd();
@@ -415,7 +440,7 @@ async function handleSessionsCommand(args: string, ctx: ExtensionCommandContext)
     },
   });
   if (result.cancelled) {
-    ctx.ui.notify("切换被取消", "warning");
+    runOnOldCtx(ctx, (old) => old.ui.notify("切换被取消", "warning"));
   }
 }
 
@@ -561,23 +586,26 @@ export default function (pi: ExtensionAPI) {
       }
 
       ctx.ui.setStatus("session-browse", "fork session…");
+      // fork/switch 成功后旧 ctx 立即失效（连读 ctx.ui 都会抛）：
+      // 收尾 UI 动作只能在 withSession 里用新 ctx，旧 ctx 上的只能兜底尝试
       try {
         const result = await ctx.fork(leafId, {
           position: "at",
           withSession: async (newCtx) => {
+            newCtx.ui.setStatus("session-browse", undefined);
             newCtx.ui.notify("已 fork 到新 session，可继续对话", "info");
           },
         });
         if (result.cancelled) {
           ctx.ui.notify("fork 被取消", "warning");
+          ctx.ui.setStatus("session-browse", undefined);
         }
       } catch (err) {
-        ctx.ui.notify(
-          `fork 失败: ${err instanceof Error ? err.message : String(err)}`,
-          "error",
-        );
-      } finally {
-        ctx.ui.setStatus("session-browse", undefined);
+        const message = err instanceof Error ? err.message : String(err);
+        runOnOldCtx(ctx, (old) => {
+          old.ui.setStatus("session-browse", undefined);
+          old.ui.notify(`fork 失败: ${message}`, "error");
+        });
       }
     },
   });
