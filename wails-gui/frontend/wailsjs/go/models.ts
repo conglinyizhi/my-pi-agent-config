@@ -1,16 +1,16 @@
 export namespace main {
-
+	
 	export class DiagnosticSummary {
 	    batchId: string;
 	    createdAt: string;
 	    updatedAt: string;
 	    model: string;
 	    workers: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DiagnosticSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.batchId = source["batchId"];
@@ -25,11 +25,11 @@ export namespace main {
 	    title: string;
 	    kw: string;
 	    content: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ReasonEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.t = source["t"];
@@ -44,11 +44,11 @@ export namespace main {
 	    state: string;
 	    createdAt: string;
 	    handedOffAt?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SupplementEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -63,11 +63,11 @@ export namespace main {
 	    createdAt: string;
 	    updatedAt: string;
 	    entries: SupplementEntry[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SubagentSupplementInbox(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.inboxId = source["inboxId"];
@@ -75,7 +75,7 @@ export namespace main {
 	        this.updatedAt = source["updatedAt"];
 	        this.entries = this.convertValues(source["entries"], SupplementEntry);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -98,18 +98,18 @@ export namespace main {
 	    inbox: SubagentSupplementInbox;
 	    withdrawn: boolean;
 	    merged: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SubagentSupplementMutation(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.inbox = this.convertValues(source["inbox"], SubagentSupplementInbox);
 	        this.withdrawn = source["withdrawn"];
 	        this.merged = source["merged"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
