@@ -12,9 +12,10 @@ import (
 )
 
 // App 是对应 gui-kit.mjs 的 Go 侧实现：
-//   createGuiApp(inject)   -> NewApp(windowName) + GetInitData()
-//   fs.writeFileSync       -> SaveResponse()
-//   .ready sidecar         -> MarkReady()
+//
+//	createGuiApp(inject)   -> NewApp(windowName) + GetInitData()
+//	fs.writeFileSync       -> SaveResponse()
+//	.ready sidecar         -> MarkReady()
 type App struct {
 	windowName   string
 	requestFile  string
@@ -23,6 +24,8 @@ type App struct {
 	supplementRoot string
 	// statusPath subagent 状态快照路径；空 -> ~/.pi/subagent-status.json（测试注入）。
 	statusPath string
+	// reasonsFile 理由库路径；空 -> 默认路径（测试注入）。
+	reasonsFile string
 }
 
 func NewApp(windowName, requestFile, responseFile string) *App {
@@ -178,6 +181,13 @@ func reasonsPath() string {
 	return filepath.Join(home, ".pi", "agent", "permission-gate-reasons.csv")
 }
 
+func (a *App) reasonFilePath() string {
+	if a.reasonsFile != "" {
+		return a.reasonsFile
+	}
+	return reasonsPath()
+}
+
 func oldReasonsPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".pi", "agent", "permission-gate-reasons.json")
@@ -209,7 +219,7 @@ func (a *App) LoadReasons() ([]ReasonEntry, error) {
 		}
 	}
 	// CSV 读取（文件不存在时静默返回空，对齐原 JS ldR 的 try/catch）
-	if f, err := os.Open(reasonsPath()); err == nil {
+	if f, err := os.Open(a.reasonFilePath()); err == nil {
 		defer f.Close()
 		rows, _ := csv.NewReader(f).ReadAll()
 		for i, row := range rows {
@@ -224,26 +234,86 @@ func (a *App) LoadReasons() ([]ReasonEntry, error) {
 	return entries, nil
 }
 
-// SaveReason 追加/重写理由库（去重 + 限 20 条）
-func (a *App) SaveReason(content string) error {
-	entries, _ := a.LoadReasons()
-	entry := ReasonEntry{T: time.Now().Format(time.RFC3339), Title: truncateReason(content, 40), Kw: "", Content: content}
-	newEntries := []ReasonEntry{entry}
-	for _, e := range entries {
-		if e.Content != content {
-			newEntries = append(newEntries, e)
+// writeReasons 是理由库唯一的写盘入口，统一处理去重和最多 20 条的上限。
+func (a *App) writeReasons(entries []ReasonEntry) error {
+	seen := make(map[string]struct{}, len(entries))
+	unique := make([]ReasonEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, exists := seen[entry.Content]; exists {
+			continue
+		}
+		seen[entry.Content] = struct{}{}
+		unique = append(unique, entry)
+		if len(unique) == 20 {
+			break
 		}
 	}
-	if len(newEntries) > 20 {
-		newEntries = newEntries[:20]
+
+	path := a.reasonFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
 	}
-	_ = os.MkdirAll(filepath.Dir(reasonsPath()), 0755)
 	var b strings.Builder
 	b.WriteString("timestamp,title,keywords,content\n")
-	for _, e := range newEntries {
+	for _, e := range unique {
 		b.WriteString(fmt.Sprintf("%s,\"%s\",\"%s\",\"%s\"\n", e.T, escapeCSV(e.Title), escapeCSV(e.Kw), escapeCSV(e.Content)))
 	}
-	return os.WriteFile(reasonsPath(), []byte(b.String()), 0644)
+	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// SaveReason 追加/重写理由库（去重 + 限 20 条）。
+func (a *App) SaveReason(content string) error {
+	entries, err := a.LoadReasons()
+	if err != nil {
+		return err
+	}
+	entry := ReasonEntry{T: time.Now().Format(time.RFC3339), Title: truncateReason(content, 40), Kw: "", Content: content}
+	return a.writeReasons(append([]ReasonEntry{entry}, entries...))
+}
+
+// DeleteReason 删除一条理由；不存在时保持成功，便于前端重复操作幂等。
+func (a *App) DeleteReason(content string) error {
+	entries, err := a.LoadReasons()
+	if err != nil {
+		return err
+	}
+	filtered := make([]ReasonEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Content != content {
+			filtered = append(filtered, entry)
+		}
+	}
+	return a.writeReasons(filtered)
+}
+
+// UpdateReason 更新一条理由。旧内容找不到时，把新内容插到列表顶部而不报错；
+// 这是为了让前端在多窗口/过期列表场景下仍能完成用户明确提交的编辑。
+func (a *App) UpdateReason(oldContent, newContent string) error {
+	newContent = strings.TrimSpace(newContent)
+	if newContent == "" {
+		return fmt.Errorf("new reason content must not be empty")
+	}
+	entries, err := a.LoadReasons()
+	if err != nil {
+		return err
+	}
+	updated := ReasonEntry{T: time.Now().Format(time.RFC3339), Title: truncateReason(newContent, 40), Kw: "", Content: newContent}
+	found := false
+	result := make([]ReasonEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Content == oldContent {
+			if !found {
+				result = append(result, updated)
+				found = true
+			}
+			continue
+		}
+		result = append(result, entry)
+	}
+	if !found {
+		result = append([]ReasonEntry{updated}, result...)
+	}
+	return a.writeReasons(result)
 }
 
 // MarkReady 前端 Vue 挂载完成后调用，写 .ready sidecar（对齐 gui-kit 的 ready 轮询）

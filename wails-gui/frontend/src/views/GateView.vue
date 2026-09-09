@@ -38,10 +38,13 @@
     <GateActionBar
       :is-sandbox-allow="isSandboxAllow"
       :is-capability="isCapability"
-      :rules="rules"
       :reasons="reasons"
+      :comment="comment"
+      @update:comment="comment = $event"
       @respond="respondFromAction"
       @save-reason="saveReason"
+      @update-reason="updateReason"
+      @delete-reason="deleteReason"
     />
   </div>
 </template>
@@ -82,6 +85,8 @@ const sessionTrustedRoots = ref([]);
 
 const cur = ref(0);
 const reasons = ref([]);
+// 附言由 GateView 持有：普通决定与目录授权动作共用同一份
+const comment = ref("");
 
 const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
 const isCapability = computed(() => kind.value === "capability");
@@ -101,23 +106,34 @@ const verdictMeta = computed(() => {
 const highlights = computed(() => findHighlights(cmd.value, rules.value));
 
 function pathAction({ path, list }) {
-  // 选择目录授权并结束本次审核；授权动作同时放行当前命令链。
-  respond(list === "block" ? "deny" : "allow", undefined, undefined, [{ path, list }]);
+  // 选择目录授权并结束本次审核；授权动作同时放行当前命令链，附言一并带上。
+  const note = comment.value.trim();
+  respond(list === "block" ? "deny" : "allow", note || undefined, [{ path, list }]);
 }
-function respondFromAction({ action, comment, flagged, pathActions }) {
-  respond(action, comment, flagged, pathActions);
+function respondFromAction({ action, comment: note, pathActions }) {
+  respond(action, note, pathActions);
 }
-async function respond(action, comment, flagged, pathActions) {
+async function respond(action, comment, pathActions) {
   const response = { action };
   if (comment) response.comment = comment;
-  if (flagged && flagged.length > 0) response.flagged = flagged;
   if (pathActions && pathActions.length > 0) response.pathActions = pathActions;
   await platform.session.submit(response);
   await platform.session.close();
 }
+async function refreshReasons() {
+  reasons.value = await platform.gate.loadReasons();
+}
 async function saveReason(content) {
   await platform.gate.saveReason(content);
-  reasons.value = await platform.gate.loadReasons();
+  await refreshReasons();
+}
+async function updateReason({ oldContent, newContent }) {
+  await platform.gate.updateReason(oldContent, newContent);
+  await refreshReasons();
+}
+async function deleteReason(content) {
+  await platform.gate.deleteReason(content);
+  await refreshReasons();
 }
 
 onMounted(async () => {
@@ -139,7 +155,7 @@ onMounted(async () => {
   persistentRoots.value = data.persistentRoots || [];
   sessionWriteRoots.value = data.sessionWriteRoots || [];
   sessionTrustedRoots.value = data.sessionTrustedRoots || [];
-  reasons.value = await platform.gate.loadReasons();
+  await refreshReasons();
   ready.value = true;
   await platform.session.markReady();
   // 子组件在 ready 后挂载并定位第一个高亮点。

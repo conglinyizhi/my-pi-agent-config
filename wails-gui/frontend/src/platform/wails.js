@@ -11,6 +11,8 @@ import {
   OpenFile,
   QueueSubagentSupplement,
   SaveReason,
+  UpdateReason,
+  DeleteReason,
   SaveResponse,
   SaveSubagentFeedback,
   WithdrawSubagentSupplement,
@@ -41,6 +43,8 @@ export function createWailsPlatform() {
     gate: {
       loadReasons: LoadReasons,
       saveReason: SaveReason,
+      updateReason: UpdateReason,
+      deleteReason: DeleteReason,
     },
     subagents: {
       getStatus: GetSubagentStatus,

@@ -27,6 +27,16 @@ export function createBrowserPlatform(initData, { onSubmit = () => {}, onOpenFil
         const entry = { t: new Date().toISOString(), title: content.slice(0, 40), content };
         reasons = [entry, ...reasons.filter((reason) => reason.content !== content)].slice(0, 20);
       },
+      async updateReason(oldContent, newContent) {
+        const content = newContent.trim();
+        if (!content) throw new Error("new reason content must not be empty");
+        const entry = { t: new Date().toISOString(), title: content.slice(0, 40), content };
+        const retained = reasons.filter((reason) => reason.content !== oldContent && reason.content !== content);
+        reasons = [entry, ...retained].slice(0, 20);
+      },
+      async deleteReason(content) {
+        reasons = reasons.filter((reason) => reason.content !== content);
+      },
     },
     subagents: {
       async getStatus() { return JSON.stringify({ workers }); },

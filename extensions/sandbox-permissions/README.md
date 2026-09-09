@@ -177,6 +177,22 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块——verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的自然语言看法（`opinion`，原样完整展示）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
 
+### 审批附言（三个窗口通用）
+
+三个 gate 窗口（`audit` / `capability` / `sandbox-allow`）底部都有一条常驻附言输入框（`data-name=gate-comment-input`）：点「🚫 拒绝」或允许按钮时，框里有内容就随响应带上 `{ action, comment }`，空则不带（不发空 `comment` 字段）。输入框有内容时右侧出现 `✕` 清空按钮（等同 Esc）；`Ctrl/Cmd+Enter` = 允许。sandbox-allow 的目录授权动作也会带上当前附言。
+
+「▾ 历史」展开 chip 面板（`gate-history-toggle`）：点 chip 文本回填到输入框（`gate-history-chip`），悬停 chip 显示 `✎` 原地编辑（`gate-history-edit`）与 `✕` 删除单条（`gate-history-delete`）；没有批量清空能力。历史读写走 `wails-gui/app.go` 的 `LoadReasons` / `SaveReason` / `UpdateReason` / `DeleteReason`，落盘仍是 `permission-gate-reasons.csv`（去重 + 上限 20 条）。
+
+附言同时落地两处：
+
+| 窗口 | 回传（模型能看到） | 审计条目 |
+|------|-------------------|----------|
+| `audit`（bash / bash_background） | 工具结果末尾追加 `[审批附言：…]` | `bash-audit` 条目的 `comment`（新增 `origin` 区分 `bash` / `bash_background`） |
+| `capability`（subagent） | worker 的 bash 工具结果前加 `[主 agent 附言] …` | `subagent-capability-approval` 条目 |
+| `sandbox-allow` | 工具结果末尾追加 `[审批附言：…]` | `sandbox-allow` 条目的 `comment` |
+
+拒绝路径不变：`comment` 仍作为「拒绝理由」写进对应审计条目与拒绝文案。TUI 回退是二选一，不产生附言。
+
 ### 配置（extensions.toml 的 `[sandbox-llm-review]`）
 
 扩展配置统一放 `~/.pi/agent/extensions.toml`（不进 settings.json，避免换模型时被误改）：
@@ -294,6 +310,7 @@ GateView.vue 的「📁 目录授权」区块提供四种动作：
 - **提升**：普通 bash 固定 1GiB；需要更大内存时**必须**走 `sandbox-allow` 并显式指定 `memoryMb`（具体 MB 数值，上限 32768），经审批后该命令按指定上限执行。
 - **关闭**：`/yolo` 全降零时由 `bash-guard` 的 `spawnHook` 注入 `PI_SANDBOX_MEMORY_DISABLE=1`，内存墙一并关闭。普通 `sandbox-allow` 的 `full-access` 只取消文件系统沙箱，**不**关闭内存墙（仍按 1GiB 默认或 `memoryMb` 指定值执行）。
 - **通道覆盖**：内建 bash、`sandbox-allow`、`bash_background`（dsh-jobs）都经 `sandbox-shell.mjs`，缺省均为 1GiB；后台任务可通过 `SandboxedCommandOptions.memoryMb`（`lib/sandboxed-command.ts`）单独指定。
+- **前置审批**：`bash_background` 与内建 bash 共用 `lib/bash-approval.ts` 的审批链——黑名单/内联脚本/全 autoReject 硬拒；需确认类先 LLM 预审，`safe`+auto 直接启动，否则弹 GUI/TUI 人工（批准在 `registry.start` 之前完成，等待发生在本次工具调用内）。审批条目写入 `bash-audit` 并带 `origin: "bash_background"`。
 - **局限**：内存墙依赖 `/proc`，仅 Linux 生效；macOS/Windows 无 `/proc` 时采样恒为 0，内存墙自动失效（不误杀、不报错）。
 
 GUI 中的目录动作会同时批准当前命令：
