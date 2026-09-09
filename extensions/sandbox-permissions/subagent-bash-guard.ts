@@ -19,6 +19,7 @@ import {
   waitForCapabilityDecision,
   type CapabilityGrant,
 } from "../../lib/subagent-capability.ts";
+import { rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
 
 const PROMPT_SNIPPET = "Execute a bash command in the isolated worker sandbox. Risky commands block until the parent agent approves or denies them.";
 const PROMPT_GUIDELINES = [
@@ -104,6 +105,7 @@ export default function (pi: ExtensionAPI): void {
       // 同一条命令若同时命中两者，按 network 优先请求一次（父进程审的是整条命令）。
       const networkRisk = requested?.capability === "network" && !isWorkerNetworkAutoApproved(command);
       const commandRisk = !verdict.allow;
+      let approvalComment: string | undefined;
       if (networkRisk || commandRisk) {
         const digest = commandDigest(command);
         const capability = networkRisk ? "network" : "command";
@@ -144,6 +146,9 @@ export default function (pi: ExtensionAPI): void {
             };
           }
           granted.add(`${capability}:${digest}`);
+          // 附言只属于本次获批命令；在工具结果中显式交给 worker 模型。
+          // 空白附言已由审批链 trim/丢弃，因此没有附言时完全不改原结果。
+          approvalComment = decision.comment?.trim() || undefined;
         }
       }
 
@@ -151,7 +156,18 @@ export default function (pi: ExtensionAPI): void {
         // 自动放行与人工批准都只对当前精确命令生效；spawnHook 仅为本次进程注入网络开关。
         networkApproved.add(commandDigest(command));
       }
-      return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+      const result = await bashDef
+        .execute(toolCallId, params, signal, onUpdate, ctx)
+        .catch((err) => rethrowWithApprovalComment(err, approvalComment ? `[主 agent 附言] ${approvalComment}` : undefined));
+      if (!approvalComment) return result;
+      const index = result.content.findIndex((part) => part.type === "text");
+      if (index < 0) return result;
+      const content = result.content.map((part, i) =>
+        i === index && part.type === "text"
+          ? { ...part, text: `[主 agent 附言] ${approvalComment}\n${part.text}` }
+          : part,
+      );
+      return { ...result, content };
     },
   });
 }

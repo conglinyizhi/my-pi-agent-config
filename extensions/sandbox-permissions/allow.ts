@@ -26,6 +26,7 @@ import {
 	validateMemoryMb,
 } from "./helpers.ts";
 import { runGuiWindow } from "../../lib/gui-runner.ts";
+import { normalizeApprovalComment } from "../../lib/bash-approval.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
 import { addAllowDir, addBlockDir, collectCandidateDirs, loadSandboxPaths } from "./paths.ts";
 import {
@@ -90,11 +91,18 @@ interface GuiDecision {
 	action: "allow" | "deny";
 	/** 用户在 GUI 上点选的目录授权操作 */
 	pathActions?: { path: string; list: PathActionList }[];
-	/** GUI「拒绝并说明理由」写的用户理由（审计分支专属；sandbox-allow 分支目前不产） */
+	/** GUI 审批窗口填写的用户附言/条件说明，允许与拒绝都可回传 */
 	comment?: string;
 }
 
 /** 通过 GUI 审批（合并进现有权限闸门 gate 窗口，kind=sandbox-allow） */
+export interface SandboxAllowDependencies {
+	/** 测试注入；默认使用真实 wails-gui runner。 */
+	runGui?: typeof runGuiWindow;
+	/** 测试注入；默认使用 ctx.ui.select。 */
+	selectApproval?: (title: string, choices: string[]) => Promise<string | undefined>;
+}
+
 async function tryGuiApproval(
 	command: string,
 	permission: "full-access" | "write-paths",
@@ -105,8 +113,9 @@ async function tryGuiApproval(
 	signal: AbortSignal | undefined,
 	audit?: SandboxCheckResult,
 	memoryMb?: number,
+	runGui: typeof runGuiWindow = runGuiWindow,
 ): Promise<GuiDecision | "gui-unavailable"> {
-	const result = await runGuiWindow(
+	const result = await runGui(
 		"gate",
 		{
 			kind: "sandbox-allow",
@@ -134,7 +143,7 @@ async function tryGuiApproval(
 	return "gui-unavailable";
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, options: { approvalDependencies?: SandboxAllowDependencies } = {}) {
 	pi.registerTool({
 		name: "sandbox-allow",
 		label: "Sandbox Allow (one-shot)",
@@ -211,7 +220,18 @@ export default function (pi: ExtensionAPI) {
 			} else if (whitelisted) {
 				decision = "allow";
 			} else {
-				const gui = await tryGuiApproval(command, permission, writePaths, justification, timeout, sessionId, signal, audit, memoryMb as number | undefined);
+				const gui = await tryGuiApproval(
+					command,
+					permission,
+					writePaths,
+					justification,
+					timeout,
+					sessionId,
+					signal,
+					audit,
+					memoryMb as number | undefined,
+					options.approvalDependencies?.runGui,
+				);
 				if (gui !== "gui-unavailable") {
 					// 只接受本次窗口展示过的候选目录，防止响应文件扩大授权范围。
 					const candidates = new Set(
@@ -245,10 +265,11 @@ export default function (pi: ExtensionAPI) {
 					}
 					writePaths = [...new Set([...writePaths, ...currentCommandRoots])];
 					decision = gui.action;
-					userComment = gui.comment;
-				} else if (ctx.hasUI) {
+					userComment = normalizeApprovalComment(gui.comment);
+				} else if (ctx.hasUI || options.approvalDependencies?.selectApproval) {
 					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout, memoryMb as number | undefined);
-					const choice = await ctx.ui.select(title, [APPROVE, DENY]);
+					const selectApproval = options.approvalDependencies?.selectApproval ?? ((prompt, choices) => ctx.ui.select(prompt, choices));
+					const choice = await selectApproval(title, [APPROVE, DENY]);
 					decision = choice?.includes("允许") ? "allow" : "deny";
 				}
 			}
@@ -282,6 +303,7 @@ export default function (pi: ExtensionAPI) {
 				justification,
 				...(memoryMb !== undefined ? { memoryMb: memoryMb as number } : {}),
 				outcome: whitelisted ? "approved-whitelist" : "approved",
+				...(userComment ? { comment: userComment } : {}),
 				ts: Date.now(),
 			});
 
@@ -344,6 +366,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let output = Buffer.concat(chunks).toString("utf8");
+			if (userComment) output += `\n[审批附言：${userComment}]`;
 			if (truncated) output += `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
 			if (exitCode !== null && exitCode !== 0) output += `\n[exit code: ${exitCode}]`;
 			if (statusLine) output += statusLine;

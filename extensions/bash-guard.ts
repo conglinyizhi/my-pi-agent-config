@@ -15,13 +15,12 @@
 // （含 renderCall/renderResult/截断/超时/临时文件）。promptSnippet/promptGuidelines
 // 显式定义（官方不继承），静态常量保证 KV 缓存稳定。
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, getAgentDir, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { checkCommand, buildSandboxEnv, type SandboxCheckResult, type TokenRule } from "../lib/sandbox-check.ts";
-import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
+import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
+import { appendApprovalComment, approveBashCommand, bashApprovalDeniedText, isHardRejected, rethrowWithApprovalComment } from "../lib/bash-approval.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
-import { runGuiWindow } from "../lib/gui-runner.ts";
 import { yoloEnabled } from "./sandbox-permissions/yolo.ts";
 
 // ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
@@ -32,57 +31,8 @@ const PROMPT_GUIDELINES = [
 	"所有 bash 命令默认有 1GiB 内存上限（进程树匿名内存），超出会以退出码 137 终止；需要更大内存时用 sandbox-allow 的 memoryMb 参数给出具体 MB 数值（上限 32768 MB）。",
 ] as const;
 
-/** LLM 预审内存缓存（同命令同规则不重复调 API；gate 同款） */
-const reviewCache = createReviewCache();
+
 let currentSessionId: string | undefined;
-
-/** 权限闸门窗口兜底超时（与 allow.ts 一致：窗口内不自动超时，仅防窗口进程卡死） */
-const GUI_TIMEOUT_MS = 3_600_000;
-
-/** 人类兜底确认结果：ok=放行/拒绝；comment 为 GUI「拒绝并说明理由」写的用户理由 */
-type HumanConfirmResult = { ok: boolean; comment?: string };
-
-/**
- * 人类兜底确认（风险命令）：优先走 wails-gui 权限闸门窗口（kind=audit，与
- * sandbox-allow 升权审批共用 gate 窗口），窗口异常/不可用时回退 TUI select。
- * 返回 { ok, comment? }：ok=放行/拒绝；comment 为 GUI「拒绝并说明理由」对话框
- * 写的用户理由（audit 专属，回退 TUI 或纯拒绝时不产生）。两者皆不可用按
- * fail-closed 拒绝。
- */
-async function humanConfirm(
-	ctx: ExtensionContext,
-	command: string,
-	rules: TokenRule[],
-	reason: string | undefined,
-	review: ReviewResult | undefined,
-	taskId: string | undefined,
-	signal: AbortSignal | undefined,
-): Promise<HumanConfirmResult> {
-	// 1. 优先 wails-gui 权限闸门窗口（kind=audit；GUI 侧展示命令/规则/LLM 审核意见）
-	const gui = await runGuiWindow(
-		"gate",
-		{ kind: "audit", command, taskId, rules, review },
-		{ timeoutMs: GUI_TIMEOUT_MS, signal },
-	);
-	// 仅采纳用户明确的选择（allow/deny）；窗口关闭/超时/进程退出 → 回退 TUI
-	if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
-		return {
-			ok: gui.data.action === "allow",
-			comment: typeof gui.data.comment === "string" ? gui.data.comment : undefined,
-		};
-	}
-
-	// 2. GUI 不可用 → 回退 TUI select
-	if (!ctx?.ui) return { ok: false };
-	const reviewNote = review && (review.reason || review.suggestion || review.opinion)
-		? `\n\n${formatReviewNote(review)}`
-		: "";
-	const choice = await ctx.ui.select(
-		`⚠️ 命令需确认：\n\n  ${reason ?? "命中风险规则"}${reviewNote}\n\n是否允许执行？`,
-		["✅ 允许执行", "❌ 拒绝"],
-	);
-	return { ok: choice?.includes("允许") ?? false };
-}
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
@@ -134,50 +84,32 @@ export default function (pi: ExtensionAPI) {
 			const verdict: SandboxCheckResult = checkCommand(command, { cwd: ctx?.cwd ?? cwd });
 
 			if (!verdict.allow) {
-				// 纯自动拒绝（黑名单/内联脚本/全 autoReject）→ 直接拦，不弹窗
-				if (verdict.rules && verdict.rules.length > 0 && verdict.rules.every((r) => r.autoReject)) {
+				// 黑名单/内联脚本/全 autoReject（以及无规则的硬拒）不进入审批器。
+				if (isHardRejected(verdict)) {
 					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
 				}
 
-				// 【1】白名单豁免：checkCommand 在 allowDirs 内已返回 allow，此处已是需确认类
-				// 【2】需确认类（动态构造/非 autoReject）→ LLM 预审 + 人类兜底
-				if (verdict.rules && verdict.rules.length > 0 && !verdict.rules.every((r) => r.autoReject)) {
-					// ── 3. LLM 二次预审（gate 同款）──
-					let review: ReviewResult | undefined;
-					const reviewConfig = loadLlmReviewConfig();
-					if (reviewConfig.enabled) {
-						// LLM 预审失败/不可用时降级到人类确认（fail-closed）：不因 API 异常放行危险命令
-						try {
-							review = await reviewCommand(pi, ctx!, command, verdict.rules, signal, reviewCache, reviewConfig);
-						} catch {
-							review = undefined;
-						}
-						if (review?.verdict === "safe" && reviewConfig.mode === "auto") {
-							// LLM 判定安全且 auto 模式 → 自动放行，不打扰用户
-							return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
-						}
-					}
-
-					// ── 4. 人类兜底确认（LLM 不通过 / 无 LLM / strict 模式；GUI 优先，TUI 回退）──
-					const decision = await humanConfirm(ctx!, command, verdict.rules, verdict.reason, review, toolCallId, signal);
-					const auditEntry = {
-						command,
-						rules: verdict.rules.map((rule) => ({ name: rule.name, matched: rule.matched })),
-						...(review ? { review: { verdict: review.verdict, reason: review.reason } } : {}),
-						...(decision.comment ? { comment: decision.comment } : {}),
-						ts: Date.now(),
-					};
-					if (!decision.ok) {
-						pi.appendEntry("bash-audit", { ...auditEntry, outcome: "denied" });
-						const userNote = decision.comment ? `（用户理由：${decision.comment}）` : "";
-						return { content: [{ type: "text", text: `已拒绝：${verdict.reason}${userNote}` }], details: {} as BashToolDetails };
-					}
-					// 仅记录真实出现过的人工闸门决策；自动放行仍保持静默，避免会话噪声。
-					pi.appendEntry("bash-audit", { ...auditEntry, outcome: "approved" });
-				} else {
-					// 无 rules 但 allow=false（黑名单/内联脚本），直接拦
-					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
+				// 需确认类：共享 LLM 预审 + GUI/TUI 人工闸门。
+				const decision = await approveBashCommand({
+					pi,
+					ctx,
+					command,
+					verdict,
+					taskId: toolCallId,
+					signal,
+					origin: "bash",
+				});
+				if (!decision.approved) {
+					return { content: [{ type: "text", text: bashApprovalDeniedText(verdict.reason, decision.comment) }], details: {} as BashToolDetails };
 				}
+				// 审批链已记录 bash-audit；附言同时回传给模型可见的工具结果。
+				// 官方 execute 在非零退出时是 throw，失败路径也要把附言带上。
+				const result = await bashDef
+					.execute(toolCallId, params, signal, onUpdate, ctx)
+					.catch((err) =>
+						rethrowWithApprovalComment(err, decision.comment ? `[审批附言：${decision.comment}]` : undefined),
+					);
+				return appendApprovalComment(result, decision.comment);
 			}
 
 			// ── 5. 通过 → 走官方原版 execute（内部已应用 spawnHook 的沙箱 env）──

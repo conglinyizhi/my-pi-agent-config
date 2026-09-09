@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerSection } from "../../lib/prompt-sections.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
+import { appendApprovalComment, approveBashCommand, isHardRejected, type BashApprovalDependencies } from "../../lib/bash-approval.ts";
 import { JobRegistry, type JobSnapshot } from "./registry.ts";
 import { bashBackground } from "./providers.ts";
 import { beginSandboxSession } from "../sandbox-permissions/session-access.ts";
@@ -20,6 +21,10 @@ export interface JobsToolOptions {
 	waitTimeoutMs?: number;
 	/** wait 上限（ms，默认 600s） */
 	maxWaitTimeoutMs?: number;
+	/** 测试注入审批器；生产环境使用共享审批链。 */
+	approveBash?: typeof approveBashCommand;
+	/** 传给共享审批器的可注入 LLM/GUI 依赖。 */
+	approvalDependencies?: BashApprovalDependencies;
 }
 
 function snapshotStatusText(snapshot: JobSnapshot): string {
@@ -47,31 +52,56 @@ export function registerJobsTools(pi: ExtensionAPI, registry: JobRegistry, optio
 			"Start a shell command as a background job and return its job id. The turn continues without waiting; collect the result later with job_output (optionally wait: true), or stop it with job_kill. Use for long-running commands that should not block the current turn.",
 		promptSnippet: "Start a shell command as a background job",
 		promptGuidelines: [
-			"bash_background 立即返回 job_id，不阻塞当前轮次",
+			"bash_background 在必要的审批完成后立即返回 job_id，不等待后台命令完成；审批等待发生在本次工具调用内",
 			"长任务用 bash_background 启动后继续其他工作，最后用 job_output 收集",
 			"不需要的任务用 job_kill 停止，避免僵尸进程",
 		],
 		parameters: Type.Object({
 			command: Type.String({ description: "The full shell command to run in the background." }),
 		}),
-		async execute(_toolCallId, params: { command: string }, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: { command: string }, signal, _onUpdate, ctx) {
 			const sessionId = ctx.sessionManager.getSessionId();
 			beginSandboxSession(sessionId);
-			// ── 前置检查（对齐 bash-guard 的自动判定层）──
-			// 后台任务不等待用户确认（违背后台语义）：黑名单/内联脚本/全 autoReject 硬拦；
-			// 「需人工确认」类也拒绝（后台无法同步确认）。
+			// ── 前置检查（与内建 bash 的自动判定层一致）──
 			const verdict = checkCommand(params.command, { cwd: ctx.cwd });
 			if (!verdict.allow) {
-				return {
-					content: [{ type: "text", text: `已拦截：${verdict.reason ?? "命令不符合沙盒策略"}` }],
-					details: { job_id: undefined, label: "blocked" },
-				};
+				// 黑名单/内联脚本/全 autoReject 仍硬拒；需确认类进入共享审批链。
+				if (isHardRejected(verdict)) {
+					return {
+						content: [{ type: "text", text: `已拦截：${verdict.reason ?? "命令不符合沙盒策略"}` }],
+						details: { job_id: undefined, label: "blocked" },
+					};
+				}
+				const approval = await (options.approveBash ?? approveBashCommand)({
+					pi,
+					ctx,
+					command: params.command,
+					verdict,
+					taskId: _toolCallId,
+					signal,
+					origin: "bash_background",
+					deps: options.approvalDependencies,
+				});
+				if (!approval.approved) {
+					const userNote = approval.comment ? `（用户理由：${approval.comment}）` : "";
+					return {
+						content: [{ type: "text", text: `已拒绝：${verdict.reason ?? "命令需人工确认"}${userNote}` }],
+						details: { job_id: undefined, label: "blocked" },
+					};
+				}
+				// 审批在 registry.start 之前完成；附言同时回传给模型。
+				const id = registry.start(bashBackground(params.command, { cwd: ctx.cwd, sessionId }));
+				const snapshot = registry.get(id);
+				return appendApprovalComment({
+					content: [{ type: "text" as const, text: `Started background job ${id}: ${snapshot.label}\n${snapshotStatusText(snapshot)}` }],
+					details: { job_id: id, label: snapshot.label },
+				}, approval.comment);
 			}
 
 			const id = registry.start(bashBackground(params.command, { cwd: ctx.cwd, sessionId }));
 			const snapshot = registry.get(id);
 			return {
-				content: [{ type: "text", text: `Started background job ${id}: ${snapshot.label}\n${snapshotStatusText(snapshot)}` }],
+				content: [{ type: "text" as const, text: `Started background job ${id}: ${snapshot.label}\n${snapshotStatusText(snapshot)}` }],
 				details: { job_id: id, label: snapshot.label },
 			};
 		},

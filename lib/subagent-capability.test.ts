@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { appendCapabilityApprovalAudit } from "../extensions/trident-subagent/index.ts";
 import {
   buildCapabilityDecision,
   commandDigest,
@@ -88,22 +89,60 @@ test("needsHumanApproval: safe+auto 自动放行，其余一律人工确认", ()
   assert.equal(needsHumanApproval(undefined, "auto"), true);
 });
 
-test("capability 决策：有 grant 才 allow，并随响应透传审核意见", () => {
+test("capability 决策：allow 附言写入 decision，空附言不创建 comment 键", () => {
   const request = makeCapabilityRequest({ capability: "network", command: "curl https://example.com", reason: "r", cwd: "/tmp" });
+  const review = { verdict: "safe" as const, reason: "只读元数据", suggestion: "" };
   const allow = buildCapabilityDecision(request, {
     grant: { capability: "network", commandDigest: request.commandDigest },
-    review: { verdict: "safe", reason: "只读元数据", suggestion: "" },
+    review,
+    comment: "  仅允许读取元数据  ",
   });
   assert.equal(allow.action, "allow");
+  assert.equal(allow.comment, "仅允许读取元数据");
   assert.equal(allow.requestId, request.requestId);
-  assert.equal(validateCapabilityDecision(allow, request.requestId)?.action, "allow");
+  assert.equal(validateCapabilityDecision(allow, request.requestId)?.comment, "仅允许读取元数据");
 
-  const deny = buildCapabilityDecision(request, {
-    review: { verdict: "dangerous", reason: "动态执行", suggestion: "改用 -print" },
+  const allowWithoutComment = buildCapabilityDecision(request, {
+    grant: { capability: "network", commandDigest: request.commandDigest },
+    review,
   });
-  assert.equal(deny.action, "deny");
-  assert.equal(deny.comment, "动态执行");
-  assert.equal(validateCapabilityDecision(deny, request.requestId)?.review?.suggestion, "改用 -print");
+  assert.equal(allowWithoutComment.action, "allow");
+  assert.equal(Object.hasOwn(allowWithoutComment, "comment"), false);
+});
+
+test("capability 决策：deny 优先采用用户附言，否则保留审核理由/默认理由", () => {
+  const request = makeCapabilityRequest({ capability: "network", command: "curl https://example.com", reason: "r", cwd: "/tmp" });
+  const review = { verdict: "dangerous" as const, reason: "动态执行", suggestion: "改用 -print" };
+  const denyWithComment = buildCapabilityDecision(request, { review, comment: "  请改用离线文件  " });
+  assert.equal(denyWithComment.action, "deny");
+  assert.equal(denyWithComment.comment, "请改用离线文件");
+  assert.equal(validateCapabilityDecision(denyWithComment, request.requestId)?.review?.suggestion, "改用 -print");
+
+  const denyWithReviewOnly = buildCapabilityDecision(request, { review });
+  assert.equal(denyWithReviewOnly.comment, "动态执行");
+  const denyWithoutReview = buildCapabilityDecision(request, undefined);
+  assert.equal(denyWithoutReview.comment, "未获批准");
+});
+
+test("capability 审批审计：pi stub 收到命令、能力、决策、附言和 review.verdict", () => {
+  const request = makeCapabilityRequest({ capability: "network", command: "curl https://example.com", reason: "r", cwd: "/tmp" });
+  const entries: Array<{ type: string; data: unknown }> = [];
+  appendCapabilityApprovalAudit(
+    { appendEntry: (type, data) => entries.push({ type, data }) },
+    request,
+    "allow",
+    "  只读元数据  ",
+    { verdict: "risky", reason: "需确认", suggestion: "" },
+  );
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.type, "subagent-capability-approval");
+  assert.deepEqual(entries[0]?.data, {
+    capability: "network",
+    command: request.command,
+    decision: "allow",
+    comment: "只读元数据",
+    review: { verdict: "risky" },
+  });
 });
 
 test("capability 决策校验：requestId 不匹配 / action 非法 / 非对象一律拒绝", () => {

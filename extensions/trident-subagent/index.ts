@@ -44,6 +44,31 @@ function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** 写入 capability 审批审计；只记录稳定的审核 verdict，不把审核意见全文重复塞进条目。 */
+export function appendCapabilityApprovalAudit(
+  pi: Pick<ExtensionAPI, "appendEntry">,
+  request: CapabilityRequest,
+  action: "allow" | "deny",
+  comment: string | undefined,
+  review: CapabilityReview | undefined,
+): void {
+  const payload: {
+    capability: string;
+    command: string;
+    decision: "allow" | "deny";
+    comment?: string;
+    review?: { verdict: CapabilityReview["verdict"] };
+  } = {
+    capability: request.capability,
+    command: request.command,
+    decision: action,
+  };
+  const trimmed = comment?.trim();
+  if (trimmed) payload.comment = trimmed;
+  if (review) payload.review = { verdict: review.verdict };
+  pi.appendEntry("subagent-capability-approval", payload);
+}
+
 async function approveCapability(
   pi: ExtensionAPI,
   request: CapabilityRequest,
@@ -72,6 +97,7 @@ async function approveCapability(
   };
 
   if (!needsHumanApproval(review, reviewConfig.mode)) {
+    appendCapabilityApprovalAudit(pi, validated, "allow", undefined, review);
     return { grant, review };
   }
 
@@ -90,6 +116,9 @@ async function approveCapability(
     { timeoutMs: CAPABILITY_GUI_TIMEOUT_MS, signal },
   );
   let allow = result.ok && result.data?.action === "allow";
+  let comment = result.ok && typeof result.data?.comment === "string"
+    ? result.data.comment.trim()
+    : undefined;
   if (!allow && (!result.ok || result.data?.action !== "deny") && ctx?.hasUI) {
     // TUI 回退也带审核简报，人工确认前能看到模型意见
     const reviewNote = review.reason || review.suggestion || review.opinion
@@ -100,8 +129,12 @@ async function approveCapability(
       ["✅ 允许本次命令", "❌ 拒绝"],
     );
     allow = choice?.includes("允许") ?? false;
+    // TUI 只有二选一，没有附言输入；保持 comment 未定义。
+    comment = undefined;
   }
-  return allow ? { grant, review } : { review };
+  const action = allow ? "allow" : "deny";
+  appendCapabilityApprovalAudit(pi, validated, action, comment, review);
+  return allow ? { grant, review, ...(comment ? { comment } : {}) } : { review, ...(comment ? { comment } : {}) };
 }
 
 // 把 skill 名解析成绝对路径（目录含 SKILL.md）：在 ~/.pi/agent/skills 下按名匹配，含一层子目录

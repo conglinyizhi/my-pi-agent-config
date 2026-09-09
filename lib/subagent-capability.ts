@@ -24,10 +24,12 @@ export interface CapabilityReview {
   opinion?: string;
 }
 
-/** 一次 capability 审批结果：grant 存在=放行；review 是审核意见（可能缺失） */
+/** 一次 capability 审批结果：grant 存在=放行；comment 是人工附言（可能缺失） */
 export interface CapabilityApproval {
   grant?: CapabilityGrant;
   review?: CapabilityReview;
+  /** 用户附言/条件说明；空白附言会在写回决策时丢弃。 */
+  comment?: string;
 }
 
 /**
@@ -72,7 +74,13 @@ export function buildCapabilityDecision(
     action: allow ? "allow" : "deny",
   };
   if (approval?.review) decision.review = approval.review;
-  if (!allow) decision.comment = approval?.review?.reason || "未获批准";
+  const comment = approval?.comment?.trim();
+  if (comment) {
+    decision.comment = comment;
+  } else if (!allow) {
+    // 没有用户附言时保持原有拒绝语义；allow 不创建 comment 键。
+    decision.comment = approval?.review?.reason || "未获批准";
+  }
   return decision;
 }
 
