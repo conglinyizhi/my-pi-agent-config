@@ -6,6 +6,7 @@ import { Value } from "typebox/value";
 import {
 	SANDBOX_ALLOW_PARAMETERS,
 	validateSandboxAllowInput,
+	writePathsFullyTrusted,
 } from "./allow.ts";
 
 describe("sandbox-allow 参数契约", () => {
@@ -47,5 +48,41 @@ describe("sandbox-allow 参数契约", () => {
 		assert.match(validateSandboxAllowInput({ ...base, justification: "" }, "/work/project") ?? "", /justification/);
 		assert.match(validateSandboxAllowInput({ ...base, timeout: 0 }, "/work/project") ?? "", /timeout/);
 		assert.match(validateSandboxAllowInput({ ...base, timeout: 2_147_484 }, "/work/project") ?? "", /timeout/);
+	});
+});
+
+describe("sandbox-allow 免审批判定（混合信任）", () => {
+	const roots = (allowDirs: string[], sessionTrustedDirs: string[], sessionWriteDirs: string[]) => ({
+		allowDirs,
+		sessionTrustedDirs,
+		sessionWriteDirs,
+	});
+
+	it("三档信任混合覆盖请求的全部路径即免审批", () => {
+		assert.equal(
+			writePathsFullyTrusted(
+				["/opt/long/build", "/tmp/trust/cache", "/tmp/write/out"],
+				roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"]),
+			),
+			true,
+		);
+	});
+
+	it("任一路径不被任何信任根覆盖则仍需审批", () => {
+		assert.equal(
+			writePathsFullyTrusted(
+				["/opt/long/build", "/tmp/unknown/out"],
+				roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"]),
+			),
+			false,
+		);
+	});
+
+	it("空路径列表不免审批（避免 write-paths 漏填时静默放行）", () => {
+		assert.equal(writePathsFullyTrusted([], roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"])), false);
+	});
+
+	it("单一档位全覆盖也免审批", () => {
+		assert.equal(writePathsFullyTrusted(["/tmp/write/a", "/tmp/write/b"], roots([], [], ["/tmp/write"])), true);
 	});
 });

@@ -249,8 +249,9 @@ gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录�
 |------|------|--------|
 | 长期信任 `allowDirs` | 普通 bash 常驻可写；sandbox-allow 的 write-paths 完全覆盖时可免审批；autoReject 仍优先 | shell/allow（即时生效） |
 | 本 session 信任 | 当前 session 可写；后续 sandbox-allow 完全覆盖时可免审批 | session-access/allow（内存） |
-| 本 session 可写 | 当前 session 可写；后续 sandbox-allow 仍需审批 | session-access/bash/job（内存） |
 | 黑名单 `blockDirs` | 该目录整体视为敏感，read/write/bash 一旦引用直接拒绝 | guard.ts（session_start 加载，reload 生效） |
+
+长期 `allowDirs`、本 session 信任根、本 session 可写根共同构成 `sandbox-allow` 的信任根集合：请求的**每个** `writePaths` 都被任一信任根覆盖即可免审批，且各路径可分别命中不同档位（例如 A 长期 + B session 信任 + C session 可写）。命中信任根只免去「写权限」这一层，命令本身的安全审计（危险规则 / 动态构造）仍然保留。
 
 ### 存储
 
@@ -270,9 +271,8 @@ worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`
 
 当前 session 的目录授权只存在内存，不写入上述文件：
 
-- **本 session 可写**：后续普通 bash 可写该目录，但 `sandbox-allow` 仍需审批
 - **本 session 信任**：后续普通 bash 可写该目录，且匹配的 `sandbox-allow` 可免审批
-- 两者都只在当前 session 有效；切换、恢复、分叉或退出后不继承
+- 只在当前 session 有效；切换、恢复、分叉或退出后不继承
 
 ### 长期根的命令豁免规则（paths.ts `isWhitelisted`）
 
@@ -283,11 +283,10 @@ worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`
 
 ### GUI 交互
 
-GateView.vue 的「📁 目录授权」区块提供四种动作：
+GateView.vue 的「📁 目录授权」区块提供三种动作：
 
 - 「长期信任」→ 写入 `allowDirs`，当前命令放行
 - 「本 session 信任」→ 写入当前内存信任根，当前命令放行
-- 「本 session 可写」→ 写入当前内存可写根，当前命令放行
 - 「黑名单」→ 写入 `blockDirs`，当前命令拒绝
 
 返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次窗口展示过的候选路径，再应用授权。
@@ -317,7 +316,6 @@ GUI 中的目录动作会同时批准当前命令：
 
 - **长期信任**：写入 `allowDirs`，跨 session 可写并可免后续 `sandbox-allow` 审批
 - **本 session 信任**：当前 session 可写并可免后续 `sandbox-allow` 审批
-- **本 session 可写**：当前 session 可写，但后续 `sandbox-allow` 仍需审批
 - **黑名单**：写入 `blockDirs`，后续敏感路径拦截
 
 长期根、session 根和本次 `paths` 都会在执行前合并；GUI 响应中的路径只接受本次窗口展示过的候选目录。
@@ -325,6 +323,6 @@ GUI 中的目录动作会同时批准当前命令：
 ### 生效与同步
 
 - 长期 `allowDirs`：shell 每次启动读取，普通 bash 与 `sandbox-allow` 实时生效；它们同时承担可写根与长期信任根
-- session 可写/信任根：当前进程内存状态，按 session ID 隔离，不跨 session、不落盘
+- session 信任根：当前进程内存状态，按 session ID 隔离，不跨 session、不落盘
 - 黑名单：guard 在 session_start 加载（reload 随扩展重载重新触发），添加后需 `/reload`
 - `sandbox-paths.json` 进 git 同步（与多机配置一致）

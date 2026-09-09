@@ -87,6 +87,20 @@ export function validateSandboxAllowInput(input: SandboxAllowInput, cwd = proces
 	return undefined;
 }
 
+/**
+ * sandbox-allow 免审批判定：请求的每个 writePath 都被任一信任根覆盖即可。
+ * 三档信任可混合——长期 allowDirs / 本 session 信任根 / 本 session 可写根，
+ * 各路径分别命中不同档位也算满足（例如 A 长期 + B session 信任 + C session 可写）。
+ */
+export function writePathsFullyTrusted(
+	writePaths: string[],
+	roots: { allowDirs: string[]; sessionTrustedDirs: string[]; sessionWriteDirs: string[] },
+	cwd = process.cwd(),
+): boolean {
+	if (writePaths.length === 0) return false;
+	return pathsCoveredByRoots(writePaths, [...roots.allowDirs, ...roots.sessionTrustedDirs, ...roots.sessionWriteDirs], cwd);
+}
+
 interface GuiDecision {
 	action: "allow" | "deny";
 	/** 用户在 GUI 上点选的目录授权操作 */
@@ -151,7 +165,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			"Run ONE bash command with temporarily elevated sandbox permissions.",
 			"Use only when the sandbox has actually denied a write the task legitimately needs (the default sandbox is read-only outside the workspace).",
 			"A full-access request cancels the file-system sandbox for this command; write-paths keeps the sandbox and adds only the listed writable roots.",
-			"Non-trusted requests require approval and apply only to this command. Persistent allowDirs and explicitly trusted session roots may skip repeated approval; session-write roots only add write access.",
+			"Non-trusted requests require approval and apply only to this command. A request skips approval when every requested write path is covered by any trust root (persistent allowDirs, session-trusted roots, or session-write roots); the roots may be mixed.",
 			"Prefer write-paths with the smallest necessary writable roots. Never use full-access merely because a write failed if a directory can be named.",
 			"Always supply a non-empty one-sentence justification, shown to the user for consent.",
 			"timeout is the maximum execution time after approval, in seconds; it does not limit the user's approval time."
@@ -162,7 +176,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			"优先 permission=write-paths，并只列出完成命令所需的最小 writable roots；paths 不能是根目录 `/`",
 			"full-access 会完全取消文件系统沙箱，只在无法合理限定写入根时使用；它仍不改变当前用户的操作系统身份",
 			"所有 bash 命令默认有 1GiB 内存上限；若命令可能超过（如重型构建/测试），必须用 memoryMb 给出**具体 MB 数值**，上限 32768 MB，更大会被拒绝",
-			"长期 allowDirs 或本 session 信任根命中时可免重复审批；本 session 可写根不免审批",
+			"长期 allowDirs / 本 session 信任根 / 本 session 可写根命中时都可免重复审批；请求的多个路径可分别命中不同档位（混合覆盖即免审）",
 			"timeout 是获批后整条 shell 命令链的最长执行时间（秒），不限制用户审批等待时间"
 		],
 		// OpenAI function schema 要求根节点是 object；条件字段由描述与运行时校验约束。
@@ -213,8 +227,15 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			const whitelisted =
 				permission === "write-paths" &&
 				!hasAuditRisk &&
-				writePaths.length > 0 &&
-				(pathsCoveredByRoots(writePaths, allowDirs, cwd) || pathsCoveredByRoots(writePaths, sessionAccess.trustedDirs, cwd));
+				writePathsFullyTrusted(
+					writePaths,
+					{
+						allowDirs,
+						sessionTrustedDirs: sessionAccess.trustedDirs,
+						sessionWriteDirs: sessionAccess.writeDirs,
+					},
+					cwd,
+				);
 			if (yolo) {
 				decision = "allow";
 			} else if (whitelisted) {
@@ -254,6 +275,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 						} else if (pa.list === "block") {
 							addBlockDir(path);
 						} else if (pa.list === "session-write") {
+							// 兼容旧 GUI 响应：三档信任都免审批后，session-write 与 session-trust 行为等价。
 							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
 							addSessionWriteDirs([path], cwd);
 							currentCommandRoots.push(path);

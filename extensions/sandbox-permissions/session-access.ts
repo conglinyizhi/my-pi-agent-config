@@ -1,8 +1,8 @@
 // session-access.ts — 当前 session 的临时可写根与信任根
 //
 // 持久 allowDirs 仍保存在 sandbox-paths.json；本模块只保存当前进程/session 状态：
-//   - sessionWriteDirs：普通 bash 可写，但 sandbox-allow 仍需审批
-//   - sessionTrustedDirs：普通 bash 可写，sandbox-allow 的 write-paths 可免审批
+//   - sessionWriteDirs：普通 bash 可写；同样计入 sandbox-allow 免审批判定
+//   - sessionTrustedDirs：普通 bash 可写，sandbox-allow 的 write-paths 可免审批（writeDirs 的子集）
 //
 // 不写盘。session ID 变化时自动清空，避免切换/恢复 session 泄漏授权。
 

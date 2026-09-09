@@ -77,11 +77,10 @@
         <code class="path-dir">{{ path }}</code>
         <span class="path-state">{{ pathState(path) }}</span>
         <button v-if="!coveredBy(path, persistentRoots)" data-name="path-persistent" @click="pathAction(path, 'allow')" class="btn btn-allow btn-sm" title="长期可写；命中后 sandbox-allow 可免审批">长期信任</button>
-        <button v-if="!coveredBy(path, sessionTrustedRoots) && !coveredBy(path, persistentRoots)" data-name="path-session-trust" @click="pathAction(path, 'session-trust')" class="btn btn-trust btn-sm" title="本 session 可写，后续 sandbox-allow 可免审批">本 session 信任</button>
-        <button v-if="!coveredBy(path, sessionWriteRoots) && !coveredBy(path, sessionTrustedRoots) && !coveredBy(path, persistentRoots)" data-name="path-session-write" @click="pathAction(path, 'session-write')" class="btn btn-warn btn-sm" title="本 session 增加可写权限，但后续 sandbox-allow 仍需审批">本 session 可写</button>
+        <button v-if="!coveredBy(path, sessionTrustedRoots) && !coveredBy(path, sessionWriteRoots) && !coveredBy(path, persistentRoots)" data-name="path-session-trust" @click="pathAction(path, 'session-trust')" class="btn btn-trust btn-sm" title="本 session 可写，后续 sandbox-allow 可免审批">本 session 信任</button>
         <button data-name="path-block" @click="pathAction(path, 'block')" class="btn btn-deny btn-sm" title="该目录以后直接拦截">黑名单</button>
       </div>
-      <div class="paths-hint">目录授权只对无风险命令提供快捷设置。长期信任 = 跨 session 可写并可免 sandbox-allow 审批；本 session 信任 = 当前 session 可写并可免审；本 session 可写 = 当前 session 可写但仍需审；黑名单 = 长期拦截。点击授权动作会同时批准当前命令链，&&、;、管道和重定向也包含在内。</div>
+      <div class="paths-hint">目录授权只对无风险命令提供快捷设置。长期信任 = 跨 session 可写并可免 sandbox-allow 审批；本 session 信任 = 当前 session 可写并可免审；黑名单 = 长期拦截。点击授权动作会同时批准当前命令链，&&、;、管道和重定向也包含在内。</div>
     </div>
   </div>
 </template>
