@@ -1,6 +1,7 @@
 // visibility-model — skillful-local 批量显隐的纯数据逻辑
 
-import { basename, dirname, normalize, relative } from "node:path";
+import { normalize } from "node:path";
+import type { SkillGroupRule } from "../config.ts";
 import type { LoadedSkillInfo } from "../skills.ts";
 
 export type VisibilityRowKind = "all" | "group" | "skill";
@@ -19,14 +20,19 @@ export interface VisibilityRow {
 	depth: number;
 }
 
+/** 统一成 posix 分隔符，规则片段和 canonical path 才好直接比。 */
+function toPosixPath(value: string): string {
+	return normalize(value).split(/[\\/]/).join("/");
+}
+
 /**
- * 按来源分组；skills/external 下的正式入口使用固定目录结构，
- * 因此从 canonical path 提取 package 名称，比把所有扩展贡献的技能并成一组更准确。
+ * 按来源分组。规则（extensions.toml 的 [skillful.skillGroups]）优先：
+ * 命中就按规则给的 id/label 合并；未命中按 skills/external 包名或 Pi 的 source/scope 分组。
  */
-export function groupSkills(skills: LoadedSkillInfo[]): VisibilityGroup[] {
+export function groupSkills(skills: LoadedSkillInfo[], rules: readonly SkillGroupRule[] = []): VisibilityGroup[] {
 	const groups = new Map<string, VisibilityGroup>();
 	for (const skill of skills) {
-		const source = skillGroupSource(skill);
+		const source = skillGroupSource(skill, rules);
 		const current = groups.get(source.id);
 		if (current) {
 			current.skills.push(skill);
@@ -39,16 +45,21 @@ export function groupSkills(skills: LoadedSkillInfo[]): VisibilityGroup[] {
 		.sort((a, b) => a.label.localeCompare(b.label));
 }
 
-function skillGroupSource(skill: LoadedSkillInfo): { id: string; label: string } {
-	const path = normalize(skill.sourceInfo.path);
-	const marker = `${normalize("skills/external")}${normalize("/")}`;
+function skillGroupSource(skill: LoadedSkillInfo, rules: readonly SkillGroupRule[]): { id: string; label: string } {
+	const path = toPosixPath(skill.sourceInfo.path);
+	// 配置规则优先，按数组顺序先匹配先归组
+	for (const rule of rules) {
+		if (rule.match.some((pattern) => path.includes(toPosixPath(pattern)))) {
+			return { id: rule.id, label: rule.label };
+		}
+	}
+
+	// 未命中规则：skills/external 下的正式入口结构固定，按包名分组
+	const marker = "skills/external/";
 	const externalIndex = path.indexOf(marker);
 	if (externalIndex >= 0) {
 		const suffix = path.slice(externalIndex + marker.length);
 		const packageName = suffix.split("/")[0];
-		if (packageName === "moonbit-skills" || packageName === "clyzhi-moonwell-spring") {
-			return { id: "external:moonbit-environment", label: "MoonBit 开发环境" };
-		}
 		if (packageName) return { id: `external:${packageName}`, label: `skill 包：${packageName}` };
 	}
 
@@ -57,8 +68,8 @@ function skillGroupSource(skill: LoadedSkillInfo): { id: string; label: string }
 	return { id: `${source}\0${skill.sourceInfo.scope ?? ""}`, label: `${source}${scope}` };
 }
 
-export function buildVisibilityRows(skills: LoadedSkillInfo[]): VisibilityRow[] {
-	const groups = groupSkills(skills);
+export function buildVisibilityRows(skills: LoadedSkillInfo[], rules: readonly SkillGroupRule[] = []): VisibilityRow[] {
+	const groups = groupSkills(skills, rules);
 	const rows: VisibilityRow[] = [{
 		kind: "all",
 		id: "__all__",

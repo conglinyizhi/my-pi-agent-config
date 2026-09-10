@@ -13,6 +13,7 @@ import type { ExtensionAPI, Skill, Theme } from "@earendil-works/pi-coding-agent
 import {
 	readEffectiveHiddenSkills,
 	readScopedHiddenSkills,
+	readSkillGroupRules,
 	writeHiddenSkills,
 	type SkillfulScope,
 } from "../config.ts";
@@ -75,7 +76,7 @@ export default function skillVisibility(pi: ExtensionAPI): void {
 					? scoped.global.hiddenSkills
 					: scoped[scope].hiddenSkills,
 			);
-			const rows = buildVisibilityRows(loaded);
+			const rows = buildVisibilityRows(loaded, await readSkillGroupRules());
 			const result = await ctx.ui.custom<SelectorResult>((tui, theme, _keybindings, done) =>
 				new VisibilitySelector({ rows, hidden, tui, theme, done }),
 			);

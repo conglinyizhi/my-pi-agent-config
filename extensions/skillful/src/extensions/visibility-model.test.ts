@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { SkillGroupRule } from "../config.ts";
 import {
 	buildVisibilityRows,
 	groupSkills,
@@ -23,6 +24,22 @@ function skill(name: string, source: string, scope: "user" | "project" = "user")
 	};
 }
 
+function atPath(name: string, source: string, path: string) {
+	const base = skill(name, source);
+	return { ...base, sourceInfo: { ...base.sourceInfo, path } };
+}
+
+// 与 extensions.toml 里的实际规则同构（id/label 可任意，这里取短名便于断言）
+const MOONBIT_RULES: SkillGroupRule[] = [{
+	id: "moonbit-environment",
+	label: "MoonBit 开发环境",
+	match: [
+		"skills/external/moonbit-skills",
+		"skills/external/clyzhi-moonwell-spring",
+		"skills/clyzhi/moonbit-skills-guide",
+	],
+}];
+
 describe("skill visibility model", () => {
 	it("按 Pi 的 source 和 scope 分组，不从技能名猜包", () => {
 		const groups = groupSkills([
@@ -40,21 +57,51 @@ describe("skill visibility model", () => {
 		assert.deepEqual(groups[1]!.skills.map((item) => item.name), ["alpha", "zeta"]);
 	});
 
-	it("把官方 MoonBit 技能和 moonwell 热修复层合并为一个开发环境组", () => {
+	it("规则命中的外部包与本地技能合并为一组", () => {
 		const groups = groupSkills([
-			{
-				...skill("moonbit-agent-guide", "local"),
-				sourceInfo: { ...skill("moonbit-agent-guide", "local").sourceInfo, path: "/home/user/skills/external/moonbit-skills/skills/moonbit-agent-guide/SKILL.md" },
-			},
-			{
-				...skill("clyzhi-moonwell-spring", "local"),
-				sourceInfo: { ...skill("clyzhi-moonwell-spring", "local").sourceInfo, path: "/home/user/skills/external/clyzhi-moonwell-spring/SKILL.md" },
-			},
+			atPath("moonbit-agent-guide", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-agent-guide/SKILL.md"),
+			atPath("clyzhi-moonwell-spring", "local", "/home/user/skills/external/clyzhi-moonwell-spring/SKILL.md"),
+			atPath("moonbit-skills-guide", "auto", "/home/user/skills/clyzhi/moonbit-skills-guide/SKILL.md"),
+		], MOONBIT_RULES);
+
+		assert.deepEqual(groups.map((group) => [group.id, group.label, group.skills.map((item) => item.name)]), [
+			["moonbit-environment", "MoonBit 开发环境", ["clyzhi-moonwell-spring", "moonbit-agent-guide", "moonbit-skills-guide"]],
+		]);
+	});
+
+	it("没配规则时按来源和包名分组，不做任何特判", () => {
+		const groups = groupSkills([
+			atPath("moonbit-agent-guide", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-agent-guide/SKILL.md"),
+			atPath("moonbit-skills-guide", "auto", "/home/user/skills/clyzhi/moonbit-skills-guide/SKILL.md"),
 		]);
 
 		assert.deepEqual(groups.map((group) => [group.id, group.label, group.skills.map((item) => item.name)]), [
-			["external:moonbit-environment", "MoonBit 开发环境", ["clyzhi-moonwell-spring", "moonbit-agent-guide"]],
+			["auto\0user", "auto (user)", ["moonbit-skills-guide"]],
+			["external:moonbit-skills", "skill 包：moonbit-skills", ["moonbit-agent-guide"]],
 		]);
+	});
+
+	it("多条规则按顺序先匹配先归组", () => {
+		const groups = groupSkills(
+			[atPath("moonbit-orientation", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-orientation/SKILL.md")],
+			[
+				{ id: "broad", label: "广组", match: ["skills/external/moonbit-skills"] },
+				{ id: "narrow", label: "窄组", match: ["skills/external/moonbit-skills/skills/moonbit-orientation"] },
+			],
+		);
+
+		assert.deepEqual(groups.map((group) => [group.id, group.skills.map((item) => item.name)]), [
+			["broad", ["moonbit-orientation"]],
+		]);
+	});
+
+	it("canonical path 与规则片段的分隔符不一致也能命中", () => {
+		const groups = groupSkills(
+			[atPath("moonbit-orientation", "local", "C:\\Users\\me\\skills\\external\\moonbit-skills\\skills\\moonbit-orientation\\SKILL.md")],
+			MOONBIT_RULES,
+		);
+
+		assert.deepEqual(groups.map((group) => group.label), ["MoonBit 开发环境"]);
 	});
 
 	it("生成全部、来源组和单项三层行", () => {

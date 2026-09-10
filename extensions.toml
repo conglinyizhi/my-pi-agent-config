@@ -88,3 +88,19 @@ mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
 timeout_ms = 30000 # 注册模型单次审核总时长兜底（毫秒）；超时切换下一个模型
 token_idle_ms = 4000 # 免费模型相邻 token 间隔上限（毫秒）；停滞超阈值判失败
 max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
+
+# ─────────────────────────────────────────────────────────────
+# skillful：/skillful 界面里的「来源组」规则
+# 把多个技能来源合并成一行统一启停；不配则退回按 source/包名分组。
+#   id    - 组标识，同 id 合并为一行（必填）
+#   label - 组显示名（必填）
+#   match - canonical path 片段，命中任意一条即归入该组；按规则顺序先匹配先归组（必填）
+# ─────────────────────────────────────────────────────────────
+[[skillful.skillGroups]]
+id = "moonbit-environment"
+label = "MoonBit 开发环境"
+match = [
+  "skills/external/moonbit-skills",
+  "skills/external/clyzhi-moonwell-spring",
+  "skills/clyzhi/moonbit-skills-guide",
+]

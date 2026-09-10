@@ -4,10 +4,14 @@
 // UI、网络和安装遥测不在测试范围内。
 
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	normalizeSkillName,
 	normalizeSkillNames,
+	readSkillGroupRules,
 } from "./src/config.ts";
 import {
 	readSkillBlock,
@@ -23,6 +27,58 @@ describe("skillful 配置纯逻辑", () => {
 			normalizeSkillNames(["git", "skill:git", "review", "git"]),
 			["git", "review"],
 		);
+	});
+});
+
+describe("来源组规则配置", () => {
+	async function configFile(content: string): Promise<string> {
+		const dir = await mkdtemp(join(tmpdir(), "skillful-rules-"));
+		const path = join(dir, "extensions.toml");
+		await writeFile(path, content, "utf8");
+		return path;
+	}
+
+	it("从 [skillful.skillGroups] 读规则", async () => {
+		const path = await configFile([
+			"[tool-checker]",
+			"",
+			"[[skillful.skillGroups]]",
+			'id = "moonbit-environment"',
+			'label = "MoonBit 开发环境"',
+			'match = ["skills/external/moonbit-skills", " skills/clyzhi/moonbit-skills-guide "]',
+		].join("\n"));
+
+		assert.deepEqual(await readSkillGroupRules(path), [{
+			id: "moonbit-environment",
+			label: "MoonBit 开发环境",
+			match: ["skills/external/moonbit-skills", "skills/clyzhi/moonbit-skills-guide"],
+		}]);
+	});
+
+	it("丢弃字段残缺的条目，不连带其它组", async () => {
+		const path = await configFile([
+			"[[skillful.skillGroups]]",
+			'id = "ok"',
+			'label = "好组"',
+			'match = ["skills/a"]',
+			"",
+			"[[skillful.skillGroups]]",
+			'id = "no-label"',
+			'match = ["skills/b"]',
+			"",
+			"[[skillful.skillGroups]]",
+			'id = "empty-match"',
+			'label = "空匹配"',
+			"match = []",
+		].join("\n"));
+
+		assert.deepEqual((await readSkillGroupRules(path)).map((rule) => rule.id), ["ok"]);
+	});
+
+	it("配置缺失或无 skillGroups 时返回空数组", async () => {
+		assert.deepEqual(await readSkillGroupRules(join(tmpdir(), "skillful-not-exists.toml")), []);
+		const path = await configFile("[skillful]\nhiddenSkills = [\"a\"]\n");
+		assert.deepEqual(await readSkillGroupRules(path), []);
 	});
 });
 

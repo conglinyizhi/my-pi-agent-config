@@ -3,7 +3,7 @@
 // 职责边界：
 //   - sync.ts 负责 repo.toml 中外部技能仓库的 clone 与正式 skills/external 入口
 //   - 本文件只保留按名称读取技能并注入当前会话
-//   - `skills/external/moonbit-skills` 与 `clyzhi-moonwell-spring` 在 skillful 中合并为 MoonBit 开发环境组
+//   - 技能分组规则由 skillful 从 extensions.toml 的 [skillful.skillGroups] 读取，本扩展不管
 //
 // 命令：
 //   /skill-boot            — 显示用法

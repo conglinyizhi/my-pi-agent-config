@@ -4,6 +4,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 export type SkillfulScope = "global" | "project";
@@ -17,6 +18,11 @@ export function globalSkillfulPath(): string {
 }
 export function projectSkillfulPath(cwd: string): string {
 	return join(cwd, ".pi", "skillful-settings.toml");
+}
+
+/** 扩展集中配置：来源组规则写在 [skillful] section，不硬编码在源码里。 */
+export function extensionsConfigPath(): string {
+	return join(getAgentDir(), "extensions.toml");
 }
 
 // 旧存储路径：仅读兼容/迁移回退用，写入不再使用。
@@ -37,8 +43,8 @@ export function normalizeSkillNames(names: Iterable<string>): string[] {
 
 // ── 底层读写：专属 toml（新）+ 旧 settings.json（迁移回退） ──
 
-interface SkillfulToml {
-	skillful?: { hiddenSkills?: unknown };
+interface TomlDocument {
+	skillful?: { hiddenSkills?: unknown; skillGroups?: unknown };
 }
 
 interface PiSettingsDocument {
@@ -51,10 +57,10 @@ function legacyPathFor(tomlPath: string): string {
 	return join(dirname(tomlPath), "settings.json");
 }
 
-async function readToml(path: string): Promise<SkillfulToml> {
+async function readToml(path: string): Promise<TomlDocument> {
 	try {
 		const parsed = parseToml(await readFile(path, "utf8")) as unknown;
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as SkillfulToml : {};
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as TomlDocument : {};
 	} catch {
 		return {};
 	}
@@ -121,4 +127,39 @@ export async function writeHiddenSkills(
 	const content = stringifyToml({ skillful: { hiddenSkills: normalizeSkillNames(hiddenSkills) } });
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, content, "utf8");
+}
+
+// ── 来源组规则：[skillful.skillGroups]（extensions.toml） ──
+// 规则是数据不是代码：新增/调整分组只改配置，不动这个文件。
+
+export interface SkillGroupRule {
+	/** 组标识；同 id 的技能合并为一行。 */
+	id: string;
+	/** 组显示名。 */
+	label: string;
+	/** canonical path 片段，命中任意一条即归入该组。 */
+	match: string[];
+}
+
+/** 单条配置 → 规则；字段缺失或类型不对就丢弃，坏配置不影响其它组。 */
+function toSkillGroupRule(value: unknown): SkillGroupRule | undefined {
+	const entry = value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
+	if (!entry) return undefined;
+	const id = typeof entry.id === "string" ? entry.id.trim() : "";
+	const label = typeof entry.label === "string" ? entry.label.trim() : "";
+	const match = Array.isArray(entry.match)
+		? entry.match.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+		: [];
+	if (!id || !label || match.length === 0) return undefined;
+	return { id, label, match };
+}
+
+/** 读 extensions.toml 的 [skillful.skillGroups]；未配置返回空数组（退回按来源/包名分组）。 */
+export async function readSkillGroupRules(path = extensionsConfigPath()): Promise<SkillGroupRule[]> {
+	const toml = await readToml(path);
+	const raw = toml.skillful?.skillGroups;
+	if (!Array.isArray(raw)) return [];
+	return raw.map(toSkillGroupRule).filter((rule): rule is SkillGroupRule => !!rule);
 }

@@ -10,7 +10,7 @@ description: >
 
 > 本技能是**索引**，不是技能正文。它告诉你有哪些 MoonBit 技能、它们放在哪、怎么装载。
 > 需要具体能力时再装载对应技能（`/skill:name` 或读取正文），不要一次性全部注入。
-> `/skillful` 中的「MoonBit 开发环境」组会同时管理官方 9 个技能与 `clyzhi-moonwell-spring` 热修复层。
+> `/skillful` 中的「MoonBit 开发环境」组会同时管理官方 9 个技能、`clyzhi-moonwell-spring` 热修复层和本索引技能（规则见 `~/.pi/agent/extensions.toml` 的 `[skillful.skillGroups]`）。
 > 路径前缀 `~/.pi/agent` = 本机 pi 配置目录（AGENT_DIR），换机同步后相对位置不变。
 
 ## 技能全家桶（10 个）
@@ -32,7 +32,7 @@ description: >
 
 ## 装载方式
 
-1. `/skillful` —— 一键启停完整 MoonBit 开发环境（官方技能 + moonwell 热修复层）
+1. `/skillful` —— 一键启停完整 MoonBit 开发环境（官方技能 + moonwell 热修复层 + 本索引）
 2. `/skill-boot <名>` —— 兼容入口，注入指定技能 SKILL.md 全文进上下文
 3. 直接 `read` 上表正文入口
 4. 推荐组合：`moonbit-orientation`（先定位）+ 任务对应技能 + `clyzhi-moonwell-spring`（热修复，若涉及工具链新特性）
@@ -48,4 +48,5 @@ description: >
 - 官方技能聚合仓库：`~/.pi/agent/skill-repo/moonbit-skills/`（README、`skills.sources.json` 定义各技能来源仓库/ref/path、`scripts/`）
 - 热修复层仓库：`~/.pi/agent/skill-repo/clyzhi-moonwell-spring/`（`references/patches.md` 补丁详情、`references/update-workflow.md` 更新流程）
 - 本机装载配置：`~/.pi/agent/skill-repo/repo.toml`（`moonbit-skills` bundle 的 link_targets 定义暴露哪些子技能）
+- `/skillful` 来源组规则：`~/.pi/agent/extensions.toml` 的 `[skillful.skillGroups]`（match 为 canonical path 片段）
 - 用户说「更新 moonwell-spring」或 moon 版本变更 → 沿 `update-workflow.md` 滚动更新热修复层
