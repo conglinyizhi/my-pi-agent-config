@@ -118,3 +118,12 @@ tags = ["arch", "aur", "security"]
 trigger = "手动创建/更新/重建 AUR 包、makepkg 手工构建、AUR 投毒后不信任维护者、需要审计 PKGBUILD 或安装脚本"
 
 disable_model_invocation = true
+
+[[skills]]
+name = "fcitx5-rime-helper-skill"
+source = "https://github.com/conglinyizhi/fcitx5-rime-helper-skill"
+description = "fcitx5-rime 候选排序、自造词维护与排障：权重分层诊断、userdb 编辑、词表权重与重新部署、librime 实测探针"
+tags = ["rime", "fcitx5", "input-method"]
+trigger = "输入法候选排序不对、想要的字排后面、自造词被记错、自造词找不到或丢了、rime 部署失败报错、fcitx5 输入法排障"
+
+disable_model_invocation = true
