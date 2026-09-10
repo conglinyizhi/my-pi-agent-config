@@ -55,6 +55,19 @@ describe("来源组规则配置", () => {
 		}]);
 	});
 
+	it("单包兜底规则可以只给 singletonPackages", async () => {
+		const path = await configFile([
+			"[[skillful.skillGroups]]",
+			'id = "auxiliary"',
+			'label = "辅助技能"',
+			"singletonPackages = true",
+		].join("\n"));
+
+		assert.deepEqual(await readSkillGroupRules(path), [
+			{ id: "auxiliary", label: "辅助技能", match: [], singletonPackages: true },
+		]);
+	});
+
 	it("丢弃字段残缺的条目，不连带其它组", async () => {
 		const path = await configFile([
 			"[[skillful.skillGroups]]",
@@ -70,6 +83,10 @@ describe("来源组规则配置", () => {
 			'id = "empty-match"',
 			'label = "空匹配"',
 			"match = []",
+			"",
+			"[[skillful.skillGroups]]",
+			'label = "无 id"',
+			'singletonPackages = false',
 		].join("\n"));
 
 		assert.deepEqual((await readSkillGroupRules(path)).map((rule) => rule.id), ["ok"]);

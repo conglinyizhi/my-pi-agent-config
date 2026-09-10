@@ -20,7 +20,7 @@ pi
 
 **skill-boot** — 技能来源同步与过渡期手动注入。启动时同步技能仓库（clone → `skills/external` 正式发现入口）；`/skill-boot <名>` 注入指定 SKILL.md。外部技能默认隐藏，技能发现与可见性统一交给 Pi / skillful。
 
-**skillful-local** — 从 `pi-skillful` 迁移的精简核心：发现 Git 仓库外层的 `.agents/skills/` 与 `skills/external` 正式入口，统一管理模型自动发现的技能可见性，并支持在输入任意位置显式调用 `/skill:name`。外部技能及后续新发现技能默认隐藏，只提示用户自行开启；`/skillful` 的来源组规则写在 `extensions.toml` 的 `[skillful.skillGroups]`（按 canonical path 片段归组，不硬编码在源码里），当前把官方 MoonBit 技能、`clyzhi-moonwell-spring` 热修复层和本地索引 `moonbit-skills-guide` 合并为 **MoonBit 开发环境** 一组。排除了安装遥测和会话快捷键。许可证与归属见 `extensions/skillful/`。
+**skillful-local** — 从 `pi-skillful` 迁移的精简核心：发现 Git 仓库外层的 `.agents/skills/` 与 `skills/external` 正式入口，统一管理模型自动发现的技能可见性，并支持在输入任意位置显式调用 `/skill:name`。外部技能及后续新发现技能默认隐藏，只提示用户自行开启；`/skillful` 的来源组规则写在 `extensions.toml` 的 `[skillful.skillGroups]`（`match` 按 canonical path 片段归组、`singletonPackages` 收单包，都不硬编码在源码里），当前分四组：MoonBit 开发环境、华夏技能、辅助技能（单包兑底）、以及按包名/来源自动分的其余项。排除了安装遥测和会话快捷键。许可证与归属见 `extensions/skillful/`。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 

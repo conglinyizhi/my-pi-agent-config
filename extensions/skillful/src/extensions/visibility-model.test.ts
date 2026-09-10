@@ -81,6 +81,38 @@ describe("skill visibility model", () => {
 		]);
 	});
 
+	it("单包兜底收单技能包，多技能包保持独立", () => {
+		const rules: SkillGroupRule[] = [{ id: "auxiliary", label: "辅助技能", match: [], singletonPackages: true }];
+		const groups = groupSkills([
+			atPath("creating-aur-packages-skill", "auto", "/home/user/skills/external/creating-aur-packages-skill/SKILL.md"),
+			atPath("fount-char", "auto", "/home/user/skills/external/fount-char/SKILL.md"),
+			atPath("superpowers-a", "auto", "/home/user/skills/external/superpowers/skills/a/SKILL.md"),
+			atPath("superpowers-b", "auto", "/home/user/skills/external/superpowers/skills/b/SKILL.md"),
+			atPath("gui-standards", "auto", "/home/user/skills/clyzhi/gui-standards/SKILL.md"),
+		], rules);
+
+		// 不依赖 locale 排序，按组 id 比对
+		assert.deepEqual(
+			Object.fromEntries(groups.map((group) => [group.id, group.skills.map((item) => item.name)])),
+			{
+				auxiliary: ["creating-aur-packages-skill", "fount-char"],
+				"external:superpowers": ["superpowers-a", "superpowers-b"],
+				"auto\0user": ["gui-standards"],
+			},
+		);
+	});
+
+	it("显式规则命中的技能不被单包兜底抢走", () => {
+		const groups = groupSkills(
+			[atPath("moonbit-orientation", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-orientation/SKILL.md")],
+			[...MOONBIT_RULES, { id: "auxiliary", label: "辅助技能", match: [], singletonPackages: true }],
+		);
+
+		assert.deepEqual(groups.map((group) => [group.id, group.skills.map((item) => item.name)]), [
+			["moonbit-environment", ["moonbit-orientation"]],
+		]);
+	});
+
 	it("多条规则按顺序先匹配先归组", () => {
 		const groups = groupSkills(
 			[atPath("moonbit-orientation", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-orientation/SKILL.md")],

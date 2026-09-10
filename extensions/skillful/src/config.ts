@@ -137,8 +137,10 @@ export interface SkillGroupRule {
 	id: string;
 	/** 组显示名。 */
 	label: string;
-	/** canonical path 片段，命中任意一条即归入该组。 */
+	/** canonical path 片段，命中任意一条即归入该组；按规则顺序先匹配先归组。 */
 	match: string[];
+	/** 兑单：收下未命中其它规则的「单技能包」；多技能包保持各自独立。 */
+	singletonPackages?: boolean;
 }
 
 /** 单条配置 → 规则；字段缺失或类型不对就丢弃，坏配置不影响其它组。 */
@@ -152,8 +154,9 @@ function toSkillGroupRule(value: unknown): SkillGroupRule | undefined {
 	const match = Array.isArray(entry.match)
 		? entry.match.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
 		: [];
-	if (!id || !label || match.length === 0) return undefined;
-	return { id, label, match };
+	const singletonPackages = entry.singletonPackages === true;
+	if (!id || !label || (match.length === 0 && !singletonPackages)) return undefined;
+	return singletonPackages ? { id, label, match, singletonPackages } : { id, label, match };
 }
 
 /** 读 extensions.toml 的 [skillful.skillGroups]；未配置返回空数组（退回按来源/包名分组）。 */

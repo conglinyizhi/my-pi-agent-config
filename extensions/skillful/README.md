@@ -8,6 +8,7 @@
 - 通过 `skillful.hiddenSkills` 控制技能是否出现在模型自动发现列表中
 - `/skillful` 支持单个技能、来源组和全部技能的批量显隐选择
 - 来源组规则是数据不是代码：写在 `extensions.toml` 的 `[skillful.skillGroups]`（`id` / `label` / `match` 路径片段），未命中规则的技能按 `skills/external` 包名或 Pi 的 source/scope 分组
+- `singletonPackages = true` 的兑底规则只收「单技能包」，多技能聚合仓库（如 superpowers）保持各自独立
 - 界面采用“模型可见性”语义：`[x]` 可见，`[ ]` 隐藏，`[~]` 表示组内部分可见
 - 选择界面中 `Space` 切换当前项，`v` 全部可见，`h` 全部隐藏，`Enter` 统一保存，`Esc` 放弃
 - 支持在输入任意位置显式调用 `/skill:name`

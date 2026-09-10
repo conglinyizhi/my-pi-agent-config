@@ -94,7 +94,10 @@ max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
 # 把多个技能来源合并成一行统一启停；不配则退回按 source/包名分组。
 #   id    - 组标识，同 id 合并为一行（必填）
 #   label - 组显示名（必填）
-#   match - canonical path 片段，命中任意一条即归入该组；按规则顺序先匹配先归组（必填）
+#   match - canonical path 片段，命中任意一条即归入该组；按规则顺序先匹配先归组
+#   singletonPackages - true 时做单包兜底：收下未命中其它规则的「单技能包」，
+#                       多技能聚合仓库（如 superpowers）保持各自独立
+# match 与 singletonPackages 至少给一个
 # ─────────────────────────────────────────────────────────────
 [[skillful.skillGroups]]
 id = "moonbit-environment"
@@ -104,3 +107,20 @@ match = [
   "skills/external/clyzhi-moonwell-spring",
   "skills/clyzhi/moonbit-skills-guide",
 ]
+
+# 零散单技能包收敛成组，避免每个包占一行；按规则顺序先匹配先归组，兜底放最后
+[[skillful.skillGroups]]
+id = "huaxia"
+label = "华夏技能"
+match = [
+  "skills/external/nopua",
+  "skills/external/tiangong",
+  "skills/external/bibuzaohua",
+  "skills/external/paoding-jieniu",
+]
+
+# 兜底：未命中上面规则的「单技能包」收进这组，多技能包不受影响
+[[skillful.skillGroups]]
+id = "auxiliary"
+label = "辅助技能"
+singletonPackages = true
