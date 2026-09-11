@@ -73,6 +73,50 @@ const AskQuestionParams = Type.Object({
 type AskQuestionInput = Static<typeof AskQuestionParams>;
 type AskQuestionToolResult = AgentToolResult<AskQuestionResult>;
 
+/**
+ * 兼容垫片：部分模型（deepseek 系尤其明显）按 Claude Code AskUserQuestion 的形状输出，
+ * 选项只给 label/description（漏 value），问题字段用 header/question 而不是 label/question_text。
+ * 这些字段在这里是冗余或可推的，缺失时补上，避免整次调用硬失败。
+ *
+ * 必须走 prepareArguments：pi 的参数校验发生在 tool_call 扩展事件之前，扩展钩子接不住这类硬失败。
+ */
+function normalizeAskQuestionArguments(args: unknown): AskQuestionInput {
+  if (!args || typeof args !== "object") return args as AskQuestionInput;
+  const input = args as { questions?: unknown };
+  if (!Array.isArray(input.questions)) return args as AskQuestionInput;
+
+  const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+
+  const questions = input.questions.map((rawQuestion, index) => {
+    const question = (rawQuestion && typeof rawQuestion === "object" ? rawQuestion : {}) as Record<string, unknown>;
+
+    const options = Array.isArray(question.options)
+      ? question.options.map((rawOption) => {
+          const option = (rawOption && typeof rawOption === "object" ? rawOption : {}) as Record<string, unknown>;
+          const value = asString(option.value);
+          const label = asString(option.label);
+          const filled = value ?? label ?? asString(option.description);
+          // 三者都不是字符串时原样放行，让校验明确报错，而不是造一个空选项
+          return filled === undefined ? option : { ...option, value: value ?? filled, label: label ?? filled };
+        })
+      : question.options;
+
+    const label = asString(question.label) ?? asString(question.header);
+    const questionText = asString(question.question_text) ?? asString(question.question);
+
+    return {
+      ...question,
+      id: asString(question.id) || `q${index + 1}`,
+      // 只在能推出值时才写字段，避免留下 undefined 让校验报出误导性错误
+      ...(label === undefined ? {} : { label }),
+      ...(questionText === undefined ? {} : { question_text: questionText }),
+      options,
+    };
+  });
+
+  return { ...input, questions } as AskQuestionInput;
+}
+
 function errorResult(message: string, questions: Question[] = []): AskQuestionToolResult {
   return {
     content: [{ type: "text", text: message }],
@@ -436,6 +480,7 @@ export default function askQuestion(pi: ExtensionAPI) {
     description:
       "Ask the user one or more structured questions with selectable options. Use for clarifying requirements, getting preferences, or confirming decisions. Single question: simple option list. Multiple questions: tab-based interface. Prefer concise options; set allowOther when free-form input may be needed.",
     parameters: AskQuestionParams,
+    prepareArguments: normalizeAskQuestionArguments,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return handleAskQuestion(ctx, params);
