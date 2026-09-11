@@ -198,7 +198,7 @@ export function buildSubagentEnv(
 }
 
 /**
- * 合并 worker 额外显式扩展（纯函数）：保留既有 extras（反馈模式等），
+ * 合并 worker 额外显式扩展（纯函数）：保留既有 extras，
  * 仅当 inboxId 合法时追加 supplement bridge 扩展绝对路径（AGENT_DIR 派生，
  * 非硬编码 cwd），且去重——绝不在同一 worker 上重复加载 bridge。
  */
@@ -310,7 +310,7 @@ export interface RunSubagentOptions {
   timeout?: number;
   signal?: AbortSignal;
   taskId?: string; // 用于 permission-gate 关联
-  tools?: string[]; // 工具白名单（反馈模式：read/bash/be-*）
+  tools?: string[]; // worker 工具白名单（--tools 精确名单，不支持通配）
   extraExtensions?: string[]; // 额外显式加载的扩展绝对路径
   /** 要提供给 worker 的 skill 绝对路径（目录/文件） */
   skills?: string[];

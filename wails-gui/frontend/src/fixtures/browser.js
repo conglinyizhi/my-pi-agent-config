@@ -14,7 +14,6 @@ export const browserFixtures = {
     kind: "audit",
   },
   subagents: {
-    feedback: false,
     workers: [
       {
         id: "browser-w1", task: "检查浏览器壳的 View 平台边界", status: "running", model: "mock/browser", pid: 1001,

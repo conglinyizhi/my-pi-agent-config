@@ -1,10 +1,9 @@
-// trident-subagent — 同步 subagent 派发 + 反馈模式开关
+// trident-subagent — 同步 subagent 派发
 //
 // subagent({ task: string | Brief | (string | Brief)[], skills?: string[] })：主 agent 整理好完整任务简报后调用，
 // 同步等待全部 worker 返航（success/failed/aborted/timeout 逐项汇报）。
 // 默认模型优先级：显式 model > subagent 独立默认 > 当前会话模型；可由用户命令设置独立默认。
 // skills 可按简报逐 worker 指定。
-// /subagent:feedback on|off|toggle：后续新启动 worker 只允许 read/bash/be-* 工具。
 // /subagent:gui：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -14,7 +13,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
-import { readFeedbackState, writeFeedbackState, buildSafeWorkerTools, buildToolsFromNames } from "./feedback.ts";
+import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
@@ -33,7 +32,6 @@ import {
 import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
 import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
 
-const BE_ERROR_RECORDER = path.join(os.homedir(), ".pi", "agent", "extensions", "be-error-recorder", "index.ts");
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
 const capabilityReviewCache = createReviewCache();
@@ -303,7 +301,6 @@ export default function (pi: ExtensionAPI) {
           details: { error: "missing_worker_model" },
         };
       }
-      const feedbackOn = readFeedbackState();
       const profile = params.sandbox_profile
         ?? (params.sandbox_dir ? "worktree" : "readonly");
       if (profile === "worktree" && !params.sandbox_dir) {
@@ -321,16 +318,6 @@ export default function (pi: ExtensionAPI) {
           details: { error: "missing_safe_worker_tools" },
         };
       }
-      const toolCfg = feedbackOn
-        ? buildToolsFromNames(activeTools)
-        : { tools: safeTools };
-      if (!toolCfg.tools || !toolCfg.tools.includes("bash") || !toolCfg.tools.includes("read")) {
-        return {
-          content: [{ type: "text", text: "错误：反馈模式的安全工具白名单不可用，拒绝启动 worker。" }],
-          details: { error: "invalid_feedback_tools" },
-        };
-      }
-
       // batch-scoped inbox id：`batch-${base36 timestamp}-${compact randomUUID}-w${i+1}`
       // 只含 [A-Za-z0-9_-]（base36 小写 + 32 位 hex + 分隔符），长度 ~50 << 128；
       // 同一 id 同时交给 runBatch（不得按任务位置重算）。randomUUID 去连字符防歧义。
@@ -360,14 +347,14 @@ export default function (pi: ExtensionAPI) {
           kind: "reconstructable-input",
           stableInstruction: SUBAGENT_PROMPT,
           skillPaths: workerSkills,
-          tools: toolCfg.tools,
-          extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : [],
+          tools: safeTools,
+          extraExtensions: [],
         },
       });
       onUpdate?.({
         content: [{
           type: "text",
-          text: `已启动 ${tasks.length} 个 subagent，主线等待全部完成；/subagent:gui 查看实时详情${feedbackOn ? "（反馈模式）" : ""}`,
+          text: `已启动 ${tasks.length} 个 subagent，主线等待全部完成；/subagent:gui 查看实时详情`,
         }],
         details: { phase: "running" },
       });
@@ -382,8 +369,7 @@ export default function (pi: ExtensionAPI) {
           signal,
           skills: resolveSkillPaths(params.skills ?? []),
           workerSkills,
-          tools: toolCfg.tools,
-          extraExtensions: feedbackOn ? [BE_ERROR_RECORDER] : undefined,
+          tools: safeTools,
           taskId: batchTaskId,
           onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
             pi,
@@ -452,44 +438,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ═══════════════════════════
-  // /subagent:feedback — 反馈模式开关
-  // ═══════════════════════════
-
-  pi.registerCommand("subagent:feedback", {
-    description: "切换 subagent 反馈模式：on|off|toggle（仅影响新启动的 worker，只允许 read/bash/be-* 工具）",
-    handler: async (args, ctx) => {
-      const arg = args?.trim();
-      const current = readFeedbackState();
-      let next: boolean;
-      if (arg === "on") next = true;
-      else if (arg === "off") next = false;
-      else if (arg === "toggle" || !arg) next = !current;
-      else {
-        ctx.ui.notify(`未知参数：${arg}。用法 /subagent:feedback on|off|toggle`, "error");
-        return;
-      }
-
-      if (next && !buildToolsFromNames(pi.getActiveTools()).tools) {
-        ctx.ui.notify("反馈模式拒绝开启：当前未检测到 be-* 工具（better-edit-tools 未连接）。", "error");
-        return;
-      }
-      writeFeedbackState(next);
-      ctx.ui.notify(
-        `subagent 反馈模式已${next ? "开启" : "关闭"}。${next ? "新 worker 仅限 read/bash/be-*；运行中的 worker 不受影响。" : ""}`,
-        next ? "warning" : "info",
-      );
-    },
-  });
-
-
-  // ═══════════════════════════
   // /subagent:gui — 异步启动实时监视窗口
   // ═══════════════════════════
 
   const subagentsGuiHandler = async (_args: string, ctx: ExtensionContext) => {
-    // 非阻塞拉起：不等待 response / 窗口关闭，反馈开关由 GUI 内 SaveSubagentFeedback 持久化
+    // 非阻塞拉起：不等待 response / 窗口关闭
     const result = launchGuiWindow("subagents", {
-      feedback: readFeedbackState(),
       workers: getSnapshot(),
     });
 
@@ -502,7 +456,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.registerCommand("subagent:gui", {
-    description: "打开 subagent 实时监视 GUI（不阻塞命令；反馈开关由窗口内直接持久化）",
+    description: "打开 subagent 实时监视 GUI（不阻塞命令）",
     handler: subagentsGuiHandler,
   });
 

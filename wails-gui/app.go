@@ -61,7 +61,6 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 	base := map[string]interface{}{"responseFile": a.responseFile}
 	switch a.windowName {
 	case "subagents":
-		base["feedback"] = req["feedback"]
 		base["workers"] = req["workers"]
 	case "routing":
 		base["todos"] = req["todos"]
@@ -142,14 +141,6 @@ func (a *App) GetSubagentStatus() string {
 		return string(data)
 	}
 	return string(out)
-}
-
-// SaveSubagentFeedback 由 GUI 开关调用，写反馈模式状态
-func (a *App) SaveSubagentFeedback(enabled bool) error {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".pi")
-	_ = os.MkdirAll(dir, 0755)
-	return os.WriteFile(filepath.Join(dir, "subagent-feedback.json"), []byte(fmt.Sprintf("{\"enabled\": %v}\n", enabled)), 0644)
 }
 
 // SaveResponse 写响应文件（对齐 fs.writeFileSync(responseFile, JSON.stringify(payload))）

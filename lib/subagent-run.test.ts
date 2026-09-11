@@ -1,7 +1,7 @@
 // subagent-run.test.ts — runSubagent 参数构造、最终输出提取与 timeline 归一化行为测试
 //
 // 背景：worker 子进程需要显式加载 custom-providers 扩展（providers.toml 的动态模型），
-// 同时保持隔离（--no-extensions 等）；反馈模式下 --tools 白名单只放 read/bash/be-*。
+// 同时保持隔离（--no-extensions 等）；--tools 为精确名单，不支持通配。
 // timeline：把 pi JSON stdout 事件归一化成有界 per-worker 轨迹（assistant/tool/lifecycle）。
 //
 // 跑法：node --experimental-strip-types lib/subagent-run.test.ts
@@ -55,11 +55,11 @@ describe("buildSubagentArgs", () => {
   });
 
   it("extraExtensions 逐个显式加载", () => {
-    const args = buildSubagentArgs({ ...base, extraExtensions: ["/ext/be-error-recorder/index.ts"] });
+    const args = buildSubagentArgs({ ...base, extraExtensions: ["/ext/custom-providers/index.ts"] });
     const extIdxs: number[] = [];
     for (let i = 0; i < args.length; i++) if (args[i] === "--extension") extIdxs.push(i + 1);
     assert(extIdxs.length >= 2);
-    assert(extIdxs.some((i) => args[i].includes("be-error-recorder")));
+    assert(extIdxs.some((i) => args[i].includes("custom-providers")));
   });
 
   it("无 tools 时不传 --tools", () => {
@@ -110,10 +110,10 @@ describe("buildWorkerExtraExtensions（仅有效 inbox 追加 supplement bridge�
     assert.ok(exts.includes(bridge));
   });
 
-  it("与既有反馈扩展合并且不重复 bridge 路径", () => {
-    const exts = buildWorkerExtraExtensions(["/ext/be-error-recorder/index.ts", bridge], "batch-abc123-w1");
+  it("与既有扩展合并且不重复 bridge 路径", () => {
+    const exts = buildWorkerExtraExtensions(["/ext/custom-providers/index.ts", bridge], "batch-abc123-w1");
     assert.strictEqual(exts.filter((e) => e === bridge).length, 1);
-    assert.ok(exts.includes("/ext/be-error-recorder/index.ts"));
+    assert.ok(exts.includes("/ext/custom-providers/index.ts"));
   });
 
   it("无效/缺失 inboxId 不追加 bridge，既有 extras 原样保留", () => {

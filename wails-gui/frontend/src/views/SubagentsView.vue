@@ -5,13 +5,10 @@
       v-if="viewLevel === 'agents'"
       :workers="workers"
       :selected-id="selectedId"
-      :feedback="feedback"
-      :feedback-note="feedbackNote"
       :status-icon="statusIcon"
       :status-label="statusLabel"
       :activity-state="activityState"
       @select="select"
-      @toggle-feedback="toggleFeedback"
     />
     <button v-if="viewLevel === 'agents'" class="diagnostics-btn" @click="loadDiagnostics">本地诊断档案</button>
     <div v-if="diagnosticsOpen" class="diagnostics-overlay" @click.self="diagnosticsOpen = false">
@@ -180,8 +177,6 @@ const OVERSCAN = 5; // 视口外预渲染行数，减少滚动闪白
 
 const ready = ref(false);
 const workers = ref([]);
-const feedback = ref(false);
-const feedbackNote = ref("");
 const diagnosticsOpen = ref(false);
 const diagnostics = ref([]);
 const diagnosticDocument = ref("");
@@ -629,20 +624,9 @@ async function deleteDiagnostic(batchId) {
   } catch { /* 保留当前列表，用户可重试 */ }
 }
 
-async function toggleFeedback(e) {
-  const next = e.target.checked;
-  try {
-    await platform.subagents.saveFeedback(next);
-    feedback.value = next;
-    feedbackNote.value = next ? "仅影响新启动的 worker；运行中的不受影响。" : "";
-  } catch { /* 写失败保持原状 */ }
-}
-
 onMounted(async () => {
   const init = await platform.session.getInitData();
   workers.value = init.workers || [];
-  feedback.value = !!init.feedback;
-  feedbackNote.value = feedback.value ? "仅影响新启动的 worker；运行中的不受影响。" : "";
   ready.value = true;
   await platform.session.markReady();
   await nextTick();

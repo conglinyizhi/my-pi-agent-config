@@ -5,11 +5,6 @@
         <h1>Subagent 批次</h1>
         <span class="count-badge">{{ workers.length }}</span>
       </div>
-      <label class="feedback-toggle" data-name="feedback-toggle-wrap">
-        <input type="checkbox" data-name="feedback-toggle" :checked="feedback" @change="$emit('toggle-feedback', $event)" />
-        <span>反馈模式（新 worker 仅 read/bash/be-*）</span>
-      </label>
-      <p v-if="feedbackNote" class="note">{{ feedbackNote }}</p>
     </header>
 
     <div class="worker-list">
@@ -30,13 +25,11 @@
 defineProps({
   workers: { type: Array, default: () => [] },
   selectedId: { type: String, default: null },
-  feedback: Boolean,
-  feedbackNote: { type: String, default: "" },
   statusIcon: { type: Function, required: true },
   statusLabel: { type: Function, required: true },
   activityState: { type: Function, required: true },
 });
-defineEmits(["select", "toggle-feedback"]);
+defineEmits(["select"]);
 </script>
 
 <style scoped>
@@ -45,9 +38,6 @@ defineEmits(["select", "toggle-feedback"]);
 .agents-title-row { display: flex; justify-content: space-between; align-items: center; }
 .agents-title-row h1 { font-size: 14px; color: #7aa2f7; margin: 0; }
 .count-badge { font-size: 11px; color: #565f89; }
-.feedback-toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: #a9b1d6; cursor: pointer; }
-.feedback-toggle input { accent-color: #e0af68; cursor: pointer; }
-.note { font-size: 10px; color: #565f89; margin: 6px 0 0; line-height: 1.4; }
 .worker-list { flex: 1; overflow-y: auto; }
 .agent-item { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #1a1a3e; display: flex; align-items: center; gap: 6px; border-left: 3px solid transparent; }
 .agent-item:hover { background: #16213e; }

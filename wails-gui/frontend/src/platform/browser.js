@@ -2,7 +2,6 @@
 
 export function createBrowserPlatform(initData, { onSubmit = () => {}, onOpenFile = () => {}, onCopyText } = {}) {
   let reasons = [];
-  let feedback = Boolean(initData?.feedback);
   let workers = Array.isArray(initData?.workers) ? initData.workers : [];
   const copyText = onCopyText ?? (async (text) => {
     if (globalThis.navigator?.clipboard?.writeText) await globalThis.navigator.clipboard.writeText(text);
@@ -43,7 +42,6 @@ export function createBrowserPlatform(initData, { onSubmit = () => {}, onOpenFil
       async getDiagnostics() { return []; },
       async getDiagnostic() { return ""; },
       async deleteDiagnostic() { return false; },
-      async saveFeedback(enabled) { feedback = enabled; },
       async queueSupplement(inboxId, text) {
         workers = workers.map((worker) => worker.inboxId === inboxId
           ? { ...worker, supplements: [...(worker.supplements || []), { id: `browser-${Date.now()}`, text, state: "pending" }] }
@@ -64,7 +62,5 @@ export function createBrowserPlatform(initData, { onSubmit = () => {}, onOpenFil
         });
       },
     },
-    // 仅供浏览器入口显示 fixture 运行的本地状态，不被业务 View 使用。
-    debug: { get feedback() { return feedback; } },
   };
 }

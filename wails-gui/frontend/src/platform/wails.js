@@ -14,7 +14,6 @@ import {
   UpdateReason,
   DeleteReason,
   SaveResponse,
-  SaveSubagentFeedback,
   WithdrawSubagentSupplement,
 } from "../../wailsjs/go/main/App.js";
 import { ClipboardSetText, Quit } from "../../wailsjs/runtime/runtime.js";
@@ -51,7 +50,6 @@ export function createWailsPlatform() {
       getDiagnostics: GetSubagentDiagnostics,
       getDiagnostic: GetSubagentDiagnostic,
       deleteDiagnostic: DeleteSubagentDiagnostic,
-      saveFeedback: SaveSubagentFeedback,
       queueSupplement: QueueSubagentSupplement,
       withdrawSupplement: WithdrawSubagentSupplement,
       mergeSupplements: MergeSubagentSupplements,

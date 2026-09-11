@@ -58,10 +58,6 @@ export function SaveResponse(arg1) {
   return window['go']['main']['App']['SaveResponse'](arg1);
 }
 
-export function SaveSubagentFeedback(arg1) {
-  return window['go']['main']['App']['SaveSubagentFeedback'](arg1);
-}
-
 export function UpdateReason(arg1, arg2) {
   return window['go']['main']['App']['UpdateReason'](arg1, arg2);
 }
