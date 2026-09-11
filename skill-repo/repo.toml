@@ -127,3 +127,16 @@ tags = ["rime", "fcitx5", "input-method"]
 trigger = "输入法候选排序不对、想要的字排后面、自造词被记错、自造词找不到或丢了、rime 部署失败报错、fcitx5 输入法排障"
 
 disable_model_invocation = true
+
+[[skills]]
+name = "baoyu-design"
+source = "https://github.com/JimLiu/baoyu-design"
+description = "Claude Design 的本地 Agent 移植版 — 以自包含 HTML 产出 UI 稿、交互原型、线框图、落地页、仪表盘、移动端界面、幻灯片(PPT/PPTX)、文档简历、图表、HTML 邮件等设计产物"
+tags = ["design", "html", "prototype", "slides"]
+bundle = true
+link_targets = [
+  "skills/baoyu-design",
+]
+trigger = "做 UI 稿/界面设计、交互原型、线框图、落地页、仪表盘、移动端界面、幻灯片或 PPT/PPTX、简历与文档排版、图表、HTML 邮件；或要建立设计系统/UI kit/品牌 token"
+
+disable_model_invocation = true
