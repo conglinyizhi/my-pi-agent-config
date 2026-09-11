@@ -187,7 +187,7 @@ ResourcesDiscoverResult = { skillPaths?; promptPaths?; themePaths? }
 
 | 扩展 | 文件 | 注册面（工具/命令/事件） | 状态持久化 |
 |---|---|---|---|
-| **trident-subagent** | `extensions/trident-subagent/{index,batch,feedback,status}.ts` | 工具 `subagent`（单/并行 worker）；命令 `/subagent:feedback` `/gui:subagents` `/trident-models` `/gui:trident-setup` | 内存 worker 快照 → `~/.pi/subagent-status.json`（GUI 轮询）；反馈开关 `~/.pi/subagent-feedback.json`；模型路由 `providers.roles.toml` |
+| **trident-subagent** | `extensions/trident-subagent/{index,batch,status,worker-tools}.ts` | 工具 `subagent`（单/并行 worker）；命令 `/subagent:gui` `/gui:subagents`(兼容别名) `/trident-models` `/gui:trident-setup` | 内存 worker 快照 → `~/.pi/subagent-status.json`（GUI 轮询）；模型路由 `providers.roles.toml` |
 | **goal** | `extensions/goal/index.ts` | 命令 `/goal`；事件 `agent_settled`(循环核心) `input`(用户打断重置) `message_end`(抑制完成通知) `session_shutdown` | 纯内存（靠会话里的 `<summary>` XML 消息 + 300ms 定时器续行）；无跨重启恢复 |
 | **plan-mode** | `extensions/plan-mode/{index,utils}.ts` | 命令 `/plan` `/todos`；flag `--plan`；快捷键 ctrl+alt+p；事件 `tool_call`(bash 白名单拦截) `context`(过滤过期 plan 消息) `before_agent_start`(注入 [PLAN MODE ACTIVE]/[EXECUTING PLAN]) `turn_end`(`[DONE:n]` 追踪) `agent_end`(提取待办+用户选择) `session_start`(恢复) | `pi.appendEntry("plan-mode", {enabled,todos,executing})` 写入会话 JSONL；恢复时重扫消息重建完成状态 |
 | **subagent-supplement-bridge** | `extensions/subagent-supplement-bridge/index.ts` | 事件 `tool_execution_end`（worker 子进程内由 env `PI_SUBAGENT_INBOX` 激活：claim 队列 → `sendUserMessage(⟦pi-supplement:v1⟧+JSON, {deliverAs:"steer"})`） | 队列 `~/.pi/subagent-supplements/<inboxId>.json`（lib 层实现，锁目录+原子 rename） |
@@ -207,7 +207,6 @@ ResourcesDiscoverResult = { skillPaths?; promptPaths?; themePaths? }
 | **zhipu-search** | `extensions/zhipu-search/index.ts` | 工具 `web_search`（智谱 Web Search API 结构化搜索） | 读 `auth.json` 的 `zhipu.key` |
 | **trident-routing** | `extensions/trident-routing/{index,todo-scan}.ts` | 命令 `/homeport`(母港维修模式: 替换系统提示词) `/gui:scan-todo`；快捷键 ctrl+shift+t；事件 `session_start`(开场白 appendEntry + 工具集校准) `before_agent_start`(母港替换 systemPrompt)；`registerEntryRenderer("trident-greeting")` | `pi.appendEntry("trident-greeting")` 会话内 |
 | **tool-param-normalizer** | `extensions/tool-param-normalizer/index.ts` | 事件 `tool_call`(edit 参数别名归一化 old_str→oldText) `tool_result`(错误落盘日志) | `~/.pi/agent/tool-errors.log` |
-| **be-error-recorder** | `extensions/be-error-recorder/index.ts` | 事件 `tool_result`(仅反馈模式 worker 显式加载；be-* 失败追加记录) | `~/.pi/subagent-be-errors.jsonl` |
 | **settings-sync** | `extensions/settings-sync.ts` | 事件 `session_start`(tracked→settings.json 单向同步) `session_shutdown`(兜底回写)；`fs.watch` 实时防抖回写 | `settings.tracked.json`(git 跟踪真相源) ⇄ `settings.json`(gitignore)；黑名单字段不参与 |
 | **ctrl-c-safety** | `extensions/ctrl-c-safety.ts` | 快捷键 `ctrl+c`（保存编辑器内容到历史后清空） | `~/.pi/agent/queue/cliphist.json`(15 条) |
 | **editor-gui** | `extensions/editor-gui/index.ts` | 命令 `/prompt-edit-gui`（Wails GUI 编辑提示词/Ctrl+C 历史） | 读 cliphist.json |
@@ -242,12 +241,11 @@ ResourcesDiscoverResult = { skillPaths?; promptPaths?; themePaths? }
 - 失败恢复包：重试彻底失败写 `lib/subagent-investigation.ts` 生成的**调查文件**（md 章节：任务/错误/最后步骤/stderr 尾/疑似写文件工具白名单提示），主 agent 按"读档指引+最终结论"低成本恢复现场，而非整文件灌回上下文。
 - 终态分类：`SubagentError.status`（timeout/aborted 结构化字段）而非正则匹配错误文本；超时控制器（默认 600s）+ 外部 signal 双 AbortController 合并。
 - GUI 观察：`/gui:subagents` 经 `lib/gui-runner.ts::launchGuiWindow` 异步拉起 Wails 窗口轮询状态文件；`/gui:trident-setup` 同步等待选择模型写回 `providers.roles.toml`。
-- 反馈模式：`/subagent:feedback on` 后新 worker 只用 `read/bash/be-*` 白名单（`--tools` 精确名单不支持通配，从活跃工具名过滤 be- 前缀），be-* 失败由 be-error-recorder 追加 `~/.pi/subagent-be-errors.jsonl` 供离线审阅。
 - 补充指令桥：主 agent 可向运行中 worker 的 inbox 队列投递指令，worker 内 `subagent-supplement-bridge` 在每个 `tool_execution_end` claim 一条并以 `⟦pi-supplement:v1⟧` wire 前缀 + `deliverAs:"steer"` 塞回（工具执行后、下次 LLM 调用前投递；send 失败尽力 release 回滚）。
 
-**持久化格式**：`~/.pi/subagent-status.json`（运行时快照，GUI 轮询，进程结束即弃）、`~/.pi/subagent-feedback.json`（`{enabled}`）、`~/.pi/subagent-supplements/<inboxId>.json`（FIFO 队列，`.lock` 目录互斥 + 临时文件 rename 原子写 + stale mtime 回收 + 0o600）、`~/.pi/subagent-be-errors.jsonl`、tmp 下调查文件（`pi-subagent-*/`）、`providers.roles.toml`（模型路由，`[roles] worker=...`）。
+**持久化格式**：`~/.pi/subagent-status.json`（运行时快照，GUI 轮询，进程结束即弃）、`~/.pi/subagent-supplements/<inboxId>.json`（FIFO 队列，`.lock` 目录互斥 + 临时文件 rename 原子写 + stale mtime 回收 + 0o600）、tmp 下调查文件（`pi-subagent-*/`）、`providers.roles.toml`（模型路由，`[roles] worker=...`）。
 
-> 对照：pi 官方示例 `node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/` 提供更简单的版本（`agents.ts` 声明式 agent 定义、单/并行/链式 `{previous}` 三种模式、MAX_PARALLEL_TASKS=8、MAX_CONCURRENCY=4、输出 50KB 封顶），仓库版在此基础上加了重试/调查/状态 GUI/反馈模式。
+> 对照：pi 官方示例 `node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/` 提供更简单的版本（`agents.ts` 声明式 agent 定义、单/并行/链式 `{previous}` 三种模式、MAX_PARALLEL_TASKS=8、MAX_CONCURRENCY=4、输出 50KB 封顶），仓库版在此基础上加了重试/调查/状态 GUI。
 
 ### D.2 goal —— agent_settled 事件驱动的续行循环
 
