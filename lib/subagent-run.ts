@@ -155,6 +155,8 @@ const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adap
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
 const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "guard.ts");
 const SUBAGENT_BASH_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "subagent-bash-guard.ts");
+// 提供 worker 的 web_search（智谱搜索）；凭据从 auth.json 读，不依赖 worker 环境变量
+const ZHIPU_SEARCH_EXT = path.join(AGENT_DIR, "extensions", "zhipu-search", "index.ts");
 
 /**
  * 实时快照最小投递间隔（毫秒）。增量事件（尤其 thinking_delta）可达每秒几十条，
@@ -260,6 +262,7 @@ export function buildSubagentArgs(opts: {
     "--extension", MCP_ADAPTER_EXT,
     "--extension", SANDBOX_GUARD_EXT,
     "--extension", SUBAGENT_BASH_GUARD_EXT,
+    "--extension", ZHIPU_SEARCH_EXT,
   ];
   for (const ext of opts.extraExtensions ?? []) args.push("--extension", ext);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));

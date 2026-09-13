@@ -7,11 +7,11 @@ import { describe, it } from "node:test";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 
 describe("worker tools", () => {
-  it("普通 worker 只保留文件/bash/be-*，排除联网与 MCP 工具", () => {
+  it("普通 worker 保留文件/bash/be-*/web_search，排除 MCP 与派发工具", () => {
     const tools = buildSafeWorkerTools([
       "read", "write", "edit", "bash", "grep", "find", "ls",
       "be-read", "web_search", "mcp", "mcpScript", "subagent",
     ]);
-    assert.deepStrictEqual(tools, ["bash", "be-read", "edit", "find", "grep", "ls", "read", "write"]);
+    assert.deepStrictEqual(tools, ["bash", "be-read", "edit", "find", "grep", "ls", "read", "web_search", "write"]);
   });
 });
