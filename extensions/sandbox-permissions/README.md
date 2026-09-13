@@ -15,7 +15,7 @@
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
-注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程复用现有 gate GUI/TUI 审批，批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network grant 由 `scripts/network-block-run.c` 编译出的 seccomp runner 执行：未批准的 worker bash 无法创建 IPv4/IPv6 socket；Unix socket 保留。publish/read-secrets 不开放给 worker。
+注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程复用现有 gate GUI/TUI 审批，批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -60,14 +60,16 @@ node --experimental-strip-types lib/subagent-capability.test.ts
 node --experimental-strip-types lib/subagent-env.test.ts
 ```
 
-network seccomp runner（Linux）构建：
+可选加固：network seccomp runner（当前未启用）
+
+`scripts/network-block-run.c` 是一层可选的 Linux 网络墙，能在内核层禁止 worker bash 创建 IPv4/IPv6 socket（Unix socket 保留）。2026-09 上线时曾默认启用，同月按原设计移除：网络能力交给 capability 审批链，不做 OS 级隔离。需要恢复时自行编译：
 
 ```bash
 cc -O2 -Wall -Wextra -o scripts/vendor/network-block-run scripts/network-block-run.c -lseccomp
 chmod 755 scripts/vendor/network-block-run
 ```
 
-runner 缺失时 worker 网络墙 fail-closed（退出码 125），不会裸跑。
+注意 `scripts/sandbox-shell.mjs` 已不再引用该 runner，编译出来不会生效，需同时改回 wrapper。
 
 ## gate 规则引擎（原 permission-gate）
 

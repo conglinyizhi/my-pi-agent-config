@@ -29,6 +29,11 @@
 //
 // 安全策略：fail-closed——landlock-run 缺失时拒绝执行并报错，绝不裸跑。
 // 跨平台：仅 Linux（Landlock 内核机制）；macOS/Windows 不适用本 wrapper。
+//
+// 网络：本 wrapper 不做网络拦截。worker 的网络访问由 capability 审批链控制
+// （subagent-bash-guard 请求 → 主对话审批），不用内核级网络墙。
+// 历史：2026-09-06 曾接入 seccomp runner（scripts/network-block-run.c）默认断掉
+// worker bash 的 IPv4/IPv6 socket；2026-09-13 按原设计移除该层。源码保留但不再编译调用。
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -37,7 +42,6 @@ import { homedir } from "node:os";
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 const VENDORED_LANDLOCK = join(AGENT_DIR, "scripts", "vendor", "landlock-run");
-const NETWORK_BLOCK_RUN = join(AGENT_DIR, "scripts", "vendor", "network-block-run");
 const SETTINGS_PATH = join(AGENT_DIR, "settings.json");
 const FAIL_EXIT = 125;
 
@@ -170,26 +174,9 @@ function runCommand(launcher, args, cwd) {
   });
 }
 
-/** worker 未获本次 network grant 时，通过 seccomp runner 禁止创建 IPv4/IPv6 socket。 */
-function workerNetworkBlocked() {
-  return process.platform === "linux"
-    && process.env.PI_SUBAGENT === "1"
-    && process.env.PI_SANDBOX_NETWORK_ALLOW !== "1";
-}
-
-function requireNetworkBlocker() {
-  if (workerNetworkBlocked() && !existsSync(NETWORK_BLOCK_RUN)) {
-    console.error(`sandbox-shell: 找不到 network-block-run（${NETWORK_BLOCK_RUN}），worker 网络墙 fail-closed。`);
-    process.exit(FAIL_EXIT);
-  }
-}
-
 /** 直接执行 bash（豁免命令 / 非沙箱平台 / 完全开放：文件系统不沙箱，但内存墙照常） */
 function execBash(command) {
-  requireNetworkBlocker();
-  return workerNetworkBlocked()
-    ? runCommand(NETWORK_BLOCK_RUN, ["bash", "-c", command], process.cwd())
-    : runCommand("bash", ["-c", command], process.cwd());
+  return runCommand("bash", ["-c", command], process.cwd());
 }
 
 /**
@@ -226,13 +213,9 @@ function buildGrants() {
   return grants;
 }
 
-/** 经 landlock-run 沙箱执行；worker 未获 network grant 时，内层再套 seccomp 网络墙。 */
+/** 经 landlock-run 沙箱执行（只约束文件系统；网络不拦截，由 capability 审批链管）。 */
 function execSandboxed(command, launcher) {
-  requireNetworkBlocker();
-  const inner = workerNetworkBlocked()
-    ? [NETWORK_BLOCK_RUN, "bash", "-c", command]
-    : ["bash", "-c", command];
-  return runCommand(launcher, [...buildGrants(), "--", ...inner], process.cwd());
+  return runCommand(launcher, [...buildGrants(), "--", "bash", "-c", command], process.cwd());
 }
 
 // ── 入口 ──

@@ -4,7 +4,7 @@
 // 然后在工具调用内阻塞等待父进程的响应文件（不 kill worker）。
 // 批准就执行本条命令；拒绝就把理由作为工具结果返回给模型，agent 可以换方式继续。
 
-import type { ExtensionAPI, BashSpawnContext, BashToolDetails } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -62,20 +62,8 @@ export default function (pi: ExtensionAPI): void {
   // 预批准（父进程显式传入的 grant）+ 本次进程内已批准的命令；同一 worker 里同一条命令只批一次
   const grants: CapabilityGrant[] = parseCapabilityGrants(process.env.PI_SUBAGENT_CAPABILITY_GRANTS);
   const granted = new Set(grants.map((g) => `${g.capability}:${g.commandDigest}`));
-  const networkApproved = new Set<string>();
 
-  const spawnHook = ({ command, cwd: commandCwd, env }: BashSpawnContext): BashSpawnContext => {
-    const nextEnv = { ...env };
-    // 批准登记后 spawnHook 才注入网络开关，保证只影响这一条命令。
-    if (networkApproved.delete(commandDigest(command))) nextEnv.PI_SANDBOX_NETWORK_ALLOW = "1";
-    else delete nextEnv.PI_SANDBOX_NETWORK_ALLOW;
-    return { command, cwd: commandCwd, env: nextEnv };
-  };
-
-  const bashDef = createBashToolDefinition(cwd, {
-    shellPath,
-    spawnHook,
-  });
+  const bashDef = createBashToolDefinition(cwd, { shellPath });
 
   pi.registerTool({
     ...bashDef,
@@ -152,10 +140,6 @@ export default function (pi: ExtensionAPI): void {
         }
       }
 
-      if (requested?.capability === "network") {
-        // 自动放行与人工批准都只对当前精确命令生效；spawnHook 仅为本次进程注入网络开关。
-        networkApproved.add(commandDigest(command));
-      }
       const result = await bashDef
         .execute(toolCallId, params, signal, onUpdate, ctx)
         .catch((err) => rethrowWithApprovalComment(err, approvalComment ? `[主 agent 附言] ${approvalComment}` : undefined));
