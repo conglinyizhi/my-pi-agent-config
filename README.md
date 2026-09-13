@@ -57,7 +57,7 @@ pi
 - `gate`：危险 bash 命令审批（token 化规则引擎判定 rm-recursive/find-delete/sudo/dd 等 gap 规则 + 动态构造降级），GUI 审计面板 + TUI 回退
 - `allow`：DSH 升权移植，`sandbox-allow` 工具临时同意「单一指令」跨越沙箱（等价 `sandbox_permissions` + `justification`），审批并入 `gate` 窗口（`kind=sandbox-allow` 分支），授权只此一次、fail-closed，审计写会话日志
 
-**talk-sleep** — `/talk-sleep [备注]` 暂存当前对话，换台电脑 `pi --resume` 继续聊。
+**talk-sleep** — `/talk-sleep [备注]` 暂存当前对话（备注必填，未带则弹框索取），换台电脑 `pi --resume` 继续聊；`/talk-sleep-load` 选暂存项复制恢复指令，可顺手编辑备注。
 
 **todo-scanner** — 扫描项目中的 TODO 注释，`/todos` 或 Ctrl+Shift+T 查看；TODO 调度 GUI 使用 `/routing:gui`（`/gui:scan-todo` 为兼容别名）。
 
