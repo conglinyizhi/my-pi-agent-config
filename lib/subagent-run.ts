@@ -11,7 +11,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
-import { TimelineBuilder, resolveTerminalState } from "./timeline.ts";
+import { TimelineBuilder, resolveTerminalState, emptyStreamStats, type StreamStats } from "./timeline.ts";
 import type { TimelineEvent } from "./timeline.ts";
 import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
@@ -21,6 +21,7 @@ import { commandDigest, buildCapabilityDecision, validateCapabilityRequest, type
 export {
   TimelineBuilder,
   resolveTerminalState,
+  emptyStreamStats,
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
@@ -29,6 +30,7 @@ export type {
   TimelineEvent,
   TimelineEventType,
   TimelineBuilderOptions,
+  StreamStats,
 } from "./timeline.ts";
 
 export interface SubagentUsage {
@@ -77,6 +79,17 @@ export interface SubagentResult {
   errorMessage?: string;
   /** 有界 per-worker 执行轨迹（实时变化；终态保留最终 timeline） */
   timeline: TimelineEvent[];
+  /**
+   * 流式增量累计（跨 attempt 连续）：各类 delta 字符数 + 增量事件数 + 最近增量时间。
+   * 只计数、不含文本；供吞吐/活性展示（TUI 仪表盘、状态文件、诊断档案）。
+   */
+  stream?: StreamStats;
+  /**
+   * 当前进行中 assistant 消息的实时 output token（来自 message_update 顶层 usage，报即得）。
+   * 显示时的「已产出」应为 usage.output + liveOutputTokens：前者是已终结消息的权威累计，
+   * 后者是本条在途消息的增量。provider 只在完成时报 usage 时此项始终为 0/undefined。
+   */
+  liveOutputTokens?: number;
   /** 重试彻底失败后写出的调查文件绝对路径（成功/未重试时为 undefined） */
   investigationPath?: string;
   /** 实际尝试次数（含首次） */
@@ -142,6 +155,13 @@ const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adap
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
 const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "guard.ts");
 const SUBAGENT_BASH_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "subagent-bash-guard.ts");
+
+/**
+ * 实时快照最小投递间隔（毫秒）。增量事件（尤其 thinking_delta）可达每秒几十条，
+ * 而单次投递要同步不受上限约束的归档（O(条数) 复制）并触发状态文件合并写；
+ * 限速后 CPU 花在调度上而非展示上，观感无损（状态轮询本来就是秒级）。
+ */
+export const EMIT_MIN_INTERVAL_MS = 120;
 
 /**
  * 构造 worker 子进程 env（纯函数，不改 process.env）：
@@ -332,6 +352,8 @@ export interface RunSubagentOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** 重试循环注入：上一轮累积的最终轨迹，作为本轮 timeline 的种子（续接而非重置） */
   seedTimeline?: TimelineEvent[];
+  /** 重试循环注入：上一轮累积的增量计数，作为本轮 StreamStats 的种子（吞吐跨重试连续） */
+  seedStats?: StreamStats;
   /** 重试循环注入：本次 attempt 编号（1-based），用于 timeline 合成 id 命名空间去撞号 */
   attempt?: number;
 }
@@ -411,7 +433,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       // worker 启动 lifecycle；timeline 数组引用直接挂到 result，实时快照随事件推进。
       // 重试时以上轮累积轨迹为 seed，并用 attempt 命名空间隔离合成 id，避免 GUI 轨迹塌缩/撞号。
       const attempt = opts.attempt ?? 1;
-      const timeline = new TimelineBuilder({ seedEvents: opts.seedTimeline, attempt });
+      const timeline = new TimelineBuilder({ seedEvents: opts.seedTimeline, seedStats: opts.seedStats, attempt });
       timeline.addLifecycle(
         "starting",
         attempt > 1 ? `worker 重试（第 ${attempt} 次尝试）` : "worker 启动",
@@ -435,6 +457,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         model,
         timeline: timeline.events,
+        stream: timeline.stream,
       };
 
       // 独立的无限（相对当前进程寿命）可见归档轨迹；实时 timeline 仍有 500 条保护。
@@ -443,13 +466,35 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           .filter((event) => event.type !== "supplement")
           .map((event) => ({ ...event } as VisibleArchiveEvent));
       };
-      const emitUpdate = () => {
+      /** 立即投递当前快照（含归档同步）；启动/终态等不可延后的点必须走这里 */
+      const emitNow = () => {
+        if (emitTimer) { clearTimeout(emitTimer); emitTimer = undefined; }
+        lastEmitAt = Date.now();
         syncArchiveTimeline();
         opts.onUpdate?.(result);
+      };
+      /**
+       * 高频增量路径（每个 delta / tool 更新）：限速投递。
+       *
+       * 现在 thinking_delta 也计入活性，增量事件可达每秒几十条，而每次投递要做
+       * syncArchiveTimeline（对不受条数上限约束的归档做 O(条数) filter+map，每条
+       * 还新建对象）+ 调用方数组复制 + 状态文件合并写。全量按 delta 投递会把 CPU
+       * 烧在展示层上。限速对观感无损（人眼与状态轮询都在百毫秒量级），且终态走
+       * emitNow 保证不丢最终快照。
+       */
+      const emitUpdate = () => {
+        const elapsed = Date.now() - lastEmitAt;
+        if (elapsed >= EMIT_MIN_INTERVAL_MS) { emitNow(); return; }
+        if (emitTimer) return; // 已有挂起投递，等它带上最新快照
+        emitTimer = setTimeout(() => { emitTimer = undefined; emitNow(); }, EMIT_MIN_INTERVAL_MS - elapsed);
+        emitTimer.unref?.();
       };
 
       let wasAborted = false;
       let capabilityRequest: CapabilityRequest | undefined;
+      // 实时快照限速器状态（见 emitUpdate）
+      let lastEmitAt = 0;
+      let emitTimer: NodeJS.Timeout | undefined;
       // 审批进行中：防止 capabilityPoll 重复处理同一请求
       let approvalInFlight = false;
       // 最近一次审核意见：随终态结果带回主 agent（供回报简报）
@@ -487,12 +532,21 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
             if (!line.trim()) continue;
             const archiveChanged = archiveTimeline.handleLine(line);
             if (timeline.handleLine(line) || archiveChanged) emitUpdate();
-            let event: { type?: string; message?: unknown };
+            let event: { type?: string; message?: unknown; usage?: { output?: number } };
             try { event = JSON.parse(line); } catch { continue; }
+
+            // delta 级 usage：message_update 顶层带最新累计 usage（provider 报即得，
+            // 未报时为 0）。不累加——message_end 才是权威累计；这里只记录在途消息的实时值，
+            // 使「已产出 token」在长输出过程中就能涨，而不是每个 message 跳一次。
+            if (event.type === "message_update") {
+              const liveOutput = event.usage?.output;
+              if (typeof liveOutput === "number" && liveOutput > 0) result.liveOutputTokens = liveOutput;
+            }
 
             if (event.type === "message_end" && event.message) {
               const msg = event.message as Message;
               result.messages.push(msg);
+              result.liveOutputTokens = 0; // 本条已终结：权威值并入 usage.output，清掉在途计数
               if (msg.role === "assistant") {
                 const visible = getFinalOutput([msg as unknown as { role: string; content: string | ContentPartLike[] }]);
                 if (visible) {
@@ -611,7 +665,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       archiveTimeline.addLifecycle(capabilityRequest ? "needs_approval" : terminal, capabilityRequest?.reason);
       // 终态同步一次：尾缓冲里的 telemetry 已并入 timeline，随终态 lifecycle 一起
       // 通过 onUpdate 送达调用方（与下方 resolve/throw 路径的 result.timeline 一致）
-      emitUpdate();
+      emitNow();
       // agent_end 兜底：若 messages 里没有最终输出（如非标准退出路径），用 agent_end 的完整 messages
       if (agentEndOutput && !getFinalOutput(result.messages)) {
         result.messages.push({ role: "assistant", content: agentEndOutput } as unknown as Message);
@@ -735,6 +789,8 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   let lastError: unknown;
   // 跨 attempt 累积的轨迹：上轮结果作为下轮种子，让 GUI 实时轨迹重试时续接而非塌缩回 1 条。
   let accumulated: TimelineEvent[] | undefined;
+  // 跨 attempt 累积的增量计数：同理续接，使吞吐/活性在重试前后连续（不因第 N 轮开始而归零）。
+  let accStats: StreamStats = emptyStreamStats();
   let capabilityGrants = [...(opts.capabilityGrants ?? [])];
   let capabilityGrantIssued = capabilityGrants.length > 0;
   // 最后一次审核意见：进入最终失败终态时（批准后基础设施失败 / 超时 / 中止）随结果带回；
@@ -763,10 +819,13 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
         runOnce: undefined,
         sleep: undefined,
         seedTimeline: accumulated,
+        seedStats: accStats,
         attempt: round,
       });
       lastResult = result;
       accumulated = result.timeline; // 本轮结束后的完整累积，供下轮重试续接
+      // result.stream 已含 seedStats（builder 从种子起数），故直接覆盖即累计值
+      if (result.stream) accStats = result.stream;
       if (result.capabilityRequest) {
         // 权限请求不属于基础设施失败；只有主进程明确返回匹配 grant 才重启。
         const approval = await opts.onCapabilityRequest?.(result.capabilityRequest);
@@ -861,6 +920,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     stderr: "",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
     timeline: [],
+    stream: emptyStreamStats(),
   };
   failed.investigationPath = investigationPath;
   failed.attempts = attempts.length || 1;

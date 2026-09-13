@@ -12,4 +12,10 @@ describe("worker activity state", () => {
   it("labels capability waits separately", () => {
     assert.equal(activityState({ status: "needs_approval", lastActivityAt: "2026-09-07T12:09:00.000Z" }, now).level, "waiting");
   });
+
+  it("treats queued workers as active (waiting for a parallel slot), never terminal", () => {
+    const state = activityState({ status: "queued", startedAt: "2026-09-07T12:09:00.000Z" }, now);
+    assert.equal(state.level, "queued");
+    assert.equal(state.label, "排队中 60s");
+  });
 });

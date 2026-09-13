@@ -7,10 +7,9 @@
 // /subagent:gui：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
@@ -20,7 +19,16 @@ import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validate
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
-import { beginBatch, flushStatusFile, getSnapshot, updateWorker, type WorkerRun } from "./status.ts";
+import { beginBatch, flushStatusFile, getSnapshot, onSnapshotChange, updateWorker, type WorkerRun } from "./status.ts";
+import {
+  FleetView,
+  createCoalescer,
+  formatWorkerOutput,
+  projectFleet,
+  workerOutputBudget,
+  type FleetWorkerView,
+} from "./dispatch-view.ts";
+import { buildSkillIndex, formatUnresolvedSkills, resolveSkillRefs } from "./skill-refs.ts";
 import {
   SUBAGENT_MODEL_SCOPE,
   modelLabel,
@@ -33,6 +41,18 @@ import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-
 import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
 
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
+/**
+ * fleet 实时投影投递间隔：N 个 worker 的更新合并到这一档，足够「看得出在动」。
+ */
+const FLEET_EMIT_INTERVAL_MS = 150;
+/**
+ * fleet 节拍：即使所有 worker 都无事件也要定期重投影。
+ *
+ * 两个作用：
+ *   - 静默时长能真正往前走（否则「卡了 40 秒」永远是 0，回到看不出死活的老问题）；
+ *   - 行组件在纯思考期也有帧可刷。
+ */
+const FLEET_TICK_MS = 500;
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
 const capabilityReviewCache = createReviewCache();
 
@@ -135,26 +155,23 @@ async function approveCapability(
   return allow ? { grant, review, ...(comment ? { comment } : {}) } : { review, ...(comment ? { comment } : {}) };
 }
 
-// 把 skill 名解析成绝对路径（目录含 SKILL.md）：在 ~/.pi/agent/skills 下按名匹配，含一层子目录
-function resolveSkillPaths(names: string[]): string[] {
-  const root = path.join(os.homedir(), ".pi", "agent", "skills");
-  const out: string[] = [];
-  for (const name of names) {
-    const found = findSkillDir(root, name);
-    if (found) out.push(found);
-  }
-  return out;
+/**
+ * 工具文本面的摘要行（模型可见）。
+ *
+ * 刻意只放一行计数：表格、吞吐、sparkline 全部走 details + renderResult，
+ * 不经 content 进模型上下文。
+ */
+function fleetSummaryText(workers: WorkerRun[]): string {
+  const total = workers.length;
+  const queued = workers.filter((w) => w.status === "queued").length;
+  const done = workers.filter((w) => w.status === "success").length;
+  const bad = workers.filter((w) => w.status === "failed" || w.status === "aborted" || w.status === "timeout").length;
+  const wait = workers.filter((w) => w.status === "needs_approval").length;
+  const running = Math.max(0, total - queued - done - bad - wait);
+  const capacity = queued > 0 ? `（${queued} 排队中）` : "";
+  return `${total} 个 subagent：运行 ${running} / 完成 ${done} / 异常 ${bad} / 等待权限 ${wait}${capacity}（表格见工具行，/subagent:gui 可开实时窗口）`;
 }
 
-function findSkillDir(root: string, name: string): string | undefined {
-  if (fs.existsSync(path.join(root, name, "SKILL.md"))) return path.join(root, name);
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const p = path.join(root, entry.name, name, "SKILL.md");
-    if (fs.existsSync(p)) return path.join(root, entry.name, name);
-  }
-  return undefined;
-}
 
 export default function (pi: ExtensionAPI) {
   // 子进程内不注册派发工具，防递归
@@ -257,6 +274,37 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const raw = args.task;
+      const count = Array.isArray(raw) ? raw.length : 1;
+      let content = theme.fg("toolTitle", theme.bold("subagent "));
+      content += theme.fg("muted", `${count} 个 worker`);
+      if (typeof args.model === "string" && args.model) content += theme.fg("dim", ` · ${args.model}`);
+      if (typeof args.sandbox_profile === "string" && args.sandbox_profile) {
+        content += theme.fg("dim", ` · ${args.sandbox_profile}`);
+      }
+      if (Array.isArray(args.skills) && args.skills.length > 0) {
+        content += theme.fg("dim", ` · skills ${args.skills.length}`);
+      }
+      text.setText(content);
+      return text;
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      // details.fleet 已是展示投影（不含 timeline/任务全文），直接交给行组件；
+      // 不要在渲染期重投影——那会把投影当 WorkerRun 再投影一次，表格会全是 0。
+      const fleet = ((result.details ?? {}) as { fleet?: FleetWorkerView[] }).fleet;
+      const previous = context.lastComponent;
+      // 行组件必须跨帧复用，否则瞬时速率历史（sparkline）每帧归零
+      const view = previous instanceof FleetView
+        ? previous
+        : new FleetView(theme, expanded, undefined, () => keyHint("app.tools.expand", "展开明细"));
+      view.update(fleet ?? [], theme, expanded);
+      if (isPartial && (fleet === undefined || fleet.length === 0)) {
+        return new Text(theme.fg("warning", "启动 worker…"), 0, 0);
+      }
+      return view;
+    },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const rawTasks: Array<string | WorkerBriefInput> = Array.isArray(params.task) ? params.task : [params.task];
       if (rawTasks.length === 0) {
@@ -265,7 +313,6 @@ export default function (pi: ExtensionAPI) {
 
       const normalized = rawTasks.map((task) => normalizeWorkerBrief(task, params.skills ?? []));
       const tasks = normalized.map((brief) => brief.task);
-      const workerSkills = normalized.map((brief) => resolveSkillPaths(brief.skills));
 
       const scopedDefault = await readSelectedModel(SUBAGENT_MODEL_SCOPE);
       const sessionModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
@@ -301,6 +348,22 @@ export default function (pi: ExtensionAPI) {
           details: { error: "missing_worker_model" },
         };
       }
+      // skill 引用解析（pi 的权威发现结果 + 显式路径直通）。
+      // 解析不到就**整批拒绝**：旧的静默丢弃会让主 agent 以为加载了、其实 worker 什么都没拿到。
+      // 拒绝点前移到 spawn 之前，避免白烧一轮 worker。报错里直接列出可用名称，主 agent 自己重选。
+      const skillIndex = buildSkillIndex({ cwd: ctx.cwd, agentDir: getAgentDir() });
+      const sharedSkills = resolveSkillRefs(params.skills ?? [], skillIndex, ctx.cwd);
+      const perWorkerSkills = normalized.map((brief) => resolveSkillRefs(brief.skills, skillIndex, ctx.cwd));
+      const unresolvedSkills = [
+        ...new Set([...sharedSkills.unresolved, ...perWorkerSkills.flatMap((r) => r.unresolved)]),
+      ];
+      if (unresolvedSkills.length > 0) {
+        return {
+          content: [{ type: "text", text: formatUnresolvedSkills(unresolvedSkills, skillIndex) }],
+          details: { error: "unresolved_skills", unresolved: unresolvedSkills },
+        };
+      }
+      const workerSkills = perWorkerSkills.map((r) => r.paths);
       const profile = params.sandbox_profile
         ?? (params.sandbox_dir ? "worktree" : "readonly");
       if (profile === "worktree" && !params.sandbox_dir) {
@@ -351,13 +414,21 @@ export default function (pi: ExtensionAPI) {
           extraExtensions: [],
         },
       });
-      onUpdate?.({
-        content: [{
-          type: "text",
-          text: `已启动 ${tasks.length} 个 subagent，主线等待全部完成；/subagent:gui 查看实时详情`,
-        }],
-        details: { phase: "running" },
+      // 实时投影投递：worker 每次快照变更都推一份紧凑投影给工具行渲染。
+      // 两条限流叠加：worker 侧 emitUpdate 已按增量节流，这里再按 worker 数合并
+      // （N 个 worker 各自更新 → 最多每 FLEET_EMIT_INTERVAL_MS 一次），且最后一次
+      // 必然送达。details 只装投影（不含 timeline/对话），content 保持一行不动。
+      const emitFleet = createCoalescer<WorkerRun[]>(FLEET_EMIT_INTERVAL_MS, (workers) => {
+        onUpdate?.({
+          content: [{ type: "text", text: fleetSummaryText(workers) }],
+          details: { phase: "running", fleet: projectFleet(workers, Date.now()) },
+        });
       });
+      const unsubscribeFleet = onSnapshotChange((workers) => emitFleet.push(workers));
+      emitFleet.push(getSnapshot()); // 首帧（全部 starting）立即送达
+      // 节拍：无事件时也定期重投影，让静默时长与帧刷新继续前进
+      const fleetTick = setInterval(() => emitFleet.push(getSnapshot()), FLEET_TICK_MS);
+      fleetTick.unref?.();
 
       let results: BatchItemResult[];
       try {
@@ -367,7 +438,7 @@ export default function (pi: ExtensionAPI) {
           readonly: workerReadonly,
           model: workerModel,
           signal,
-          skills: resolveSkillPaths(params.skills ?? []),
+          skills: sharedSkills.paths,
           workerSkills,
           tools: safeTools,
           taskId: batchTaskId,
@@ -396,11 +467,16 @@ export default function (pi: ExtensionAPI) {
           details: { error: msg },
         };
       } finally {
+        // 先停节拍、退订，再 flush：收尾帧用最后一份快照，且不再接受新推送
+        clearInterval(fleetTick);
+        unsubscribeFleet();
+        emitFleet.flush();
         // 挂起合并写显式落盘（终态已立即写，此处兜底，确保进程结束前不丢状态）
         flushStatusFile();
         clearDiagnosticsContext();
       }
 
+      const budget = workerOutputBudget(results.length);
       const lines = results.map((r) => {
         const head = `#${r.index + 1} ${r.status.toUpperCase()}`;
         const meta = r.exitCode !== undefined ? ` exit=${r.exitCode}` : "";
@@ -414,7 +490,7 @@ export default function (pi: ExtensionAPI) {
         const inv = r.investigationPath && !r.output.includes(r.investigationPath)
           ? `\n  investigation: ${r.investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」`
           : "";
-        return `${head}${meta}${err}${capability}${stderr}${inv}\n  ${r.output.slice(0, 800)}`;
+        return `${head}${meta}${err}${capability}${stderr}${inv}\n  ${formatWorkerOutput(r.output, budget)}`;
       });
 
       const failedCount = results.filter((r) => r.status === "failed" || r.status === "aborted" || r.status === "timeout").length;
@@ -424,7 +500,7 @@ export default function (pi: ExtensionAPI) {
           type: "text",
           text: `${tasks.length} 个 subagent 已全部返航（成功 ${tasks.length - failedCount - approvalCount} / 失败 ${failedCount} / 等待权限 ${approvalCount}）`,
         }],
-        details: { phase: "done", results },
+        details: { phase: "done", results, fleet: projectFleet(getSnapshot(), Date.now()) },
       });
 
       return {
@@ -432,7 +508,7 @@ export default function (pi: ExtensionAPI) {
           type: "text",
           text: `subagent 全部返航（${tasks.length - failedCount - approvalCount}/${tasks.length} 成功，失败 ${failedCount}，等待权限 ${approvalCount}）：\n\n${lines.join("\n\n")}`,
         }],
-        details: { results },
+        details: { results, fleet: projectFleet(getSnapshot(), Date.now()) },
       };
     },
   });

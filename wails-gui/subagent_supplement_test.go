@@ -159,13 +159,14 @@ func TestCrossLanguageNodeCompatibleQueue(t *testing.T) {
 	}
 }
 
-// enqueue 仅允许 active（starting/running）；terminal 拒绝、未知 inbox 拒绝。
+// enqueue 仅允许 open（queued/starting/running）；terminal 拒绝、未知 inbox 拒绝。
 func TestEnqueueActiveOnlyValidation(t *testing.T) {
 	cases := []struct {
 		status string
 		ok     bool
 		want   string
 	}{
+		{"queued", true, ""},
 		{"starting", true, ""},
 		{"running", true, ""},
 		{"success", false, "lifecycle has ended"},

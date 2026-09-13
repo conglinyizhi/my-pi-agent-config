@@ -410,7 +410,14 @@ func (a *App) sanitizeErr(err error) error {
 
 // ── Wails 绑定方法（简单签名，返回类型 JSON 绑定稳定） ──
 
-// QueueSubagentSupplement 仅对当前 status 中 starting/running 的 worker 入队；
+// isOpenSubagentStatus 报告该 worker 状态是否仍可接受补充指令。
+// queued（等并行额度）算 open：worker 尚未启动，但 inbox 已存在，
+// 消息会在它启动后第一次工具结束时被 bridge claim。
+func isOpenSubagentStatus(status string) bool {
+	return status == "queued" || status == "starting" || status == "running"
+}
+
+// QueueSubagentSupplement 仅对当前 status 中 queued/starting/running 的 worker 入队；
 // 未知 inbox / terminal 生命周期一律拒绝且不写盘。错误为可直接展示的英文。
 func (a *App) QueueSubagentSupplement(inboxID, text string) (SubagentSupplementInbox, error) {
 	if !isValidInboxID(inboxID) {
@@ -420,7 +427,9 @@ func (a *App) QueueSubagentSupplement(inboxID, text string) (SubagentSupplementI
 	if !found {
 		return SubagentSupplementInbox{}, fmt.Errorf("unknown inboxId %q: no worker with that inbox in the current subagent status", inboxID)
 	}
-	if status != "starting" && status != "running" {
+	// queued（等并行额度）也允许入队：inbox 已在 spawn 前创建，worker 启动后
+	// 第一次工具结束时 bridge 会 claim 到该条消息。
+	if !isOpenSubagentStatus(status) {
 		return SubagentSupplementInbox{}, fmt.Errorf("worker lifecycle has ended (status: %s); it cannot receive further supplements", status)
 	}
 	inbox, err := supplementEnqueue(a.supplementRootDir(), inboxID, text, supplementNow, supplementNewID)

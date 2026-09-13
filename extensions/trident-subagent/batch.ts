@@ -20,6 +20,16 @@ import { updateWorker } from "./status.ts";
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
 /**
+ * 单批同时运行的 worker 数上限。
+ *
+ * 单 provider 账号的并发配额通常只有个位数，而 worker 数由主 agent 决定；
+ * 全量齐射会直接拿回 `Concurrency limit exceeded for account`，
+ * 而每个 worker 的自动重试又会把压力再乘一遍。宁可排队，不要撞墙。
+ * （不做模型降级：手上没有可用作降级的其他模型资源。）
+ */
+export const DEFAULT_MAX_PARALLEL_WORKERS = 2;
+
+/**
  * 把 runSubagent 抛出的错误分类为可识别终态（timeout | aborted）。
  *
  * 依赖 SubagentError.status（结构化字段）而非错误消息文本：超时（内部超时控制器）
@@ -105,6 +115,8 @@ export interface RunBatchOptions {
   readonly?: boolean;
   /** 主进程审批 worker 的能力请求；返回精确 grant 才会重启当前 worker，review 作为审核简报透传 */
   onCapabilityRequest?: (request: CapabilityRequest, workerId: string) => Promise<CapabilityApproval | undefined>;
+  /** 同时运行的 worker 数上限；缺省 DEFAULT_MAX_PARALLEL_WORKERS */
+  maxParallel?: number;
 }
 
 /**
@@ -142,109 +154,149 @@ export async function prepareInboxes(
   }
 }
 
+/**
+ * 固定并发度的任务池：最多 limit 个 fn 同时在飞，其余按输入顺序排队。
+ * 结果数组与输入同序（与批次汇报「按输入顺序逐项列出」的语义一致）。
+ * 单个 fn 抛错会向上冒泡——调用方（runWorker）自己消化成终态，不在这里吞。
+ */
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  const effective = Math.max(1, Math.min(Math.floor(limit) || 1, items.length));
+  let next = 0;
+  const lanes = Array.from({ length: effective }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
 export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<BatchItemResult[]> {
-  // 前置：校验 + 全部 inbox 预创建完成，之后才进入 Promise.all 并行 spawn。
+  // 前置：校验 + 全部 inbox 预创建完成，之后才进入并行 spawn。
   // 任一 create 失败都在子进程启动前整体拒绝（不留半批）；
   // 调用方（index submit tool）据此把整批标记为失败并给出可观测 UI 响应。
   validateWorkerInboxIds(tasks, opts.workerInboxIds);
   await prepareInboxes(opts.workerInboxIds);
 
-  return Promise.all(
-    tasks.map(async (task, index) => {
-      const id = `w${index + 1}`;
-      const inboxId = opts.workerInboxIds[index];
-      updateWorker(id, { status: "starting" });
+  // 并发节流：单账号并发配额有限，齐射必然撞 provider 的 concurrency limit，
+  // 而重试只会把压力再乘一遍。这里只做「同时最多跑几个」（不做模型降级）。
+  const limit = Math.max(1, Math.min(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_WORKERS, tasks.length));
+  // 超出额度的 worker 标 queued：如实告诉操作者在排队，不拿「启动中」假装已开始
+  for (let i = limit; i < tasks.length; i++) updateWorker(`w${i + 1}`, { status: "queued" });
 
-      try {
-        const result: SubagentResult = await runSubagent({
-          task,
-          cwd: opts.cwd,
-          model: opts.model,
-          signal: opts.signal,
-          tools: opts.tools,
-          extraExtensions: opts.extraExtensions,
-          skills: opts.workerSkills?.[index] ?? opts.skills,
-          taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
-          sandboxDir: opts.sandboxDir,
-          readonly: opts.readonly,
-          onCapabilityRequest: opts.onCapabilityRequest
-            ? async (request) => {
-                updateWorker(id, {
-                  status: "needs_approval",
-                  capabilityRequest: request,
-                  output: `等待主 agent 审批：${request.capability}（${request.scope}）`,
-                });
-                try {
-                  return await opts.onCapabilityRequest!(request, id);
-                } finally {
-                  // 审批结束后 worker 继续执行（不再 kill/重启），状态回到运行中
-                  updateWorker(id, { status: "running", capabilityRequest: undefined });
-                }
-              }
-            : undefined,
-          inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
-          timeout: opts.timeout ?? 600,
-          onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
-          onUpdate: (r) => updateWorker(id, {
-            usage: r.usage,
-            stderr: r.stderr.slice(-4000),
-            // 每次实时解析更新都传 timeline 快照（复制，避免共享同一数组引用）
-            timeline: [...r.timeline],
-            visibleConversation: [...r.visibleConversation],
-            archiveTimeline: [...r.archiveTimeline],
-          }),
-        });
-
-        const failed = isFailedResult(result);
-        const status: BatchItemStatus = result.capabilityRequest
-          ? result.capabilityDenied ? "failed" : "needs_approval"
-          : failed ? "failed" : "success";
-        updateWorker(id, {
-          status,
-          finishedAt: new Date().toISOString(),
-          usage: result.usage,
-          stderr: result.stderr.slice(-4000),
-          output: result.capabilityRequest
-            ? result.capabilityDenied
-              ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
-              : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
-            : getResultOutput(result).slice(-8000),
-          // 终态更新保留最终 timeline
-          timeline: [...result.timeline],
-          visibleConversation: [...result.visibleConversation],
-          archiveTimeline: [...result.archiveTimeline],
-          capabilityRequest: result.capabilityRequest,
-        });
-        return {
-          index,
-          status,
-          exitCode: result.exitCode,
-          output: result.capabilityRequest
-            ? result.capabilityDenied
-              ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
-              : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
-            : result.inlineSummary ?? getResultOutput(result),
-          stderr: result.stderr,
-          errorMessage: result.errorMessage,
-          usage: result.usage,
-          investigationPath: result.investigationPath,
-          attempts: result.attempts,
-          capabilityRequest: result.capabilityRequest,
-          capabilityReview: result.capabilityReview,
-        };
-      } catch (err) {
-        // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判
-        const patch = buildTerminalPatch(err, new Date().toISOString());
-        updateWorker(id, patch);
-        const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
-        return {
-          index,
-          status: patch.status,
-          output: formatCatchOutput(err, patch.status) || String(err),
-          stderr: String(err),
-          investigationPath,
-        };
-      }
-    }),
-  );
+  return runWithConcurrency(tasks, limit, (task, index) => runWorker(task, index, opts));
 }
+
+/** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */
+async function runWorker(
+  task: string,
+  index: number,
+  opts: RunBatchOptions,
+): Promise<BatchItemResult> {
+  const id = `w${index + 1}`;
+  const inboxId = opts.workerInboxIds[index];
+  updateWorker(id, { status: "starting" });
+
+  try {
+    const result: SubagentResult = await runSubagent({
+      task,
+      cwd: opts.cwd,
+      model: opts.model,
+      signal: opts.signal,
+      tools: opts.tools,
+      extraExtensions: opts.extraExtensions,
+      skills: opts.workerSkills?.[index] ?? opts.skills,
+      taskId: opts.taskId ? `${opts.taskId}-${id}` : id,
+      sandboxDir: opts.sandboxDir,
+      readonly: opts.readonly,
+      onCapabilityRequest: opts.onCapabilityRequest
+        ? async (request) => {
+            updateWorker(id, {
+              status: "needs_approval",
+              capabilityRequest: request,
+              output: `等待主 agent 审批：${request.capability}（${request.scope}）`,
+            });
+            try {
+              return await opts.onCapabilityRequest!(request, id);
+            } finally {
+              // 审批结束后 worker 继续执行（不再 kill/重启），状态回到运行中
+              updateWorker(id, { status: "running", capabilityRequest: undefined });
+            }
+          }
+        : undefined,
+      inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
+      timeout: opts.timeout ?? 600,
+      onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
+      onUpdate: (r) => updateWorker(id, {
+        usage: r.usage,
+        stream: r.stream,
+        liveOutputTokens: r.liveOutputTokens ?? 0,
+        stderr: r.stderr.slice(-4000),
+        // 每次实时解析更新都传 timeline 快照（复制，避免共享同一数组引用）
+        timeline: [...r.timeline],
+        visibleConversation: [...r.visibleConversation],
+        archiveTimeline: [...r.archiveTimeline],
+      }),
+    });
+
+    const failed = isFailedResult(result);
+    const status: BatchItemStatus = result.capabilityRequest
+      ? result.capabilityDenied ? "failed" : "needs_approval"
+      : failed ? "failed" : "success";
+    updateWorker(id, {
+      status,
+      finishedAt: new Date().toISOString(),
+      usage: result.usage,
+      stream: result.stream,
+      liveOutputTokens: 0, // 终态：在途计数已并入 usage.output
+      stderr: result.stderr.slice(-4000),
+      output: result.capabilityRequest
+        ? result.capabilityDenied
+          ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+          : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+        : getResultOutput(result).slice(-8000),
+      // 终态更新保留最终 timeline
+      timeline: [...result.timeline],
+      visibleConversation: [...result.visibleConversation],
+      archiveTimeline: [...result.archiveTimeline],
+      capabilityRequest: result.capabilityRequest,
+    });
+    return {
+      index,
+      status,
+      exitCode: result.exitCode,
+      output: result.capabilityRequest
+        ? result.capabilityDenied
+          ? `主 agent 未批准：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+          : `等待主 agent 审批：${result.capabilityRequest.capability}（${result.capabilityRequest.scope}）`
+        : result.inlineSummary ?? getResultOutput(result),
+      stderr: result.stderr,
+      errorMessage: result.errorMessage,
+      usage: result.usage,
+      investigationPath: result.investigationPath,
+      attempts: result.attempts,
+      capabilityRequest: result.capabilityRequest,
+      capabilityReview: result.capabilityReview,
+    };
+  } catch (err) {
+    // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判
+    const patch = buildTerminalPatch(err, new Date().toISOString());
+    updateWorker(id, patch);
+    const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+    return {
+      index,
+      status: patch.status,
+      output: formatCatchOutput(err, patch.status) || String(err),
+      stderr: String(err),
+      investigationPath,
+    };
+  }
+}
+

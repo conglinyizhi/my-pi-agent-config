@@ -22,6 +22,8 @@ import {
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
+  emptyStreamStats,
+  type StreamStats,
   type TimelineEvent,
 } from "./subagent-run.ts";
 import { commandDigest } from "./subagent-capability.ts";
@@ -209,6 +211,47 @@ describe("runSubagent retry loop (injected runOnce)", () => {
     assert.strictEqual(result.exitCode, 0);
     assert.strictEqual(result.investigationPath, undefined);
     assert.strictEqual(result.attempts, 2);
+  });
+
+  it("重试把上一轮 StreamStats 作为 seed 传下去（吞吐/活性跨重试连续）", async () => {
+    const seeds: Array<StreamStats | undefined> = [];
+    let n = 0;
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async (opts) => {
+        n++;
+        seeds.push(opts.seedStats);
+        // 模拟真实 builder 语义：从种子起数，再加上本轮新增
+        const base = opts.seedStats ?? emptyStreamStats();
+        const stream: StreamStats = {
+          ...base,
+          textChars: base.textChars + 10,
+          deltas: base.deltas + 1,
+        };
+        const shared = {
+          task: "t",
+          messages: [],
+          visibleConversation: [],
+          archiveTimeline: [],
+          stderr: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [],
+          stream,
+        };
+        if (n === 1) {
+          return { ...shared, exitCode: 1, stopReason: "error", errorMessage: "sse" };
+        }
+        return { ...shared, exitCode: 0 };
+      },
+      sleep: async () => {},
+    });
+    assert.strictEqual(n, 2);
+    assert.strictEqual(seeds[0]?.textChars ?? 0, 0); // 首轮无种子
+    assert.strictEqual(seeds[1]?.textChars, 10); // 次轮接上一轮累计，而非从零重启
+    assert.strictEqual(seeds[1]?.deltas, 1);
+    // 终态结果携带含全部轮次的累计值
+    assert.strictEqual(result.stream?.textChars, 20);
+    assert.strictEqual(result.stream?.deltas, 2);
   });
 
   it("6 failures → investigationPath set, attempts=6", async () => {
@@ -581,13 +624,21 @@ describe("TimelineBuilder.handleLine 内容变化报告", () => {
     );
   });
 
-  it("无可见变化的事件不报告（thinking_delta / 未知工具 update / malformed）", () => {
+  it("thinking_delta 只计活性不落文本；未知/malformed 事件仍不报告", () => {
     const tl = new TimelineBuilder();
     tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "assistant", content: [] } }));
+    // thinking_delta 不可见，但**必须**报告变化：否则长思考期间快照一动不动，
+    // 操作者无法区分「模型在思考」与「worker 卡死」。
     assert.strictEqual(
       tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "推理" } })),
-      false, // 隐藏推理不进轨迹 → 无可见变化
+      true,
     );
+    // 但隐藏推理文本绝不进轨迹（隐私约束不变）
+    assert.strictEqual(tl.events.some((e) => (e.text ?? "").includes("推理")), false);
+    assert.strictEqual(tl.stream.thinkingChars, 2);
+    assert.strictEqual(tl.stream.deltas, 1);
+    assert.strictEqual(tl.stream.lastDeltaKind, "thinking");
+    // 未知进行中工具 / malformed / 未知类型 / 缺字段：仍不报告
     assert.strictEqual(
       tl.handleLine(JSON.stringify({ type: "tool_execution_update", toolCallId: "nope", partialResult: { x: 1 } })),
       false, // 未知进行中工具 → 忽略
@@ -597,15 +648,70 @@ describe("TimelineBuilder.handleLine 内容变化报告", () => {
     assert.strictEqual(tl.handleLine(JSON.stringify({ type: "message_update" })), false); // 缺 assistantMessageEvent
   });
 
-  it("追加 delta 到已满文本不报告变化（上限内无可见变化）", () => {
+  it("文本达上限后不再增长，但流式计数与活性继续报告", () => {
     const tl = new TimelineBuilder();
     tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "assistant", content: [] } }));
     tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(TIMELINE_MAX_TEXT + 100) } }));
-    // 已达上限：后续 delta 不再有可见变化
+    const capped = tl.events.find((e) => e.type === "assistant")?.text?.length ?? 0;
+    // 已达上限：文本不再变长（有界保护），但增量计数仍推进 → 仍报告变化
     assert.strictEqual(
       tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "y" } })),
-      false,
+      true,
     );
+    assert.strictEqual(tl.events.find((e) => e.type === "assistant")?.text?.length, capped);
+  });
+});
+
+describe("TimelineBuilder 流式增量计数（StreamStats）", () => {
+  function update(kind: string, delta: string): string {
+    return JSON.stringify({ type: "message_update", assistantMessageEvent: { type: kind, contentIndex: 0, delta } });
+  }
+
+  it("按类别分别计数，并推进 deltas / lastDeltaKind", () => {
+    const tl = new TimelineBuilder();
+    tl.handleLine(update("thinking_delta", "一二三"));
+    tl.handleLine(update("text_delta", "ab"));
+    tl.handleLine(update("toolcall_delta", '{"x"'));
+    assert.strictEqual(tl.stream.thinkingChars, 3);
+    assert.strictEqual(tl.stream.textChars, 2);
+    assert.strictEqual(tl.stream.toolcallChars, 4);
+    assert.strictEqual(tl.stream.deltas, 3);
+    assert.strictEqual(tl.stream.lastDeltaKind, "toolcall");
+    assert.ok(tl.stream.lastDeltaAt);
+  });
+
+  it("message_end 计入 messages 数（供自校准判定「有无权威样本」）", () => {
+    const tl = new TimelineBuilder();
+    tl.handleLine(JSON.stringify({ type: "message_start", message: { role: "assistant", content: [] } }));
+    assert.strictEqual(tl.stream.messages, 0);
+    tl.handleLine(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "答" }] } }));
+    assert.strictEqual(tl.stream.messages, 1);
+  });
+
+  it("非 *_delta 的 assistantMessageEvent 不计数（start/end 不是增量）", () => {
+    const tl = new TimelineBuilder();
+    tl.handleLine(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", id: "c1", toolName: "bash" } }));
+    assert.strictEqual(tl.stream.deltas, 0);
+  });
+
+  it("seedStats 让重试前后的计数连续（不从零重启）", () => {
+    const seed: StreamStats = { textChars: 100, thinkingChars: 50, toolcallChars: 10, deltas: 9, messages: 2, lastDeltaKind: "text" };
+    const tl = new TimelineBuilder({ seedStats: seed, attempt: 2 });
+    tl.handleLine(update("thinking_delta", "abcd"));
+    assert.strictEqual(tl.stream.textChars, 100);
+    assert.strictEqual(tl.stream.thinkingChars, 54);
+    assert.strictEqual(tl.stream.toolcallChars, 10);
+    assert.strictEqual(tl.stream.deltas, 10);
+    assert.strictEqual(tl.stream.messages, 2);
+    assert.strictEqual(tl.stream.lastDeltaKind, "thinking");
+  });
+
+  it("种子对象不被改写（调用方持有的是副本语义）", () => {
+    const seed = emptyStreamStats();
+    const tl = new TimelineBuilder({ seedStats: seed });
+    tl.handleLine(update("text_delta", "abc"));
+    assert.strictEqual(seed.textChars, 0);
+    assert.strictEqual(tl.stream.textChars, 3);
   });
 });
 

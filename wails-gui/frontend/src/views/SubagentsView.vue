@@ -472,10 +472,10 @@ function backToAgents() {
 
 // ── 展示辅助 ──
 function statusIcon(s) {
-  return { starting: "…", running: "▶", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱" }[s] || "○";
+  return { queued: "⏳", starting: "…", running: "▶", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱" }[s] || "○";
 }
 function statusLabel(s) {
-  return { starting: "启动中", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
+  return { queued: "排队中", starting: "启动中", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
 }
 function fmt(iso) {
   if (!iso) return "-";

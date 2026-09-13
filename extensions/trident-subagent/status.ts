@@ -20,11 +20,19 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SubagentUsage, TimelineEvent, VisibleArchiveEvent, VisibleWorkerMessage } from "../../lib/subagent-run.ts";
+import type { SubagentUsage, TimelineEvent, VisibleArchiveEvent, VisibleWorkerMessage, StreamStats } from "../../lib/subagent-run.ts";
 import type { CapabilityRequest } from "../../lib/subagent-capability.ts";
 import { archiveDiagnostics } from "./diagnostics.ts";
 
-export type WorkerStatus = "starting" | "running" | "success" | "failed" | "aborted" | "timeout" | "needs_approval";
+export type WorkerStatus =
+  | "queued"
+  | "starting"
+  | "running"
+  | "success"
+  | "failed"
+  | "aborted"
+  | "timeout"
+  | "needs_approval";
 
 export interface WorkerRun {
   id: string;
@@ -39,6 +47,10 @@ export interface WorkerRun {
   lastActivityAt?: string;
   pid?: number;
   usage?: SubagentUsage;
+  /** 流式增量累计：展示层据此算字数吞吐与「是否还在推进」（纯思考期也有值） */
+  stream?: StreamStats;
+  /** 在途 assistant 消息的实时 output token（usage.output 之外的部分） */
+  liveOutputTokens?: number;
   output?: string;
   stderr?: string;
   /** 有界 per-worker 执行轨迹（实时更新；终态保留最终 timeline） */
@@ -53,8 +65,9 @@ export interface WorkerRun {
 /** 合并写最大延迟：GUI 1s 轮询周期内必定收到新状态 */
 export const COALESCE_DELAY_MS = 250;
 
-/** 需要立即落盘的状态：启动 + 全部终态 */
+/** 需要立即落盘的状态：启动 + 并行排队 + 全部终态 */
 const IMMEDIATE_STATUSES: ReadonlySet<WorkerStatus> = new Set([
+  "queued",
   "starting",
   "success",
   "needs_approval",
@@ -117,6 +130,34 @@ let io: StatusFileIO = defaultIO();
 let snapshot: WorkerRun[] = [];
 let pendingTimer: unknown;
 
+/**
+ * 快照变更订阅者：beginBatch / updateWorker 改写快照后同步通知。
+ *
+ * 用途：把实时状态直接推给展示层（TUI 行渲染），不必让每个改快照的调用点
+ * 都记得自己转发一次——转发漏一处就是一处“界面不动”的隐形 bug。
+ */
+const snapshotListeners = new Set<(workers: WorkerRun[]) => void>();
+
+/** 订阅快照变更，返回退订函数。监听器必须轻量（投递层自行合并频率）。 */
+export function onSnapshotChange(listener: (workers: WorkerRun[]) => void): () => void {
+  snapshotListeners.add(listener);
+  return () => {
+    snapshotListeners.delete(listener);
+  };
+}
+
+/** 广播快照；单个监听器抛错不得影响调度与其他监听器 */
+function notifySnapshot(): void {
+  if (snapshotListeners.size === 0) return;
+  for (const listener of Array.from(snapshotListeners)) {
+    try {
+      listener(snapshot);
+    } catch {
+      /* 展示层异常与调度隔离 */
+    }
+  }
+}
+
 function serialize(): string {
   return JSON.stringify({ updatedAt: io.now(), workers: snapshot }, null, 2);
 }
@@ -147,6 +188,7 @@ function scheduleWrite(): void {
 export function beginBatch(runs: WorkerRun[]): void {
   snapshot = runs;
   writeNow();
+  notifySnapshot();
 }
 
 export function updateWorker(id: string, patch: Partial<WorkerRun>): void {
@@ -161,6 +203,7 @@ export function updateWorker(id: string, patch: Partial<WorkerRun>): void {
   } else {
     scheduleWrite();
   }
+  notifySnapshot();
 }
 
 export function getSnapshot(): WorkerRun[] {
@@ -206,4 +249,5 @@ export function resetStatusFile(): void {
   }
   io = defaultIO();
   snapshot = [];
+  snapshotListeners.clear();
 }

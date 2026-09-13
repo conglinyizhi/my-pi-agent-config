@@ -4,6 +4,7 @@ import { buildMainAgentHandoff, isActiveWorkerStatus, pendingSupplements, worker
 
 describe("subagent supplements", () => {
   it("classifies active worker statuses", () => {
+    assert.equal(isActiveWorkerStatus("queued"), true); // 排队中：inbox 已存在，启动后可 claim
     assert.equal(isActiveWorkerStatus("starting"), true);
     assert.equal(isActiveWorkerStatus("running"), true);
     assert.equal(isActiveWorkerStatus("success"), false);

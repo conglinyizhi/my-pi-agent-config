@@ -14,6 +14,11 @@
 //     参数，update 追加预览，end 记录最终结果与成功/失败状态。
 //   - lifecycle：worker 启动 / 终止（success/failed/aborted/timeout）/ 截断标记。
 //
+// 另维护 StreamStats（流式增量计数，见下）：text/thinking/toolcall 三类 delta 的
+// 字符数、增量事件数、已终结消息数与最近增量时间。**只计数，不落文本**。
+// 用途是让「正在思考」与「已卡死」可区分：长思考期间只有 thinking_delta，
+// 若把它整类丢弃，快照会长时间一动不动。
+//
 // 容错约束：
 //   - malformed / unknown 行直接忽略；遥测归一化错误与结果采集隔离，永不抛出。
 //   - 任意 args/result 用安全序列化兜底（深度嵌套等非序列化数据给占位符）。
@@ -29,9 +34,53 @@
 //
 // 变化报告：handleLine 返回是否有可观察的轨迹变化——不只看条数（原地修改如 tool
 // update/end、assistant delta/finalize 不改变条数），由各处理函数置 dirty 标记。
+// 增量计数变化同样置 dirty（纯思考期也需要实时刷新）。
 // runSubagent 据此决定是否触发 onUpdate 实时刷新。
 
 export type TimelineEventType = "assistant" | "tool" | "lifecycle" | "supplement";
+
+/**
+ * worker 流式增量计数（只计数，不保存隐藏推理文本）。
+ *
+ * pi --mode json 的 message_update 是 delta-only（见 docs/json.md）：每个
+ * assistantMessageEvent 带一个增量片段，type ∈ text_delta / thinking_delta /
+ * toolcall_delta。纯思考期也会持续产生 thinking_delta——若只统计 text_delta，
+ * 长思考期间观测面完全静止（看不到 worker 还活着，也看不到吞吐）。
+ * 因此这里按类别累计字符数：
+ *   - 计数用于吞吐/活性展示（TUI 仪表盘、状态文件、诊断档案）；
+ *   - thinking/toolcall 的**文本本身仍然不落任何持久化产物**（原约束不变）。
+ */
+export interface StreamStats {
+  /** text_delta 累计字符（可见输出） */
+  textChars: number;
+  /** thinking_delta 累计字符（隐藏推理；仅计数，文本不落盘） */
+  thinkingChars: number;
+  /** toolcall_delta 累计字符（工具参数拼装） */
+  toolcallChars: number;
+  /** 收到的流式增量事件数 */
+  deltas: number;
+  /** 已终结（message_end）的 assistant 消息数 */
+  messages: number;
+  /** 最近一次增量事件时间（ISO）；无增量时为 undefined */
+  lastDeltaAt?: string;
+  /** 最近一次增量类别：展示层据此区分「正在思考」与「正在输出」 */
+  lastDeltaKind?: "text" | "thinking" | "toolcall";
+}
+
+/** 全零计数；lastDeltaAt 缺省不出现（保持 JSON 干净） */
+export function emptyStreamStats(): StreamStats {
+  return { textChars: 0, thinkingChars: 0, toolcallChars: 0, deltas: 0, messages: 0 };
+}
+
+/** 增量片段的三个字符桶；未知类型返回 undefined（不计数） */
+function deltaBucket(type: string): "textChars" | "thinkingChars" | "toolcallChars" | undefined {
+  switch (type) {
+    case "text_delta": return "textChars";
+    case "thinking_delta": return "thinkingChars";
+    case "toolcall_delta": return "toolcallChars";
+    default: return undefined;
+  }
+}
 
 export interface TimelineEvent {
   /** 稳定 id：assistant=消息 id（缺失则合成），tool=toolCallId，lifecycle=合成 */
@@ -90,11 +139,18 @@ export interface TimelineBuilderOptions {
    * 防止跨 attempt 的 seq 复位撞号（如两轮都产出 lifecycle-1 导致 GUI keyed diff 顶替）。
    */
   attempt?: number;
+  /**
+   * 上一轮 attempt 累积的增量计数：重试时从上一轮的累计值接着数，
+   * 使吞吐/活性在重试前后连续（与 seedEvents 同一套续接思路）。
+   */
+  seedStats?: StreamStats;
 }
 
 export class TimelineBuilder {
   /** 有界轨迹（含可能的 truncated 标记）；对外暴露同一数组引用，供实时快照 */
   readonly events: TimelineEvent[] = [];
+  /** 流式增量累计（含 seedStats 种子）；同一对象引用随解析持续推进 */
+  readonly stream: StreamStats;
   /** 本行是否产生可观察变化（原地修改也置位；handleLine 消费后重置） */
   private dirty = false;
   /** toolCallId → 进行中的 tool 记录 */
@@ -115,6 +171,8 @@ export class TimelineBuilder {
     this.maxText = opts.maxText ?? TIMELINE_MAX_TEXT;
     this.maxField = opts.maxField ?? TIMELINE_MAX_FIELD;
     this.attempt = opts.attempt ?? 1;
+    // 种子计数：接上一轮累计值继续数，吞吐在重试前后连续
+    this.stream = { ...emptyStreamStats(), ...opts.seedStats };
     // 种子历史：直接接入上轮 accumulated events（已有界）；不进 active 追踪，
     // 新 attempt 的流式事件从头解析新进程输出，历史事件均已完结不再变异。
     if (opts.seedEvents) {
@@ -212,8 +270,22 @@ export class TimelineBuilder {
   private onMessageUpdate(ev: Record<string, unknown>): void {
     const ame = ev.assistantMessageEvent as Record<string, unknown> | undefined;
     if (!ame || typeof ame !== "object") return;
-    // 只取 text_delta（可见文本）；thinking_delta（隐藏推理）/ toolcall_delta /
-    // start / end 等不进轨迹
+    if (typeof ame.type !== "string") return;
+
+    // 增量计数对所有 *_delta 生效（含 thinking/toolcall）：纯思考期也要有活性与吞吐，
+    // 否则长思考时快照长时间不动，操作者无法区分「在思考」与「worker 卡死」。
+    const bucket = deltaBucket(ame.type);
+    if (bucket) {
+      const delta = typeof ame.delta === "string" ? ame.delta : "";
+      this.stream.deltas++;
+      this.stream[bucket] += delta.length;
+      this.stream.lastDeltaAt = this.now();
+      this.stream.lastDeltaKind =
+        bucket === "textChars" ? "text" : bucket === "thinkingChars" ? "thinking" : "toolcall";
+      this.dirty = true; // 计数变化也是可观察变化 → 触发实时刷新
+    }
+
+    // 轨迹本身仍只收 text_delta 的可见文本；thinking/toolcall 的文本永不进轨迹（不落盘）。
     if (ame.type !== "text_delta" || typeof ame.delta !== "string") return;
     let rec = this.currentAssistant();
     if (!rec) {
@@ -238,6 +310,7 @@ export class TimelineBuilder {
     if (full) rec.text = truncate(full, this.maxText);
     rec.final = true;
     this.activeAssistant = undefined;
+    this.stream.messages++;
     this.dirty = true;
   }
 

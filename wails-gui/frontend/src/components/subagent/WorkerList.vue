@@ -47,6 +47,7 @@ defineEmits(["select"]);
 .worker-title { font-size: 12px; font-weight: 500; line-height: 1.3; word-break: break-word; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worker-id { font-size: 10px; color: #565f89; }
 .activity-waiting { color: #c792ea; }
+.activity-queued { color: #565f89; }
 .activity-quiet { color: #e0af68; }
 .activity-stalled { color: #f7768e; }
 .row-chevron { color: #565f89; font-size: 14px; flex-shrink: 0; }
