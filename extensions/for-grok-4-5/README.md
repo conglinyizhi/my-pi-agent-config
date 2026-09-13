@@ -32,9 +32,22 @@
 |------|------|
 | 1 | markSuppressTaskComplete()，task-notification 跳过「任务完成」 |
 | 2 | TUI warning + 桌面 urgency: critical：「大模型 API 出现了异常截断输出，自动进行重试」 |
-| 3 | sendUserMessage(...) 排队开启新一轮 |
+| 3 | sendUserMessage(续跑消息) 排队开启新一轮 |
 
 连续异常截断输出最多自动续 **3** 次，超限报错并停止。
+
+### 续跑消息的形状
+
+```
+<出口指令：请把完成详情写进 content；若又收到这条消息，就调 bash 执行 echo job done already>
+
+<很长一段高熵随机中英混合词>
+```
+
+- 空行后面那段**不传递信息**，只用意外性把在思维链里疯狂打转的模型拽回正常输出（实测有效）。
+- 空行是必须的分界：让模型自己看得出「前半是有价值的信息、后半是填充」。退化成连排，出口指令会被一起当成噪声。
+- 填充**每次重新生成**，长度见 `lib/continuation-message.ts` 的 `DEFAULT_FILLER_CHARS`（越长打断越强，token 成本越高）。
+- 词种用跨域词池而非随机码位：随机码位会落到生僻字/未分配区，部分 tokenizer 会退化成字节回退。
 
 ---
 
@@ -59,6 +72,23 @@ grok-4.5 收工时常反复：`bash → command: "true"`。没有正文、也不
 - 不 block 第二次 true（避免 UI 像工具报错）
 - abort 只是停循环；task-notification 对 aborted 不通知，故本扩展自行 notifyTaskComplete
 
+### 快速通道：模型直接报完成
+
+续跑消息里告诉了模型：若又收到这条消息，就调 bash 执行 `echo job done already`。
+识别用的是 `isBashHitCommand`——**只认整条命令就是哨兵本身**（容忍首尾/内部空白、
+参数带引号、结尾一个分号）。
+
+不能用 `cmd.includes(哨兵)` 子串匹配：那样任何**提到过**这句话的命令都会被当成
+模型报完成，例如
+
+- 跑一段正文里含该字面量的脚本（heredoc / python / sh）
+- `grep -rn "<哨兵>" lib/`
+- `<哨兵> && ls`、`<哨兵>` 后跟第二条命令
+
+子串匹配的后果不是“多报一次完成”那么轻：它会直接 `abort()` 掉正在进行的工作，
+把操作者的当前任务打断。另：哨兵命令如果本身被沙箱/规则拦下（tool_result isError），
+也不算报完成——那只是工具报错。
+
 ### 通知文案
 
 ```
@@ -73,6 +103,9 @@ grok-4.5 收工时常反复：`bash → command: "true"`。没有正文、也不
 
 - 本扩展在 message_end（早于 agent_end）写入 suppress 标志
 - task-notification 在发送完成通知前检查 shouldSuppressTaskComplete()
+
+续跑消息（含填充与哨兵）定义在 lib/continuation-message.ts，与本扩展同源：
+消息里叫模型执行什么，工具拦截侧就只认那一条。
 
 ## 使用
 

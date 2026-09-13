@@ -22,9 +22,10 @@ import {
   recordContinueAttempt,
   resetContinuationGuard,
   resetContinueAttempts,
-} from "../../lib/continuation-guard";
-import { isRetryableError } from "../../lib/error-utils";
-import { notify, notifyTaskComplete } from "../../lib/notify-send";
+} from "../../lib/continuation-guard.ts";
+import { buildContinueMessage, isBashHitCommand } from "../../lib/continuation-message.ts";
+import { isRetryableError } from "../../lib/error-utils.ts";
+import { notify, notifyTaskComplete } from "../../lib/notify-send.ts";
 
 // ===========================================================================
 // 常量
@@ -33,9 +34,8 @@ import { notify, notifyTaskComplete } from "../../lib/notify-send";
 // ── 习性一：异常截断输出 ──
 
 const MAX_CONTINUES = 3;
-const CONTINUE_PROMPT =
-  "你似乎没有说完，我没有看到你的发言就终止了任务，请在content区域输出一些文本让我知道这个任务完成详情；如果你重复看到了这条消息，请调用 bash 工具：";
-const BASH_HIT = "echo job done already";
+// 续跑消息（业务文本 + 空行 + 随机填充）与其中的自报完成哨兵 BASH_HIT 同源，
+// 统一定义在 lib/continuation-message.ts：消息里叫模型执行什么，工具拦截就匹配什么
 const WARNING_TITLE = "Pi Agent";
 const WARNING_BODY = "大模型 API 出现了异常截断输出，自动进行重试";
 
@@ -210,7 +210,7 @@ export default function forGrok45(pi: ExtensionAPI) {
     void fireWarning(ctx, attempt);
     clearPendingUi(ctx);
 
-    void Promise.resolve(pi.sendUserMessage(CONTINUE_PROMPT + BASH_HIT, { deliverAs: "followUp" })).catch((err: unknown) => {
+    void Promise.resolve(pi.sendUserMessage(buildContinueMessage(), { deliverAs: "followUp" })).catch((err: unknown) => {
       clearSuppressTaskComplete();
       pendingContinue = false;
       const msg = err instanceof Error ? err.message : String(err);
@@ -345,8 +345,10 @@ export default function forGrok45(pi: ExtensionAPI) {
 
     const cmd = event.input.command as string;
 
-    // 习性二 · 快速通道：bash 输出包含 BASH_HIT → 即刻收工
-    if (typeof cmd === "string" && cmd.includes(BASH_HIT)) {
+    // 习性二 · 快速通道：整条命令就是哨兵 → 即刻收工
+    // 必须用 isBashHitCommand 而不是 includes：后者会把「正文里提到过这句」的命令
+    // （跑含该字面量的脚本、grep 搜它）当成模型报完成，直接把当前工作 abort 掉
+    if (isBashHitCommand(cmd)) {
       pendingDoneToolCallId = event.toolCallId;
       if (ctx.hasUI) {
         ctx.ui.setStatus("for-grok-4-5", "grok 主动报告完成…");
@@ -379,6 +381,16 @@ export default function forGrok45(pi: ExtensionAPI) {
     }
 
     pendingDoneToolCallId = undefined;
+
+    // 哨兵根本没跑成（被沙箱/规则拦下）不算「模型报完成」：那只是工具报错，
+    // 认它会直接收工停手，而模型其实还没得到任何可用的完成确认
+    if (event.isError === true) {
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("for-grok-4-5", undefined);
+      }
+      return;
+    }
+
     await signalNormalComplete(ctx);
   });
 }
