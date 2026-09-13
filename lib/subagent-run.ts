@@ -13,7 +13,7 @@ import { getFinalOutput } from "./message-utils.ts";
 import { formatTokens } from "./format-utils.ts";
 import { TimelineBuilder, resolveTerminalState, emptyStreamStats, type StreamStats } from "./timeline.ts";
 import type { TimelineEvent } from "./timeline.ts";
-import { SUBAGENT_MAX_ATTEMPTS, backoffDelayMs, isRetryableFailure } from "./subagent-retry.ts";
+import { SUBAGENT_MAX_ATTEMPTS, planRetry, type RetryVerdict } from "./subagent-retry.ts";
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
 import { isValidInboxId } from "./subagent-supplement.ts";
 import { commandDigest, buildCapabilityDecision, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "./subagent-capability.ts";
@@ -133,6 +133,13 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 请自主完成分配给你的任务，并按需使用所有可用工具。
 
 安全边界：worker 的 bash 运行在低权限沙箱中。敏感路径与明确危险操作会直接拒绝；需要网络或其他额外能力时，当前 worker 会停止并把结构化权限请求交给主 agent。不要把“需要权限”写成普通完成结论，也不要尝试读取凭据、绕过沙箱或伪造权限请求。
+
+时间边界（很重要，出事就在这类命令上）：
+
+- 网络请求一律带显式超时：用 \`timeout 30 curl ...\` 这类写法，不要依赖默认的无超时等待；不确定要等多久的命令就干脆别发。
+- 不要写会自己扩大范围的调查脚本：递归扫描、批量爬取、在循环里 spawn 子进程、反复重试的探测。要查什么就把范围先写死，跑几个确定的目标就停。
+- 不要启动常驻或交互式命令（dev server、watch、tail -f、需要输入的命令）——它们不会自己结束。
+- 预计超过两分钟的操作先拆成能单独完成的小步；单次尝试超过 600s 会被超时终止，那一轮就白跑了。
 
 完成后的输出格式：
 
@@ -353,6 +360,8 @@ export interface RunSubagentOptions {
   runOnce?: RunOnceFn;
   /** 测试注入：替换退避等待实现 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** 测试注入：重试退避的 jitter 随机源（0..1）；不传用 Math.random */
+  retryRandom?: () => number;
   /** 重试循环注入：上一轮累积的最终轨迹，作为本轮 timeline 的种子（续接而非重置） */
   seedTimeline?: TimelineEvent[];
   /** 重试循环注入：上一轮累积的增量计数，作为本轮 StreamStats 的种子（吞吐跨重试连续） */
@@ -774,7 +783,30 @@ function deriveFinalStatus(
 }
 
 /**
- * 公共入口：单次执行 + 最多 SUBAGENT_MAX_ATTEMPTS 次基础设施重试。
+ * 把本轮重试判据写进该轮 timeline。
+ *
+ * 该 lifecycle 随 AttemptSnapshot 一起落调查档案（concatTimelines），
+ * 不会因为实时 timeline 的有界上限而丢失；供事后核对「为什么不重试」。
+ */
+function appendRetryLifecycle(
+  timeline: TimelineEvent[] | undefined,
+  verdict: RetryVerdict,
+  attempt: number,
+): void {
+  if (!timeline) return;
+  timeline.push({
+    id: `retry-verdict-${attempt}`,
+    type: "lifecycle",
+    ts: new Date().toISOString(),
+    state: verdict.retry ? "retrying" : "retry-skipped",
+    message: verdict.reason,
+  });
+}
+
+/**
+ * 公共入口：单次执行 + 按失败类别决策的重试（见 lib/subagent-retry.ts 的 RETRY_POLICY）。
+ * 配额/限速（quota）与上游瞬时故障退避重试；timeout/aborted/auth/context_limit 不重试。
+ * SUBAGENT_MAX_ATTEMPTS 仍是总轮次硬上界（防御类别表被调得过大）。
  *
  * - 成功：直接返回（带 attempts 计数），不写调查文件。
  * - 最终失败（exit/error）：返回 failed SubagentResult，附 investigationPath / attempts / inlineSummary。
@@ -862,21 +894,33 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       }
       // 失败结果（可重试或不可重试）：只有这里消耗失败预算
       failureCount++;
+      const verdict = planRetry(result, {
+        failureCount,
+        capabilityGrantIssued,
+        random: opts.retryRandom,
+      });
+      appendRetryLifecycle(result.timeline, verdict, round);
       const status: AttemptSnapshot["status"] = result.stopReason === "aborted" ? "aborted" : "failed";
       attempts.push(snapshotFromResult(round, result, status, startedAt));
       lastError = null;
-      if (capabilityGrantIssued || !isRetryableFailure(result) || failureCount >= max) break;
-      await sleep(backoffDelayMs(failureCount), opts.signal);
+      if (!verdict.retry || failureCount >= max) break;
+      await sleep(verdict.delayMs, opts.signal);
     } catch (err) {
       lastError = err;
       const status: AttemptSnapshot["status"] = err instanceof SubagentError ? err.status : "aborted";
       const timeline = err instanceof SubagentError ? err.timeline : undefined;
       if (timeline) accumulated = timeline; // 超时/中止也携最终轨迹，重试前续接
       failureCount++;
+      const verdict = planRetry(err, {
+        failureCount,
+        capabilityGrantIssued,
+        random: opts.retryRandom,
+      });
+      appendRetryLifecycle(timeline ?? accumulated, verdict, round);
       attempts.push(snapshotFromError(round, err, status, timeline, startedAt));
-      if (!isRetryableFailure(err) || failureCount >= max) break;
+      if (!verdict.retry || failureCount >= max) break;
       try {
-        await sleep(backoffDelayMs(failureCount), opts.signal);
+        await sleep(verdict.delayMs, opts.signal);
       } catch (sleepErr) {
         // 退避期间被外部中止
         lastError = sleepErr;

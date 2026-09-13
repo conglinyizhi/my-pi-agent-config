@@ -20,14 +20,15 @@ import { updateWorker } from "./status.ts";
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
 /**
- * 单批同时运行的 worker 数上限。
+ * 单批同时运行的 worker 数安全阀（不是节流额度）。
  *
- * 单 provider 账号的并发配额通常只有个位数，而 worker 数由主 agent 决定；
- * 全量齐射会直接拿回 `Concurrency limit exceeded for account`，
- * 而每个 worker 的自动重试又会把压力再乘一遍。宁可排队，不要撞墙。
+ * 正常批次应当齐射：上游的并发配额由 provider 自己管，撞到
+ * `Concurrency limit exceeded for account` 时由重试链按 quota 类别退避再试
+ * （见 lib/subagent-retry.ts 的 RETRY_POLICY），不靠静态额度预算先掉。
+ * 这个上限只挡极端大批次（一次派十几个 worker），避免把账号配额打到难以恢复。
  * （不做模型降级：手上没有可用作降级的其他模型资源。）
  */
-export const DEFAULT_MAX_PARALLEL_WORKERS = 2;
+export const MAX_PARALLEL_WORKERS_SAFETY_CAP = 8;
 
 /**
  * 把 runSubagent 抛出的错误分类为可识别终态（timeout | aborted）。
@@ -115,7 +116,7 @@ export interface RunBatchOptions {
   readonly?: boolean;
   /** 主进程审批 worker 的能力请求；返回精确 grant 才会重启当前 worker，review 作为审核简报透传 */
   onCapabilityRequest?: (request: CapabilityRequest, workerId: string) => Promise<CapabilityApproval | undefined>;
-  /** 同时运行的 worker 数上限；缺省 DEFAULT_MAX_PARALLEL_WORKERS */
+  /** 同时运行的 worker 数上限；缺省 MAX_PARALLEL_WORKERS_SAFETY_CAP */
   maxParallel?: number;
 }
 
@@ -185,9 +186,8 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
   validateWorkerInboxIds(tasks, opts.workerInboxIds);
   await prepareInboxes(opts.workerInboxIds);
 
-  // 并发节流：单账号并发配额有限，齐射必然撞 provider 的 concurrency limit，
-  // 而重试只会把压力再乘一遍。这里只做「同时最多跑几个」（不做模型降级）。
-  const limit = Math.max(1, Math.min(opts.maxParallel ?? DEFAULT_MAX_PARALLEL_WORKERS, tasks.length));
+  // 并发安全阀：正常批次齐射；只有超过安全阀的极端大批次才排队（上游限速由重试链退避吸收）。
+  const limit = Math.max(1, Math.min(opts.maxParallel ?? MAX_PARALLEL_WORKERS_SAFETY_CAP, tasks.length));
   // 超出额度的 worker 标 queued：如实告诉操作者在排队，不拿「启动中」假装已开始
   for (let i = limit; i < tasks.length; i++) updateWorker(`w${i + 1}`, { status: "queued" });
 
@@ -202,7 +202,9 @@ async function runWorker(
 ): Promise<BatchItemResult> {
   const id = `w${index + 1}`;
   const inboxId = opts.workerInboxIds[index];
-  updateWorker(id, { status: "starting" });
+  // 真启动才计耗时：创建批次时写入的 startedAt 是批次起点，排队中的 worker 一直沿用它，
+  // 会让后启动的 worker 报出与先启动兄弟相同的耗时。这里重置为实际启动时刻。
+  updateWorker(id, { status: "starting", startedAt: new Date().toISOString() });
 
   try {
     const result: SubagentResult = await runSubagent({

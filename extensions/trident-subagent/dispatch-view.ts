@@ -115,6 +115,21 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
+/**
+ * 固定宽度耗时（恒 6 字符：00m08s / 03m58s / 10m03s / 01h05m）。
+ *
+ * 专用于行内耗时列与表头汇总：分钟补零，避免跑到两位数分钟时整个字段变宽、
+ * 把右侧的成本与速率挤动。静默/等审批时长仍在行尾，用紧凑的 formatDuration。
+ */
+export function formatDurationPadded(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}m`;
+  return `${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+}
+
 export function formatCount(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
   if (n < 1000) return String(Math.round(n));
@@ -321,8 +336,8 @@ export interface FleetTheme {
   bold(text: string): string;
 }
 
-/** 展开提示（折叠态显示）；由调用方注入，避免本模块依赖 pi 的 keybinding 层 */
-export type ExpandHint = () => string;
+/** 展开/收起提示（由调用方注入，避免本模块依赖 pi 的 keybinding 层）；参数为当前是否展开 */
+export type ExpandHint = (expanded: boolean) => string;
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
   queued: "排队",
@@ -385,10 +400,18 @@ export class FleetView {
     this.expandHint = expandHint;
   }
 
-  /** 注入新投影。数据签名变化时作废渲染缓存，避免宽度未变就吃旧行。 */
+  /**
+   * 注入新投影。数据签名变化时作废渲染缓存，避免宽度未变就吃旧行。
+   *
+   * 耗时/静默也按秒进签名：只按状态与吞吐判重会让这两个字段冻在缓存里，
+   * 面板看上去假死（bash 卡在网络上等超时时尤其明显）。按秒分桶保证每秒重绘一次。
+   */
   update(workers: FleetWorkerView[], theme: FleetTheme, expanded: boolean): void {
     const sig = workers
-      .map((w) => `${w.id}|${w.status}|${w.throughput.deltas}|${w.throughput.outputTokens}|${w.activity.kind}|${w.capability?.command ?? ""}`)
+      .map((w) =>
+        `${w.id}|${w.status}|${w.throughput.deltas}|${w.throughput.outputTokens}|${w.activity.kind}|${w.capability?.command ?? ""}` +
+        `|${Math.floor(w.elapsedMs / 1000)}|${Math.floor(w.silentMs / 1000)}`,
+      )
       .join("~");
     if (sig !== this.sig) {
       this.sig = sig;
@@ -476,7 +499,7 @@ export class FleetView {
     const live = this.liveTokensPerSec();
     let right = "";
     if (this.workers.length > 0) {
-      right = t.fg("muted", formatDuration(maxElapsed));
+      right = t.fg("muted", formatDurationPadded(maxElapsed));
       if (totalCost > 0) right += t.fg("dim", " · ") + t.fg("muted", `¥${totalCost.toFixed(3)}`);
       if (live > 0) right += t.fg("dim", " · ") + t.fg("accent", `${formatRate(live)} tok/s`);
     }
@@ -489,8 +512,9 @@ export class FleetView {
       const trunc = this.workers.some((w) => w.timelineTruncated);
       if (trunc) lines.push(t.fg("warning", "  ⚠ 部分 worker 的实时轨迹已截断（最旧记录被丢弃）"));
       lines.push(t.fg("dim", `  速率按流式增量实测；token 为折算值（每 token ≈${DEFAULT_CHARS_PER_TOKEN} 字起自校准）`));
+      if (this.expandHint) lines.push("  " + t.fg("dim", this.expandHint(true)));
     } else if (!this.expanded && this.workers.length > 0 && this.expandHint) {
-      lines.push("  " + t.fg("dim", this.expandHint()));
+      lines.push("  " + t.fg("dim", this.expandHint(false)));
     }
     return lines.map((l) => truncateToWidth(l, Math.max(4, width), "…"));
   }
@@ -501,32 +525,44 @@ export class FleetView {
     const head = `${w.id.padEnd(3)}${ACTIVITY_MARK[w.activity.kind]} ${t.fg(STATUS_COLOR[w.status], STATUS_LABEL[w.status])}`;
     let l1 = ` ${head}`;
     l1 += t.fg("dim", " · ") + t.fg("muted", w.model || "?");
-    l1 += t.fg("dim", " · ") + t.fg("muted", formatDuration(w.elapsedMs));
+    // 排队中的 worker 还没真启动：显示已排队时长，而不是拿批次起点当运行耗时
+    if (w.status === "queued") {
+      l1 += t.fg("dim", " · ") + t.fg("muted", `已排队 ${formatDuration(w.elapsedMs)}`);
+    } else {
+      l1 += t.fg("dim", " · ") + t.fg("muted", formatDurationPadded(w.elapsedMs));
+    }
     if (w.cost > 0) l1 += t.fg("dim", " · ") + t.fg("muted", `¥${w.cost.toFixed(3)}`);
     if (w.retries > 0) l1 += t.fg("dim", " · ") + t.fg("warning", `第${w.retries}次尝试`);
     out.push(l1);
 
     const tp = w.throughput;
     const hist = this.rates.get(w.id) ?? [];
-    const instChars = hist.length > 0 ? hist[hist.length - 1] : tp.avgCharsPerSec;
-    const instTokens = instChars / tp.charsPerToken;
-    let l2 = "    " + t.fg("accent", `≈${formatRate(instTokens)} tok/s`);
-    l2 += t.fg("dim", " · ") + t.fg("muted", `${formatCount(tp.chars)} 字`);
-    l2 += t.fg("dim", " · ") + `out ${formatCount(tp.outputTokens)}`;
-    l2 += t.fg("dim", " ") + t.fg("dim", `(均 ≈${formatRate(tp.estTokensPerSec)} tok/s)`);
-    if (hist.length > 1) l2 += " " + t.fg("accent", sparkline(hist));
-    out.push(l2);
+    // 排队中的 worker 还没真启动：吞吐/字符/token 全是 0，整块详情是噪音，只留状态行
+    if (w.status !== "queued") {
+      const instChars = hist.length > 0 ? hist[hist.length - 1] : tp.avgCharsPerSec;
+      const instTokens = instChars / tp.charsPerToken;
+      let l2 = "    " + t.fg("accent", `≈${formatRate(instTokens)} tok/s`);
+      l2 += t.fg("dim", " · ") + t.fg("muted", `${formatCount(tp.chars)} 字`);
+      l2 += t.fg("dim", " · ") + `out ${formatCount(tp.outputTokens)}`;
+      l2 += t.fg("dim", " ") + t.fg("dim", `(均 ≈${formatRate(tp.estTokensPerSec)} tok/s)`);
+      if (hist.length > 1) l2 += " " + t.fg("accent", sparkline(hist));
+      out.push(l2);
+    }
 
     let l3 = "    " + w.activity.label;
-    if (!w.finished && w.silentMs >= IDLE_AFTER_MS) {
+    // 排队不是「静默」：还没启动，等并行额度不该读成 worker 卡了
+    if (!w.finished && w.status !== "queued" && w.silentMs >= IDLE_AFTER_MS) {
       // 等审批不是「静默」——换成「已等待」，否则读起来像 worker 卡了
       if (w.activity.kind === "waiting") l3 += t.fg("dim", ` · 已等待 ${formatDuration(w.silentMs)}`);
+      // 工具还在跑（典型：bash 在等网络/超时）：说「已执行」而不是「静默」——
+      // 后者读起来像 worker 死了，实际是它在等那条命令返回
+      else if (w.activity.kind === "tool") l3 += t.fg("dim", ` · 已执行 ${formatDuration(w.silentMs)}`);
       else if (w.activity.kind !== "idle") l3 += t.fg("dim", ` · 静默 ${formatDuration(w.silentMs)}`);
     }
     // 终态且有 note 时不再重复「失败」二字（note 行紧跟在后）
     if (!(w.activity.kind === "failed" && w.note)) out.push(l3);
 
-    if (this.expanded) {
+    if (this.expanded && w.status !== "queued") {
       let l4 = "    " + t.fg("dim", "字符 ") + `text ${formatCount(tp.textChars)} / 思考 ${formatCount(tp.thinkingChars)} / 参数 ${formatCount(tp.toolcallChars)}`;
       l4 += t.fg("dim", ` · 增量 ${formatCount(tp.deltas)} · 消息 ${tp.messages}`);
       out.push(l4);

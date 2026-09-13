@@ -21,6 +21,7 @@ import {
   createCoalescer,
   formatCount,
   formatDuration,
+  formatDurationPadded,
   formatRate,
   formatToolArgs,
   formatWorkerOutput,
@@ -305,6 +306,16 @@ describe("格式化小工具", () => {
     assert.strictEqual(formatDuration(3_600_000 + 120_000), "1h02m");
   });
 
+  it("formatDurationPadded 恒 6 字符（分钟补零，防右侧列跳动）", () => {
+    for (const ms of [0, 8_000, 59_000, 61_000, 238_000, 603_000, 3_600_000 + 120_000]) {
+      assert.strictEqual(formatDurationPadded(ms).length, 6, `${ms}ms → ${formatDurationPadded(ms)}`);
+    }
+    assert.strictEqual(formatDurationPadded(8_000), "00m08s");
+    assert.strictEqual(formatDurationPadded(238_000), "03m58s");
+    assert.strictEqual(formatDurationPadded(603_000), "10m03s");
+    assert.strictEqual(formatDurationPadded(3_600_000 + 120_000), "01h02m");
+  });
+
   it("formatCount/formatRate 压缩大数", () => {
     assert.strictEqual(formatCount(0), "0");
     assert.strictEqual(formatCount(999), "999");
@@ -403,6 +414,57 @@ describe("FleetView：渲染与采样", () => {
     assert.match(body, /等并行额度/);
     assert.match(body, /1 排队/); // 表头 chip
     assert.doesNotMatch(body, /运行/);
+  });
+
+  it("排队时长标为「已排队」，不拿批次起点冒充运行耗时", () => {
+    const view = new FleetView(plainTheme, false, () => T0 + 61_000);
+    view.update(projectFleet([run({ status: "queued", startedAt: at(0) })], T0 + 61_000), plainTheme, false);
+    const body = view.render(90).join("\n");
+    assert.match(body, /已排队 1m01s/);
+  });
+
+  it("时间推进后重渲染不吃缓存（耗时/静默继续走字）", () => {
+    let clock = T0 + 10_000;
+    const view = new FleetView(plainTheme, false, () => clock, undefined);
+    view.update(projectFleet([run({ lastActivityAt: at(5_000) })], clock), plainTheme, false);
+    const first = view.render(80).join("\n");
+    assert.match(first, /00m10s/);
+
+    // 无新事件、只有时间流逝：仍然必须重绘（否则面板看起来假死）
+    clock = T0 + 40_000;
+    view.update(projectFleet([run({ lastActivityAt: at(5_000) })], clock), plainTheme, false);
+    const second = view.render(80).join("\n");
+    assert.match(second, /00m40s/);
+    assert.notStrictEqual(first, second);
+  });
+
+  it("长工具跑着时说「已执行」而不是「静默」（bash 等网络超时的场景）", () => {
+    const clock = T0 + 60_000;
+    const w = run({
+      lastActivityAt: at(5_000),
+      timeline: [{ id: "t1", type: "tool", ts: at(5_000), tool: "bash", args: "curl https://example.com", ok: undefined }],
+    });
+    const view = new FleetView(plainTheme, false, () => clock, undefined);
+    view.update(projectFleet([w], clock), plainTheme, false);
+    const body = view.render(90).join("\n");
+    assert.match(body, /bash curl https:\/\/example\.com/);
+    assert.match(body, /已执行 /);
+    assert.doesNotMatch(body, /静默/);
+  });
+
+  it("展开提示随状态切换（折叠=展开明细 / 展开=收起明细）", () => {
+    const hint = (expanded: boolean) => (expanded ? "ctrl+i 收起明细" : "ctrl+i 展开明细");
+
+    const collapsed = new FleetView(plainTheme, false, () => T0, hint);
+    collapsed.update(projectFleet([run()], T0), plainTheme, false);
+    const collapsedBody = collapsed.render(80).join("\n");
+    assert.match(collapsedBody, /展开明细/);
+    assert.doesNotMatch(collapsedBody, /收起明细/);
+
+    const expanded = new FleetView(plainTheme, true, () => T0, hint);
+    expanded.update(projectFleet([run()], T0), plainTheme, true);
+    const expandedBody = expanded.render(80).join("\n");
+    assert.match(expandedBody, /收起明细/);
   });
 
   it("每行不超过给定宽度（含窄宽度）", () => {

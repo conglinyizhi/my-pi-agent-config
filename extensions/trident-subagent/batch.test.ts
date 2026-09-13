@@ -20,7 +20,7 @@ import {
   buildTerminalPatch,
   formatCatchOutput,
   runWithConcurrency,
-  DEFAULT_MAX_PARALLEL_WORKERS,
+  MAX_PARALLEL_WORKERS_SAFETY_CAP,
 } from "./batch.ts";
 
 describe("classifyTerminalError / buildTerminalPatch", () => {
@@ -157,8 +157,8 @@ describe("runWithConcurrency（并发节流）", () => {
     );
   });
 
-  it("缺省额度是保守值（单账号并发配额有限，不做模型降级）", () => {
-    assert.ok(DEFAULT_MAX_PARALLEL_WORKERS >= 1);
-    assert.ok(DEFAULT_MAX_PARALLEL_WORKERS <= 4, "缺省额度不该超过个位数配额的量级");
+  it("并发安全阀只挡极端大批次（正常批次齐射，上游限速走退避重试）", () => {
+    assert.ok(MAX_PARALLEL_WORKERS_SAFETY_CAP >= 4, "安全阀不该低到变成日常节流");
+    assert.ok(MAX_PARALLEL_WORKERS_SAFETY_CAP <= 16, "安全阀也不该高到形同虚设");
   });
 });

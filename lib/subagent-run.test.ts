@@ -254,7 +254,7 @@ describe("runSubagent retry loop (injected runOnce)", () => {
     assert.strictEqual(result.stream?.deltas, 2);
   });
 
-  it("6 failures → investigationPath set, attempts=6", async () => {
+  it("未知类别失败：保守只给一次重试（attempts=2），仍写调查文件", async () => {
     let n = 0;
     const result = await runSubagent({
       task: "t", cwd: "/tmp",
@@ -268,10 +268,32 @@ describe("runSubagent retry loop (injected runOnce)", () => {
       },
       sleep: async () => {},
     });
-    assert.strictEqual(n, 6);
+    assert.strictEqual(n, 2);
     assert.ok(result.investigationPath);
-    assert.strictEqual(result.attempts, 6);
+    assert.strictEqual(result.attempts, 2);
     assert.ok(result.inlineSummary?.includes("investigation:"));
+  });
+
+  it("quota（账号限速）：退避 10/20/40/80s，跑满 5 次才停", async () => {
+    let n = 0;
+    const delays: number[] = [];
+    const result = await runSubagent({
+      task: "t", cwd: "/tmp",
+      runOnce: async () => {
+        n++;
+        return {
+          task: "t", exitCode: 1, messages: [], stderr: "", stopReason: "error",
+          errorMessage: "Concurrency limit exceeded for account, please retry later",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          timeline: [],
+        };
+      },
+      sleep: async (ms) => { delays.push(ms); },
+      retryRandom: () => 0.5,
+    });
+    assert.strictEqual(n, 5);
+    assert.deepStrictEqual(delays, [10_000, 20_000, 40_000, 80_000]);
+    assert.ok(result.investigationPath);
   });
 
   it("abort → 1 run, investigationPath set, no further attempts", async () => {
@@ -306,7 +328,8 @@ describe("runSubagent retry loop (injected runOnce)", () => {
         if (n < 3) {
           return {
             task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
-            errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            errorMessage: "Upstream response stream was interrupted",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline: [],
           };
         }
@@ -323,23 +346,19 @@ describe("runSubagent retry loop (injected runOnce)", () => {
     assert.deepStrictEqual(seen, ["batch-abc123-w1", "batch-abc123-w1", "batch-abc123-w1"]);
   });
 
-  it("timeout retries until success", async () => {
+  it("timeout 不再重试（回归：旧行为会原样重跑 6 次）", async () => {
     let n = 0;
-    const result = await runSubagent({
-      task: "t", cwd: "/tmp",
-      runOnce: async () => {
-        n++;
-        if (n < 3) throw new SubagentError("timeout", "Subagent 超时（600s）");
-        return {
-          task: "t", exitCode: 0, messages: [], stderr: "",
-          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-          timeline: [],
-        };
-      },
-      sleep: async () => {},
-    });
-    assert.strictEqual(n, 3);
-    assert.strictEqual(result.exitCode, 0);
+    await assert.rejects(
+      () => runSubagent({
+        task: "t", cwd: "/tmp",
+        runOnce: async () => {
+          n++;
+          throw new SubagentError("timeout", "Subagent 超时（600s）");
+        },
+        sleep: async () => {},
+      }),
+    );
+    assert.strictEqual(n, 1);
   });
 
   it("重试跨 attempt 累积 timeline（seedTimeline 续接 + attempt 递增，不塌缩）", async () => {
@@ -360,7 +379,8 @@ describe("runSubagent retry loop (injected runOnce)", () => {
         if (n < 3) {
           return {
             task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
-            errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            errorMessage: "Upstream response stream was interrupted",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline,
           };
         }
@@ -373,8 +393,9 @@ describe("runSubagent retry loop (injected runOnce)", () => {
       sleep: async () => {},
     });
     assert.strictEqual(n, 3);
-    // 首轮无 seed，其后每轮以上一轮累积轨迹为 seed（不塌缩回 0）
-    assert.deepStrictEqual(seenSeed, [0, 1, 2]);
+    // 首轮无 seed，其后每轮以上一轮累积轨迹为 seed（不塌缩回 0）。
+    // 每轮多出 2 条：本轮新产 1 条 + 失败后追加的 retry-verdict lifecycle。
+    assert.deepStrictEqual(seenSeed, [0, 2, 4]);
     assert.deepStrictEqual(seenAttempt, [1, 2, 3]);
   });
 });

@@ -49,10 +49,12 @@ const FLEET_EMIT_INTERVAL_MS = 150;
  * fleet 节拍：即使所有 worker 都无事件也要定期重投影。
  *
  * 两个作用：
- *   - 静默时长能真正往前走（否则「卡了 40 秒」永远是 0，回到看不出死活的老问题）；
+ *   - 静默/耗时能真正往前走（否则「卡了 40 秒」永远是 0，回到看不出死活的老问题）；
  *   - 行组件在纯思考期也有帧可刷。
+ *
+ * 250ms 比显示精度（秒级）高至少一档：无事件时秒数最多晚 250ms 才翻。
  */
-const FLEET_TICK_MS = 500;
+const FLEET_TICK_MS = 250;
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
 const capabilityReviewCache = createReviewCache();
 
@@ -234,6 +236,7 @@ export default function (pi: ExtensionAPI) {
       "模型优先级是：显式 model 参数 > 用户通过 /subagent:select-change-switch-default-worker-model 设置的独立默认 > 当前主 session 模型。显式参数只影响本次 worker；独立默认不修改主 session。",
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
+      "不要派会挂很久的活：工具是同步阻塞的，一个卡住的 worker 会把主对话钉住。典型禁派：无超时的网络请求（curl/下载/接口探测）、靠脚本自己扩大范围的调查（递归扫描、批量爬取、循环里 spawn 子进程、反复重试的探查）、全量构建/完整测试套件、常驻或交互式命令（dev server、watch、tail -f）。要派就先拆小，并在简报里要求命令带显式超时。",
       "工具同步阻塞直到所有 worker 结束；一个失败不终止其他 worker，逐项汇报。",
       "运行期间可用 /subagent:gui 查看实时详情；失败 investigation 路径先读「读档指引」与「最终结论」。",
     ],
@@ -298,7 +301,8 @@ export default function (pi: ExtensionAPI) {
       // 行组件必须跨帧复用，否则瞬时速率历史（sparkline）每帧归零
       const view = previous instanceof FleetView
         ? previous
-        : new FleetView(theme, expanded, undefined, () => keyHint("app.tools.expand", "展开明细"));
+        : new FleetView(theme, expanded, undefined, (isExpanded) =>
+            keyHint("app.tools.expand", isExpanded ? "收起明细" : "展开明细"));
       view.update(fleet ?? [], theme, expanded);
       if (isPartial && (fleet === undefined || fleet.length === 0)) {
         return new Text(theme.fg("warning", "启动 worker…"), 0, 0);

@@ -1,5 +1,5 @@
 {
-  "app.tools.expand": [],
+  "app.tools.expand": "alt+i",
   "app.tree.filter.cycleForward": [],
   "tui.editor.cursorLineEnd": "end",
   "app.clear": "shift+ctrl+c",
