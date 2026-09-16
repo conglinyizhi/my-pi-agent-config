@@ -162,3 +162,27 @@ check("会话文件缺失时提示", notices.at(-1)!.includes("会话文件已�
 const ctxNoSession = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionFile: () => undefined } };
 await sleep.handler("x", ctxNoSession);
 check("in-memory 会话拒绝暂存", notices.at(-1)!.includes("无法暂存"), notices.at(-1));
+
+// ---- 11. 只剩 OSC 52 兜底时，不能报成「已复制到剪贴板」
+writeFileSync(STORE, JSON.stringify({ sessionId: "osc", sessionFile: SESSION_FILE, cwd: "/tmp", note: "远端会话", timestamp: "2026-01-07T10:00:00.000Z" }) + "\n");
+selectAnswers = [undefined];
+await load.handler("", ctx);
+const items11 = selectCalls.at(-1)!;
+
+// 造一个「没有本地通道可用 + remote 会话」的环境，逼出 OSC 52 分支
+const savedEnv = ["SSH_CONNECTION", "WAYLAND_DISPLAY", "DISPLAY", "TERMUX_VERSION"] as const;
+const restoreEnv = new Map(savedEnv.map((k) => [k, process.env[k]]));
+process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+for (const k of ["WAYLAND_DISPLAY", "DISPLAY", "TERMUX_VERSION"] as const) delete process.env[k];
+
+const stdoutChunks: string[] = [];
+const realWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = ((chunk: unknown) => { stdoutChunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+selectAnswers = [items11[0], "复制恢复指令到剪贴板"];
+await load.handler("", ctx);
+process.stdout.write = realWrite;
+for (const [k, v] of restoreEnv) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+
+check("OSC 52 序列已发出", stdoutChunks.some((c) => c.startsWith("\x1b]52;c;")), JSON.stringify(stdoutChunks));
+check("OSC 52 兜底时提示取决于终端", notices.at(-1)!.includes("OSC 52"), notices.at(-1));
+check("OSC 52 兜底时不报已复制", !notices.at(-1)!.includes("已复制到剪贴板"), notices.at(-1));

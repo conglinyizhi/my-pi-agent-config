@@ -24,6 +24,7 @@
 编辑是就地改写：只替换目标记录那一行，其余行（包括解析不了的行）原样保留；先写临时文件再 rename，避免写坏暂存文件。
 
 剪贴板走共享模块 `lib/clipboard.ts`，先按环境路由本地工具，不做无脑盲试：macOS → `pbcopy`；Windows → `clip`；Termux → `termux-clipboard-set`；Wayland → `wl-copy`（失败且存在 `DISPLAY` 再回落 `xclip` → `xsel`）；仅有 `DISPLAY` → `xclip` → `xsel`。文本只经 stdin 写入（不拼 shell 命令，也不会像 `echo … | xclip` 那样多出一个尾换行），通道退出码为 0 才算成功。本地通道全失败、或处于 SSH/mosh 会话时，额外发一次 OSC 52 转义序列，由终端自己写入宿主剪贴板（base64 超 100000 字符则放弃）。
+OSC 52 是「发出去了」而不是「生效了」：只剩它这一条通道时，提示会明说能否生效取决于终端是否支持，不会报成「已复制到剪贴板」。
 
 ## 排版
 

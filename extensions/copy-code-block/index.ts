@@ -12,7 +12,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
-import { copyToClipboard } from "../../lib/clipboard.ts";
+import { OSC52_TOOL, copyToClipboard } from "../../lib/clipboard.ts";
 
 interface CodeBlock {
   /** 排序后序号，从 1 开始（离用户最近的为 1） */
@@ -146,7 +146,13 @@ async function handleCopyCodeBlock(args: string, ctx: ExtensionCommandContext): 
   }
 
   const result = await copyToClipboard(chosen.code);
-  if (result.ok) {
+  if (result.ok && result.tool === OSC52_TOOL) {
+    // OSC 52 兜底：序列发出去了，但终端认不认由终端决定，不能报成「已复制」
+    ctx.ui.notify(
+      `已通过 OSC 52 发给终端，能否生效取决于终端是否支持 —— 代码块 #${chosen.index}，${chosen.lines} 行`,
+      "warning",
+    );
+  } else if (result.ok) {
     ctx.ui.notify(`已复制代码块 #${chosen.index}（距上问 ${chosen.dist} 轮，${chosen.lang}，${chosen.lines} 行）`, "info");
   } else {
     const failures = result.attempts.filter((a) => !a.ok);

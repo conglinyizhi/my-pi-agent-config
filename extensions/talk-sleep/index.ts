@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { appendFile, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { copyToClipboard } from "../../lib/clipboard.ts";
+import { OSC52_TOOL, copyToClipboard } from "../../lib/clipboard.ts";
 
 const STORE_PATH = join(homedir(), ".pi", "talk-sleep.jsonl");
 
@@ -260,7 +260,13 @@ export default function (pi: ExtensionAPI) {
             },
           });
           ctx.ui.setStatus("talk-sleep", undefined);
-          if (result.ok) {
+          if (result.ok && result.tool === OSC52_TOOL) {
+            // OSC 52 兜底：序列发出去了，但终端认不认由终端决定，不能报成「已复制」
+            ctx.ui.notify(
+              "已通过 OSC 52 发给终端，能否生效取决于终端是否支持。若粘贴不到，用「仅显示恢复指令」手动复制:\n" + fullCmd,
+              "warning",
+            );
+          } else if (result.ok) {
             ctx.ui.notify("已复制到剪贴板: " + fullCmd, "info");
           } else {
             const failures = result.attempts.filter((a) => !a.ok);
