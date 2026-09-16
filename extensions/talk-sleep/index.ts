@@ -5,10 +5,7 @@ import { existsSync } from "node:fs";
 import { appendFile, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-
-const execAsync = promisify(exec);
+import { copyToClipboard } from "../../lib/clipboard.ts";
 
 const STORE_PATH = join(homedir(), ".pi", "talk-sleep.jsonl");
 
@@ -124,36 +121,6 @@ async function updateStoredNote(target: StoredSession, note: string): Promise<bo
   await writeFile(tmpPath, lines.join("\n"), "utf-8");
   await rename(tmpPath, STORE_PATH);
   return true;
-}
-
-async function copyToClipboard(text: string, onTesting: (tool: string) => void): Promise<{ ok: true } | { ok: false; errors: string[] }> {
-  const CLIP_TIMEOUT = 3000;
-  const errors: string[] = [];
-
-  // 按优先级依次尝试，不依赖环境变量过滤——全部试一遍
-  const candidates: { name: string; shellCmd: string }[] = [
-    { name: "wl-copy", shellCmd: `wl-copy '${text.replace(/'/g, "'\\''")}'` },
-    { name: "xclip",   shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | xclip -selection clipboard` },
-    { name: "xsel",    shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | xsel -ib` },
-    { name: "pbcopy",  shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | pbcopy` },
-  ];
-
-  for (const { name, shellCmd } of candidates) {
-    onTesting(name);
-    try {
-      await execAsync(shellCmd, {
-        timeout: CLIP_TIMEOUT,
-        killSignal: "SIGKILL",
-        encoding: "utf-8",
-      });
-      return { ok: true };
-    } catch (e: any) {
-      const msg = e.stderr?.trim() || e.message?.slice(0, 120) || "未知错误";
-      errors.push(`${name}: ${msg}`);
-    }
-  }
-
-  return { ok: false, errors };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -287,15 +254,18 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (action.startsWith("复制")) {
-          const result = await copyToClipboard(fullCmd, (tool) => {
-            ctx.ui.setStatus("talk-sleep", `正在测试剪贴板工具 (${tool})...`);
+          const result = await copyToClipboard(fullCmd, {
+            onAttempt: (tool) => {
+              ctx.ui.setStatus("talk-sleep", `正在测试剪贴板工具 (${tool})...`);
+            },
           });
           ctx.ui.setStatus("talk-sleep", undefined);
           if (result.ok) {
             ctx.ui.notify("已复制到剪贴板: " + fullCmd, "info");
           } else {
-            const detail = result.errors.length > 0
-              ? `\n尝试了 ${result.errors.length} 个工具均失败：\n${result.errors.map((e) => `  · ${e}`).join("\n")}`
+            const failures = result.attempts.filter((a) => !a.ok);
+            const detail = failures.length > 0
+              ? `\n尝试了 ${failures.length} 个工具均失败：\n${failures.map((a) => `  · ${a.tool}: ${a.reason ?? "未知错误"}`).join("\n")}`
               : "";
             ctx.ui.notify("复制失败，未找到可用的剪贴板工具" + detail + "\n" + fullCmd, "warning");
           }

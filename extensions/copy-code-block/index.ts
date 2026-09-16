@@ -7,15 +7,12 @@
 // 代码块从当前会话消息中提取（assistant 与 user 的 ``` 围栏块），
 // 每个代码块标注「距最近用户发言的回合数」（user 消息内为 0），
 // 按该距离升序排列：离用户最近的排最前，重编号后 #1 即最近。
-// 剪贴板按 wl-copy → xclip → xsel → pbcopy 依次尝试。
+// 剪贴板走 ../../lib/clipboard.ts（按环境路由本地工具，文本只经 stdin，remote/失败时 OSC 52 兜底）。
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-
-const execAsync = promisify(exec);
+import { copyToClipboard } from "../../lib/clipboard.ts";
 
 interface CodeBlock {
   /** 排序后序号，从 1 开始（离用户最近的为 1） */
@@ -76,31 +73,6 @@ function collectCodeBlocks(entries: unknown[]): CodeBlock[] {
     }
   }
   return blocks;
-}
-
-// ---------------------------------------------------------------------------
-// 剪贴板
-// ---------------------------------------------------------------------------
-
-async function copyToClipboard(text: string): Promise<{ ok: true; tool: string } | { ok: false; errors: string[] }> {
-  const CLIP_TIMEOUT = 3000;
-  const errors: string[] = [];
-  const candidates: { name: string; shellCmd: string }[] = [
-    { name: "wl-copy", shellCmd: `wl-copy '${text.replace(/'/g, "'\\''")}'` },
-    { name: "xclip", shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | xclip -selection clipboard` },
-    { name: "xsel", shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | xsel -ib` },
-    { name: "pbcopy", shellCmd: `echo '${text.replace(/'/g, "'\\''")}' | pbcopy` },
-  ];
-  for (const { name, shellCmd } of candidates) {
-    try {
-      await execAsync(shellCmd, { timeout: CLIP_TIMEOUT, killSignal: "SIGKILL", encoding: "utf-8" });
-      return { ok: true, tool: name };
-    } catch (e) {
-      const err = e as { stderr?: string; message?: string };
-      errors.push(`${name}: ${err.stderr?.trim() || err.message?.slice(0, 120) || "未知错误"}`);
-    }
-  }
-  return { ok: false, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +149,11 @@ async function handleCopyCodeBlock(args: string, ctx: ExtensionCommandContext): 
   if (result.ok) {
     ctx.ui.notify(`已复制代码块 #${chosen.index}（距上问 ${chosen.dist} 轮，${chosen.lang}，${chosen.lines} 行）`, "info");
   } else {
-    ctx.ui.notify(`复制失败：${result.errors.join("；")}`, "error");
+    const failures = result.attempts.filter((a) => !a.ok);
+    const detail = failures.length > 0
+      ? failures.map((a) => `${a.tool}（${a.reason ?? "未知错误"}）`).join("；")
+      : "未找到可用的剪贴板通道";
+    ctx.ui.notify(`复制失败：${detail}`, "error");
   }
 }
 
