@@ -7,6 +7,8 @@ git/
 node_modules/
 .DS_Store
 mcp-cache.json
+# 提督名字（本机私有，不入库；重新部署时从 APPEND_SYSTEM.md.example 复制后全文替换占位符）
+APPEND_SYSTEM.md
 docs/superpowers/
 .worktrees/
 *.d.ts
