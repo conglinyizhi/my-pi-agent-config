@@ -23,6 +23,7 @@ import {
   formatDuration,
   formatDurationPadded,
   formatRate,
+  formatRatePadded,
   formatToolArgs,
   formatWorkerOutput,
   projectFleet,
@@ -327,6 +328,21 @@ describe("格式化小工具", () => {
     assert.strictEqual(formatRate(3_140), "3.1k");
   });
 
+  it("formatRatePadded 恒 3 字符（零填充，防右侧列跳动）", () => {
+    // 无速度也要有占位，否则整段消失同样会让右侧文本移位
+    for (const v of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.strictEqual(formatRatePadded(v), "000", `${v} 该给占位`);
+    }
+    assert.strictEqual(formatRatePadded(8), "008");
+    assert.strictEqual(formatRatePadded(86.4), "086");
+    assert.strictEqual(formatRatePadded(134), "134");
+    for (const v of [0, 1, 9, 86.4, 134, 999]) {
+      assert.strictEqual(formatRatePadded(v).length, 3, `${v} → ${formatRatePadded(v)}`);
+    }
+    // ≥1000 沿用 k 记法（罕见区间，宽度会多一位）
+    assert.strictEqual(formatRatePadded(3_140), "3.1k");
+  });
+
   it("sparkline 按峰值归一且长度对齐", () => {
     assert.strictEqual(sparkline([]), "");
     const s = sparkline([0, 1, 2, 4]);
@@ -383,6 +399,30 @@ describe("FleetView：渲染与采样", () => {
     assert.match(body, /tok\/s/);
     assert.match(body, /out 8\.4k/);
     assert.match(body, /¥0\.021/);
+  });
+
+  it("表头速率字段恒占位：无速度时给 000 tok/s，不整段消失", () => {
+    const header = (stream?: WorkerRun["stream"]) => {
+      const view = new FleetView(plainTheme, false, () => T0 + 12_000);
+      view.update(
+        projectFleet(
+          [run({ usage: usageOf({ output: 100, cost: 0.01 }), ...(stream ? { stream } : {}) })],
+          T0 + 12_000,
+        ),
+        plainTheme,
+        false,
+      );
+      return view.render(100)[0];
+    };
+
+    const idle = header();
+    assert.match(idle, /000 tok\/s/, "无速度时应有占位");
+
+    // 字段位置与行长不随速度变化：后面的文本（时间/成本）不该左右跳
+    const busy = header({ textChars: 3_000, thinkingChars: 0, toolcallChars: 0, deltas: 60, messages: 2 });
+    assert.doesNotMatch(busy, /000 tok\/s/, "有速度时不该还是占位");
+    assert.strictEqual(idle.indexOf("tok/s"), busy.indexOf("tok/s"), "速率字段位置应一致");
+    assert.strictEqual(visibleWidth(idle), visibleWidth(busy));
   });
 
   it("展开态追加字符细分与 token/pid 明细分行", () => {

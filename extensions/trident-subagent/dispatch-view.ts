@@ -143,6 +143,19 @@ export function formatRate(perSec: number): string {
   return `${(perSec / 1000).toFixed(perSec < 10_000 ? 1 : 0)}k`;
 }
 
+/**
+ * 速率按 3 位定宽零填充（`000` / `011` / `134`），与 formatDurationPadded 同一用意：
+ * 后面的文本不因数字位数变化而左右跳。无速度时给 `000` 占位，而不是把整段隐掉——
+ * 整段隐掉同样会让右侧文本位移。
+ *
+ * 每秒 1000 以上沿用原来的 k 记法（`3.1k`），这时会多一位，属于罕见区间。
+ */
+export function formatRatePadded(perSec: number): string {
+  if (!Number.isFinite(perSec) || perSec <= 0) return "000";
+  if (perSec < 1000) return String(Math.round(perSec)).padStart(3, "0");
+  return formatRate(perSec);
+}
+
 export function sparkline(values: number[]): string {
   if (values.length === 0) return "";
   const max = Math.max(...values, Number.EPSILON);
@@ -501,7 +514,9 @@ export class FleetView {
     if (this.workers.length > 0) {
       right = t.fg("muted", formatDurationPadded(maxElapsed));
       if (totalCost > 0) right += t.fg("dim", " · ") + t.fg("muted", `¥${totalCost.toFixed(3)}`);
-      if (live > 0) right += t.fg("dim", " · ") + t.fg("accent", `${formatRate(live)} tok/s`);
+      // 无速度也用占位填满：整段隐掉会让右侧的左边缘跟着跳（与 duration 补零同一用意）
+      right +=
+        t.fg("dim", " · ") + t.fg(live > 0 ? "accent" : "dim", `${formatRatePadded(live)} tok/s`);
     }
     lines.push(padBetween(t, left, right, width));
     lines.push(t.fg("dim", "─".repeat(Math.max(8, width))));
@@ -541,10 +556,10 @@ export class FleetView {
     if (w.status !== "queued") {
       const instChars = hist.length > 0 ? hist[hist.length - 1] : tp.avgCharsPerSec;
       const instTokens = instChars / tp.charsPerToken;
-      let l2 = "    " + t.fg("accent", `≈${formatRate(instTokens)} tok/s`);
+      let l2 = "    " + t.fg("accent", `≈${formatRatePadded(instTokens)} tok/s`);
       l2 += t.fg("dim", " · ") + t.fg("muted", `${formatCount(tp.chars)} 字`);
       l2 += t.fg("dim", " · ") + `out ${formatCount(tp.outputTokens)}`;
-      l2 += t.fg("dim", " ") + t.fg("dim", `(均 ≈${formatRate(tp.estTokensPerSec)} tok/s)`);
+      l2 += t.fg("dim", " ") + t.fg("dim", `(均 ≈${formatRatePadded(tp.estTokensPerSec)} tok/s)`);
       if (hist.length > 1) l2 += " " + t.fg("accent", sparkline(hist));
       out.push(l2);
     }
