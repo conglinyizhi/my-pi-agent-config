@@ -327,6 +327,12 @@ export default function (pi: ExtensionAPI) {
           description: "可选：worker 使用的已注册模型，格式 provider/model；不传时按独立默认 worker 模型，再回退到当前主 session 模型。",
         }),
       ),
+      timeout: Type.Optional(
+        Type.Number({
+          description:
+            "可选：worker 单次执行的时间预算（秒，下限 5，缺省 600）。预算见底时不会直接掐掉 worker，而是先暂存问你一次（继续给新预算 / 补充一句 / 停），所以长任务给紧预算也有退路。",
+        }),
+      ),
     }),
     // 模型偶尔把参数名写成复数的 tasks（schema 里装的就是数组，很容易滑）。
     // 这里在 schema 校验之前折回 task，省掉一个「报错 → 重发」的来回。
@@ -342,6 +348,9 @@ export default function (pi: ExtensionAPI) {
       if (typeof args.model === "string" && args.model) content += theme.fg("dim", ` · ${args.model}`);
       if (typeof args.sandbox_profile === "string" && args.sandbox_profile) {
         content += theme.fg("dim", ` · ${args.sandbox_profile}`);
+      }
+      if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
+        content += theme.fg("dim", ` · ${Math.floor(args.timeout)}s`);
       }
       if (Array.isArray(args.skills) && args.skills.length > 0) {
         content += theme.fg("dim", ` · skills ${args.skills.length}`);
@@ -491,12 +500,17 @@ export default function (pi: ExtensionAPI) {
       fleetTick.unref?.();
 
       let results: BatchItemResult[];
+      // 预算：模型偶尔给荒谬值（0 / 负数 / 小数），归一成 ≥5 的整秒，其余当缺省
+      const workerTimeout = typeof params.timeout === "number" && Number.isFinite(params.timeout)
+        ? Math.max(5, Math.floor(params.timeout))
+        : undefined;
       try {
         results = await runBatch(tasks, {
           cwd: ctx.cwd,
           sandboxDir: params.sandbox_dir,
           readonly: workerReadonly,
           model: workerModel,
+          timeout: workerTimeout,
           signal,
           skills: sharedSkills.paths,
           workerSkills,
