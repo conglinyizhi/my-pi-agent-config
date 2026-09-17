@@ -19,6 +19,7 @@ import {
   TimelineBuilder,
   resolveTerminalState,
   SubagentError,
+  externalStopReason,
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
@@ -947,5 +948,36 @@ describe("TimelineBuilder lifecycle 与终态", () => {
     assert.strictEqual(resolveTerminalState({ aborted: true, timedOut: true, exitCode: 0 }), "timeout");
     assert.strictEqual(resolveTerminalState({ aborted: true, timedOut: false, exitCode: 0 }), "aborted");
     assert.strictEqual(resolveTerminalState({ aborted: false, timedOut: false, exitCode: 0, stopReason: "aborted" }), "aborted");
+  });
+});
+
+describe("externalStopReason：外部停止的理由", () => {
+  it("带理由的 abort：原样取出，用于写进终态与轨迹", () => {
+    const c = new AbortController();
+    c.abort(new Error("测试强停"));
+    assert.strictEqual(externalStopReason(c.signal), "测试强停");
+  });
+
+  it("不带理由的 abort：AbortError 是机制默认值，不当成理由上报", () => {
+    const c = new AbortController();
+    c.abort();
+    assert.strictEqual(externalStopReason(c.signal), undefined);
+  });
+
+  it("空白理由按没写处理，不往诊断里塞空格", () => {
+    const c = new AbortController();
+    c.abort(new Error("   "));
+    assert.strictEqual(externalStopReason(c.signal), undefined);
+  });
+
+  it("未中止的信号与缺信号都返回 undefined", () => {
+    assert.strictEqual(externalStopReason(new AbortController().signal), undefined);
+    assert.strictEqual(externalStopReason(undefined), undefined);
+  });
+
+  it("reason 不是 Error（字符串等）时也不上报——只能落成文本的东西才算理由", () => {
+    const c = new AbortController();
+    c.abort("字符串理由");
+    assert.strictEqual(externalStopReason(c.signal), undefined);
   });
 });

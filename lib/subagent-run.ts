@@ -874,9 +874,22 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         // 结构化终态错误：batch 依赖 status（timeout/aborted）而非消息文本识别；
         // 最终 timeline 随错误带给调用方（catch 保留，undefined 不覆盖实时轨迹）
         const status: "timeout" | "aborted" = terminal === "timeout" ? "timeout" : "aborted";
+        // 外部中止可以带理由（/subagent:stop 就是这条路）。不记下来的话，
+        // 命令层让你填的那句话就白填了，事后没人知道为什么停。
+        const stopReason = status === "aborted" ? externalStopReason(opts.signal) : undefined;
+        if (stopReason) {
+          // 用 stopped 而不是 aborted：worker 自己报的那条 aborted 已经在轨迹上（它确实被中止了），
+          // 这条是父侧补的原因（谁停的、为什么）。同名两条摆在一起会被当成重复记录。
+          timeline.addLifecycle("stopped", `外部停止：${stopReason}`);
+          archiveTimeline.addLifecycle("stopped", `外部停止：${stopReason}`);
+        }
         throw new SubagentError(
           status,
-          status === "timeout" ? `Subagent 超时（${opts.timeout ?? 600}s）` : "Subagent 已中止",
+          status === "timeout"
+            ? `Subagent 超时（${opts.timeout ?? 600}s）`
+            : stopReason
+              ? `Subagent 已中止：${stopReason}`
+              : "Subagent 已中止",
           result.timeline,
         );
       }
@@ -889,6 +902,20 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       if (timeoutId) clearTimeout(timeoutId);
     }
   });
+}
+
+/**
+ * 取外部中止信号上的理由。
+ *
+ * AbortError 是 abort() 不给 reason 时的机制默认值（This operation was aborted），
+ * 不是人写的理由，不当作理由上报；空白理由同理。
+ */
+export function externalStopReason(signal: AbortSignal | undefined): string | undefined {
+  const reason = signal?.reason;
+  if (!(reason instanceof Error)) return undefined;
+  if (reason.name === "AbortError") return undefined;
+  const message = reason.message.trim();
+  return message ? message : undefined;
 }
 
 /** 可中止退避等待：signal 中止时以 SubagentError("aborted") 拒绝（默认 sleep 实现） */

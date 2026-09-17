@@ -17,6 +17,7 @@ import type { CapabilityApproval, CapabilityRequest, CapabilityReview } from "..
 import type { HoldDecision, HoldRequest } from "../../lib/subagent-hold.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { updateWorker } from "./status.ts";
+import { registerWorkerAbort, unregisterWorkerAbort, type WorkerKey } from "./active-workers.ts";
 
 export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval";
 
@@ -200,6 +201,28 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
   return runWithConcurrency(tasks, limit, (task, index) => runWorker(task, index, opts));
 }
 
+/**
+ * 给单个 worker 自己的取消句柄。
+ *
+ * 批次级 signal 是共用的（停一个会连坐它的兄弟），命令层要单独停人，所以每个
+ * worker 额外挂一个 controller，与批次 signal 合成后再交给 runSubagent。
+ * 句柄只在 runSubagent 存活期间登记：跑完即注销，命令层不会拿到僵尸条目。
+ */
+async function withWorkerAbort<T>(
+  key: WorkerKey | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+  batchSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const signal = batchSignal ? AbortSignal.any([batchSignal, controller.signal]) : controller.signal;
+  if (key) registerWorkerAbort(key, controller);
+  try {
+    return await run(signal);
+  } finally {
+    if (key) unregisterWorkerAbort(key);
+  }
+}
+
 /** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */
 async function runWorker(
   task: string,
@@ -213,11 +236,12 @@ async function runWorker(
   updateWorker(id, { status: "starting", startedAt: new Date().toISOString() });
 
   try {
-    const result: SubagentResult = await runSubagent({
+    const workerKey = opts.taskId ? { batchId: opts.taskId, workerId: id } : undefined;
+    const result: SubagentResult = await withWorkerAbort(workerKey, (signal) => runSubagent({
       task,
       cwd: opts.cwd,
       model: opts.model,
-      signal: opts.signal,
+      signal,
       tools: opts.tools,
       extraExtensions: opts.extraExtensions,
       skills: opts.workerSkills?.[index] ?? opts.skills,
@@ -267,7 +291,7 @@ async function runWorker(
         visibleConversation: [...r.visibleConversation],
         archiveTimeline: [...r.archiveTimeline],
       }),
-    });
+    }), opts.signal);
 
     const failed = isFailedResult(result);
     const status: BatchItemStatus = result.capabilityRequest

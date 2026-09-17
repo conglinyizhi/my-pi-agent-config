@@ -22,6 +22,12 @@ import { checkCommand } from "../../lib/sandbox-check.ts";
 import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
 import { beginBatch, flushStatusFile, getSnapshot, onSnapshotChange, updateWorker, type WorkerRun } from "./status.ts";
 import {
+  listActiveWorkers,
+  stopAllWorkers,
+  stopWorker,
+} from "./active-workers.ts";
+import { runStopAllCommand, runStopCommand, type StopCommandDeps } from "./stop-commands.ts";
+import {
   FleetView,
   createCoalescer,
   formatWorkerOutput,
@@ -621,6 +627,26 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       ctx.ui.notify("/gui:subagents 已废弃，请使用 /subagent:gui", "warning");
       return subagentsGuiHandler(args, ctx);
+    },
+  });
+
+  // 强制停下：决策归主 agent，但刹车得在提督手里
+  const stopDeps: StopCommandDeps = {
+    listActive: listActiveWorkers,
+    snapshot: getSnapshot,
+    stopOne: stopWorker,
+    stopAll: stopAllWorkers,
+  };
+  pi.registerCommand("subagent:stop", {
+    description: "强制停下某个 worker（选人、可写理由、二次确认）",
+    handler: async (_args, ctx) => {
+      await runStopCommand(ctx.ui, stopDeps);
+    },
+  });
+  pi.registerCommand("subagent:stop-all", {
+    description: "强制停下所有 worker（可写理由、二次确认）",
+    handler: async (_args, ctx) => {
+      await runStopAllCommand(ctx.ui, stopDeps);
     },
   });
 }

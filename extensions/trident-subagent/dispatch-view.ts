@@ -226,7 +226,8 @@ function countRetries(events: TimelineEvent[]): number {
 
 function terminalNote(events: TimelineEvent[]): string | undefined {
   // 暂存类的 lifecycle 也算「值得写进备注」：它解释了为什么这一步停下来 / 又续上了
-  const interesting = new Set(["failed", "aborted", "timeout", "needs_approval", "truncated", "hold_stop"]);
+  // stopped：外部强停时父侧补的原因（worker 自己只会报一条空的 aborted）
+  const interesting = new Set(["failed", "aborted", "timeout", "needs_approval", "truncated", "hold_stop", "stopped"]);
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.type === "lifecycle" && e.state && interesting.has(e.state)) {
@@ -357,7 +358,7 @@ export interface FleetTheme {
 /** 展开/收起提示（由调用方注入，避免本模块依赖 pi 的 keybinding 层）；参数为当前是否展开 */
 export type ExpandHint = (expanded: boolean) => string;
 
-const STATUS_LABEL: Record<WorkerStatus, string> = {
+export const STATUS_LABEL: Record<WorkerStatus, string> = {
   queued: "排队",
   starting: "启动",
   running: "运行",
