@@ -124,3 +124,23 @@ match = [
 id = "auxiliary"
 label = "辅助技能"
 singletonPackages = true
+
+# ─────────────────────────────────────────────────────────────
+# loop-guard：重复输出（死循环）拦截
+# 盯 thinking / 正文的流式增量，判定「同几句短话反复输出」并提示或中止。
+# 判据与校准依据见 extensions/loop-guard/README.md；键名见 detector.ts 的
+# LoopGuardOptions。改阈值前先看 README 的「校准依据」一节。
+# ─────────────────────────────────────────────────────────────
+[loop-guard]
+enabled = true
+mode = "abort" # off=不检测 | warn=只提示 | abort=提示并中止
+maxActionsPerSession = 3 # 每个 session 的中止次数上限
+cooldownMs = 15000 # 两次中止之间的最小间隔（毫秒）
+
+[loop-guard.detector]
+# 空缺项用 detector.ts 的 DEFAULT_OPTIONS；常用旋钮：
+# warnRepeatChars = 2500 # 重复多少字开始提示
+# abortRepeatChars = 9000 # 重复多少字开始中止
+# maxAvgLineChars = 20 # 重复行平均行长上限（主要精度来源）
+# maxIntruderRatio = 0.3 # 窗口内新行占比上限
+# maxAlphabet = 10 # 重复字母表大小上限
