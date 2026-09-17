@@ -18,6 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, getAgentDir, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
+import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout } from "../lib/bash-timeout.ts";
 import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
 import { appendApprovalComment, approveBashCommand, bashApprovalDeniedText, isHardRejected, rethrowWithApprovalComment } from "../lib/bash-approval.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
@@ -28,8 +29,30 @@ const PROMPT_SNIPPET = "Execute a bash command in the current working directory.
 const PROMPT_GUIDELINES = [
 	"Use bash to inspect files, run commands, and check tool availability.",
 	"bash 命令经沙箱通道执行（Landlock 写保护），危险命令会在执行前被拦截。",
+	`bash 默认 ${DEFAULT_BASH_TIMEOUT_SECONDS} 秒超时（超时杀整个进程组）；构建、测试、安装这类预期更久的命令要显式传 timeout 参数，否则会被按超时终止。更久的活儿用 bash_background 开出去。`,
 	"所有 bash 命令默认有 1GiB 内存上限（进程树匿名内存），超出会以退出码 137 终止；需要更大内存时用 sandbox-allow 的 memoryMb 参数给出具体 MB 数值（上限 32768 MB）。",
 ] as const;
+
+/**
+ * 把 timeout 参数的说明改成「默认 30 秒」。
+ * pi 的 schema 原文是「optional, no default timeout」，我们自己兜了默认值，
+ * 文档就得跟着改，否则模型会以为可以无限跑。
+ * 只在加载时算一次（静态常量），不逐轮变，KV 缓存前缀稳定。
+ */
+function withTimeoutDoc<T extends { properties?: Record<string, unknown> }>(params: T): T {
+	const props = params.properties;
+	if (!props || typeof props.timeout !== "object" || props.timeout === null) return params;
+	return {
+		...params,
+		properties: {
+			...props,
+			timeout: {
+				...props.timeout,
+				description: `Timeout in seconds (default ${DEFAULT_BASH_TIMEOUT_SECONDS}; raise it explicitly for builds/tests/installs)`,
+			},
+		},
+	};
+}
 
 
 let currentSessionId: string | undefined;
@@ -65,6 +88,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerTool({
 		...bashDef,
+		// 默认超时：schema 原文是「可选、无默认」，一条卡死的命令能把整个回合钉住。
+		// 在 schema 校验之前补上默认值，交给官方 execute 的超时实现（进程组 SIGKILL）。
+		parameters: withTimeoutDoc(bashDef.parameters),
+		prepareArguments(args) {
+			return withDefaultTimeout(args) as never;
+		},
 		// 官方不继承 prompt 元数据，必须显式定义（静态常量，保证 KV 缓存稳定）
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: [...PROMPT_GUIDELINES],
