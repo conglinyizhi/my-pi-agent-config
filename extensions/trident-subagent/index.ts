@@ -12,6 +12,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
+import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { runBatch, type BatchItemResult } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
@@ -233,6 +234,7 @@ export default function (pi: ExtensionAPI) {
       "不要把用户原话原封不动转发；先整理成 worker 可直接执行的完整简报。",
       "复杂任务优先传结构化 task：objective 必填；context 写已知现状；constraints 写边界；required_files 写必看文件；skills 只填确实需要的 skill；acceptance 写可验证标准；output_format 写回报格式。",
       "如果多个任务互相独立，传结构化对象数组并行执行；每项都要自洽，不能依赖主 agent 中途补背景。",
+      "subagent 的参数名固定是 task（单数，可直接传数组）：多个独立任务写 task: [briefA, briefB]，没有 tasks 这个参数。",
       "模型优先级是：显式 model 参数 > 用户通过 /subagent:select-change-switch-default-worker-model 设置的独立默认 > 当前主 session 模型。显式参数只影响本次 worker；独立默认不修改主 session。",
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
@@ -277,6 +279,11 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
+    // 模型偶尔把参数名写成复数的 tasks（schema 里装的就是数组，很容易滑）。
+    // 这里在 schema 校验之前折回 task，省掉一个「报错 → 重发」的来回。
+    prepareArguments(args) {
+      return normalizeSubagentArgs(args) as never;
+    },
     renderCall(args, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const raw = args.task;
