@@ -40,6 +40,8 @@ import {
 } from "../../lib/model-selection.ts";
 import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
 import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
+import { DEFAULT_HOLD_EXTRA_MS, buildHoldDecision, type HoldDecision, type HoldRequest } from "../../lib/subagent-hold.ts";
+import { enqueueSupplement } from "../../lib/subagent-supplement.ts";
 
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
 /**
@@ -63,6 +65,53 @@ function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
   const run = capabilityApprovalTail.then(work, work);
   capabilityApprovalTail = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/**
+ * 暂存决策：worker 预算见底时停下问一句。
+ *
+ * 同步派发下主 agent 正卡在工具调用里，所以这里的决策者是**人**（TUI）。
+ * 返回 undefined = 交给 runner 取默认（继续 + 默认新预算）：不因为一时问不到人
+ * 就把 worker 做到一半的活扔掉。
+ *
+ * 「补充一句」的正文走既有的 supplement 队列（与 GUI 同一份文件格式），
+ * 不入 decided 载荷——投递路径只有一条，worker 侧在继续后立刻拉一次。
+ */
+export async function decideHold(
+  ctx: ExtensionContext,
+  request: HoldRequest,
+  inboxId: string | undefined,
+): Promise<HoldDecision | undefined> {
+  if (!ctx.hasUI) return undefined;
+  const why = request.reason === "worker" ? "worker 主动请求" : "时间预算快用完了";
+  const elapsed = `${Math.round(request.elapsedMs / 1000)}s`;
+  const choice = await ctx.ui.select(
+    `worker 暂存（${why}，已跑 ${elapsed}）。怎么办？`,
+    ["继续（给新预算）", "补充一句再继续", "停，收工"],
+  );
+  if (!choice) return undefined; // 取消 = 继续
+  if (choice.startsWith("停")) {
+    const reason = await ctx.ui.input("收工理由（可留空）：");
+    return buildHoldDecision({
+      requestId: request.requestId,
+      action: "stop",
+      comment: reason?.trim() || undefined,
+    });
+  }
+  let comment: string | undefined;
+  if (choice.startsWith("补充")) {
+    const text = await ctx.ui.input("要补给 worker 的话（一句话）：");
+    const trimmed = text?.trim();
+    if (trimmed && inboxId) {
+      try {
+        await enqueueSupplement(inboxId, trimmed);
+        comment = "已补充一句";
+      } catch (err) {
+        comment = `补充投递失败（${err instanceof Error ? err.message : String(err)}），按继续处理`;
+      }
+    }
+  }
+  return buildHoldDecision({ requestId: request.requestId, action: "continue", extraMs: DEFAULT_HOLD_EXTRA_MS, comment });
 }
 
 /** 写入 capability 审批审计；只记录稳定的审核 verdict，不把审核意见全文重复塞进条目。 */
@@ -458,6 +507,12 @@ export default function (pi: ExtensionAPI) {
             request,
             ctx,
             signal,
+          )),
+          // 预算见底 → 暂存问一次（同一条 UI 队列，不与管理审批抢弹窗）
+          onHold: (request, workerId) => enqueueCapabilityApproval(() => decideHold(
+            ctx,
+            request,
+            runs.find((r) => r.id === workerId)?.inboxId,
           )),
           // 与 runs 一一对应：每个 worker 拿到本批分配的唯一 inbox id
           workerInboxIds: runs.map((r) => r.inboxId),

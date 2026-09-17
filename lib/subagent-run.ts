@@ -17,6 +17,17 @@ import { SUBAGENT_MAX_ATTEMPTS, planRetry, type RetryVerdict } from "./subagent-
 import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
 import { isValidInboxId } from "./subagent-supplement.ts";
 import { commandDigest, buildCapabilityDecision, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "./subagent-capability.ts";
+import {
+  DEFAULT_HOLD_CAP_MS,
+  DEFAULT_HOLD_EXTRA_MS,
+  HOLD_GRACE_MS,
+  buildHoldDecision,
+  buildHoldWanted,
+  shouldRequestHold,
+  validateHoldRequest,
+  type HoldDecision,
+  type HoldRequest,
+} from "./subagent-hold.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
 export {
   TimelineBuilder,
@@ -102,6 +113,10 @@ export interface SubagentResult {
   capabilityDenied?: boolean;
   /** 本次 capability 请求的审核模型意见（供主 agent 回报；无审核/未请求时 undefined） */
   capabilityReview?: CapabilityReview;
+  /** worker 最后一次暂存请求（发生过暂存才有；供调用方展示「续过预算」） */
+  holdRequest?: HoldRequest;
+  /** 暂存决定为「收工」时的说明；有值时终态是被人为收工而不是超时 */
+  holdStopComment?: string;
 }
 
 /**
@@ -207,6 +222,10 @@ export function buildSubagentEnv(
     capabilityRequestPath?: string;
     /** 权限响应文件：worker 阻塞等待父进程写回决策 */
     capabilityResponsePath?: string;
+    /** 暂存标志/请求/响应文件（仅父子进程间使用） */
+    holdWantedPath?: string;
+    holdRequestPath?: string;
+    holdResponsePath?: string;
     /** 已由主进程批准的、按 commandDigest 绑定的一次性 capability */
     capabilityGrants?: CapabilityGrant[];
   },
@@ -221,6 +240,9 @@ export function buildSubagentEnv(
   if (opts.readonly) env.PI_SANDBOX_READONLY = "1";
   if (opts.capabilityRequestPath) env.PI_SUBAGENT_CAPABILITY_REQUEST = opts.capabilityRequestPath;
   if (opts.capabilityResponsePath) env.PI_SUBAGENT_CAPABILITY_RESPONSE = opts.capabilityResponsePath;
+  if (opts.holdWantedPath) env.PI_SUBAGENT_HOLD_WANTED = opts.holdWantedPath;
+  if (opts.holdRequestPath) env.PI_SUBAGENT_HOLD_REQUEST = opts.holdRequestPath;
+  if (opts.holdResponsePath) env.PI_SUBAGENT_HOLD_RESPONSE = opts.holdResponsePath;
   if (opts.capabilityGrants && opts.capabilityGrants.length > 0) {
     env.PI_SUBAGENT_CAPABILITY_GRANTS = JSON.stringify(opts.capabilityGrants);
   }
@@ -349,6 +371,12 @@ export interface RunSubagentOptions {
   capabilityGrants?: CapabilityGrant[];
   /** 主进程审批 worker 请求；返回 grant 才会重启当前 worker，review 作为审核意见透传 */
   onCapabilityRequest?: (request: CapabilityRequest) => Promise<CapabilityApproval | undefined>;
+  /**
+   * 暂存决策：worker 在检查点请求暂存（预算见底）时问一次。
+   * 不传 = 不启用暂存，行为与以前一致（到点即超时终止）。
+   * 返回 undefined 视为「继续，给默认新预算」。
+   */
+  onHold?: (request: HoldRequest) => Promise<HoldDecision | undefined>;
   /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
   inboxId?: string;
   /** 沙箱可写根（限制本 worker 只写该目录，其余只读） */
@@ -396,13 +424,22 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
 
   const timeoutController = new AbortController();
   const timeoutError = () => new Error(`Subagent 超时（${timeoutSeconds}s）`);
-  let remainingTimeoutMs = timeoutSeconds * 1000;
-  let timeoutId: NodeJS.Timeout | undefined = setTimeout(
-    () => timeoutController.abort(timeoutError()),
-    remainingTimeoutMs,
-  );
-  // 审批等待不计入 worker 总超时：发现请求时暂停计时，审批结束后接着算剩余时间
+  /** 本轮的初始预算（用于算剩余比例） */
+  const initialBudgetMs = timeoutSeconds * 1000;
+  /** 当前窗口的总额；窗口在计时中会随墙钟流逝而消耗，所以剩余要另算 */
+  let remainingTimeoutMs = initialBudgetMs;
+  /** 当前窗口开始计时的那一刻（每次 arm 都重置） */
+  let windowStartedAt = Date.now();
+  let timeoutId: NodeJS.Timeout | undefined;
+  // 暂停期间不计入 worker 总超时（审批 / 暂存等待都不该吃掉执行预算）
   let timeoutPausedAt: number | undefined;
+
+  const armTimeout = (): void => {
+    if (timeoutId) { clearTimeout(timeoutId); timeoutId = undefined; }
+    if (timeoutController.signal.aborted) return; // 已收工：不要重开计时
+    windowStartedAt = Date.now();
+    timeoutId = setTimeout(() => timeoutController.abort(timeoutError()), remainingTimeoutMs);
+  };
   const pauseTimeout = () => {
     if (timeoutPausedAt !== undefined) return;
     timeoutPausedAt = Date.now();
@@ -416,11 +453,36 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       timeoutController.abort(timeoutError());
       return;
     }
-    timeoutId = setTimeout(() => timeoutController.abort(timeoutError()), remainingTimeoutMs);
+    armTimeout();
   };
+  armTimeout();
+
   const combinedSignal = opts.signal
     ? AbortSignal.any([opts.signal, timeoutController.signal])
     : timeoutController.signal;
+
+  /**
+   * 当前剩余预算（毫秒）。
+   * 必须从墙钟算：remainingTimeoutMs 只是窗口总额，只有在暂停/恢复时才被改写，
+   * 运行中它不会自己减少（曾因此让「预算见底」永远算不出来）。
+   */
+  const liveRemainingMs = (): number => {
+    const at = timeoutPausedAt ?? Date.now();
+    return remainingTimeoutMs - (at - windowStartedAt);
+  };
+
+  /**
+   * 续预算：暂存决定 continue 后重置剩余窗口。
+   * 不再沿用「剩余多少续多少」——那样续一次可能只够跑几秒，白问一趟
+   */
+  const extendTimeout = (ms: number): void => {
+    if (timeoutPausedAt !== undefined) {
+      remainingTimeoutMs -= Date.now() - timeoutPausedAt;
+      timeoutPausedAt = undefined;
+    }
+    remainingTimeoutMs = Math.max(1000, Math.floor(ms));
+    armTimeout();
+  };
 
   return new Promise(async (resolve, reject) => {
     try {
@@ -429,6 +491,9 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       const promptPath = path.join(tmpDir, "prompt.md");
       const capabilityRequestPath = path.join(tmpDir, "capability-request.json");
       const capabilityResponsePath = path.join(tmpDir, "capability-response.json");
+      const holdWantedPath = path.join(tmpDir, "hold-wanted.json");
+      const holdRequestPath = path.join(tmpDir, "hold-request.json");
+      const holdResponsePath = path.join(tmpDir, "hold-response.json");
       await fs.promises.writeFile(promptPath, SUBAGENT_PROMPT, { encoding: "utf-8", mode: 0o600 });
       const args = buildSubagentArgs({
         task,
@@ -510,6 +575,14 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       let emitTimer: NodeJS.Timeout | undefined;
       // 审批进行中：防止 capabilityPoll 重复处理同一请求
       let approvalInFlight = false;
+      // 暂存通道：预算见底时让 worker 在下一个检查点停下，问一次再走
+      let holdInFlight = false;
+      let holdWantedWritten = false;
+      let holdGraceAt: number | undefined;
+      let holdCapAt: number | undefined;
+      let holdSettled = false;
+      let lastHoldRequest: HoldRequest | undefined;
+      let holdStopComment: string | undefined;
       // 最近一次审核意见：随终态结果带回主 agent（供回报简报）
       let lastCapabilityReview: CapabilityReview | undefined;
       let agentEndOutput = "";
@@ -523,6 +596,9 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           readonly: opts.readonly,
           capabilityRequestPath,
           capabilityResponsePath,
+          holdWantedPath,
+          holdRequestPath,
+          holdResponsePath,
           capabilityGrants: opts.capabilityGrants,
         });
 
@@ -602,7 +678,7 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         // worker guard 写请求后阻塞等待响应；父进程审批后原子写回决策，不 kill worker。
         // 审批期间暂停 worker 总超时（权限申请不该吃掉执行预算）。
         const capabilityPoll = setInterval(() => {
-          if (approvalInFlight) return;
+          if (approvalInFlight || holdInFlight) return;
           const parsed = readCapabilityRequest();
           if (!parsed) return;
           approvalInFlight = true;
@@ -629,8 +705,107 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         }, 50);
         capabilityPoll.unref?.();
 
+        // ── 暂存通道 ──────────────────────────────────────────
+        // 预算见底不再直接杬死：先让 worker 在下一个检查点（工具调用结束）停下，
+        // 问一次「继续 / 补充 / 收工」，决定写回后它接着干。
+        // 没接 onHold（或 worker 一直没到检查点）→ 行为与以前一致：到点超时。
+        const readHoldRequest = (): HoldRequest | undefined => {
+          try {
+            return validateHoldRequest(JSON.parse(fs.readFileSync(holdRequestPath, "utf8")));
+          } catch {
+            return undefined;
+          }
+        };
+        const writeJsonAtomic = (file: string, payload: unknown): void => {
+          const tmp = `${file}.tmp-${process.pid}`;
+          fs.writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+          fs.renameSync(tmp, file);
+        };
+        const writeHoldWanted = (wanted: boolean): void => {
+          writeJsonAtomic(holdWantedPath, buildHoldWanted({ wanted, reason: "budget", remainingMs: Math.max(0, liveRemainingMs()) }));
+        };
+        /** 写回决定并执行它的后果（停 / 续预算）；只生效一次 */
+        const settleHold = (request: HoldRequest, decision: HoldDecision): void => {
+          if (holdSettled) return;
+          holdSettled = true;
+          if (decision.action === "continue") {
+            // 先清标志再写响应：否则 worker 一解开就可能撞上「wanted 还是 true」→ 立刻又暂存
+            holdWantedWritten = false;
+            try { writeHoldWanted(false); } catch { /* ignore */ }
+            extendTimeout(decision.extraMs ?? DEFAULT_HOLD_EXTRA_MS);
+            const note = decision.comment ?? "暂存决定：继续";
+            timeline.addLifecycle("hold_continue", note);
+            archiveTimeline.addLifecycle("hold_continue", note);
+          } else {
+            holdStopComment = decision.comment;
+            const note = decision.comment ?? "暂存决定：收工";
+            timeline.addLifecycle("hold_stop", note);
+            archiveTimeline.addLifecycle("hold_stop", note);
+          }
+          try {
+            writeJsonAtomic(holdResponsePath, decision);
+          } catch {
+            // worker 侧有等待上限，会自己收工
+          }
+          try { fs.unlinkSync(holdRequestPath); } catch { /* ignore */ }
+          if (decision.action === "stop") timeoutController.abort(new Error("暂存决定：收工"));
+          emitNow();
+          holdInFlight = false;
+          holdCapAt = undefined;
+        };
+
+        const holdPoll = opts.onHold
+          ? setInterval(() => {
+              if (timeoutController.signal.aborted) return;
+              if (holdInFlight) {
+                // 兜底：主侧迟迟不答（人不在），按收工收尾，不把进程无限挂着占额度
+                const req = lastHoldRequest;
+                if (req && !holdSettled && holdCapAt !== undefined && Date.now() >= holdCapAt) {
+                  settleHold(req, buildHoldDecision({ requestId: req.requestId, action: "stop", comment: "暂存无人决策（超时）" }));
+                }
+                return;
+              }
+              if (approvalInFlight) return;
+              // ① 预算见底 → 只写一次标志，由 worker 自己挑检查点。
+              // 写标志同时暂停计时：不然一边请它暂存、一边几秒后就枉死它
+              if (!holdWantedWritten && shouldRequestHold(liveRemainingMs(), initialBudgetMs)) {
+                holdWantedWritten = true;
+                holdGraceAt = Date.now() + HOLD_GRACE_MS;
+                pauseTimeout();
+                try { writeHoldWanted(true); } catch { /* 写不进去：下次检查点再说 */ }
+              }
+              // 宽限期满还没等到检查点 → 恢复计时（仍按普通超时收尾，不比以前差）
+              if (holdWantedWritten && holdGraceAt !== undefined && Date.now() >= holdGraceAt) {
+                holdGraceAt = undefined;
+                holdWantedWritten = false;
+                resumeTimeout();
+              }
+              // ② worker 已暂存 → 问决策
+              const request = readHoldRequest();
+              if (!request) return;
+              holdInFlight = true;
+              holdSettled = false;
+              holdGraceAt = undefined;
+              holdCapAt = Date.now() + DEFAULT_HOLD_CAP_MS;
+              lastHoldRequest = request;
+              pauseTimeout(); // 已在宽限期暂停时是幂等无操作
+              void (async () => {
+                let decision: HoldDecision | undefined;
+                try {
+                  decision = await opts.onHold!(request);
+                } catch {
+                  decision = undefined;
+                }
+                // 没有回答（或抛错）→ 当作「继续，给默认新预算」：不因为主侧一时失误就毁掉 worker 的活
+                settleHold(request, decision ?? buildHoldDecision({ requestId: request.requestId, action: "continue", extraMs: DEFAULT_HOLD_EXTRA_MS }));
+              })();
+            }, 50)
+          : undefined;
+        holdPoll?.unref?.();
+
         proc.on("close", (code: number) => {
           clearInterval(capabilityPoll);
+          if (holdPoll) clearInterval(holdPoll);
           // 短命 worker 可能在首个 50ms 轮询前退出；close 时再读一次，避免丢请求。
           capabilityRequest ??= readCapabilityRequest();
           if (buffer.trim()) {
@@ -667,6 +842,9 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       result.exitCode = exitCode;
       if (capabilityRequest) result.capabilityRequest = capabilityRequest;
       if (lastCapabilityReview) result.capabilityReview = lastCapabilityReview;
+      // 暂存发生过就记下来：调用方据此区分「跑完」与「续过预算」
+      if (lastHoldRequest) result.holdRequest = lastHoldRequest;
+      if (holdStopComment) result.holdStopComment = holdStopComment;
       // 终态 lifecycle：success/failed/aborted/timeout（timeout 依据内部超时控制器判断）
       const terminal = resolveTerminalState({
         aborted: wasAborted,
@@ -687,6 +865,9 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
       try { fs.unlinkSync(promptPath); } catch { /* ignore */ }
       try { fs.unlinkSync(capabilityRequestPath); } catch { /* ignore */ }
       try { fs.unlinkSync(capabilityResponsePath); } catch { /* ignore */ }
+      try { fs.unlinkSync(holdWantedPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(holdRequestPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(holdResponsePath); } catch { /* ignore */ }
       try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
 
       if (wasAborted && !capabilityRequest) {

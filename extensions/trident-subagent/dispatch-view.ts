@@ -225,7 +225,8 @@ function countRetries(events: TimelineEvent[]): number {
 }
 
 function terminalNote(events: TimelineEvent[]): string | undefined {
-  const interesting = new Set(["failed", "aborted", "timeout", "needs_approval", "truncated"]);
+  // 暂存类的 lifecycle 也算「值得写进备注」：它解释了为什么这一步停下来 / 又续上了
+  const interesting = new Set(["failed", "aborted", "timeout", "needs_approval", "truncated", "hold_stop"]);
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.type === "lifecycle" && e.state && interesting.has(e.state)) {
@@ -250,6 +251,10 @@ function deriveActivity(
   }
   if (w.status === "needs_approval" && w.capabilityRequest) {
     return { kind: "waiting", label: `等待审批 ${w.capabilityRequest.capability}` };
+  }
+  if (w.status === "holding") {
+    const why = w.holdRequest?.reason === "worker" ? "worker 主动请求" : "时间预算快用完";
+    return { kind: "waiting", label: `暂存中（${why}）` };
   }
   if (w.status === "starting" && stream.deltas === 0) {
     return { kind: "starting", label: "启动中" };
@@ -357,6 +362,7 @@ const STATUS_LABEL: Record<WorkerStatus, string> = {
   starting: "启动",
   running: "运行",
   needs_approval: "等审批",
+  holding: "暂存",
   success: "完成",
   failed: "失败",
   aborted: "中止",
@@ -368,6 +374,7 @@ const STATUS_COLOR: Record<WorkerStatus, string> = {
   starting: "dim",
   running: "accent",
   needs_approval: "warning",
+  holding: "warning",
   success: "success",
   failed: "error",
   aborted: "warning",
@@ -488,12 +495,18 @@ export class FleetView {
     const t = this.theme;
     const lines: string[] = [];
     const ready = this.workers.filter(
-      (w) => !w.finished && w.status !== "queued" && w.status !== "needs_approval" && w.status !== "success",
+      (w) =>
+        !w.finished &&
+        w.status !== "queued" &&
+        w.status !== "needs_approval" &&
+        w.status !== "holding" &&
+        w.status !== "success",
     ).length;
     const queued = this.workers.filter((w) => w.status === "queued").length;
     const done = this.workers.filter((w) => w.status === "success").length;
     const bad = this.workers.filter((w) => w.finished && w.status !== "success").length;
     const wait = this.workers.filter((w) => w.status === "needs_approval").length;
+    const holding = this.workers.filter((w) => w.status === "holding").length;
 
     // 表头：左身份，右总量（按可见宽度对齐，ANSI 不影响）
     const chips: string[] = [];
@@ -503,6 +516,7 @@ export class FleetView {
       if (ready > 0) chips.push(t.fg("accent", `${ready} 运行`));
       if (queued > 0) chips.push(t.fg("dim", `${queued} 排队`));
       if (wait > 0) chips.push(t.fg("warning", `${wait} 等审批`));
+      if (holding > 0) chips.push(t.fg("warning", `${holding} 暂存`));
       if (done > 0) chips.push(t.fg("success", `${done} 完成`));
       if (bad > 0) chips.push(t.fg("error", `${bad} 异常`));
     }

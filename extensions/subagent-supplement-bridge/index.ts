@@ -17,12 +17,21 @@
 // claimNextSupplement 与 pi.sendUserMessage。default export 只读 env。
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import {
   claimNextSupplement,
   encodeSupplementMessage,
   isValidInboxId,
   releaseSupplement,
 } from "../../lib/subagent-supplement.ts";
+import {
+  makeHoldRequest,
+  validateHoldWanted,
+  waitForHoldDecision,
+  type HoldAction,
+  type HoldWanted,
+} from "../../lib/subagent-hold.ts";
 
 /**
  * tool_execution_end 事件的最小结构形状（本地定义，避免依赖包的导出面；
@@ -59,22 +68,25 @@ export interface SupplementBridgeDeps {
 export function createSupplementToolEndHandler(
   deps: SupplementBridgeDeps,
 ): (event: ToolEndEventShape) => Promise<void> {
-  return async (_event: ToolEndEventShape): Promise<void> => {
-    const { claimed } = await deps.claim(deps.inboxId);
-    if (!claimed) return;
+  return async (_event: ToolEndEventShape): Promise<void> => deliverOneSupplement(deps);
+}
+
+/** 领一条 pending 补充并 steer 投递；有一条就拿一条，没有就什么都不做。 */
+async function deliverOneSupplement(deps: SupplementBridgeDeps): Promise<void> {
+  const { claimed } = await deps.claim(deps.inboxId);
+  if (!claimed) return;
+  try {
+    deps.send(encodeSupplementMessage(claimed.id, claimed.text), { deliverAs: "steer" });
+  } catch (err) {
+    // send 是同步 void：只有同步抛错才进这里。回滚为 best-effort——
+    // release 自身失败也不吞掉原始错误，仍抛 err。
     try {
-      deps.send(encodeSupplementMessage(claimed.id, claimed.text), { deliverAs: "steer" });
-    } catch (err) {
-      // send 是同步 void：只有同步抛错才进这里。回滚为 best-effort——
-      // release 自身失败也不吞掉原始错误，仍抛 err。
-      try {
-        await deps.release(deps.inboxId, claimed.id);
-      } catch {
-        // 尽力回滚失败：保留原始 send 错误
-      }
-      throw err;
+      await deps.release(deps.inboxId, claimed.id);
+    } catch {
+      // 尽力回滚失败：保留原始 send 错误
     }
-  };
+    throw err;
+  }
 }
 
 /** 注册选项：可覆盖 inboxId / claim / release / send（测试注入；默认用真实实现）。 */
@@ -83,6 +95,116 @@ export interface SupplementBridgeOptions {
   claim?: (inboxId: string) => Promise<SupplementClaimResult>;
   release?: (inboxId: string, entryId: string) => Promise<{ released: boolean }>;
   send?: (encoded: string, options: { deliverAs: "steer" }) => void;
+  /** 暂存三文件路径；缺省从 env 读（与 runner 的 PI_SUBAGENT_HOLD_* 对应） */
+  holdPaths?: HoldPaths;
+  /** 测试注入：等决定时的时钟与等待上限 */
+  holdWait?: HoldWaitOverrides;
+}
+
+/** 暂存通道的三个文件（父进程建在 worker 的 tmpDir 里） */
+export interface HoldPaths {
+  wanted: string;
+  request: string;
+  response: string;
+}
+
+export interface HoldWaitOverrides {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  healthMs?: number;
+  pollMs?: number;
+}
+
+/** 从环境变量取暂存路径；三个都齐且为绝对路径才启用 */
+export function holdPathsFromEnv(env: NodeJS.ProcessEnv = process.env): HoldPaths | undefined {
+  const wanted = env.PI_SUBAGENT_HOLD_WANTED;
+  const request = env.PI_SUBAGENT_HOLD_REQUEST;
+  const response = env.PI_SUBAGENT_HOLD_RESPONSE;
+  if (!wanted || !request || !response) return undefined;
+  if (![wanted, request, response].every((p) => isAbsolute(p))) return undefined;
+  return { wanted, request, response };
+}
+
+export interface HoldCycleDeps {
+  paths: HoldPaths;
+  /** 继续后立刻拉一条补充投递（让人给的补充赶在下一次 LLM 调用前到位） */
+  deliverSupplement: () => Promise<void>;
+  parentAlive?: () => boolean;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  timeoutMs?: number;
+  healthMs?: number;
+  pollMs?: number;
+}
+
+export interface HoldOutcome {
+  held: boolean;
+  action?: HoldAction;
+}
+
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJsonAtomic(file: string, payload: unknown): void {
+  const tmp = `${file}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+/**
+ * 造一个「检查点暂存」动作：工具调用结束时调一次。
+ *
+ * 父进程只在预算见底时写下 wanted 标志；worker 拿到后**自己挑时机**（就是现在这个
+ * 工具结束点）写请求并阻塞等决定——模型流没法暂停，只能在安静点停，所以这个顺序不能反。
+ *
+ * 拿到 continue：拉一条补充投递（若有），继续干；拿到 stop：往 stderr 留一行，
+ * 剩下交给父进程（它会 abort 本进程）。
+ */
+export function createHoldCycle(deps: HoldCycleDeps): () => Promise<HoldOutcome> {
+  return async (): Promise<HoldOutcome> => {
+    const wanted: HoldWanted | undefined = validateHoldWanted(readJson(deps.paths.wanted));
+    if (!wanted?.wanted) return { held: false };
+    const request = makeHoldRequest({
+      reason: wanted.reason,
+      elapsedMs: Math.round(process.uptime() * 1000),
+      remainingMs: wanted.remainingMs,
+    });
+    try {
+      writeJsonAtomic(deps.paths.request, request);
+    } catch {
+      return { held: false }; // 写不进去（tmpDir 没了等）：当作没发生
+    }
+    const decision = await waitForHoldDecision(request.requestId, {
+      readDecision: () => readJson(deps.paths.response),
+      parentAlive: deps.parentAlive ?? (() => true),
+      now: deps.now,
+      sleep: deps.sleep,
+      timeoutMs: deps.timeoutMs,
+      healthMs: deps.healthMs,
+      pollMs: deps.pollMs,
+    });
+    try {
+      unlinkSync(deps.paths.response);
+    } catch {
+      // 下次暂存靠 requestId 比对防陈旧，不依赖删干净
+    }
+    if (decision.action === "continue") {
+      try {
+        await deps.deliverSupplement();
+      } catch {
+        // 补充投递失败不能把 worker 拖挂：下一轮工具结束还会再试
+      }
+    }
+    // 「收工」不在这里出声：停下是父侧的决定，它已经把 hold_stop 生命周期
+    // （含理由）记进 timeline 和诊断档案，worker 再留一行只是重复
+    return { held: true, action: decision.action };
+  };
 }
 
 /**
@@ -99,7 +221,30 @@ export function registerSupplementBridge(
   const release =
     opts.release ?? ((id: string, entryId: string) => releaseSupplement(id, entryId));
   const send = opts.send ?? ((encoded: string) => pi.sendUserMessage(encoded, { deliverAs: "steer" }));
-  pi.on("tool_execution_end", createSupplementToolEndHandler({ inboxId, claim, release, send }));
+  const supplementDeps: SupplementBridgeDeps = { inboxId, claim, release, send };
+  const partnerAlive = () => {
+    try {
+      process.kill(process.ppid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const holdPaths = opts.holdPaths ?? holdPathsFromEnv();
+  const holdCycle = holdPaths
+    ? createHoldCycle({
+        paths: holdPaths,
+        deliverSupplement: () => deliverOneSupplement(supplementDeps),
+        parentAlive: partnerAlive,
+        ...opts.holdWait,
+      })
+    : undefined;
+
+  pi.on("tool_execution_end", async (event: ToolEndEventShape) => {
+    // 先处理暂存：预算见底时在这个检查点停下问一次，拿到补充再继续
+    if (holdCycle) await holdCycle();
+    await createSupplementToolEndHandler(supplementDeps)(event);
+  });
   return true;
 }
 

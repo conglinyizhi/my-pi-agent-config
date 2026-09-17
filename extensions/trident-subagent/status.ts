@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SubagentUsage, TimelineEvent, VisibleArchiveEvent, VisibleWorkerMessage, StreamStats } from "../../lib/subagent-run.ts";
 import type { CapabilityRequest } from "../../lib/subagent-capability.ts";
+import type { HoldRequest } from "../../lib/subagent-hold.ts";
 import { archiveDiagnostics } from "./diagnostics.ts";
 
 export type WorkerStatus =
@@ -32,7 +33,9 @@ export type WorkerStatus =
   | "failed"
   | "aborted"
   | "timeout"
-  | "needs_approval";
+  | "needs_approval"
+  /** 暂存中：预算见底（或 worker 主动请求），停下等主侧决定继续/补充/收工 */
+  | "holding";
 
 export interface WorkerRun {
   id: string;
@@ -60,6 +63,8 @@ export interface WorkerRun {
   archiveTimeline?: VisibleArchiveEvent[];
   /** worker 等待主进程审批的能力请求 */
   capabilityRequest?: CapabilityRequest;
+  /** worker 已暂存，等主侧决定（继续/补充/收工） */
+  holdRequest?: HoldRequest;
 }
 
 /** 合并写最大延迟：GUI 1s 轮询周期内必定收到新状态 */

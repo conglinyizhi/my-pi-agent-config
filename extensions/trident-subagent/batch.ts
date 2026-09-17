@@ -14,6 +14,7 @@ import {
   type TimelineEvent,
 } from "../../lib/subagent-run.ts";
 import type { CapabilityApproval, CapabilityRequest, CapabilityReview } from "../../lib/subagent-capability.ts";
+import type { HoldDecision, HoldRequest } from "../../lib/subagent-hold.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { updateWorker } from "./status.ts";
 
@@ -116,6 +117,11 @@ export interface RunBatchOptions {
   readonly?: boolean;
   /** 主进程审批 worker 的能力请求；返回精确 grant 才会重启当前 worker，review 作为审核简报透传 */
   onCapabilityRequest?: (request: CapabilityRequest, workerId: string) => Promise<CapabilityApproval | undefined>;
+  /**
+   * worker 预算见底时的暂存决策（继续/补充/收工）。
+   * 不传 = 不启用暂存，行为与以前一致（到点即超时终止）。
+   */
+  onHold?: (request: HoldRequest, workerId: string) => Promise<HoldDecision | undefined>;
   /** 同时运行的 worker 数上限；缺省 MAX_PARALLEL_WORKERS_SAFETY_CAP */
   maxParallel?: number;
 }
@@ -230,6 +236,21 @@ async function runWorker(
             } finally {
               // 审批结束后 worker 继续执行（不再 kill/重启），状态回到运行中
               updateWorker(id, { status: "running", capabilityRequest: undefined });
+            }
+          }
+        : undefined,
+      // 预算见底：worker 在检查点停下，状态转 holding，等主侧决定后再跑
+      onHold: opts.onHold
+        ? async (request) => {
+            updateWorker(id, {
+              status: "holding",
+              holdRequest: request,
+              output: `暂存中（${request.reason === "budget" ? "时间预算快用完了" : "worker 主动请求"}）：等主侧决定`,
+            });
+            try {
+              return await opts.onHold!(request, id);
+            } finally {
+              updateWorker(id, { status: "running", holdRequest: undefined });
             }
           }
         : undefined,

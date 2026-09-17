@@ -272,3 +272,157 @@ describe("registerSupplementBridge（默认接线：真实 Pi API 投递路径�
     assert.ok(handlers.has("tool_execution_end"));
   });
 });
+
+// ── 暂存通道（hold）───────────────────────────────────────────────────────
+//
+// worker 侧不主动挑时机：只有父进程写下 wanted 标志，它才在当前这个工具结束点
+// 写请求并阻塞等决定。这一组钉住：没想要就不动、想要就写请求并等、继续时把补充
+// 拉一次、收工时不动补充、响应文件用完就清。
+
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHoldCycle, holdPathsFromEnv } from "./index.ts";
+
+function holdDir() {
+  const dir = mkdtempSync(join(tmpdir(), "hold-test-"));
+  return {
+    paths: {
+      wanted: join(dir, "hold-wanted.json"),
+      request: join(dir, "hold-request.json"),
+      response: join(dir, "hold-response.json"),
+    },
+    dir,
+  };
+}
+
+function writeWanted(paths: { wanted: string }, wanted: boolean) {
+  writeFileSync(paths.wanted, JSON.stringify({ version: 1, wanted, reason: "budget", remainingMs: 1000 }));
+}
+
+/** 在等待循环里替父进程写回决定（读请求拿 requestId，保证对得上） */
+function answerDuringWait(requestPath: string, responsePath: string, answerAtCall: number) {
+  let calls = 0;
+  return {
+    now: () => 0,
+    sleep: async () => {
+      calls += 1;
+      if (calls !== answerAtCall) return;
+      const request = JSON.parse(readFileSync(requestPath, "utf8"));
+      writeFileSync(responsePath, JSON.stringify({ version: 1, requestId: request.requestId, action: "continue", extraMs: 60_000 }));
+    },
+  };
+}
+
+describe("holdPathsFromEnv", () => {
+  it("三个环境变量齐全且为绝对路径才启用", () => {
+    const ok = holdPathsFromEnv({
+      PI_SUBAGENT_HOLD_WANTED: "/tmp/a.json",
+      PI_SUBAGENT_HOLD_REQUEST: "/tmp/b.json",
+      PI_SUBAGENT_HOLD_RESPONSE: "/tmp/c.json",
+    } as NodeJS.ProcessEnv);
+    assert.deepEqual(ok, { wanted: "/tmp/a.json", request: "/tmp/b.json", response: "/tmp/c.json" });
+  });
+
+  it("缺一个或路径不绝对 → 不启用（静默禁用）", () => {
+    assert.equal(holdPathsFromEnv({} as NodeJS.ProcessEnv), undefined);
+    assert.equal(
+      holdPathsFromEnv({
+        PI_SUBAGENT_HOLD_WANTED: "/tmp/a.json",
+        PI_SUBAGENT_HOLD_REQUEST: "/tmp/b.json",
+      } as NodeJS.ProcessEnv),
+      undefined,
+    );
+    assert.equal(
+      holdPathsFromEnv({
+        PI_SUBAGENT_HOLD_WANTED: "相对路径.json",
+        PI_SUBAGENT_HOLD_REQUEST: "/tmp/b.json",
+        PI_SUBAGENT_HOLD_RESPONSE: "/tmp/c.json",
+      } as NodeJS.ProcessEnv),
+      undefined,
+    );
+  });
+});
+
+describe("createHoldCycle（检查点暂存）", () => {
+  it("父进程没要求 → 什么都不做，也不写请求", async () => {
+    const { paths } = holdDir();
+    writeWanted(paths, false);
+    let delivered = 0;
+    const cycle = createHoldCycle({ paths, deliverSupplement: async () => void (delivered += 1) });
+    const out = await cycle();
+    assert.deepEqual(out, { held: false });
+    assert.equal(existsSync(paths.request), false, "不该凭空写请求");
+    assert.equal(delivered, 0);
+  });
+
+  it("被要求暂存 → 写请求、等决定、继续时拉一次补充、清掉响应", async () => {
+    const { paths } = holdDir();
+    writeWanted(paths, true);
+    let delivered = 0;
+    const cycle = createHoldCycle({
+      paths,
+      deliverSupplement: async () => void (delivered += 1),
+      ...answerDuringWait(paths.request, paths.response, 2),
+      timeoutMs: 10_000,
+      healthMs: 10_000_000,
+      pollMs: 100,
+    });
+    const out = await cycle();
+    assert.deepEqual(out, { held: true, action: "continue" });
+    assert.equal(delivered, 1, "继续后要把人给的补充拉一次");
+    assert.equal(existsSync(paths.response), false, "响应读完就该清掉");
+  });
+
+  it("决定收工 → 不拉补充", async () => {
+    const { paths } = holdDir();
+    writeWanted(paths, true);
+    let delivered = 0;
+    let calls = 0;
+    const cycle = createHoldCycle({
+      paths,
+      deliverSupplement: async () => void (delivered += 1),
+      now: () => 0,
+      sleep: async () => {
+        calls += 1;
+        if (calls !== 2) return;
+        const request = JSON.parse(readFileSync(paths.request, "utf8"));
+        writeFileSync(paths.response, JSON.stringify({ version: 1, requestId: request.requestId, action: "stop", comment: "收工" }));
+      },
+      timeoutMs: 10_000,
+      healthMs: 10_000_000,
+      pollMs: 100,
+    });
+    const out = await cycle();
+    assert.deepEqual(out, { held: true, action: "stop" });
+    assert.equal(delivered, 0);
+  });
+
+  it("写请求失败（tmpDir 没了）→ 当作没发生，不抛", async () => {
+    const { paths } = holdDir();
+    writeWanted(paths, true);
+    const cycle = createHoldCycle({
+      paths: { ...paths, request: join(paths.wanted, "nope", "request.json") }, // 父目录不存在
+      deliverSupplement: async () => {},
+    });
+    const out = await cycle();
+    assert.deepEqual(out, { held: false });
+  });
+
+  it("父进程失联 → 等决定循环按收工返回，不无限挂着", async () => {
+    const { paths } = holdDir();
+    writeWanted(paths, true);
+    const cycle = createHoldCycle({
+      paths,
+      deliverSupplement: async () => {},
+      parentAlive: () => false,
+      now: () => 0,
+      sleep: async () => {},
+      timeoutMs: 100_000,
+      healthMs: 0,
+      pollMs: 100,
+    });
+    const out = await cycle();
+    assert.equal(out.action, "stop");
+  });
+});
