@@ -180,32 +180,57 @@ function execBash(command) {
 }
 
 /**
+ * 过滤掉不存在的授权路径。
+ *
+ * landlock-run 是 fail-closed：任何一条授权路径打不开就直接 exit 125，命令根本不执行。
+ * 于是「白名单里有个陈旧目录」或者「会话里授权过的目录已被删/改名」会让**所有**命令全挂，
+ * 而报错只说 cannot open rule path，指不到真凶（常驻项目根被 mv 走一次就能复现）。
+ *
+ * 丢弃一条写权限是收窄不是放宽，仍然 fail-closed：把「全盘瘫痪」降级成
+ * 「那条路径变回只读」，并打一行警告说明丢的是哪条、从哪来。
+ */
+function filterExisting(paths, source) {
+  const kept = [];
+  for (const p of paths) {
+    if (!p) continue;
+    if (existsSync(p)) {
+      if (!kept.includes(p)) kept.push(p);
+      continue;
+    }
+    console.error(`sandbox-shell: 忽略不存在的授权路径（来源：${source}）：${p}`);
+  }
+  return kept;
+}
+
+/**
  * 细粒度 grants 构造：
  *   默认：--ro / + --rw /tmp /dev/null <cwd>（写工作区）
  *   PI_SANDBOX_RW=<dir>[:…]：可写根替换 cwd（subagent 只写指定目录，工程其余只读）
  *   PI_SANDBOX_READONLY=1：只读模式，不写 workspace（/tmp /dev/null 保留作临时文件）
+ *
+ * 所有路径都过 filterExisting：缺一条不该让整条命令跑不起来。
  */
 function buildGrants() {
-  const rw = ["/tmp", "/dev/null"];
+  const builtin = filterExisting(["/tmp", "/dev/null"], "内置");
+  const rw = [...builtin];
   if (process.env.PI_SANDBOX_READONLY !== "1") {
     if (process.env.PI_SANDBOX_RW) {
       // subagent：只能写指定的 sandboxDir，工程其余只读——保持隔离，不叠加白名单
-      for (const dir of process.env.PI_SANDBOX_RW.split(":")) {
-        if (dir) rw.push(dir);
+      for (const dir of filterExisting(process.env.PI_SANDBOX_RW.split(":"), "PI_SANDBOX_RW")) {
+        if (!rw.includes(dir)) rw.push(dir);
       }
     } else {
-      rw.push(process.cwd());
       // 主 agent 默认：白名单目录（sandbox-paths.json 的 allowDirs）作为常驻可写根，
       // bash 可直接写这些目录，免走 sandbox-allow 一次授权
-      for (const dir of readAllowDirs()) {
-        if (dir && !rw.includes(dir)) rw.push(dir);
+      for (const dir of filterExisting([process.cwd(), ...readAllowDirs()], "cwd / allowDirs")) {
+        if (!rw.includes(dir)) rw.push(dir);
       }
     }
   }
   // 一次性升权：额外可写根，叠加在默认 cwd 之上（sandbox-allow 注入 PI_SANDBOX_RW_EXTRA）
   if (process.env.PI_SANDBOX_RW_EXTRA) {
-    for (const dir of process.env.PI_SANDBOX_RW_EXTRA.split(":")) {
-      if (dir) rw.push(dir);
+    for (const dir of filterExisting(process.env.PI_SANDBOX_RW_EXTRA.split(":"), "PI_SANDBOX_RW_EXTRA")) {
+      if (!rw.includes(dir)) rw.push(dir);
     }
   }
   const grants = ["--ro", "/"];
