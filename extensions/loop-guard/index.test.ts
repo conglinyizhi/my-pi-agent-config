@@ -20,6 +20,7 @@ type Handler = (event: any, ctx: any) => unknown;
 function fakePi() {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, any>();
+	const renderers = new Map<string, any>();
 	const sent: Array<{ message: any; options: any }> = [];
 	const pi = {
 		on(name: string, handler: Handler) {
@@ -30,6 +31,9 @@ function fakePi() {
 		registerCommand(name: string, def: any) {
 			commands.set(name, def);
 		},
+		registerMessageRenderer(customType: string, renderer: any) {
+			renderers.set(customType, renderer);
+		},
 		sendMessage(message: any, options: any) {
 			sent.push({ message, options });
 		},
@@ -37,7 +41,7 @@ function fakePi() {
 	const emit = (name: string, event: any, ctx: any) => {
 		for (const h of handlers.get(name) ?? []) h(event, ctx);
 	};
-	return { pi, emit, commands, sent };
+	return { pi, emit, commands, sent, renderers };
 }
 
 function fakeCtx() {
@@ -109,6 +113,56 @@ describe("abort 路径", () => {
 		assert.equal(sent[0].message.customType, "loop-guard");
 		assert.ok(sent[0].message.content.includes("<loop_guard>"));
 		assert.ok(sent[0].message.content.includes("占位语"));
+		assert.ok(sent[0].message.details.fillerChars > 0, "details 应该记下填充量");
+	});
+
+	it("注入消息把随机填充嵌在 <random-trash-word> 里，摆在指令之后", async () => {
+		const { pi, emit, sent } = fakePi();
+		createLoopGuard(pi, cfg());
+		const { ctx } = fakeCtx();
+		feed(emit, ctx, stall());
+		await flush();
+		emit("agent_settled", {}, ctx);
+
+		const content: string = sent[0].message.content;
+		const order = ["<loop_guard>", "立刻换做法：", "<random-trash-word>", "</random-trash-word>", "</loop_guard>"];
+		let at = -1;
+		for (const marker of order) {
+			const next = content.indexOf(marker);
+			assert.ok(next > at, `${marker} 应该出现在预期位置（实得 ${next}，前一个 ${at}）`);
+			at = next;
+		}
+		// 指令与垃圾之间恰好一个空行：模型要靠这个边界分辨哪半有用
+		assert.match(content, /然后停下\n\n<random-trash-word>/);
+		assert.doesNotMatch(content, /\n\n\n/);
+		// 元素里真的塞了东西，且长度与 details 对得上
+		const inner = content.slice(
+			content.indexOf("<random-trash-word>") + "<random-trash-word>".length,
+			content.indexOf("</random-trash-word>"),
+		).trim();
+		assert.ok(inner.length > 1000, `填充应该够长才有打断力，实得 ${inner.length}`);
+		assert.equal(inner.length, sent[0].message.details.fillerChars);
+	});
+
+	it("两次注入的填充不相同（固定串会被模型记住并当成噪声忽略）", async () => {
+		const { pi, emit, sent } = fakePi();
+		createLoopGuard(pi, cfg({ cooldownMs: 0, maxActionsPerSession: 3 }));
+		const { ctx } = fakeCtx();
+		feed(emit, ctx, stall());
+		await flush();
+		emit("agent_settled", {}, ctx);
+		feed(emit, ctx, stall(), 2);
+		await flush();
+		emit("agent_settled", {}, ctx);
+		assert.equal(sent.length, 2);
+		const junk = (m: any) => (m.content as string).split("<random-trash-word>")[1];
+		assert.notEqual(junk(sent[0].message), junk(sent[1].message));
+	});
+
+	it("注册了消息渲染器，避免 4000 字垃圾直接糊屏", () => {
+		const { pi, renderers } = fakePi();
+		createLoopGuard(pi, cfg());
+		assert.ok(renderers.has("loop-guard"), "应该注册 loop-guard 的渲染器");
 	});
 
 	it("同一个块内不重复中止", async () => {

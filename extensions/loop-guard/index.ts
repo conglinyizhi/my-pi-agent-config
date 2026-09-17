@@ -21,9 +21,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { generateRandomFiller } from "../../lib/random-filler.ts";
 import {
 	DEFAULT_OPTIONS,
 	LoopDetector,
@@ -89,17 +91,41 @@ export function loadConfig(path = TOML_PATH): GuardConfig {
 	};
 }
 
-/** 给模型看的纠正消息（中止后注入） */
-export function buildCorrectionPrompt(hit: LoopHit): string {
-	const samples = hit.samples.map((s) => JSON.stringify(s)).join(" / ");
-	return `<loop_guard>
-检测到重复输出，已中止本次生成：重复内容共 ${hit.repeatChars} 字符 / ${hit.repeatLines} 行，集中在 ${hit.alphabet} 种短句上（${samples}），占窗口内 ${Math.round((1 - hit.intruderRatio) * 100)}% 的行。这是在重复占位句，没有产出新信息。
+/** 注入消息的 details（渲染器与事后排查都靠它） */
+export interface CorrectionDetails {
+	repeatChars: number;
+	repeatLines: number;
+	alphabet: number;
+	avgLineChars: number;
+	fillerChars: number;
+	samples: string[];
+}
 
-立刻换做法：
-- 不要写「好 / 做 / 输出 / 现在 / RUN」这类占位语
-- 该调工具就直接发出工具调用；该给结论就直接给结论
-- 如果确实卡住了，用一句话说清卡在哪（缺什么输入、哪条命令失败），然后停下
-</loop_guard>`;
+/**
+ * 给模型看的纠正消息（中止后注入）。
+ *
+ * 除了判据与改法，末尾还嵌一段 `<random-trash-word>`：模型此刻正卡在重复里，
+ * 注意力已经塌到一个短循环上，高熵随机串是把它拽出来的手段（词池与生成器见
+ * lib/random-filler.ts，那里写清了为什么用词池、为什么必须每次重新生成）。
+ *
+ * 摆位契约：垃圾放在**最后**，与指令之间隔恰好一个空行。前半是可执行指令，
+ * 必须保持完整可读；空行加元素边界是让模型自己看出「前半有用、后半是噪声」。
+ * 这个元素只喂给模型，人看的是渲染器折叠后的卡片（见下）。
+ */
+export function buildCorrectionPrompt(hit: LoopHit, filler: string = generateRandomFiller()): string {
+	const samples = hit.samples.map((s) => JSON.stringify(s)).join(" / ");
+	const lines = [
+		"<loop_guard>",
+		`检测到重复输出，已中止本次生成：重复内容共 ${hit.repeatChars} 字符 / ${hit.repeatLines} 行，集中在 ${hit.alphabet} 种短句上（${samples}），占窗口内 ${Math.round((1 - hit.intruderRatio) * 100)}% 的行。这是在重复占位句，没有产出新信息。`,
+		"",
+		"立刻换做法：",
+		"- 不要写「好 / 做 / 输出 / 现在 / RUN」这类占位语",
+		"- 该调工具就直接发出工具调用；该给结论就直接给结论",
+		"- 如果确实卡住了，用一句话说清卡在哪（缺什么输入、哪条命令失败），然后停下",
+	];
+	if (filler) lines.push("", "<random-trash-word>", filler, "</random-trash-word>");
+	lines.push("</loop_guard>");
+	return lines.join("\n");
 }
 
 function describeHit(hit: LoopHit): string {
@@ -265,18 +291,21 @@ export function createLoopGuard(pi: ExtensionAPI, cfg: GuardConfig) {
 		if (!hit) return;
 		setStatus(ctx, undefined);
 		try {
-			pi.sendMessage(
+			const filler = generateRandomFiller();
+			const details: CorrectionDetails = {
+				repeatChars: hit.repeatChars,
+				repeatLines: hit.repeatLines,
+				alphabet: hit.alphabet,
+				avgLineChars: hit.avgLineChars,
+				fillerChars: filler.length,
+				samples: hit.samples,
+			};
+			pi.sendMessage<CorrectionDetails>(
 				{
 					customType: CUSTOM_TYPE,
-					content: buildCorrectionPrompt(hit),
+					content: buildCorrectionPrompt(hit, filler),
 					display: true,
-					details: {
-						repeatChars: hit.repeatChars,
-						repeatLines: hit.repeatLines,
-						alphabet: hit.alphabet,
-						avgLineChars: hit.avgLineChars,
-						samples: hit.samples,
-					},
+					details,
 				},
 				{ triggerTurn: true },
 			);
@@ -292,6 +321,28 @@ export function createLoopGuard(pi: ExtensionAPI, cfg: GuardConfig) {
 		resetBlock();
 		if (!pendingCorrection) setStatus(ctx, undefined);
 	});
+
+	// 注入消息里带 4000 字符随机填充（喂给模型用），人看的应该是折叠后的卡片
+	pi.registerMessageRenderer<CorrectionDetails>(
+		CUSTOM_TYPE,
+		(message, { expanded }, theme) => {
+			const d = message.details;
+			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			const head = d
+				? `${d.repeatChars} 字符 / ${d.repeatLines} 行 · ${d.alphabet} 种短句`
+				: "";
+			box.addChild(new Text(`${theme.fg("accent", "🛑 重复输出已中止")}  ${theme.fg("dim", head)}`, 0, 0));
+			if (expanded) {
+				const body = typeof message.content === "string" ? message.content : "";
+				box.addChild(new Text(theme.fg("dim", body), 0, 0));
+			} else if (d?.fillerChars) {
+				box.addChild(
+					new Text(theme.fg("dim", `+ ${d.fillerChars} 字符随机填充，与注入全文一起收在展开里`), 0, 0),
+				);
+			}
+			return box;
+		},
+	);
 
 	pi.registerCommand("loop-guard", {
 		description: "重复输出拦截：查看状态 / 切换模式（off | warn | abort | reset）",
