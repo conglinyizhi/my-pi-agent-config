@@ -238,7 +238,13 @@ export function registerSupplementBridge(
   if (!hasInbox) {
     // 以前这里是默默返回 false，连暂存也一起废掉：两条通道本无关，inbox 有问题
     // 不该拖累暂存。留一行 stderr，它会进父侧的诊断尾部。
-    process.stderr.write("subagent-supplement-bridge: 无有效 inbox id，补充通道未启用\n");
+    //
+    // 但本扩展住在 ~/.pi/agent/extensions/（全局自动发现），主会话、`pi --help`
+    // 这类非 worker 进程也会加载它，而它们永远没有 PI_SUBAGENT_INBOX——不加
+    // 门槛就等于每次启动都报一次。诊断是给父侧看的，只在 worker 上下文出声。
+    if (process.env.PI_SUBAGENT === "1") {
+      process.stderr.write("subagent-supplement-bridge: 无有效 inbox id，补充通道未启用\n");
+    }
   }
   const holdPathsProbe = opts.holdPaths ?? holdPathsFromEnv();
   if (!hasInbox && !holdPathsProbe) return false; // 两条都没得做才彻底退出

@@ -73,6 +73,7 @@ function fakeRelease() {
 
 afterEach(() => {
   delete process.env.PI_SUBAGENT_INBOX;
+  delete process.env.PI_SUBAGENT;
 });
 
 describe("createSupplementToolEndHandler（工厂：可注入 claim 与 send）", () => {
@@ -271,6 +272,45 @@ describe("registerSupplementBridge（默认接线：真实 Pi API 投递路径�
     process.env.PI_SUBAGENT_INBOX = "worker-7";
     assert.strictEqual(registerBridge(pi), true);
     assert.ok(handlers.has("tool_execution_end"));
+  });
+});
+
+// 本扩展在全局自动发现目录里，主会话也会加载；只有在 worker 进程里才该出声，
+// 否则每次 `pi` 启动都留一行噪音。
+describe("registerSupplementBridge：无有效 inbox 时的出声门槛", () => {
+  function captureStderr<T>(fn: () => T): { out: string; value: T } {
+    const stderr = process.stderr as unknown as { write: (chunk: string) => boolean };
+    const original = stderr.write;
+    const chunks: string[] = [];
+    stderr.write = (chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    try {
+      // 先跑 fn 再取 chunks：对象字面量从左往右求值，写在 value 前面会取到空串
+      const value = fn();
+      return { out: chunks.join(""), value };
+    } finally {
+      stderr.write = original;
+    }
+  }
+
+  it("非 worker 进程（主会话 / pi --help）加载：静默，不写 stderr", () => {
+    delete process.env.PI_SUBAGENT;
+    const { pi, handlers } = mockPi();
+    const { out, value } = captureStderr(() => registerSupplementBridge(pi));
+    assert.strictEqual(value, false);
+    assert.strictEqual(out, "");
+    assert.ok(!handlers.has("tool_execution_end"));
+  });
+
+  it("worker 上下文（PI_SUBAGENT=1）无有效 inbox：仍留一行诊断给父侧", () => {
+    process.env.PI_SUBAGENT = "1";
+    const { pi, handlers } = mockPi();
+    const { out, value } = captureStderr(() => registerSupplementBridge(pi));
+    assert.strictEqual(value, false);
+    assert.match(out, /无有效 inbox id/);
+    assert.ok(!handlers.has("tool_execution_end"));
   });
 });
 
