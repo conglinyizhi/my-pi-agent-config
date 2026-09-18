@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
+import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
 import { startBatch, type BatchItemResult, type BatchRuntime } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
@@ -644,6 +645,31 @@ export default function (pi: ExtensionAPI) {
   };
 
 
+  /** 历史快照浏览：二级选择，选完把那份文件交给 GUI */
+  const subagentsGuiHistoryHandler = async (_args: string, ctx: ExtensionContext) => {
+    const dir = join(homedir(), ".pi");
+    const files = listStatusSnapshots(dir, { currentPath: currentStatusPath() });
+    if (files.length === 0) {
+      ctx.ui.notify("没有找到任何 subagent 状态快照", "info");
+      return;
+    }
+    const labels = files.map(describeSnapshot);
+    const picked = await ctx.ui.select("打开哪一份会话快照？", labels);
+    if (!picked) return;
+    const at = labels.indexOf(picked);
+    if (at < 0) return;
+    const result = launchGuiWindow("subagents", {
+      workers: [],
+      statusPath: files[at].path,
+    });
+    if (!result.ok) {
+      ctx.ui.notify(
+        result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
+        "error",
+      );
+    }
+  };
+
   pi.registerTool({
     name: "subagent_resume",
     label: "Resume Subagent",
@@ -761,6 +787,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("subagent:gui", {
     description: "打开 subagent 实时监视 GUI（不阻塞命令）",
     handler: subagentsGuiHandler,
+  });
+
+  pi.registerCommand("subagent:gui-history", {
+    description: "浏览历史会话的 subagent 状态快照（选一份打开 GUI）",
+    handler: subagentsGuiHistoryHandler,
   });
 
   pi.registerCommand("gui:subagents", {
