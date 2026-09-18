@@ -203,7 +203,26 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
   // 超出额度的 worker 标 queued：如实告诉操作者在排队，不拿「启动中」假装已开始
   for (let i = limit; i < tasks.length; i++) updateWorker(`w${i + 1}`, { status: "queued" });
 
-  return runWithConcurrency(tasks, limit, (task, index) => runWorker(task, index, opts));
+  // 取消句柄在排队阶段就建好并登记：排队的 worker 也要停得掉。
+  // 登记在这里、注销在 finally，因为排队中的 worker 可能压根不会进 runWorker。
+  const controllers = new Map<string, AbortController>();
+  for (let i = 0; i < tasks.length; i++) {
+    const id = `w${i + 1}`;
+    const controller = new AbortController();
+    controllers.set(id, controller);
+    if (opts.taskId) registerWorkerAbort({ batchId: opts.taskId, workerId: id }, controller);
+  }
+  try {
+    return await runWithConcurrency(tasks, limit, (task, index) =>
+      runWorker(task, index, opts, controllers.get(`w${index + 1}`)!),
+    );
+  } finally {
+    if (opts.taskId) {
+      for (const id of controllers.keys()) {
+        unregisterWorkerAbort({ batchId: opts.taskId, workerId: id });
+      }
+    }
+  }
 }
 
 /** 一个停在检查点上等决定的 worker */
@@ -308,41 +327,51 @@ export function startBatch(tasks: string[], opts: RunBatchOptions): BatchRuntime
 }
 
 /**
- * 给单个 worker 自己的取消句柄。
- *
- * 批次级 signal 是共用的（停一个会连坐它的兄弟），命令层要单独停人，所以每个
- * worker 额外挂一个 controller，与批次 signal 合成后再交给 runSubagent。
- * 句柄只在 runSubagent 存活期间登记：跑完即注销，命令层不会拿到僵尸条目。
+ * 用调用方建好的取消句柄跑一轮（句柄的生命周期比单次 runSubagent 长：
+ * 排队中的 worker 也得停得掉，所以 controller 由 runBatch 统一创建并登记）。
  */
 async function withWorkerAbort<T>(
-  key: WorkerKey | undefined,
+  controller: AbortController,
   run: (signal: AbortSignal) => Promise<T>,
   batchSignal?: AbortSignal,
 ): Promise<T> {
-  const controller = new AbortController();
   const signal = batchSignal ? AbortSignal.any([batchSignal, controller.signal]) : controller.signal;
-  if (key) registerWorkerAbort(key, controller);
   try {
     return await run(signal);
-  } finally {
-    if (key) unregisterWorkerAbort(key);
+  } catch (err) {
+    // 命令层停下来的理由挂在 abort reason 上；别让它随 signal 一起消失
+    const reason = controller.signal.reason;
+    if (controller.signal.aborted && reason instanceof Error && err instanceof Error) {
+      (err as Error & { stopReason?: string }).stopReason = reason.message;
+    }
+    throw err;
   }
 }
 
-/** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */async function runWorker(
+/** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */
+async function runWorker(
   task: string,
   index: number,
   opts: RunBatchOptions,
+  controller: AbortController,
 ): Promise<BatchItemResult> {
   const id = `w${index + 1}`;
   const inboxId = opts.workerInboxIds[index];
+
+  // 排队期间被停：不启动进程。不检查的话，stop 会在队列里排队等着启动，
+  // 面板上它一直是 queued，提督以为停干净了
+  if (controller.signal.aborted) {
+    const finishedAt = new Date().toISOString();
+    updateWorker(id, { status: "aborted", finishedAt, output: "启动前已被停止" });
+    return { index, status: "aborted", output: "启动前已被停止", stderr: "" };
+  }
+
   // 真启动才计耗时：创建批次时写入的 startedAt 是批次起点，排队中的 worker 一直沿用它，
   // 会让后启动的 worker 报出与先启动兄弟相同的耗时。这里重置为实际启动时刻。
   updateWorker(id, { status: "starting", startedAt: new Date().toISOString() });
 
   try {
-    const workerKey = opts.taskId ? { batchId: opts.taskId, workerId: id } : undefined;
-    const result: SubagentResult = await withWorkerAbort(workerKey, (signal) => runSubagent({
+    const result: SubagentResult = await withWorkerAbort(controller, (signal) => runSubagent({
       task,
       cwd: opts.cwd,
       model: opts.model,
