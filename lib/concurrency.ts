@@ -58,7 +58,7 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
   const nextIndex = { value: 0 };
 
   const workers = new Array(limit).fill(null).map(() =>
-    createConcurrencyWorker(nextIndex, items, results, fn),
+    createConcurrencyWorker(nextIndex, items, results, fn)(),
   );
 
   await Promise.all(workers);

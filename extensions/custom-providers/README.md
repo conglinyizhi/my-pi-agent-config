@@ -73,6 +73,11 @@
 
 重新加载 `~/.pi/agent/providers.toml`，热更新已注册的供应商。
 
+### `/provider:reload-online`
+
+从各供应商 `/models` 重新拉列表，合并 `models.dev` 元数据后写回 `providers.toml` 并热更新运行时。
+多个供应商会并行请求（默认最多 8 路），`models.dev` 按模型 ID 去重后再限并发；注册、写盘、通知仍按 toml 里的原顺序。
+
 ### 事件钩子
 
 - **`model_select`** — 当用户选择 `auto-detect` 占位模型时触发，引导完成 API 格式检测和模型拉取
@@ -95,6 +100,8 @@ custom-providers/
 ├── fast-edit-with-copy.test.ts  # 复刻逻辑测试
 ├── models-dev.ts            # 开发环境模型配置
 ├── models-dev-static.json   # 静态模型数据
+├── reload-online.ts         # /provider:reload-online 的并行拉取与合并
+├── reload-online.test.ts    # reload-online 并行拉取测试
 ├── loader.test.ts           # loader 测试
 ├── detector.test.ts         # detector 测试
 ├── models.test.ts           # models 测试
@@ -115,6 +122,7 @@ custom-providers/
 - **格式自动检测**：请求 `/models` 端点，根据响应结构判断 OpenAI/Anthropic
 - **配置持久化**：检测结果自动写回 providers.toml，下次启动直接使用
 - **reload 安全**：reload 时清理旧注册，避免重复注册
+- **reload-online 并行**：多个供应商的 `/models` 同时拉（默认最多 8 路），一个失败不影响其它；注册和写盘仍按 toml 原顺序
 - **隐藏模型保护**：模型覆盖项可设置 `do_not = ["remove", "update", "edit"]`。`remove` 防止 `reload-online` 因供应商不返回而删除模型；`update` 防止在线元数据覆盖本地配置；`edit` 防止 `/provider:fast-edit` 修改或删除模型。三个动作可单独或组合使用，未知动作会被忽略。
 - **默认保护**：`/provider:fast-edit` 里改过字段的模型、新建的模型，以及 `/provider:fast-edit-with-copy` 复刻出来的模型，都会默认补上 `do_not = ["remove", "update"]` 并弹一条提示；已有任何 `do_not` 配置的不动。字段菜单第一行 `🛡 保护` 可改保护级别或关掉。
 - **密钥管理**：通过 `../../lib/auth.ts` 获取 API key
