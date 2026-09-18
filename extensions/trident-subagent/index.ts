@@ -24,7 +24,7 @@ import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validate
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
-import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, onSnapshotChange, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
+import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
 import {
   listActiveWorkers,
   stopAllWorkers,
@@ -33,12 +33,13 @@ import {
 import { runStopAllCommand, runStopCommand, type StopCommandDeps } from "./stop-commands.ts";
 import {
   FleetView,
-  createCoalescer,
   formatWorkerOutput,
   projectFleet,
   workerOutputBudget,
+  type FleetTheme,
   type FleetWorkerView,
 } from "./dispatch-view.ts";
+import { watchFleet } from "./fleet-watch.ts";
 import { buildSkillIndex, formatUnresolvedSkills, resolveSkillRefs } from "./skill-refs.ts";
 import {
   SUBAGENT_MODEL_SCOPE,
@@ -53,20 +54,6 @@ import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
 import { enqueueSupplement } from "../../lib/subagent-supplement.ts";
 
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
-/**
- * fleet 实时投影投递间隔：N 个 worker 的更新合并到这一档，足够「看得出在动」。
- */
-const FLEET_EMIT_INTERVAL_MS = 150;
-/**
- * fleet 节拍：即使所有 worker 都无事件也要定期重投影。
- *
- * 两个作用：
- *   - 静默/耗时能真正往前走（否则「卡了 40 秒」永远是 0，回到看不出死活的老问题）；
- *   - 行组件在纯思考期也有帧可刷。
- *
- * 250ms 比显示精度（秒级）高至少一档：无事件时秒数最多晚 250ms 才翻。
- */
-const FLEET_TICK_MS = 250;
 /**
  * 暂存中的批次：worker 守在检查点上，等主 agent 用 subagent_resume 把它续上。
  *
@@ -214,22 +201,30 @@ async function approveCapability(
 }
 
 /**
- * 工具文本面的摘要行（模型可见）。
- *
- * 刻意只放一行计数：表格、吞吐、sparkline 全部走 details + renderResult，
- * 不经 content 进模型上下文。
+ * details.fleet 已是展示投影（不含 timeline/任务全文），直接交给行组件；
+ * 不要在渲染期重投影——那会把投影当 WorkerRun 再投影一次，表格会全是 0。
+ * 行组件必须跨帧复用，否则瞬时速率历史（sparkline）每帧归零。
  */
-function fleetSummaryText(workers: WorkerRun[]): string {
-  const total = workers.length;
-  const queued = workers.filter((w) => w.status === "queued").length;
-  const done = workers.filter((w) => w.status === "success").length;
-  const bad = workers.filter((w) => w.status === "failed" || w.status === "aborted" || w.status === "timeout").length;
-  const wait = workers.filter((w) => w.status === "needs_approval").length;
-  const running = Math.max(0, total - queued - done - bad - wait);
-  const capacity = queued > 0 ? `（${queued} 排队中）` : "";
-  return `${total} 个 subagent：运行 ${running} / 完成 ${done} / 异常 ${bad} / 等待权限 ${wait}${capacity}（表格见工具行，/subagent:gui 可开实时窗口）`;
+function renderFleetResult(
+  result: { details?: unknown },
+  expanded: boolean,
+  isPartial: boolean,
+  theme: FleetTheme,
+  context: { lastComponent?: unknown },
+  emptyHint: string,
+) {
+  const fleet = ((result.details ?? {}) as { fleet?: FleetWorkerView[] }).fleet;
+  const previous = context.lastComponent;
+  const view = previous instanceof FleetView
+    ? previous
+    : new FleetView(theme, expanded, undefined, (isExpanded) =>
+        keyHint("app.tools.expand", isExpanded ? "收起明细" : "展开明细"));
+  view.update(fleet ?? [], theme, expanded);
+  if (isPartial && (fleet === undefined || fleet.length === 0)) {
+    return new Text(theme.fg("warning", emptyHint), 0, 0);
+  }
+  return view;
 }
-
 
 export default function (pi: ExtensionAPI) {
   // 子进程内不注册派发工具，防递归
@@ -365,20 +360,7 @@ export default function (pi: ExtensionAPI) {
       return text;
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
-      // details.fleet 已是展示投影（不含 timeline/任务全文），直接交给行组件；
-      // 不要在渲染期重投影——那会把投影当 WorkerRun 再投影一次，表格会全是 0。
-      const fleet = ((result.details ?? {}) as { fleet?: FleetWorkerView[] }).fleet;
-      const previous = context.lastComponent;
-      // 行组件必须跨帧复用，否则瞬时速率历史（sparkline）每帧归零
-      const view = previous instanceof FleetView
-        ? previous
-        : new FleetView(theme, expanded, undefined, (isExpanded) =>
-            keyHint("app.tools.expand", isExpanded ? "收起明细" : "展开明细"));
-      view.update(fleet ?? [], theme, expanded);
-      if (isPartial && (fleet === undefined || fleet.length === 0)) {
-        return new Text(theme.fg("warning", "启动 worker…"), 0, 0);
-      }
-      return view;
+      return renderFleetResult(result, expanded, isPartial, theme, context, "启动 worker…");
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const rawTasks: Array<string | WorkerBriefInput> = Array.isArray(params.task) ? params.task : [params.task];
@@ -489,21 +471,9 @@ export default function (pi: ExtensionAPI) {
           extraExtensions: [],
         },
       });
-      // 实时投影投递：worker 每次快照变更都推一份紧凑投影给工具行渲染。
-      // 两条限流叠加：worker 侧 emitUpdate 已按增量节流，这里再按 worker 数合并
-      // （N 个 worker 各自更新 → 最多每 FLEET_EMIT_INTERVAL_MS 一次），且最后一次
-      // 必然送达。details 只装投影（不含 timeline/对话），content 保持一行不动。
-      const emitFleet = createCoalescer<WorkerRun[]>(FLEET_EMIT_INTERVAL_MS, (workers) => {
-        onUpdate?.({
-          content: [{ type: "text", text: fleetSummaryText(workers) }],
-          details: { phase: "running", fleet: projectFleet(workers, Date.now()) },
-        });
-      });
-      const unsubscribeFleet = onSnapshotChange((workers) => emitFleet.push(workers));
-      emitFleet.push(getSnapshot()); // 首帧（全部 starting）立即送达
-      // 节拍：无事件时也定期重投影，让静默时长与帧刷新继续前进
-      const fleetTick = setInterval(() => emitFleet.push(getSnapshot()), FLEET_TICK_MS);
-      fleetTick.unref?.();
+      // 实时投影投递：订阅当前快照，推给这一行工具渲染。
+      // 暂存返回后这一行冻住；续跑由 subagent_resume 另开一行再订一次。
+      const fleetWatch = watchFleet(onUpdate);
 
       let results: BatchItemResult[];
       // 预算：模型偶尔给荒谬值（0 / 负数 / 小数），归一成 ≥5 的整秒，其余当缺省
@@ -557,10 +527,8 @@ export default function (pi: ExtensionAPI) {
           details: { error: msg },
         };
       } finally {
-        // 先停节拍、退订，再 flush：收尾帧用最后一份快照，且不再接受新推送
-        clearInterval(fleetTick);
-        unsubscribeFleet();
-        emitFleet.flush();
+        // 先停订阅/节拍并 flush 末帧，再落盘：这一行不再接受新推送
+        fleetWatch.stop();
         // 挂起合并写显式落盘（终态已立即写，此处兜底，确保进程结束前不丢状态）
         flushStatusFile();
         clearDiagnosticsContext();
@@ -744,10 +712,24 @@ export default function (pi: ExtensionAPI) {
         { description: "一次可以处理多个 worker，不必来回调" },
       ),
     }),
-    async execute(_toolCallId: string, params: {
-      batch_id: string;
-      decisions: { worker_id: string; action: "continue" | "stop"; extra_seconds?: number; supplement?: string }[];
-    }, _signal?: AbortSignal, _onUpdate?: unknown, _ctx?: unknown) {      const entry = batchRuntimes.get(params.batch_id);
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const decisions = Array.isArray(args.decisions) ? args.decisions : [];
+      const cont = decisions.filter((d) => d && d.action === "continue").length;
+      const stop = decisions.filter((d) => d && d.action === "stop").length;
+      let content = theme.fg("toolTitle", theme.bold("subagent_resume "));
+      content += theme.fg("muted", String(args.batch_id ?? ""));
+      if (decisions.length > 0) {
+        content += theme.fg("dim", ` · ${cont} 续 / ${stop} 停`);
+      }
+      text.setText(content);
+      return text;
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      return renderFleetResult(result, expanded, isPartial, theme, context, "续上 worker…");
+    },
+    async execute(_toolCallId, params, _signal, onUpdate, _ctx) {
+      const entry = batchRuntimes.get(params.batch_id);
       if (!entry) {
         return {
           content: [{
@@ -759,83 +741,88 @@ export default function (pi: ExtensionAPI) {
       }
       // 从这一刻起这批有人接管：兵底回调不再插手，结果由本次调用自己报
       entry.awaiting = true;
-
-      const applied: string[] = [];
-      const missed: string[] = [];
-      const supplementFailed: string[] = [];
-      for (const d of params.decisions) {
-        const text = d.supplement?.trim();
-        if (text) {
-          const inboxId = entry.inboxIds.get(d.worker_id);
-          if (inboxId) {
-            try {
-              await enqueueSupplement(inboxId, text);
-            } catch (err) {
-              // 补充投不进不该拦住续跑：worker 还有别的事要做，退化成「只给预算」
-              supplementFailed.push(`${d.worker_id}（${err instanceof Error ? err.message : String(err)}）`);
+      // 续跑期间订回同一份快照。不要 beginBatch：那会把 GUI/TUI 正在看的表清掉。
+      const fleetWatch = watchFleet(onUpdate);
+      try {
+        const applied: string[] = [];
+        const missed: string[] = [];
+        const supplementFailed: string[] = [];
+        for (const d of params.decisions) {
+          const text = d.supplement?.trim();
+          if (text) {
+            const inboxId = entry.inboxIds.get(d.worker_id);
+            if (inboxId) {
+              try {
+                await enqueueSupplement(inboxId, text);
+              } catch (err) {
+                // 补充投不进不该拦住续跑：worker 还有别的事要做，退化成「只给预算」
+                supplementFailed.push(`${d.worker_id}（${err instanceof Error ? err.message : String(err)}）`);
+              }
             }
           }
+          const ok = entry.runtime.resume(d.worker_id, {
+            action: d.action,
+            extraMs: d.extra_seconds === undefined ? undefined : Math.max(5, Math.floor(d.extra_seconds)) * 1000,
+          });
+          (ok ? applied : missed).push(d.worker_id);
         }
-        const ok = entry.runtime.resume(d.worker_id, {
-          action: d.action,
-          extraMs: d.extra_seconds === undefined ? undefined : Math.max(5, Math.floor(d.extra_seconds)) * 1000,
-        });
-        (ok ? applied : missed).push(d.worker_id);
-      }
 
-      const notes: string[] = [];
-      if (missed.length > 0) notes.push(`没接上（已收尾或已被处理）：${missed.join("、")}`);
-      if (supplementFailed.length > 0) notes.push(`补充没投进去：${supplementFailed.join("、")}`);
+        const notes: string[] = [];
+        if (missed.length > 0) notes.push(`没接上（已收尾或已被处理）：${missed.join("、")}`);
+        if (supplementFailed.length > 0) notes.push(`补充没投进去：${supplementFailed.join("、")}`);
 
-      let outcome: "done" | "held";
-      try {
-        outcome = await Promise.race([
-          entry.runtime.done.then(() => "done" as const),
-          entry.runtime.waitForDefer().then(() => "held" as const),
-        ]);
-      } catch (err) {
+        let outcome: "done" | "held";
+        try {
+          outcome = await Promise.race([
+            entry.runtime.done.then(() => "done" as const),
+            entry.runtime.waitForDefer().then(() => "held" as const),
+          ]);
+        } catch (err) {
+          batchRuntimes.delete(params.batch_id);
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text", text: [`批次收尾失败：${msg}`, ...notes].join("\n") }],
+            details: { phase: "failed", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
+          };
+        }
+
+        const snapshot = getSnapshot();
+        if (outcome === "held") {
+          // 又停下来了：控制权再次交回，兵底重新待命
+          entry.awaiting = false;
+          const held = entry.runtime.takePendingDefers();
+          const heldList = held.map((d) => d.workerId).join("、");
+          const decisions = held
+            .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
+            .join(", ");
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `续上后又有 worker 暂存：${heldList}`,
+                ...notes,
+                `继续推进：subagent_resume({ batch_id: "${params.batch_id}", decisions: [${decisions}] })`,
+              ].filter(Boolean).join("\n"),
+            }],
+            details: { phase: "held", batchId: params.batch_id, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+          };
+        }
+
         batchRuntimes.delete(params.batch_id);
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text", text: [`批次收尾失败：${msg}`, ...notes].join("\n") }],
-          details: { phase: "failed", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
-        };
-      }
-
-      const snapshot = getSnapshot();
-      if (outcome === "held") {
-        // 又停下来了：控制权再次交回，兵底重新待命
-        entry.awaiting = false;
-        const held = entry.runtime.takePendingDefers();
-        const heldList = held.map((d) => d.workerId).join("、");
-        const decisions = held
-          .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
-          .join(", ");
+        flushStatusFile();
+        const lines = snapshot
+          .filter((w) => w.id.startsWith("w"))
+          .map((w) => `#${w.id} ${w.status.toUpperCase()}\n  ${(w.output ?? "").trim().slice(0, 600)}`);
         return {
           content: [{
             type: "text",
-            text: [
-              `续上后又有 worker 暂存：${heldList}`,
-              ...notes,
-              `继续推进：subagent_resume({ batch_id: "${params.batch_id}", decisions: [${decisions}] })`,
-            ].filter(Boolean).join("\n"),
+            text: [`已处理：${applied.join("、") || "（无）"}`, ...notes, "", ...lines].filter(Boolean).join("\n") ,
           }],
-          details: { phase: "held", batchId: params.batch_id, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+          details: { phase: "done", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(snapshot, Date.now()) },
         };
+      } finally {
+        fleetWatch.stop();
       }
-
-      batchRuntimes.delete(params.batch_id);
-      flushStatusFile();
-      const lines = snapshot
-        .filter((w) => w.id.startsWith("w"))
-        .map((w) => `#${w.id} ${w.status.toUpperCase()}\n  ${(w.output ?? "").trim().slice(0, 600)}`);
-      return {
-        content: [{
-          type: "text",
-          text: [`已处理：${applied.join("、") || "（无）"}`, ...notes, "", ...lines].filter(Boolean).join("\n") ,
-        }],
-        details: { phase: "done", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(snapshot, Date.now()) },
-      };
     },
   });
 
