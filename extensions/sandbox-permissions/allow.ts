@@ -28,7 +28,7 @@ import {
 import { runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeApprovalComment } from "../../lib/bash-approval.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
-import { addAllowDir, addBlockDir, collectCandidateDirs, loadSandboxPaths } from "./paths.ts";
+import { addAllowDir, addBlockDir, loadSandboxPaths } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
 	addSessionWriteDirs,
@@ -53,7 +53,7 @@ export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 		{ description: "write-paths = sandbox plus listed paths (paths required); full-access = cancel file-system sandbox (paths forbidden)." },
 	),
 	justification: Type.String({ minLength: 1, description: "Non-empty one-sentence reason shown to the user for consent." }),
-	paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required for write-paths; smallest necessary writable roots; root `/` is forbidden." })),
+	paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Required for write-paths: directories you declare, not files parsed from command. Root `/` (including `/.` and `/..`) rejects the whole request." })),
 	timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: MAX_COMMAND_TIMEOUT_SECONDS, description: "Maximum execution time after approval, in seconds." })),
 	memoryMb: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_MEMORY_MB, description: "Memory limit (MB) for this command's process tree. Default 1 GiB (1024). Specify a concrete MB value only when the command needs more than the default; larger values raise the cap, subject to approval." })),
 }, { additionalProperties: false });
@@ -138,7 +138,7 @@ async function tryGuiApproval(
 			writePaths,
 			timeout,
 			memoryMb,
-			candidatePaths: permission === "write-paths" ? collectCandidateDirs(command, writePaths) : [],
+			candidatePaths: writePaths,
 			persistentRoots: loadSandboxPaths().allowDirs,
 			sessionWriteRoots: getSessionAccessSnapshot(sessionId).writeDirs,
 			sessionTrustedRoots: getSessionAccessSnapshot(sessionId).trustedDirs,
@@ -166,14 +166,14 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			"Use only when the sandbox has actually denied a write the task legitimately needs (the default sandbox is read-only outside the workspace).",
 			"A full-access request cancels the file-system sandbox for this command; write-paths keeps the sandbox and adds only the listed writable roots.",
 			"Non-trusted requests require approval and apply only to this command. A request skips approval when every requested write path is covered by any trust root (persistent allowDirs, session-trusted roots, or session-write roots); the roots may be mixed.",
-			"Prefer write-paths with the smallest necessary writable roots. Never use full-access merely because a write failed if a directory can be named.",
+			"Prefer write-paths with the smallest necessary writable roots, declared in paths. The tool does not parse directories from command. Never use full-access merely because a write failed if a directory can be named.",
 			"Always supply a non-empty one-sentence justification, shown to the user for consent.",
 			"timeout is the maximum execution time after approval, in seconds; it does not limit the user's approval time."
 		].join(" "),
 		promptSnippet: "Run one bash command with user-approved, one-shot elevated sandbox permissions",
 		promptGuidelines: [
 			"sandbox-allow 是升权工具：仅当普通 bash 确实因沙箱拒绝而无法完成任务时才用，绝不预先调用",
-			"优先 permission=write-paths，并只列出完成命令所需的最小 writable roots；paths 不能是根目录 `/`",
+			"优先 permission=write-paths，paths 由模型自己声明最小可写目录（不是命令里的文件参数）；工具不从 command 拆目录。paths 里出现 `/` （含 `/.` `/..`）整次拒绝",
 			"full-access 会完全取消文件系统沙箱，只在无法合理限定写入根时使用；它仍不改变当前用户的操作系统身份",
 			"所有 bash 命令默认有 1GiB 内存上限；若命令可能超过（如重型构建/测试），必须用 memoryMb 给出**具体 MB 数值**，上限 32768 MB，更大会被拒绝",
 			"长期 allowDirs / 本 session 信任根 / 本 session 可写根命中时都可免重复审批；请求的多个路径可分别命中不同档位（混合覆盖即免审）",
@@ -254,12 +254,8 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					options.approvalDependencies?.runGui,
 				);
 				if (gui !== "gui-unavailable") {
-					// 只接受本次窗口展示过的候选目录，防止响应文件扩大授权范围。
-					const candidates = new Set(
-						(permission === "write-paths" ? collectCandidateDirs(command, writePaths) : [])
-							.map((path) => normalizeSandboxRoot(path, cwd))
-							.filter((path): path is string => path !== undefined),
-					);
+					// 只接受模型声明并已规范化的 writePaths，不从 command 拆路径。
+					const candidates = new Set(writePaths);
 					const currentCommandRoots: string[] = [];
 					// 走到 GUI 分支说明非 yolo，audit 必已计算（非空）
 					const auditResolved = audit!;

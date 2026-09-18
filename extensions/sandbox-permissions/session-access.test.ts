@@ -57,6 +57,8 @@ describe("session sandbox access", () => {
 
 	it("拒绝根目录，规范化相对路径与 ..", () => {
 		assert.equal(normalizeSandboxRoot("/"), undefined);
+		assert.equal(normalizeSandboxRoot("/.", "/work/project"), undefined);
+		assert.equal(normalizeSandboxRoot("/..", "/work/project"), undefined);
 		assert.equal(normalizeSandboxRoot(".", "/work/project"), "/work/project");
 		assert.equal(normalizeSandboxRoot("../outside", "/work/project"), "/work/outside");
 	});

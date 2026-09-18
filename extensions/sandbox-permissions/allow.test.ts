@@ -31,6 +31,9 @@ describe("sandbox-allow 参数契约", () => {
 		assert.equal(validateSandboxAllowInput(base, "/work/project"), undefined);
 		assert.match(validateSandboxAllowInput({ ...base, paths: [] }, "/work/project") ?? "", /需要至少一个/);
 		assert.match(validateSandboxAllowInput({ ...base, paths: ["/"] }, "/work/project") ?? "", /非根目录/);
+		assert.match(validateSandboxAllowInput({ ...base, paths: ["/."] }, "/work/project") ?? "", /非根目录/);
+		assert.match(validateSandboxAllowInput({ ...base, paths: ["/.."] }, "/work/project") ?? "", /非根目录/);
+		assert.match(validateSandboxAllowInput({ ...base, paths: ["/tmp", "/"] }, "/work/project") ?? "", /非根目录/);
 		assert.equal(validateSandboxAllowInput({
 			command: "echo x",
 			permission: "full-access",

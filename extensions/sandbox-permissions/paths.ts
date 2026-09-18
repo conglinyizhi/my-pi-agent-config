@@ -1,8 +1,8 @@
 // paths.ts — 目录白/黑名单（gate 审核 GUI 动态维护）
 //
-// 背景：gate 审核弹窗（危险命令 / sandbox-allow 升权）时，模型会给出它想操作的
-// 目录（sandbox-allow 的 writePaths、命令中的目标路径）。用户可在界面上把单个
-// 目录加入名单：
+// 背景：sandbox-allow 升权时，GUI 候选目录就是模型声明的 writePaths，不从 command
+// 拆路径。extractPathTokens / isWhitelisted 只服务普通 bash 的危险规则豁免。
+// 用户可在界面上把单个已声明目录加入名单：
 //   - 长期 allowDirs：普通 bash 常驻可写；低风险 sandbox-allow 请求完全覆盖时可免审批
 //   - 黑名单 blockDirs：guard 拦截对该目录的任何 read/write/bash 引用
 //
@@ -43,7 +43,12 @@ export function normalizeDir(dir: string): string {
 	return d;
 }
 
-/** 从命令中提取路径 token（绝对路径 / ~ 路径；排除含 shell 元字符的动态 token） */
+/**
+ * 从命令中提取路径 token（绝对路径 / ~ 路径；排除含 shell 元字符的动态 token）。
+ *
+ * 只给 isWhitelisted 用：普通 bash 没有 paths 参数，危险规则豁免只能保守地看命令。
+ * sandbox-allow 的 GUI / Landlock 根不走这里。
+ */
 export function extractPathTokens(command: string): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
@@ -85,22 +90,6 @@ export function isWhitelisted(command: string, allowDirs: string[]): boolean {
 	const targets = extractPathTokens(command);
 	if (targets.length === 0) return false;
 	return targets.every((t) => allowDirs.some((d) => isDirInside(t, d)));
-}
-
-/** 候选目录（GUI 展示）：sandbox-allow 的 writePaths + 命令中提取的路径，去重 */
-export function collectCandidateDirs(command: string, writePaths: string[]): string[] {
-	const out: string[] = [];
-	const seen = new Set<string>();
-	const push = (d: string) => {
-		const n = normalizeDir(d);
-		if (n && !seen.has(n)) {
-			seen.add(n);
-			out.push(n);
-		}
-	};
-	for (const p of writePaths ?? []) push(p);
-	for (const t of extractPathTokens(command)) push(t);
-	return out;
 }
 
 // ═══════════════════════════════════════════════════

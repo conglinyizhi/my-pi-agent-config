@@ -77,7 +77,7 @@ const requestReason = ref("");
 const timeout = ref(undefined);
 const memoryMb = ref(undefined);
 const DEFAULT_MEMORY_MB = 1024;
-// 目录白/黑名单候选（writePaths + 命令路径）
+// 目录白/黑名单候选（sandbox-allow 声明的 writePaths）
 const candidatePaths = ref([]);
 const persistentRoots = ref([]);
 const sessionWriteRoots = ref([]);

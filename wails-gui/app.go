@@ -87,7 +87,7 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["capability"] = req["capability"]
 		base["scope"] = req["scope"]
 		base["requestReason"] = req["requestReason"]
-		// 目录白/黑名单候选：writePaths + 命令中提取的路径（GUI 逐个加入名单）
+		// 目录白/黑名单候选：sandbox-allow 声明的 writePaths（不从命令拆路径）
 		base["candidatePaths"] = req["candidatePaths"]
 		base["persistentRoots"] = req["persistentRoots"]
 		base["sessionWriteRoots"] = req["sessionWriteRoots"]

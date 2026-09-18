@@ -8,7 +8,6 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	collectCandidateDirs,
 	extractPathTokens,
 	isDirInside,
 	isWhitelisted,
@@ -88,17 +87,6 @@ describe("isWhitelisted", () => {
 	});
 });
 
-describe("collectCandidateDirs", () => {
-	it("合并 writePaths 与命令路径、去重", () => {
-		const c = collectCandidateDirs("rm -rf /tmp/build", ["/tmp/build", "/var/lib"]);
-		assert.ok(c.includes("/tmp/build"));
-		assert.ok(c.includes("/var/lib"));
-		assert.equal(c.filter((p) => p === "/tmp/build").length, 1);
-	});
-	it("无候选 → 空", () => {
-		assert.deepEqual(collectCandidateDirs("echo hi", []), []);
-	});
-});
 
 describe("sandbox-paths 文件读写", () => {
 	it("缺文件 → 空名单", () => {

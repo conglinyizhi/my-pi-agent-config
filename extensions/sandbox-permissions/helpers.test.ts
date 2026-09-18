@@ -39,6 +39,9 @@ describe("resolveWritePaths", () => {
 		assert.deepEqual(resolveWritePaths(undefined, cwd), []);
 		assert.deepEqual(resolveWritePaths([], cwd), []);
 	});
+	it("根目录 / 以及规范化后等于根的路径被丢掉", () => {
+		assert.deepEqual(resolveWritePaths(["/", "/.", "/..", "/tmp"], cwd), ["/tmp"]);
+	});
 });
 
 describe("buildEscalationEnv", () => {

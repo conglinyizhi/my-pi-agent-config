@@ -245,7 +245,7 @@ max_cache = 200         # 内存缓存上限（同命令同规则不重复调 AP
 
 ## 目录授权（paths.ts，GUI 动态维护）
 
-gate 审核弹窗（危险命令 / sandbox-allow 升权）会展示候选目录（请求的 writePaths + 命令中提取的路径），每个候选目录可选择长期或当前 session 的授权级别：
+gate 审核弹窗（sandbox-allow 升权）展示的候选目录就是模型声明的 `paths`（规范化后的 writePaths），不从 command 拆路径。每个候选目录可选择长期或当前 session 的授权级别：
 
 | 名单/授权 | 效果 | 生效层 |
 |------|------|--------|
@@ -278,7 +278,9 @@ worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`
 
 ### 长期根的命令豁免规则（paths.ts `isWhitelisted`）
 
-- 命令**所有**目标路径都在长期 `allowDirs` 内才可免后续 sandbox-allow 审批；任一目标在长期根外 → 照常审核
+这只覆盖**普通 bash** 的危险规则豁免：bash 没有 `paths` 参数，只能保守地从命令里抠绝对路径。sandbox-allow 的免审走 `writePathsFullyTrusted`（看模型声明的 `paths`），不走这条。
+
+- 命令**所有**目标路径都在长期 `allowDirs` 内才可免后续人工确认；任一目标在长期根外 → 照常审核
 - 长期根只减少重复审批，不绕过 `autoReject` 硬拒绝规则
 - 含动态构造（`$()` / 变量引用 `$dir` 等）→ 不豁免（路径无法静态确认，避免 `cd /tmp/build && rm -rf $dir` 误放行）
 - 提取不到目标路径 → 不豁免；autoReject 硬拦优先于白名单（白名单不豁免 autoReject）
@@ -291,13 +293,13 @@ GateView.vue 的「📁 目录授权」区块提供三种动作：
 - 「本 session 信任」→ 写入当前内存信任根，当前命令放行
 - 「黑名单」→ 写入 `blockDirs`，当前命令拒绝
 
-返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次窗口展示过的候选路径，再应用授权。
+返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次声明的 writePaths，再应用授权；命令字符串里多出来的绝对路径不会扩大这一枪。
 
 ### sandbox-allow 使用语义
 
 `sandbox-allow` 只在普通 bash 确实因为沙箱写保护无法完成时使用。它执行的是一整条 shell 命令字符串；`&&`、`;`、管道、重定向和子 shell 都包含在同一次审批与同一个 timeout 内。
 
-- `permission=write-paths`：保留文件系统沙箱，只额外开放 `paths` 中的最小可写根；`paths` 必填，根目录 `/` 禁止
+- `permission=write-paths`：保留文件系统沙箱，只额外开放模型声明的 `paths`（目录，不是命令里的文件参数）；`paths` 必填。出现 `/`（含 `/.` `/..`）整次拒绝，不丢弃该项后继续
 - `permission=full-access`：本次命令完全取消文件系统沙箱，可以读写当前用户原本有权限访问的任意路径；它不是“多开放一个目录”，也不提升为 root
 - `justification`：非空理由会展示给审批者
 - `timeout`：用户批准后整条命令链的最长执行时间（秒），不限制用户查看审批窗口的时间
@@ -320,7 +322,7 @@ GUI 中的目录动作会同时批准当前命令：
 - **本 session 信任**：当前 session 可写并可免后续 `sandbox-allow` 审批
 - **黑名单**：写入 `blockDirs`，后续敏感路径拦截
 
-长期根、session 根和本次 `paths` 都会在执行前合并；GUI 响应中的路径只接受本次窗口展示过的候选目录。
+长期根、session 根和本次声明的 `paths` 都会在执行前合并；GUI 响应中的路径只接受这次声明的 writePaths。
 
 ### 生效与同步
 
