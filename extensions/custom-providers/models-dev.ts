@@ -13,7 +13,7 @@ import { parse } from "smol-toml";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { InputCapability } from "./types.ts";
+import { parseInputCapabilities, type InputCapability } from "./types.ts";
 
 // ─── 类型定义 ───────────────────────────────────────
 
@@ -238,11 +238,8 @@ function parseModalities(raw: unknown): string[] {
 }
 
 function toInputCapabilities(mods: string[]): InputCapability[] {
-  const caps: InputCapability[] = [];
-  if (mods.includes("text")) caps.push("text");
-  if (mods.includes("image")) caps.push("image");
-  if (caps.length === 0) caps.push("text");
-  return caps;
+  const caps = parseInputCapabilities(mods);
+  return caps && caps.length > 0 ? caps : ["text"];
 }
 
 /**

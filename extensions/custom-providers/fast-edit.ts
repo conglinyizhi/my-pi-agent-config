@@ -22,6 +22,15 @@ import { isProtected } from "./model-protection.ts";
 import { vimSelect } from "../../lib/vim-select.ts";
 import { promptWithPreview } from "../../lib/prompt-with-preview.ts";
 import { formatTokens } from "./provider-diff.ts";
+import {
+  INPUT_CAPABILITIES,
+  INPUT_CAPABILITY_LABELS,
+  formatInputCapabilities,
+  isInputCapability,
+  parseInputCapabilities,
+  toggleInputCapability,
+  type InputCapability,
+} from "./types.ts";
 
 const CONFIG_PATH = `${getAgentDir()}/providers.toml`;
 
@@ -89,13 +98,11 @@ export const THINKING_FORMAT_CHOICES: FieldChoice[] = [
   { value: "ant-ling", label: "ant-ling：reasoning.effort" },
 ];
 
-/** 输入模态：只有这三种非空组合，做成预设就不用敲 text, image 了 */
-export const MODE_CHOICES: Array<{ label: string; value: string[] | null }> = [
-  { label: "只看文字（text）", value: ["text"] },
-  { label: "文字 + 图片（text, image）", value: ["text", "image"] },
-  { label: "只看图片（image）", value: ["image"] },
-  { label: "清除（未设置，按默认 text）", value: null },
-];
+/** 输入模态：文本 / 图像 / 视频 / 声音各自独立勾选 */
+export const MODE_CHOICES = INPUT_CAPABILITIES.map(value => ({
+  value,
+  label: INPUT_CAPABILITY_LABELS[value],
+}));
 
 /** 模型级字段 */
 export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
@@ -113,7 +120,7 @@ export const MODEL_FIELDS: FieldDef[] = withPath("models[]", [
   { key: "cost_cache_read", label: "缓存读价格", kind: "number", desc: "命中提示词缓存时，读取那部分的单价。" },
   { key: "cost_cache_write", label: "缓存写价格", kind: "number", desc: "把提示词写进缓存的单价。" },
   { key: "reasoning", label: "推理", kind: "bool", desc: "这个模型会先输出思考过程再给答案；关掉就不请求思维链。" },
-  { key: "input", label: "输入模态", kind: "modes", desc: "能接受什么输入：text 是纯文字，image 是能读图。" },
+  { key: "input", label: "输入模态", kind: "modes", desc: "能接受什么输入：文本、图像、视频、声音各自独立勾选。当前 pi 只把文本和图像交给模型，视频和声音会写进配置留给其它插件。" },
   { key: "cot_replay", label: "思维链回传", kind: "bool", desc: "把上一轮的思考过程带回对话历史。DeepSeek 系不开会丢思维链；等于一键打开「思考格式 + 历史带思考」。" },
   { key: "cost_locked", label: "锁定价格", kind: "bool", desc: "锁住价格，/provider:reload-online 刷新在线数据时不会用在线价覆盖它。" },
   { key: "supports_developer_role", label: "允许 developer 角色", kind: "bool", section: "compat", desc: COMPAT_DESCS.developerRole },
@@ -155,9 +162,13 @@ export function fmtValue(v: unknown): string {
   if (typeof v === "boolean") return v ? "开启" : "关闭";
   if (Array.isArray(v)) {
     // do_not 是保护动作列表，直接打印 remove/update 看不懂，转成白话
-    return isProtectActionList(v)
-      ? v.map(action => PROTECT_ACTION_LABELS[action as string]).join(" + ")
-      : v.join(", ");
+    if (isProtectActionList(v)) {
+      return v.map(action => PROTECT_ACTION_LABELS[action as string]).join(" + ");
+    }
+    if (v.length > 0 && v.every(isInputCapability)) {
+      return formatInputCapabilities(v);
+    }
+    return v.join(", ");
   }
   if (typeof v === "number") {
     // 大整数（上下文 / 最大输出）顺带标上 1.0M / 384K，一眼能看出量级
@@ -386,18 +397,40 @@ async function inputChoice(
   return { type: "set", value: selected.split(" — ")[0] };
 }
 
-/** 输入模态（input 字段）：预设的三种组合，不用敲 text, image */
+function modeCheckboxLabel(cap: InputCapability, selected: readonly InputCapability[]): string {
+  const mark = selected.includes(cap) ? "[x]" : "[ ]";
+  return `${mark} ${INPUT_CAPABILITY_LABELS[cap]}`;
+}
+
+/** 输入模态：四项独立勾选，点一项即开关 */
 async function inputModes(
   ctx: ExtensionCommandContext,
   field: FieldDef,
   current: unknown,
-): Promise<{ type: "set"; value: string[] } | { type: "clear" } | null> {
-  const options = MODE_CHOICES.map(choice => choice.label);
-  const selected = await ctx.ui.select(fieldPrompt(field, current), options);
-  if (!selected) return null;
-  const picked = MODE_CHOICES[options.indexOf(selected)];
-  if (!picked) return null;
-  return picked.value === null ? { type: "clear" } : { type: "set", value: picked.value };
+): Promise<{ type: "set"; value: InputCapability[] } | { type: "clear" } | null> {
+  let selected = parseInputCapabilities(current) ?? [];
+  const how = "点一项勾选或取消；选「完成」写入。当前 pi 只把文本和图像交给模型。";
+
+  while (true) {
+    const options = [
+      ...INPUT_CAPABILITIES.map(cap => modeCheckboxLabel(cap, selected)),
+      "完成",
+      "清除（未设置，按默认 text）",
+      "取消",
+    ];
+    const choice = await ctx.ui.select(
+      fieldPrompt(field, selected.length > 0 ? selected : undefined, how),
+      options,
+    );
+    if (!choice || choice === "取消") return null;
+    if (choice.startsWith("清除")) return { type: "clear" };
+    if (choice === "完成") {
+      return selected.length > 0 ? { type: "set", value: selected } : { type: "clear" };
+    }
+    const cap = INPUT_CAPABILITIES.find(item => choice.endsWith(INPUT_CAPABILITY_LABELS[item]));
+    if (!cap) return null;
+    selected = toggleInputCapability(selected, cap);
+  }
 }
 
 /** 保护级别选项：值写入 do_not，null 表示清除 */

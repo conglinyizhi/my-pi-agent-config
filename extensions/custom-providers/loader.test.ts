@@ -65,4 +65,24 @@ cot_replay = false
     assert.strictEqual(models[0].cotReplay, undefined);
     assert.strictEqual(models[1].cotReplay, false);
   });
+
+  it("parses four independent input modalities and drops unknown values", () => {
+    const toml = `
+[[providers]]
+id = "p"
+base_url = "https://example.com"
+
+[[providers.models]]
+id = "m1"
+input = ["audio", "text", "video", "image", "text", "unknown"]
+
+[[providers.models]]
+id = "m2"
+input = ["video"]
+`;
+    const result = parseProvidersToml(toml);
+    const models = result.providers?.[0]?.models as Array<{ id: string; input?: string[] }>;
+    assert.deepStrictEqual(models[0].input, ["text", "image", "video", "audio"]);
+    assert.deepStrictEqual(models[1].input, ["video"]);
+  });
 });

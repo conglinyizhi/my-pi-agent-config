@@ -23,6 +23,26 @@ describe("models", () => {
     assert.strictEqual(config.input[0], "text");
   });
 
+  it("keeps video/audio in toml but only registers text/image to pi", () => {
+    const provider: RawProvider = {
+      id: "p",
+      baseUrl: "https://example.com",
+      models: [{ id: "omni", input: ["text", "image", "video", "audio"] }],
+    };
+    const config = buildModelConfig("omni", provider, { id: "omni", input: ["text", "image", "video", "audio"] });
+    assert.deepStrictEqual(config.input, ["text", "image"]);
+  });
+
+  it("falls back to text when only video/audio are configured", () => {
+    const provider: RawProvider = {
+      id: "p",
+      baseUrl: "https://example.com",
+      models: [{ id: "voice", input: ["audio", "video"] }],
+    };
+    const config = buildModelConfig("voice", provider, { id: "voice", input: ["audio", "video"] });
+    assert.deepStrictEqual(config.input, ["text"]);
+  });
+
   it("cot_replay at model level enables deepseek CoT compat", () => {
     const provider: RawProvider = {
       id: "p",

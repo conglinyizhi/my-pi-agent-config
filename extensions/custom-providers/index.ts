@@ -7,7 +7,8 @@ import { loadProvidersConfig } from "./loader.ts";
 import { buildModelConfig, resolveModels, toPiApi } from "./models.ts";
 import { diffModelLists, formatDiffReport, formatTokens, fmtPrice } from "./provider-diff.ts";
 import { findModelCandidates, buildMatchedModel } from "./models-dev.ts";
-import type { InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
+import type { ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
+import { parseInputCapabilities, toPiInput } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
 import { fastDelHandler } from "./fast-del.ts";
 import { fastEditHandler } from "./fast-edit.ts";
@@ -288,7 +289,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
                 name: m.name !== m.id ? m.name : undefined,
                 contextWindow: m.contextWindow,
                 maxTokens: m.maxTokens,
-                input: m.input as InputCapability[],
+                input: parseInputCapabilities(m.input) ?? ["text"],
                 reasoning: m.reasoning,
                 costInput: m.cost.input,
                 costOutput: m.cost.output,
@@ -352,7 +353,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
             name: o.name || o.id,
             api: toPiApi(format),
             reasoning: o.reasoning ?? false,
-            input: ((o.input as InputCapability[]) || ["text"]).slice().sort() as InputCapability[],
+            input: toPiInput(o.input),
             cost: {
               input: o.costInput ?? 0,
               output: o.costOutput ?? 0,

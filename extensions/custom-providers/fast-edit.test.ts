@@ -21,7 +21,8 @@ describe("fast-edit 字段展示", () => {
   });
 
   it("其它数组、布尔、空值照旧", () => {
-    assert.strictEqual(fmtValue(["text", "image"]), "text, image");
+    assert.strictEqual(fmtValue(["text", "image"]), "文本 + 图像");
+    assert.strictEqual(fmtValue(["text", "video", "audio"]), "文本 + 视频 + 声音");
     assert.strictEqual(fmtValue(true), "开启");
     assert.strictEqual(fmtValue(false), "关闭");
     assert.strictEqual(fmtValue(undefined), "未设置");
@@ -96,8 +97,9 @@ describe("选项式字段", () => {
     assert.strictEqual(field.choices?.length, THINKING_FORMAT_CHOICES.length);
   });
 
-  it("输入模态是三选一 + 清除，不用手敲", () => {
-    assert.deepStrictEqual(MODE_CHOICES.map(c => c.value), [["text"], ["text", "image"], ["image"], null]);
+  it("输入模态是文本 / 图像 / 视频 / 声音四项独立勾选", () => {
+    assert.deepStrictEqual(MODE_CHOICES.map(c => c.value), ["text", "image", "video", "audio"]);
+    assert.deepStrictEqual(MODE_CHOICES.map(c => c.label), ["文本", "图像", "视频", "声音"]);
     const field = MODEL_FIELDS.find(f => f.key === "input")!;
     assert.strictEqual(field.kind, "modes");
   });

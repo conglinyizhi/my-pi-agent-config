@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
-import type { CompatOverride, InputCapability, ModelOverride, ProtectedModelAction, ProviderDefaults, ProvidersConfig, RawProvider } from "./types.ts";
+import { parseInputCapabilities, type CompatOverride, type ModelOverride, type ProtectedModelAction, type ProviderDefaults, type ProvidersConfig, type RawProvider } from "./types.ts";
 
 export function parseProvidersToml(raw: string): ProvidersConfig {
   const parsed = parse(raw) as { providers?: Array<Record<string, unknown>> };
@@ -66,7 +66,7 @@ function normalizeModelOverride(raw: Record<string, unknown>): ModelOverride {
     name: raw.name as string | undefined,
     contextWindow: raw.context_window as number | undefined,
     maxTokens: raw.max_tokens as number | undefined,
-    input: raw.input as InputCapability[] | undefined,
+    input: parseInputCapabilities(raw.input),
     reasoning: raw.reasoning as boolean | undefined,
     costInput: raw.cost_input as number | undefined,
     costOutput: raw.cost_output as number | undefined,
@@ -92,7 +92,7 @@ function normalizeDefaults(raw: Record<string, unknown>): ProviderDefaults {
   return {
     contextWindow: raw.context_window as number | undefined,
     maxTokens: raw.max_tokens as number | undefined,
-    input: raw.input as InputCapability[] | undefined,
+    input: parseInputCapabilities(raw.input),
     reasoning: raw.reasoning as boolean | undefined,
     costInput: raw.cost_input as number | undefined,
     costOutput: raw.cost_output as number | undefined,

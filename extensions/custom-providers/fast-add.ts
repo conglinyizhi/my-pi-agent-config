@@ -22,7 +22,7 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "smol-toml";
-import type { ModelOverride, InputCapability } from "./types.ts";
+import { isDefaultInput, parseInputCapabilities, toPiInput, type InputCapability, type ModelOverride } from "./types.ts";
 import { isProtected } from "./model-protection.ts";
 import { maskKey } from "../../lib/auth";
 import { extractDomainId } from "../../lib/url-utils";
@@ -519,7 +519,7 @@ function tomlModel(m: ModelOverride): Record<string, unknown> {
   if (m.reasoning !== undefined) result.reasoning = m.reasoning;
   if (m.do_not !== undefined && m.do_not.length > 0) result.do_not = m.do_not;
   if (m.cotReplay !== undefined) result.cot_replay = m.cotReplay;
-  if (m.input !== undefined && m.input.length > 1) result.input = m.input;
+  if (m.input !== undefined && !isDefaultInput(m.input)) result.input = m.input;
   if (m.compat && Object.keys(m.compat).length > 0) result.compat = m.compat;
   return result;
 }
@@ -595,7 +595,7 @@ async function applyAndRegister(
                 reasoning: (m as Record<string, unknown>).reasoning as boolean | undefined,
                 do_not: (m as Record<string, unknown>).do_not as ModelOverride["do_not"],
                 cotReplay: (m as Record<string, unknown>).cot_replay as boolean | undefined,
-                input: (m as Record<string, unknown>).input as InputCapability[] | undefined,
+                input: parseInputCapabilities((m as Record<string, unknown>).input),
               });
             }
           }
@@ -699,7 +699,7 @@ async function applyAndRegister(
           name: m.name || m.id,
           api: resolvedApi,
           reasoning: m.reasoning || false,
-          input: m.input || ["text"] as const,
+          input: toPiInput(m.input),
           cost: {
             input: m.costInput || 0,
             output: m.costOutput || 0,

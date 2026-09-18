@@ -1,6 +1,6 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { parseCommaList } from "../../lib/string-utils.ts";
-import type { CompatOverride, InputCapability, ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
+import { toPiInput, type CompatOverride, type InputCapability, type ModelOverride, type RawProvider, type ResolvedApiFormat } from "./types.ts";
 
 /** @deprecated 请使用 lib/string-utils 中的 parseCommaList */
 export const parseModelIds = parseCommaList;
@@ -108,7 +108,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
 
   const contextWindow = override?.contextWindow ?? anthropic?.contextWindow ?? defaults.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxTokens = override?.maxTokens ?? anthropic?.maxTokens ?? defaults.maxTokens ?? DEFAULT_MAX_TOKENS;
-  const input = override?.input ?? anthropic?.input ?? defaults.input ?? ["text"];
+  const input = toPiInput(override?.input ?? anthropic?.input ?? defaults.input);
   const reasoning = override?.reasoning ?? anthropic?.reasoning ?? defaults.reasoning ?? false;
   const thinkingLevelMap = override?.thinkingLevelMap ?? defaults.thinkingLevelMap;
 
