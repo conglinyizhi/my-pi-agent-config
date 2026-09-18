@@ -11,6 +11,8 @@ import { getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
@@ -20,7 +22,7 @@ import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validate
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
-import { beginBatch, flushStatusFile, getSnapshot, onSnapshotChange, updateWorker, type WorkerRun } from "./status.ts";
+import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, onSnapshotChange, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
 import {
   listActiveWorkers,
   stopAllWorkers,
@@ -608,10 +610,29 @@ export default function (pi: ExtensionAPI) {
   // /subagent:gui — 异步启动实时监视窗口
   // ═══════════════════════════
 
+  // 状态快照按会话分区：多开 pi 同时跑 subagent 时不再互相覆盖。
+  // new / resume / fork 都会重新触发，路径跟着换。
+  pi.on("session_start", (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const hash = sessionHashOf(sessionId);
+    const sessionFile = ctx.sessionManager.getSessionFile?.();
+    configureStatusFile({
+      path: statusPathFor(hash),
+      session: {
+        id: sessionId,
+        hash,
+        ...(sessionFile ? { file: sessionFile } : {}),
+        cwd: ctx.cwd,
+      },
+    });
+  });
+
   const subagentsGuiHandler = async (_args: string, ctx: ExtensionContext) => {
     // 非阻塞拉起：不等待 response / 窗口关闭
     const result = launchGuiWindow("subagents", {
       workers: getSnapshot(),
+      // 让窗口盯当前会话的快照：多会话并存时不会读到别条会话的状态
+      statusPath: currentStatusPath(),
     });
 
     if (!result.ok) {
@@ -621,6 +642,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
   };
+
 
   pi.registerTool({
     name: "subagent_resume",

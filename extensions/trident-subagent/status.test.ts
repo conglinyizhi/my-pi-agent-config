@@ -21,6 +21,10 @@ import {
   getSnapshot,
   flushStatusFile,
   configureStatusFile,
+  currentStatusPath,
+  sessionHashOf,
+  statusPathFor,
+  writeStatusFile,
   resetStatusFile,
   COALESCE_DELAY_MS,
   type WorkerRun,
@@ -268,4 +272,60 @@ describe("batch inbox 前置准备（validateWorkerInboxIds / prepareInboxes）"
 after(() => {
   resetStatusFile(); // 取消挂起写、恢复默认 IO（顺序在恢复文件内容之前）
   try { writeFileSync(STATUS_PATH, orig); } catch { rmSync(STATUS_PATH, { force: true }); }
+});
+
+describe("状态快照的会话归属", () => {
+  it("带会话信息：写进快照顶层，多个会话靠它区分", () => {
+    resetStatusFile();
+    const io = makeInjectedIO();
+    configureStatusFile({
+      path: "/fake/subagent-status-abcdef12.json",
+      session: { id: "sess-uuid", hash: "abcdef12", cwd: "/home/x/proj", file: "/home/x/.pi/sessions/s.jsonl" },
+      writeFile: (_p, d) => io.writes.push(d),
+      now: () => "2026-09-17T00:00:00.000Z",
+      schedule: io.schedule,
+      cancel: io.cancel,
+    });
+    beginBatch([makeRun("w1")]);
+    writeStatusFile();
+    const doc = JSON.parse(io.writes[io.writes.length - 1]);
+    assert.strictEqual(doc.session.hash, "abcdef12");
+    assert.strictEqual(doc.session.cwd, "/home/x/proj");
+    assert.strictEqual(doc.workers.length, 1, "加了 session 不影响原来的 workers 字段");
+  });
+
+  it("不带会话信息：不凭空造 session 字段（旧调用方行为不变）", () => {
+    const io = setupInjected();
+    writeStatusFile();
+    const doc = JSON.parse(io.writes[io.writes.length - 1]);
+    assert.strictEqual(doc.session, undefined);
+    assert.strictEqual(doc.workers.length, 1);
+  });
+
+  it("会话短哈希：8 位十六进制，同 id 稳定、不同 id 不同", () => {
+    const a = sessionHashOf("session-aaa");
+    assert.match(a, /^[0-9a-f]{8}$/);
+    assert.strictEqual(a, sessionHashOf("session-aaa"));
+    assert.notStrictEqual(a, sessionHashOf("session-bbb"));
+    assert.ok(!a.includes("session"), "哈希里不该漏出 id 原文");
+  });
+
+  it("带哈希时路径按会话分区，不带时保持全局单文件", () => {
+    assert.match(statusPathFor("abcdef12"), /subagent-status-abcdef12\.json$/);
+    assert.match(statusPathFor(undefined), /subagent-status\.json$/);
+    assert.ok(!statusPathFor(undefined).includes("subagent-status-"), "旧路径不该被改名");
+  });
+
+  it("currentStatusPath 跟着注入的路径走（GUI 靠它盯对文件）", () => {
+    resetStatusFile();
+    const io = makeInjectedIO();
+    configureStatusFile({
+      path: "/fake/subagent-status-99999999.json",
+      writeFile: (_p, d) => io.writes.push(d),
+      now: () => "2026-09-17T00:00:00.000Z",
+      schedule: io.schedule,
+      cancel: io.cancel,
+    });
+    assert.strictEqual(currentStatusPath(), "/fake/subagent-status-99999999.json");
+  });
 });

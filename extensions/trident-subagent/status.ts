@@ -20,6 +20,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { SubagentUsage, TimelineEvent, VisibleArchiveEvent, VisibleWorkerMessage, StreamStats } from "../../lib/subagent-run.ts";
 import type { CapabilityRequest } from "../../lib/subagent-capability.ts";
 import type { HoldRequest } from "../../lib/subagent-hold.ts";
@@ -82,6 +83,44 @@ const IMMEDIATE_STATUSES: ReadonlySet<WorkerStatus> = new Set([
 ]);
 
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
+
+/** 状态快照文件名前缀；带会话哈希时写 `<前缀>-<哈希>.json` */
+export const STATUS_FILE_PREFIX = "subagent-status";
+
+/**
+ * 会话语义下的状态快照路径。
+ *
+ * 不带哈希时仍是全局单文件（旧行为，单会话/测试用）；带哈希时每个会话一份，
+ * 多开 pi 同时跑 subagent 不再互相覆盖。
+ */
+export function statusPathFor(sessionHash: string | undefined): string {
+  const dir = join(homedir(), ".pi");
+  return sessionHash
+    ? join(dir, `${STATUS_FILE_PREFIX}-${sessionHash}.json`)
+    : join(dir, `${STATUS_FILE_PREFIX}.json`);
+}
+
+/**
+ * 会话短哈希：8 位十六进制，用作文件名与记录里的会话标识。
+ * 走哈希而不是截 id 前缀，免得把会话 id 本身漏到到处可见的文件名里。
+ */
+export function sessionHashOf(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex").slice(0, 8);
+}
+
+/** 写进快照的会话信息：事后能看出这份状态属于哪条会话 */
+export interface StatusSessionInfo {
+  /** 会话 id 原文（不写进文件名，只进内容，便于精确对应） */
+  id?: string;
+  /** 短哈希：文件名与记录里的标识 */
+  hash: string;
+  /** 会话 jsonl 路径（便于回溯） */
+  file?: string;
+  /** 工作目录：多个会话常在不同项目下，认人靠它 */
+  cwd?: string;
+}
+
+let session: StatusSessionInfo | undefined;
 
 let tmpSeq = 0;
 
@@ -164,7 +203,9 @@ function notifySnapshot(): void {
 }
 
 function serialize(): string {
-  return JSON.stringify({ updatedAt: io.now(), workers: snapshot }, null, 2);
+  const doc: Record<string, unknown> = { updatedAt: io.now(), workers: snapshot };
+  if (session) doc.session = session;
+  return JSON.stringify(doc, null, 2);
 }
 
 /** 立即写入：取消任何挂起的合并定时器（本次写入已含最新 snapshot，避免冗余落盘） */
@@ -227,6 +268,8 @@ export function writeStatusFile(): void {
 
 export interface StatusFileConfig {
   path?: string;
+  /** 当前会话信息；不传则不写 session 字段（旧行为） */
+  session?: StatusSessionInfo;
   writeFile?: (path: string, data: string) => void;
   now?: () => string;
   schedule?: (fn: () => void, delayMs: number) => unknown;
@@ -235,6 +278,7 @@ export interface StatusFileConfig {
 
 /** 测试/宿主注入：替换状态文件 IO 与合并调度器（确定性验证用） */
 export function configureStatusFile(cfg: StatusFileConfig): void {
+  session = cfg.session;
   io = {
     path: cfg.path ?? STATUS_PATH,
     writeFile: cfg.writeFile ?? atomicWriteFileSync,
@@ -253,6 +297,12 @@ export function resetStatusFile(): void {
     pendingTimer = undefined;
   }
   io = defaultIO();
+  session = undefined;
   snapshot = [];
   snapshotListeners.clear();
+}
+
+/** 当前快照路径：/subagent:gui 与历史浏览用它确认「哪个是当前会话的」 */
+export function currentStatusPath(): string {
+  return io.path;
 }

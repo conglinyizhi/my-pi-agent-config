@@ -49,6 +49,11 @@ func (a *App) readRequest() (map[string]interface{}, error) {
 		a.writeError(err.Error())
 		return nil, err
 	}
+	// 状态快照路径由启动方指定：多会话并存时每个窗口盯自己那条会话的文件，
+	// 不再互相覆盖。不给就回退到全局路径（单会话的旧行为不变）。
+	if v, ok := req["statusPath"].(string); ok && v != "" {
+		a.statusPath = v
+	}
 	return req, nil
 }
 
