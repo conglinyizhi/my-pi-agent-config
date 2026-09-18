@@ -14,6 +14,7 @@
 
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import type { HoldDeferHandle } from "../../lib/subagent-hold.ts";
 import { SubagentError, type TimelineEvent } from "../../lib/subagent-run.ts";
 import {
   classifyTerminalError,
@@ -21,6 +22,7 @@ import {
   formatCatchOutput,
   runWithConcurrency,
   MAX_PARALLEL_WORKERS_SAFETY_CAP,
+  createDeferQueue,
 } from "./batch.ts";
 
 describe("classifyTerminalError / buildTerminalPatch", () => {
@@ -160,5 +162,70 @@ describe("runWithConcurrency（并发节流）", () => {
   it("并发安全阀只挡极端大批次（正常批次齐射，上游限速走退避重试）", () => {
     assert.ok(MAX_PARALLEL_WORKERS_SAFETY_CAP >= 4, "安全阀不该低到变成日常节流");
     assert.ok(MAX_PARALLEL_WORKERS_SAFETY_CAP <= 16, "安全阀也不该高到形同虚设");
+  });
+});
+
+describe("createDeferQueue：暂存句柄队列", () => {
+  const handle = (id: string): HoldDeferHandle => ({
+    request: { version: 1, requestId: id, reason: "budget", elapsedMs: 1000, remainingMs: 0, createdAt: new Date().toISOString() },
+    resume: () => {},
+  });
+
+  it("push 之后 wait 立即返回（不挂住）", async () => {
+    const q = createDeferQueue();
+    q.push("w1", handle("r1"));
+    const settled = await Promise.race([q.wait().then(() => "resolved"), new Promise((r) => setTimeout(() => r("hung"), 20))]);
+    assert.strictEqual(settled, "resolved");
+  });
+
+  it("先 wait 后 push：等待者被唤醒", async () => {
+    const q = createDeferQueue();
+    let woke = false;
+    const waiting = q.wait().then(() => { woke = true; });
+    assert.strictEqual(woke, false);
+    q.push("w1", handle("r1"));
+    await waiting;
+    assert.strictEqual(woke, true);
+  });
+
+  it("takePending 取走即清空，同一个请求不会被决策两次", () => {
+    const q = createDeferQueue();
+    q.push("w1", handle("r1"));
+    assert.strictEqual(q.takePending().length, 1);
+    assert.strictEqual(q.takePending().length, 0);
+  });
+
+  it("resume 把决定交回句柄，并消费掉它", () => {
+    const q = createDeferQueue();
+    const seen: string[] = [];
+    q.push("w1", { ...handle("r1"), resume: (d) => seen.push(d.action) });
+    assert.strictEqual(q.resume("w1", { action: "continue" }), true);
+    assert.deepStrictEqual(seen, ["continue"]);
+    assert.strictEqual(q.resume("w1", { action: "stop" }), false, "同一个请求不该被决策第二次");
+  });
+
+  it("resume 一个没收过暂存的 worker 返回 false", () => {
+    const q = createDeferQueue();
+    assert.strictEqual(q.resume("w9", { action: "continue" }), false);
+  });
+
+  it("同一个 worker 续跑后又暂存：旧句柄被新句柄替换", () => {
+    const q = createDeferQueue();
+    const seen: string[] = [];
+    q.push("w1", { ...handle("r1"), resume: () => seen.push("旧") });
+    q.push("w1", { ...handle("r2"), resume: () => seen.push("新") });
+    assert.strictEqual(q.resume("w1", { action: "continue" }), true);
+    assert.deepStrictEqual(seen, ["新"], "该走最新的那次暂存，旧句柄已经过期");
+  });
+
+  it("多个 worker 各自待决，互不串台", () => {
+    const q = createDeferQueue();
+    const seen: string[] = [];
+    q.push("w1", { ...handle("r1"), resume: (d) => seen.push(`w1:${d.action}`) });
+    q.push("w2", { ...handle("r2"), resume: (d) => seen.push(`w2:${d.action}`) });
+    assert.strictEqual(q.takePending().length, 2);
+    q.resume("w2", { action: "stop" });
+    q.resume("w1", { action: "continue" });
+    assert.deepStrictEqual(seen, ["w2:stop", "w1:continue"]);
   });
 });

@@ -14,7 +14,7 @@ import {
   type TimelineEvent,
 } from "../../lib/subagent-run.ts";
 import type { CapabilityApproval, CapabilityRequest, CapabilityReview } from "../../lib/subagent-capability.ts";
-import type { HoldDecision, HoldRequest } from "../../lib/subagent-hold.ts";
+import { buildHoldDecision, type HoldDecision, type HoldDeferHandle, type HoldRequest } from "../../lib/subagent-hold.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { updateWorker } from "./status.ts";
 import { registerWorkerAbort, unregisterWorkerAbort, type WorkerKey } from "./active-workers.ts";
@@ -122,9 +122,14 @@ export interface RunBatchOptions {
    * worker 预算见底时的暂存决策（继续/补充/收工）。
    * 不传 = 不启用暂存，行为与以前一致（到点即超时终止）。
    */
-  onHold?: (request: HoldRequest, workerId: string) => Promise<HoldDecision | undefined>;
+  onHold?: (request: HoldRequest, workerId: string) => Promise<HoldDecision | "defer" | undefined>;
   /** 同时运行的 worker 数上限；缺省 MAX_PARALLEL_WORKERS_SAFETY_CAP */
   maxParallel?: number;
+  /**
+   * worker 交出暂存控制权（onHold 返回 defer）时按 worker 回调。
+   * 拿到句柄的一方负责写回决定，否则 worker 会一直守着检查点。
+   */
+  onDefer?: (handle: HoldDeferHandle, workerId: string) => void;
 }
 
 /**
@@ -201,6 +206,107 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
   return runWithConcurrency(tasks, limit, (task, index) => runWorker(task, index, opts));
 }
 
+/** 一个停在检查点上等决定的 worker */
+export interface BatchDefer {
+  workerId: string;
+  handle: HoldDeferHandle;
+  at: number;
+}
+
+/**
+ * 批次运行时：跑到暂存点先把控制权交回来，worker 继续守着检查点。
+ *
+ * 为什么需要这层：runBatch 要等所有 worker 收尾，而暂存中的 worker 就是在等决定，
+ * 两边互等就死在那里。所以把「批次结束」和「又有 worker 暂存了」拆成两个信号，
+ * 调用方 race 它们：前者到 = 收工；后者到 = 把球踢出去做决策，批次在后台挂着。
+ */
+export interface BatchRuntime {
+  batchId: string | undefined;
+  /** 全部 worker 收尾才 resolve；暂存期间继续挂着 */
+  done: Promise<BatchItemResult[]>;
+  /** 取走当前待决的暂存。取走即不再返回，避免同一个请求被决策两次 */
+  takePendingDefers(): BatchDefer[];
+  /** 等下一个暂存；已有待决的立即返回。批次结束由 done 那边收场，这里不等它 */
+  waitForDefer(): Promise<void>;
+  /** 写回某个 worker 的决定；没有句柄则 false（它可能已收尾或已被决策） */
+  resume(workerId: string, choice: ResumeChoice): boolean;
+}
+
+export function createDeferQueue(): DeferQueue {
+  const pending: BatchDefer[] = [];
+  const handles = new Map<string, HoldDeferHandle>();
+  let wake: (() => void) | undefined;
+  return {
+    push(workerId, handle) {
+      handles.set(workerId, handle);
+      pending.push({ workerId, handle, at: Date.now() });
+      const notify = wake;
+      wake = undefined;
+      notify?.();
+    },
+    takePending: () => pending.splice(0, pending.length),
+    wait: () =>
+      new Promise<void>((resolve) => {
+        if (pending.length > 0) {
+          resolve();
+          return;
+        }
+        wake = resolve;
+      }),
+    resume: (workerId, choice) => {
+      const handle = handles.get(workerId);
+      if (!handle) return false;
+      handles.delete(workerId);
+      handle.resume(buildHoldDecision({
+        requestId: handle.request.requestId,
+        action: choice.action,
+        extraMs: choice.extraMs,
+        comment: choice.comment,
+      }));
+      return true;
+    },
+  };
+}
+
+/** 续跑选择：requestId 由句柄自己带上，调用方不必（也不该）操心配对 */
+export interface ResumeChoice {
+  action: "continue" | "stop";
+  /** continue 时的新预算；缺省用 DEFAULT_HOLD_EXTRA_MS */
+  extraMs?: number;
+  comment?: string;
+}
+
+/**
+ * 暂存句柄队列：攒待决请求、唤醒等待者、写回决定。
+ * 单独抽出来是为了能测——这层出错的表现是「决策丢了」或「同一次请求被决策两次」，
+ * 现场都很难看出来。
+ */
+export interface DeferQueue {
+  push(workerId: string, handle: HoldDeferHandle): void;
+  takePending(): BatchDefer[];
+  wait(): Promise<void>;
+  /** 写回决定；没有句柄则 false。requestId 从句柄取，避免调用方配错对 */
+  resume(workerId: string, choice: ResumeChoice): boolean;
+}
+
+export function startBatch(tasks: string[], opts: RunBatchOptions): BatchRuntime {
+  const queue = createDeferQueue();
+  const done = runBatch(tasks, {
+    ...opts,
+    onDefer: (handle, workerId) => queue.push(workerId, handle),
+  });
+  // 批次的拒绝由调用方 await done 接收；这里先搽一层，避免没人接时进程报 unhandled rejection
+  done.catch(() => {});
+
+  return {
+    batchId: opts.taskId,
+    done,
+    takePendingDefers: () => queue.takePending(),
+    waitForDefer: () => queue.wait(),
+    resume: (workerId, choice) => queue.resume(workerId, choice),
+  };
+}
+
 /**
  * 给单个 worker 自己的取消句柄。
  *
@@ -223,8 +329,7 @@ async function withWorkerAbort<T>(
   }
 }
 
-/** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */
-async function runWorker(
+/** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */async function runWorker(
   task: string,
   index: number,
   opts: RunBatchOptions,
@@ -271,12 +376,29 @@ async function runWorker(
               holdRequest: request,
               output: `暂存中（${request.reason === "budget" ? "时间预算快用完了" : "worker 主动请求"}）：等主侧决定`,
             });
+            let outcome: HoldDecision | "defer" | undefined;
             try {
-              return await opts.onHold!(request, id);
+              outcome = await opts.onHold!(request, id);
             } finally {
-              updateWorker(id, { status: "running", holdRequest: undefined });
+              // defer 不能当「答完了」：worker 还停在检查点，状态得留着 holding，
+              // 否则面板会显示运行中，实际它一步没动
+              if (outcome !== "defer") updateWorker(id, { status: "running", holdRequest: undefined });
             }
+            return outcome;
           }
+        : undefined,
+      // 交出控制权：不在这里写决定，由拿到句柄的一方决定何时续跑；resume 时才翻回运行中
+      onDefer: opts.onDefer
+        ? (handle) => opts.onDefer!(
+            {
+              request: handle.request,
+              resume: (decision) => {
+                updateWorker(id, { status: "running", holdRequest: undefined });
+                handle.resume(decision);
+              },
+            },
+            id,
+          )
         : undefined,
       inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
       timeout: opts.timeout ?? 600,

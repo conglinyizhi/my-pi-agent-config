@@ -26,6 +26,7 @@ import {
   shouldRequestHold,
   validateHoldRequest,
   type HoldDecision,
+  type HoldDeferHandle,
   type HoldRequest,
 } from "./subagent-hold.ts";
 // timeline 公共面（类型/常量/归一化器）从本模块再导出，供调用方与测试统一引用
@@ -374,9 +375,15 @@ export interface RunSubagentOptions {
   /**
    * 暂存决策：worker 在检查点请求暂存（预算见底）时问一次。
    * 不传 = 不启用暂存，行为与以前一致（到点即超时终止）。
-   * 返回 undefined 视为「继续，给默认新预算」。
+   * 返回 undefined 视为「继续，给默认新预算」；返回 "defer" 表示现在答不了，
+   * 改由 onDefer 把恢复句柄交给外部（主 agent 决策那条路）。
    */
-  onHold?: (request: HoldRequest) => Promise<HoldDecision | undefined>;
+  onHold?: (request: HoldRequest) => Promise<HoldDecision | "defer" | undefined>;
+  /**
+   * onHold 返回 "defer" 时收到恢复句柄。worker 仍守着检查点，拿到决定后调 resume 才继续。
+   * 不传 onDefer 而 onHold 又返回 defer，则按继续处理（不能把 worker 无所依靠地挂着）。
+   */
+  onDefer?: (handle: HoldDeferHandle) => void;
   /** 本 worker 的补充指令 inbox id（batch 分配；重试循环内复用同一个） */
   inboxId?: string;
   /** 沙箱可写根（限制本 worker 只写该目录，其余只读） */
@@ -790,14 +797,24 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
               lastHoldRequest = request;
               pauseTimeout(); // 已在宽限期暂停时是幂等无操作
               void (async () => {
-                let decision: HoldDecision | undefined;
+                let decision: HoldDecision | "defer" | undefined;
                 try {
                   decision = await opts.onHold!(request);
                 } catch {
                   decision = undefined;
                 }
-                // 没有回答（或抛错）→ 当作「继续，给默认新预算」：不因为主侧一时失误就毁掉 worker 的活
-                settleHold(request, decision ?? buildHoldDecision({ requestId: request.requestId, action: "continue", extraMs: DEFAULT_HOLD_EXTRA_MS }));
+                if (decision === "defer" && opts.onDefer) {
+                  // 把控制权交出去：worker 继续守着检查点，谁接这活谁负责写回决定。
+                  // 此时不能设 cap：主 agent 可能要把这事带回自己的上下文里想，
+                  // worker 侧的等待上限自己兜底（WORKER_HOLD_WAIT_MS 后按收工结尾）。
+                  holdCapAt = undefined;
+                  opts.onDefer({ request, resume: (d) => settleHold(request, d) });
+                  return;
+                }
+                // 没有回答（或抛错，或说了 defer 却没人接）→ 当作「继续，给默认新预算」：
+                // 不因为主侧一时失误就把 worker 无所依靠地挂着
+                const settled = decision === "defer" ? undefined : decision;
+                settleHold(request, settled ?? buildHoldDecision({ requestId: request.requestId, action: "continue", extraMs: DEFAULT_HOLD_EXTRA_MS }));
               })();
             }, 50)
           : undefined;

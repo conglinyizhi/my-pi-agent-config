@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
-import { runBatch, type BatchItemResult } from "./batch.ts";
+import { startBatch, type BatchItemResult, type BatchRuntime } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
@@ -46,7 +46,6 @@ import {
 } from "../../lib/model-selection.ts";
 import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-brief.ts";
 import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
-import { DEFAULT_HOLD_EXTRA_MS, buildHoldDecision, type HoldDecision, type HoldRequest } from "../../lib/subagent-hold.ts";
 import { enqueueSupplement } from "../../lib/subagent-supplement.ts";
 
 const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
@@ -64,6 +63,16 @@ const FLEET_EMIT_INTERVAL_MS = 150;
  * 250ms 比显示精度（秒级）高至少一档：无事件时秒数最多晚 250ms 才翻。
  */
 const FLEET_TICK_MS = 250;
+/**
+ * 暂存中的批次：worker 守在检查点上，等主 agent 用 subagent_resume 把它续上。
+ *
+ * 不留在表里的批次的 worker 不算死：它自己等到上限会按收工收尾，只是没人能续它。
+ * 所以这里放着的是「还能救回来的」那一批。
+ */
+const batchRuntimes = new Map<
+  string,
+  { runtime: BatchRuntime; inboxIds: Map<string, string>; subject: string }
+>();
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
 const capabilityReviewCache = createReviewCache();
 
@@ -73,52 +82,6 @@ function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/**
- * 暂存决策：worker 预算见底时停下问一句。
- *
- * 同步派发下主 agent 正卡在工具调用里，所以这里的决策者是**人**（TUI）。
- * 返回 undefined = 交给 runner 取默认（继续 + 默认新预算）：不因为一时问不到人
- * 就把 worker 做到一半的活扔掉。
- *
- * 「补充一句」的正文走既有的 supplement 队列（与 GUI 同一份文件格式），
- * 不入 decided 载荷——投递路径只有一条，worker 侧在继续后立刻拉一次。
- */
-export async function decideHold(
-  ctx: ExtensionContext,
-  request: HoldRequest,
-  inboxId: string | undefined,
-): Promise<HoldDecision | undefined> {
-  if (!ctx.hasUI) return undefined;
-  const why = request.reason === "worker" ? "worker 主动请求" : "时间预算快用完了";
-  const elapsed = `${Math.round(request.elapsedMs / 1000)}s`;
-  const choice = await ctx.ui.select(
-    `worker 暂存（${why}，已跑 ${elapsed}）。怎么办？`,
-    ["继续（给新预算）", "补充一句再继续", "停，收工"],
-  );
-  if (!choice) return undefined; // 取消 = 继续
-  if (choice.startsWith("停")) {
-    const reason = await ctx.ui.input("收工理由（可留空）：");
-    return buildHoldDecision({
-      requestId: request.requestId,
-      action: "stop",
-      comment: reason?.trim() || undefined,
-    });
-  }
-  let comment: string | undefined;
-  if (choice.startsWith("补充")) {
-    const text = await ctx.ui.input("要补给 worker 的话（一句话）：");
-    const trimmed = text?.trim();
-    if (trimmed && inboxId) {
-      try {
-        await enqueueSupplement(inboxId, trimmed);
-        comment = "已补充一句";
-      } catch (err) {
-        comment = `补充投递失败（${err instanceof Error ? err.message : String(err)}），按继续处理`;
-      }
-    }
-  }
-  return buildHoldDecision({ requestId: request.requestId, action: "continue", extraMs: DEFAULT_HOLD_EXTRA_MS, comment });
-}
 
 /** 写入 capability 审批审计；只记录稳定的审核 verdict，不把审核意见全文重复塞进条目。 */
 export function appendCapabilityApprovalAudit(
@@ -510,33 +473,37 @@ export default function (pi: ExtensionAPI) {
       const workerTimeout = typeof params.timeout === "number" && Number.isFinite(params.timeout)
         ? Math.max(5, Math.floor(params.timeout))
         : undefined;
-      try {
-        results = await runBatch(tasks, {
-          cwd: ctx.cwd,
-          sandboxDir: params.sandbox_dir,
-          readonly: workerReadonly,
-          model: workerModel,
-          timeout: workerTimeout,
+      const batchRuntime = startBatch(tasks, {
+        cwd: ctx.cwd,
+        sandboxDir: params.sandbox_dir,
+        readonly: workerReadonly,
+        model: workerModel,
+        timeout: workerTimeout,
+        signal,
+        skills: sharedSkills.paths,
+        workerSkills,
+        tools: safeTools,
+        taskId: batchTaskId,
+        onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
+          pi,
+          request,
+          ctx,
           signal,
-          skills: sharedSkills.paths,
-          workerSkills,
-          tools: safeTools,
-          taskId: batchTaskId,
-          onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
-            pi,
-            request,
-            ctx,
-            signal,
-          )),
-          // 预算见底 → 暂存问一次（同一条 UI 队列，不与管理审批抢弹窗）
-          onHold: (request, workerId) => enqueueCapabilityApproval(() => decideHold(
-            ctx,
-            request,
-            runs.find((r) => r.id === workerId)?.inboxId,
-          )),
-          // 与 runs 一一对应：每个 worker 拿到本批分配的唯一 inbox id
-          workerInboxIds: runs.map((r) => r.inboxId),
-        });
+        )),
+        // 预算见底：不在父侧等人回答，把控制权交回来给主 agent 自己判断续/停
+        // （签名里的 workerId 这里用不上：续跑的配对靠 BatchRuntime 里的句柄）
+        onHold: async () => "defer" as const,
+        // 与 runs 一一对应：每个 worker 拿到本批分配的唯一 inbox id
+        workerInboxIds: runs.map((r) => r.inboxId),
+      });
+      let outcome: "done" | "held";
+      try {
+        // 两个信号取先到：批次全收尾，或又有 worker 暂存了。
+        // 暂存期间 done 一直挂着（worker 还活着），所以不能只等它。
+        outcome = await Promise.race([
+          batchRuntime.done.then(() => "done" as const),
+          batchRuntime.waitForDefer().then(() => "held" as const),
+        ]);
       } catch (err) {
         // 批量前置失败（workerInboxIds 非法 / inbox 预创建失败）：无任何 worker 被 spawn。
         // 把整批标记为 failed 终态，避免 GUI 显示半途悬挂；落盘后以错误文本返回（不抛）。
@@ -561,6 +528,44 @@ export default function (pi: ExtensionAPI) {
         flushStatusFile();
         clearDiagnosticsContext();
       }
+
+      if (outcome === "held") {
+        // 有 worker 守在检查点上等决定：把批次留在注册表里，控制权交回主 agent。
+        // 不能把 runtime 丢掉——worker 进程还活着，丢了就再也没人能把它续上。
+        const held = batchRuntime.takePendingDefers();
+        batchRuntimes.set(batchTaskId, {
+          runtime: batchRuntime,
+          inboxIds: new Map(runs.map((r) => [r.id, r.inboxId])),
+          subject: tasks.length === 1 ? tasks[0] : `${tasks.length} 个任务`,
+        });
+        flushStatusFile();
+        const snapshot = getSnapshot();
+        const byId = new Map(snapshot.map((w) => [w.id, w]));
+        const heldLines = held.map((d) => {
+          const run = byId.get(d.workerId);
+          const elapsed = run ? Math.round((Date.now() - Date.parse(run.startedAt)) / 1000) : 0;
+          const why = d.handle.request.reason === "budget" ? "时间预算快用完了" : "worker 主动请求";
+          return `  ${d.workerId} 已跑 ${elapsed}s（${why}）`;
+        });
+        const finishedCount = snapshot.filter((w) => w.status === "success").length;
+        const decisions = held
+          .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
+          .join(", ");
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `subagent 暂存：${held.length} 个 worker 停在检查点上等你决定（本批已完成 ${finishedCount} 个）`,
+              ...heldLines,
+              "",
+              `续跑：subagent_resume({ batch_id: "${batchTaskId}", decisions: [${decisions}] })`,
+              "不想接着跑就 action: \"stop\"；放着不管也行，worker 等到自己的上限会按收工收尾",
+            ].join("\n"),
+          }],
+          details: { phase: "held", batchId: batchTaskId, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+        };
+      }
+      results = await batchRuntime.done;
 
       const budget = workerOutputBudget(results.length);
       const lines = results.map((r) => {
@@ -616,6 +621,120 @@ export default function (pi: ExtensionAPI) {
       );
     }
   };
+
+  pi.registerTool({
+    name: "subagent_resume",
+    label: "Resume Subagent",
+    description:
+      "把暂存在检查点上的 worker 续上：给它新预算继续跑，或让它带着现有产出收工。batch_id 来自 subagent 返回的暂存报告，worker 在续上之前一直守着检查点。",
+    parameters: Type.Object({
+      batch_id: Type.String({ description: "subagent 暂存报告里的 batch_id" }),
+      decisions: Type.Array(
+        Type.Object({
+          worker_id: Type.String({ description: "要处理的 worker，如 w1" }),
+          action: Type.Union([Type.Literal("continue"), Type.Literal("stop")], {
+            description: "continue=给新预算接着跑；stop=收工，交出当前产出",
+          }),
+          extra_seconds: Type.Optional(
+            Type.Number({ description: "continue 时的新预算秒数，缺省 300；低于 5 按 5 算" }),
+          ),
+          supplement: Type.Optional(
+            Type.String({ description: "顺带给它的一句话（进 inbox，它在下一个检查点领走）" }),
+          ),
+        }),
+        { description: "一次可以处理多个 worker，不必来回调" },
+      ),
+    }),
+    async execute(_toolCallId: string, params: {
+      batch_id: string;
+      decisions: { worker_id: string; action: "continue" | "stop"; extra_seconds?: number; supplement?: string }[];
+    }, _signal?: AbortSignal, _onUpdate?: unknown, _ctx?: unknown) {      const entry = batchRuntimes.get(params.batch_id);
+      if (!entry) {
+        return {
+          content: [{
+            type: "text",
+            text: `没有待决的批次 ${params.batch_id}：可能已经收尾，或者 batch_id 不对。用 /subagent:gui 看当前还有谁在跑`,
+          }],
+          details: { phase: "none", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
+        };
+      }
+
+      const applied: string[] = [];
+      const missed: string[] = [];
+      const supplementFailed: string[] = [];
+      for (const d of params.decisions) {
+        const text = d.supplement?.trim();
+        if (text) {
+          const inboxId = entry.inboxIds.get(d.worker_id);
+          if (inboxId) {
+            try {
+              await enqueueSupplement(inboxId, text);
+            } catch (err) {
+              // 补充投不进不该拦住续跑：worker 还有别的事要做，退化成「只给预算」
+              supplementFailed.push(`${d.worker_id}（${err instanceof Error ? err.message : String(err)}）`);
+            }
+          }
+        }
+        const ok = entry.runtime.resume(d.worker_id, {
+          action: d.action,
+          extraMs: d.extra_seconds === undefined ? undefined : Math.max(5, Math.floor(d.extra_seconds)) * 1000,
+        });
+        (ok ? applied : missed).push(d.worker_id);
+      }
+
+      const notes: string[] = [];
+      if (missed.length > 0) notes.push(`没接上（已收尾或已被处理）：${missed.join("、")}`);
+      if (supplementFailed.length > 0) notes.push(`补充没投进去：${supplementFailed.join("、")}`);
+
+      let outcome: "done" | "held";
+      try {
+        outcome = await Promise.race([
+          entry.runtime.done.then(() => "done" as const),
+          entry.runtime.waitForDefer().then(() => "held" as const),
+        ]);
+      } catch (err) {
+        batchRuntimes.delete(params.batch_id);
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: [`批次收尾失败：${msg}`, ...notes].join("\n") }],
+          details: { phase: "failed", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
+        };
+      }
+
+      const snapshot = getSnapshot();
+      if (outcome === "held") {
+        const held = entry.runtime.takePendingDefers();
+        const heldList = held.map((d) => d.workerId).join("、");
+        const decisions = held
+          .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
+          .join(", ");
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `续上后又有 worker 暂存：${heldList}`,
+              ...notes,
+              `继续推进：subagent_resume({ batch_id: "${params.batch_id}", decisions: [${decisions}] })`,
+            ].filter(Boolean).join("\n"),
+          }],
+          details: { phase: "held", batchId: params.batch_id, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+        };
+      }
+
+      batchRuntimes.delete(params.batch_id);
+      flushStatusFile();
+      const lines = snapshot
+        .filter((w) => w.id.startsWith("w"))
+        .map((w) => `#${w.id} ${w.status.toUpperCase()}\n  ${(w.output ?? "").trim().slice(0, 600)}`);
+      return {
+        content: [{
+          type: "text",
+          text: [`已处理：${applied.join("、") || "（无）"}`, ...notes, "", ...lines].filter(Boolean).join("\n") ,
+        }],
+        details: { phase: "done", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(snapshot, Date.now()) },
+      };
+    },
+  });
 
   pi.registerCommand("subagent:gui", {
     description: "打开 subagent 实时监视 GUI（不阻塞命令）",

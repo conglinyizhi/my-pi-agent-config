@@ -47,6 +47,18 @@ export interface HoldDecision {
 }
 
 /** 父进程侧「下次检查点请暂存」的标志 */
+/**
+ * 暂存恢复句柄：`onHold` 返回 "defer" 时交给外部。
+ *
+ * 此时 worker 仍阻塞在检查点，拿回控制权的一方负责写回决定：调 resume（stop 则收尾）。
+ * 不交出这玩意就只能干等，而干等等不来主 agent 的判断——它此刻还被同步派发卡着。
+ */
+export interface HoldDeferHandle {
+  request: HoldRequest;
+  /** 写回决定并执行后果；重复调用只有首次生效（内部按 requestId 幂等） */
+  resume: (decision: HoldDecision) => void;
+}
+
 export interface HoldWanted {
   version: 1;
   wanted: boolean;
