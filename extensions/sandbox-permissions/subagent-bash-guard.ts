@@ -9,6 +9,7 @@ import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding
 import { join } from "node:path";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { checkCommand } from "../../lib/sandbox-check.ts";
+import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "../../lib/bash-timeout.ts";
 import {
   commandDigest,
   isWorkerApprovalCapability,
@@ -24,6 +25,7 @@ import { rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
 const PROMPT_SNIPPET = "Execute a bash command in the isolated worker sandbox. Risky commands block until the parent agent approves or denies them.";
 const PROMPT_GUIDELINES = [
   "bash 在 worker 中经过文件系统沙箱；不要尝试读取凭据或绕过隔离。",
+  `bash 默认 ${DEFAULT_BASH_TIMEOUT_SECONDS} 秒超时（超时杀整个进程组），与主 agent 一致；构建、测试、安装这类预期更久的命令要显式传 timeout 参数，否则会被按超时终止。`,
   "如果命令需要网络或其他额外能力，工具会阻塞等待主 agent 审批；被拒绝时按返回的理由换个安全写法继续，不要假装已经获批。",
 ] as const;
 
@@ -69,6 +71,12 @@ export default function (pi: ExtensionAPI): void {
     ...bashDef,
     promptSnippet: PROMPT_SNIPPET,
     promptGuidelines: [...PROMPT_GUIDELINES],
+    // 与主 agent 同一套默认超时：没有这个，卡死的命令会让 worker 永远碰不到
+    // 暂存检查点，续跑与强停都够不着它，只能等总预算到点硬杀
+    parameters: withTimeoutDoc(bashDef.parameters),
+    prepareArguments(args) {
+      return withDefaultTimeout(args) as never;
+    },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const command = typeof params.command === "string" ? params.command : "";
       const verdict = checkCommand(command, { cwd: ctx.cwd });

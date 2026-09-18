@@ -18,7 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, getAgentDir, type BashSpawnContext, type BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout } from "../lib/bash-timeout.ts";
+import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "../lib/bash-timeout.ts";
 import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
 import { appendApprovalComment, approveBashCommand, bashApprovalDeniedText, isHardRejected, rethrowWithApprovalComment } from "../lib/bash-approval.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
@@ -33,26 +33,6 @@ const PROMPT_GUIDELINES = [
 	"所有 bash 命令默认有 1GiB 内存上限（进程树匿名内存），超出会以退出码 137 终止；需要更大内存时用 sandbox-allow 的 memoryMb 参数给出具体 MB 数值（上限 32768 MB）。",
 ] as const;
 
-/**
- * 把 timeout 参数的说明改成「默认 30 秒」。
- * pi 的 schema 原文是「optional, no default timeout」，我们自己兜了默认值，
- * 文档就得跟着改，否则模型会以为可以无限跑。
- * 只在加载时算一次（静态常量），不逐轮变，KV 缓存前缀稳定。
- */
-function withTimeoutDoc<T extends { properties?: Record<string, unknown> }>(params: T): T {
-	const props = params.properties;
-	if (!props || typeof props.timeout !== "object" || props.timeout === null) return params;
-	return {
-		...params,
-		properties: {
-			...props,
-			timeout: {
-				...props.timeout,
-				description: `Timeout in seconds (default ${DEFAULT_BASH_TIMEOUT_SECONDS}; raise it explicitly for builds/tests/installs)`,
-			},
-		},
-	};
-}
 
 
 let currentSessionId: string | undefined;

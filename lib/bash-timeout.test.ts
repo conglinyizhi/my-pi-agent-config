@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout } from "./bash-timeout.ts";
+import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "./bash-timeout.ts";
 
 describe("withDefaultTimeout", () => {
   it("缺 timeout 时补默认值", () => {
@@ -52,5 +52,32 @@ describe("withDefaultTimeout", () => {
   it("自定义默认值可用（便于调用方按场景收紧）", () => {
     const out = withDefaultTimeout({ command: "curl x" }, 10) as Record<string, unknown>;
     assert.equal(out.timeout, 10);
+  });
+});
+
+describe("withTimeoutDoc：把参数说明改成「有默认值」", () => {
+  it("改写 timeout 的描述，保留其余字段", () => {
+    const params = {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        timeout: { type: "number", description: "optional, no default timeout" },
+      },
+    };
+    const patched = withTimeoutDoc(params);
+    assert.match(String(patched.properties.timeout.description), /default 30/);
+    assert.strictEqual(patched.properties.command, params.properties.command, "别的参数不动");
+    assert.strictEqual(params.properties.timeout.description, "optional, no default timeout", "不改输入对象");
+  });
+
+  it("没有 timeout 参数时原样返回", () => {
+    const params = { properties: { command: { type: "string" } } };
+    assert.strictEqual(withTimeoutDoc(params), params);
+  });
+
+  it("properties 缺失 / timeout 不是对象时原样返回，不凭空造字段", () => {
+    assert.deepStrictEqual(withTimeoutDoc({}), {});
+    const weird = { properties: { timeout: null } };
+    assert.strictEqual(withTimeoutDoc(weird), weird);
   });
 });

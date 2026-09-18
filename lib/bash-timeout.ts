@@ -27,3 +27,25 @@ export function withDefaultTimeout(
   if (typeof t === "number" && Number.isFinite(t) && t > 0) return args;
   return { ...a, timeout: seconds };
 }
+
+/**
+ * 把 timeout 参数的说明改成「默认 30 秒」。
+ * pi 的 schema 原文是「optional, no default timeout」，我们自己兜了默认值，
+ * 文档就得跟着改，否则模型会以为可以无限跑。
+ * 主 agent 与 worker 两个 bash guard 共用这一份，免得两边说法不一。
+ * 只在加载时算一次（静态常量），不逐轮变，KV 缓存前缀稳定。
+ */
+export function withTimeoutDoc<T extends { properties?: Record<string, unknown> }>(params: T): T {
+  const props = params.properties;
+  if (!props || typeof props.timeout !== "object" || props.timeout === null) return params;
+  return {
+    ...params,
+    properties: {
+      ...props,
+      timeout: {
+        ...props.timeout,
+        description: `Timeout in seconds (default ${DEFAULT_BASH_TIMEOUT_SECONDS}; raise it explicitly for builds/tests/installs)`,
+      },
+    },
+  };
+}
