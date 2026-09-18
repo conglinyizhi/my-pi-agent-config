@@ -17,6 +17,7 @@ import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
+import { formatUnclaimedReturn } from "./return-notice.ts";
 import { startBatch, type BatchItemResult, type BatchRuntime } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
@@ -74,8 +75,41 @@ const FLEET_TICK_MS = 250;
  */
 const batchRuntimes = new Map<
   string,
-  { runtime: BatchRuntime; inboxIds: Map<string, string>; subject: string }
+  {
+    runtime: BatchRuntime;
+    inboxIds: Map<string, string>;
+    subject: string;
+    /**
+     * 是否有人在等这批的结果。
+     *
+     * 工具在暂存点返回时控制权交回主 agent，此刻没人等它；subagent_resume 接手后
+     * 转 true。若批次直接落地而 awaiting 仍是 false，说明结果没人接——不能就这么算了。
+     */
+    awaiting: boolean;
+  }
 >();
+
+/**
+ * 没人接管的返航结果，补投给主 agent。
+ *
+ * 暂存交还控制权的代价就是「必须有人接」：主 agent 忘了续、或者当时没在跑，
+ * 批次会在后台默默跑完，而 await 它的人早就不存在了。这条消息是那道兼底。
+ */
+function deliverUnclaimedReturn(
+  pi: ExtensionAPI,
+  batchId: string,
+  results: BatchItemResult[],
+): void {
+  pi.sendMessage(
+    {
+      customType: "subagent-return",
+      content: formatUnclaimedReturn(batchId, results),
+      display: true,
+      details: { batchId, results },
+    },
+    { triggerTurn: true },
+  );
+}
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
 const capabilityReviewCache = createReviewCache();
 
@@ -540,7 +574,24 @@ export default function (pi: ExtensionAPI) {
           runtime: batchRuntime,
           inboxIds: new Map(runs.map((r) => [r.id, r.inboxId])),
           subject: tasks.length === 1 ? tasks[0] : `${tasks.length} 个任务`,
+          awaiting: false,
         });
+        // 兵底：批次落地时如果还是没人接管，把结果补投给主 agent。
+        // 只挂在暂存过的批次上——前置失败那类，工具已经当场报过了。
+        batchRuntime.done.then(
+          (results) => {
+            const entry = batchRuntimes.get(batchTaskId);
+            if (!entry || entry.awaiting) return;
+            batchRuntimes.delete(batchTaskId);
+            deliverUnclaimedReturn(pi, batchTaskId, results);
+          },
+          () => {
+            const entry = batchRuntimes.get(batchTaskId);
+            if (!entry || entry.awaiting) return;
+            batchRuntimes.delete(batchTaskId);
+            deliverUnclaimedReturn(pi, batchTaskId, []);
+          },
+        );
         flushStatusFile();
         const snapshot = getSnapshot();
         const byId = new Map(snapshot.map((w) => [w.id, w]));
@@ -706,6 +757,8 @@ export default function (pi: ExtensionAPI) {
           details: { phase: "none", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
         };
       }
+      // 从这一刻起这批有人接管：兵底回调不再插手，结果由本次调用自己报
+      entry.awaiting = true;
 
       const applied: string[] = [];
       const missed: string[] = [];
@@ -751,6 +804,8 @@ export default function (pi: ExtensionAPI) {
 
       const snapshot = getSnapshot();
       if (outcome === "held") {
+        // 又停下来了：控制权再次交回，兵底重新待命
+        entry.awaiting = false;
         const held = entry.runtime.takePendingDefers();
         const heldList = held.map((d) => d.workerId).join("、");
         const decisions = held

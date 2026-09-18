@@ -12,6 +12,7 @@ import { describe, it, afterEach } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createSupplementToolEndHandler,
+  parentProcessAlive,
   registerSupplementBridge,
   type ToolEndEventShape,
 } from "./index.ts";
@@ -424,5 +425,23 @@ describe("createHoldCycle（检查点暂存）", () => {
     });
     const out = await cycle();
     assert.equal(out.action, "stop");
+  });
+});
+
+describe("parentProcessAlive：父进程存活判定", () => {
+  it("ppid 没变且信号可达：活着", () => {
+    assert.strictEqual(parentProcessAlive({ initialPpid: 4242, currentPpid: 4242, signalable: true }), true);
+  });
+
+  it("被 init 收养（ppid 变 1）：判定为死，孤儿 worker 不该把活干完", () => {
+    assert.strictEqual(parentProcessAlive({ initialPpid: 4242, currentPpid: 1, signalable: true }), false);
+  });
+
+  it("ppid 换成了别人：同样是死（不是原来那个爹）", () => {
+    assert.strictEqual(parentProcessAlive({ initialPpid: 4242, currentPpid: 999, signalable: true }), false);
+  });
+
+  it("信号发不出去：死", () => {
+    assert.strictEqual(parentProcessAlive({ initialPpid: 4242, currentPpid: 4242, signalable: false }), false);
   });
 });

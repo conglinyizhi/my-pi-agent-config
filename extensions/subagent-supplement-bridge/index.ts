@@ -211,39 +211,77 @@ export function createHoldCycle(deps: HoldCycleDeps): () => Promise<HoldOutcome>
  * 向 ExtensionAPI 注册 supplement 桥接 handler。inboxId 无效时返回 false
  * 且不注册 handler、不抛。返回是否已注册。
  */
+/**
+ * 父进程还活着吗。
+ *
+ * 只看 `kill(ppid, 0)` 挡不住：父进程死后子进程会被 init 收养，ppid 变成 1，
+ * 而 `kill(1, 0)` 是成功的 —— 于是孤儿 worker 以为自己还有爹，把活干完，
+ * 而等结果的人早就不在了。所以额外认 ppid 的变化。
+ */
+export function parentProcessAlive(opts: {
+  initialPpid: number;
+  currentPpid: number;
+  /** 向 currentPpid 发信号是否成功 */
+  signalable: boolean;
+}): boolean {
+  if (opts.currentPpid === 1) return false;
+  if (opts.currentPpid !== opts.initialPpid) return false;
+  return opts.signalable;
+}
+
 export function registerSupplementBridge(
   pi: ExtensionAPI,
   opts: SupplementBridgeOptions = {},
 ): boolean {
   const inboxId = opts.inboxId ?? process.env.PI_SUBAGENT_INBOX ?? "";
-  if (!isValidInboxId(inboxId)) return false; // 无有效 inbox：静默禁用
+  const hasInbox = isValidInboxId(inboxId);
+  if (!hasInbox) {
+    // 以前这里是默默返回 false，连暂存也一起废掉：两条通道本无关，inbox 有问题
+    // 不该拖累暂存。留一行 stderr，它会进父侧的诊断尾部。
+    process.stderr.write("subagent-supplement-bridge: 无有效 inbox id，补充通道未启用\n");
+  }
+  const holdPathsProbe = opts.holdPaths ?? holdPathsFromEnv();
+  if (!hasInbox && !holdPathsProbe) return false; // 两条都没得做才彻底退出
   const claim = opts.claim ?? ((id: string) => claimNextSupplement(id));
   const release =
     opts.release ?? ((id: string, entryId: string) => releaseSupplement(id, entryId));
   const send = opts.send ?? ((encoded: string) => pi.sendUserMessage(encoded, { deliverAs: "steer" }));
   const supplementDeps: SupplementBridgeDeps = { inboxId, claim, release, send };
+  // 父进程存活判断：只看 kill(ppid,0) 挡不住这件事——父死了子进程会被 init 收养，
+  // ppid 变成 1，而 kill(1,0) 是成功的。所以额外认 ppid 的变化。
+  const initialParentPid = process.ppid;
   const partnerAlive = () => {
+    let signalable = true;
     try {
       process.kill(process.ppid, 0);
-      return true;
     } catch {
-      return false;
+      signalable = false;
     }
+    return parentProcessAlive({
+      initialPpid: initialParentPid,
+      currentPpid: process.ppid,
+      signalable,
+    });
   };
-  const holdPaths = opts.holdPaths ?? holdPathsFromEnv();
-  const holdCycle = holdPaths
+  const holdCycle = holdPathsProbe
     ? createHoldCycle({
-        paths: holdPaths,
+        paths: holdPathsProbe,
         deliverSupplement: () => deliverOneSupplement(supplementDeps),
         parentAlive: partnerAlive,
         ...opts.holdWait,
       })
     : undefined;
 
-  pi.on("tool_execution_end", async (event: ToolEndEventShape) => {
+  pi.on("tool_execution_end", async (event: ToolEndEventShape, ctx) => {
+    // 父进程没了就别接着跑：孤儿 worker 会把活干完，而等结果的人早就不在了，
+    // 白烧时间和额度。检查点只有工具结束这一个，够用。
+    if (!partnerAlive()) {
+      ctx.shutdown();
+      return;
+    }
     // 先处理暂存：预算见底时在这个检查点停下问一次，拿到补充再继续
     if (holdCycle) await holdCycle();
-    await createSupplementToolEndHandler(supplementDeps)(event);
+    if (hasInbox) await createSupplementToolEndHandler(supplementDeps)(event);
   });
   return true;
 }

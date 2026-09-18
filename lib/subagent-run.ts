@@ -785,6 +785,10 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
               if (holdWantedWritten && holdGraceAt !== undefined && Date.now() >= holdGraceAt) {
                 holdGraceAt = undefined;
                 holdWantedWritten = false;
+                // 留痕：没等到检查点意味着 worker 卡在工具里（或它的暂存通道根本没启用），
+                // 不记下来的话，事后只能看到「到点超时了」而不知道暂存为什么没接上
+                timeline.addLifecycle("hold_grace_expired", "宽限期满，worker 未到检查点，恢复计时");
+                archiveTimeline.addLifecycle("hold_grace_expired", "宽限期满，worker 未到检查点，恢复计时");
                 resumeTimeout();
               }
               // ② worker 已暂存 → 问决策
