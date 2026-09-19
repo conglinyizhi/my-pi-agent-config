@@ -8,25 +8,32 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { SandboxCheckResult, TokenRule } from "./sandbox-check.ts";
 import {
 	createReviewCache,
-	formatReviewNote,
 	loadLlmReviewConfig,
 	reviewCommand as defaultReviewCommand,
 	type LlmReviewConfig,
 	type ReviewCache,
 	type ReviewResult,
 } from "../extensions/sandbox-permissions/llm-review.ts";
-import { runGuiWindow, type GuiRunResult, type GuiRunOptions } from "./gui-runner.ts";
+import {
+	normalizeApprovalComment,
+	resolveApprovalChannel,
+	type ApprovalChannel,
+	type ApprovalRunGui,
+	type ApprovalSelect,
+} from "./approval-channel.ts";
 
-const GUI_TIMEOUT_MS = 3_600_000;
+export { normalizeApprovalComment };
 
 /** bash 审批链共用的 LLM 缓存；bash 与 bash_background 不重复审核同一命令。 */
 export const bashApprovalReviewCache = createReviewCache();
 
 export interface BashApprovalDependencies {
+	/** 测试或 IM 注入整条通道；优先于 runGui / selectApproval。 */
+	channel?: ApprovalChannel;
 	/** 测试注入；默认使用真实 wails-gui runner。 */
-	runGui?: (windowName: string, request: unknown, options?: GuiRunOptions) => Promise<GuiRunResult>;
+	runGui?: ApprovalRunGui;
 	/** 测试注入；默认使用 ctx.ui.select；不注入时保持 TUI 回退语义。 */
-	selectApproval?: (title: string, choices: string[]) => Promise<string | undefined>;
+	selectApproval?: ApprovalSelect;
 	/** 测试注入；默认使用 sandbox-permissions 的 LLM 配置。 */
 	loadReviewConfig?: () => LlmReviewConfig;
 	/** 测试注入；默认调用真实 LLM 预审。 */
@@ -55,13 +62,6 @@ export interface BashApprovalResult {
 	review?: ReviewResult;
 }
 
-/** 审批附言的统一规范：空白附言不回传、不入审计。 */
-export function normalizeApprovalComment(comment: unknown): string | undefined {
-	if (typeof comment !== "string") return undefined;
-	const trimmed = comment.trim();
-	return trimmed.length > 0 ? trimmed : undefined;
-}
-
 function auditEntry(
 	command: string,
 	verdict: SandboxCheckResult,
@@ -87,30 +87,18 @@ async function humanConfirm(
 	review: ReviewResult | undefined,
 	taskId: string | undefined,
 	signal: AbortSignal | undefined,
-	runGui: NonNullable<BashApprovalDependencies["runGui"]>,
-	selectApproval: BashApprovalDependencies["selectApproval"],
+	deps: BashApprovalDependencies,
 ): Promise<{ approved: boolean; comment?: string }> {
-	const gui = await runGui(
-		"gate",
-		{ kind: "audit", command, taskId, rules, review },
-		{ timeoutMs: GUI_TIMEOUT_MS, signal },
-	);
-	if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
-		return {
-			approved: gui.data.action === "allow",
-			comment: normalizeApprovalComment(gui.data.comment),
-		};
-	}
-
-	if (!ctx?.ui && !selectApproval) return { approved: false };
-	const reviewNote = review && (review.reason || review.suggestion || review.opinion)
-		? `\n\n${formatReviewNote(review)}`
-		: "";
-	const choice = await (selectApproval ?? ((title, choices) => ctx.ui.select(title, choices)))(
-		`⚠️ 命令需确认：\n\n  ${reason ?? "命中风险规则"}${reviewNote}\n\n是否允许执行？`,
-		["✅ 允许执行", "❌ 拒绝"],
-	);
-	return { approved: choice?.includes("允许") ?? false };
+	const decision = await resolveApprovalChannel(deps)({
+		kind: "audit",
+		command,
+		taskId,
+		rules,
+		review,
+		reason,
+		signal,
+	}, ctx);
+	return { approved: decision.action === "allow", comment: decision.comment };
 }
 
 /**
@@ -152,8 +140,7 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 		review,
 		taskId,
 		signal,
-		deps.runGui ?? runGuiWindow,
-		deps.selectApproval,
+		deps,
 	);
 	const entry = auditEntry(command, verdict, review, decision.comment, origin);
 	pi.appendEntry("bash-audit", { ...entry, outcome: decision.approved ? "approved" : "denied" });

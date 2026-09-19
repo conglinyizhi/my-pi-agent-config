@@ -12,10 +12,11 @@
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
 | `yolo.ts` | `/yolo` 会话级沙箱墙开关（全部降零，仅当前 session） | `pi.registerCommand("yolo")` |
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
+| `lib/approval-channel.ts` | 人工审批通道（默认 GUI→TUI；可 `setApprovalChannel` 换成 IM） | bash / sandbox-allow / capability 共用 |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
-注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程复用现有 gate GUI/TUI 审批，批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
+注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI），批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -59,6 +60,8 @@ node --experimental-strip-types extensions/sandbox-permissions/llm-review.test.t
 node --experimental-strip-types extensions/sandbox-permissions/paths.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/session-access.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/allow.test.ts
+node --experimental-strip-types lib/approval-channel.test.ts
+node --experimental-strip-types lib/bash-approval.test.ts
 node --test wails-gui/frontend/src/domain/gate/path-actions.test.js
 node --experimental-strip-types lib/subagent-capability.test.ts
 node --experimental-strip-types lib/subagent-env.test.ts
@@ -178,6 +181,12 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 - `/provider:fast-pop [provider/model 或模型名]` — 从审核池移除一个模型（池子清空后审核回退当前会话模型）
 
 审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/token_idle_ms/max_cache）。
+
+### 人工审批通道（lib/approval-channel.ts）
+
+三条闸（bash `audit` / `sandbox-allow` / subagent `capability`）问人时都走 `resolveApprovalChannel()`，不各自 spawn 窗口。默认实现仍是本机 wails-gui，窗口异常或超时再回退 `ctx.ui.select`（二选一，无附言、无目录草稿）。后续接 IM / RPC 面板只需 `setApprovalChannel`，或在测试里注入 `channel` / `runGui` / `selectApproval`；规则硬拒、LLM 预审、信任根免审、`/yolo` 仍在通道外面。
+
+通道请求与 GUI `request.json` 同形：`kind` + 命令/规则/审核意见；`sandbox-allow` 另带 writePaths 与各档信任根。响应统一 `{ action, comment?, pathActions? }`。没通道或人没答 = 拒绝，不静默放行。
 
 ### GUI 联动（wails-gui 权限闸门窗口）
 

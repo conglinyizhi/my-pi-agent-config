@@ -18,15 +18,19 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-	buildApprovalTitle,
 	buildEscalationEnv,
 	MAX_MEMORY_MB,
 	readShellPath,
 	resolveWritePaths,
 	validateMemoryMb,
 } from "./helpers.ts";
-import { runGuiWindow } from "../../lib/gui-runner.ts";
-import { normalizeApprovalComment } from "../../lib/bash-approval.ts";
+import {
+	normalizeApprovalComment,
+	resolveApprovalChannel,
+	type ApprovalChannel,
+	type ApprovalRunGui,
+	type ApprovalSelect,
+} from "../../lib/approval-channel.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
 import { addAllowDir, addBlockDir, loadSandboxPaths, removeAllowDir } from "./paths.ts";
 import {
@@ -43,10 +47,7 @@ import {
 import { yoloEnabled } from "./yolo.ts";
 
 const MAX_OUTPUT_BYTES = 1_000_000;
-const GUI_TIMEOUT_MS = 3_600_000; // 1 小时兜底（窗口内不自动超时；仅防窗口进程卡死）
 const MAX_COMMAND_TIMEOUT_SECONDS = 2_147_483.647; // 与 pi 内建 bash 的 setTimeout 上限一致
-const APPROVE = "✅ 允许执行（仅此一次）";
-const DENY = "❌ 拒绝";
 
 export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 	command: Type.String({ minLength: 1, description: "The complete shell command string to run once approved." }),
@@ -160,63 +161,14 @@ export function applyPathActions(
 	return { writePaths: [...new Set([...writePaths, ...extraRoots])] };
 }
 
-interface GuiDecision {
-	action: "allow" | "deny";
-	/** 用户在 GUI 上点选的目录授权操作 */
-	pathActions?: { path: string; list: PathActionList }[];
-	/** GUI 审批窗口填写的用户附言/条件说明，允许与拒绝都可回传 */
-	comment?: string;
-}
-
-/** 通过 GUI 审批（合并进现有权限闸门 gate 窗口，kind=sandbox-allow） */
+/** 通过审批通道问人（默认 GUI→TUI，kind=sandbox-allow） */
 export interface SandboxAllowDependencies {
+	/** 测试或 IM 注入整条通道；优先于 runGui / selectApproval。 */
+	channel?: ApprovalChannel;
 	/** 测试注入；默认使用真实 wails-gui runner。 */
-	runGui?: typeof runGuiWindow;
+	runGui?: ApprovalRunGui;
 	/** 测试注入；默认使用 ctx.ui.select。 */
-	selectApproval?: (title: string, choices: string[]) => Promise<string | undefined>;
-}
-
-async function tryGuiApproval(
-	command: string,
-	permission: "full-access" | "write-paths",
-	writePaths: string[],
-	justification: string,
-	timeout: number | undefined,
-	sessionId: string | undefined,
-	signal: AbortSignal | undefined,
-	audit?: SandboxCheckResult,
-	memoryMb?: number,
-	cwd: string | undefined,
-	runGui: typeof runGuiWindow = runGuiWindow,
-): Promise<GuiDecision | "gui-unavailable"> {
-	const result = await runGui(
-		"gate",
-		{
-			kind: "sandbox-allow",
-			command,
-			permission,
-			writePaths,
-			timeout,
-			memoryMb,
-			candidatePaths: writePaths,
-			persistentRoots: loadSandboxPaths().allowDirs,
-			sessionWriteRoots: getSessionAccessSnapshot(sessionId).writeDirs,
-			sessionTrustedRoots: getSessionAccessSnapshot(sessionId).trustedDirs,
-			builtinRoots: builtinWritableRoots(cwd),
-			workspaceRoot: cwd ?? process.cwd(),
-			rules: audit?.rules ?? [],
-		},
-		{ timeoutMs: GUI_TIMEOUT_MS, signal },
-	);
-	// 仅采纳用户明确的选择（允许/拒绝）；窗口异常关闭/超时/中止 → 回退 TUI
-	if (result.ok && result.data && (result.data.action === "allow" || result.data.action === "deny")) {
-		return {
-			action: result.data.action,
-			pathActions: result.data.pathActions,
-			comment: typeof result.data.comment === "string" ? result.data.comment : undefined,
-		};
-	}
-	return "gui-unavailable";
+	selectApproval?: ApprovalSelect;
 }
 
 export default function (pi: ExtensionAPI, options: { approvalDependencies?: SandboxAllowDependencies } = {}) {
@@ -303,29 +255,26 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			} else if (whitelisted) {
 				decision = "allow";
 			} else {
-				const gui = await tryGuiApproval(
+				const asked = await resolveApprovalChannel(options.approvalDependencies ?? {})({
+					kind: "sandbox-allow",
 					command,
 					permission,
 					writePaths,
 					justification,
 					timeout,
-					sessionId,
+					memoryMb: memoryMb as number | undefined,
+					candidatePaths: writePaths,
+					persistentRoots: allowDirs,
+					sessionWriteRoots: sessionAccess.writeDirs,
+					sessionTrustedRoots: sessionAccess.trustedDirs,
+					builtinRoots: builtinWritableRoots(cwd),
+					workspaceRoot: cwd ?? process.cwd(),
+					rules: audit?.rules ?? [],
 					signal,
-					audit,
-					memoryMb as number | undefined,
-					cwd,
-					options.approvalDependencies?.runGui,
-				);
-				if (gui !== "gui-unavailable") {
-					writePaths = applyPathActions(gui.pathActions, writePaths, cwd, audit).writePaths;
-					decision = gui.action;
-					userComment = normalizeApprovalComment(gui.comment);
-				} else if (ctx.hasUI || options.approvalDependencies?.selectApproval) {
-					const title = buildApprovalTitle(command, permission, writePaths, justification, timeout, memoryMb as number | undefined);
-					const selectApproval = options.approvalDependencies?.selectApproval ?? ((prompt, choices) => ctx.ui.select(prompt, choices));
-					const choice = await selectApproval(title, [APPROVE, DENY]);
-					decision = choice?.includes("允许") ? "allow" : "deny";
-				}
+				}, ctx);
+				writePaths = applyPathActions(asked.pathActions as PathAction[] | undefined, writePaths, cwd, audit).writePaths;
+				decision = asked.action;
+				userComment = normalizeApprovalComment(asked.comment);
 			}
 
 			// 目录草稿随允许/拒绝一并提交；信任类动作只减少后续审批，不代替本次决定。

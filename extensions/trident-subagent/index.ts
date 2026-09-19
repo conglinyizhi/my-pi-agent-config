@@ -13,7 +13,8 @@ import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { launchGuiWindow, runGuiWindow } from "../../lib/gui-runner.ts";
+import { launchGuiWindow } from "../../lib/gui-runner.ts";
+import { resolveApprovalChannel } from "../../lib/approval-channel.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
@@ -53,7 +54,6 @@ import { normalizeWorkerBrief, type WorkerBriefInput } from "../../lib/subagent-
 import { SUBAGENT_PROMPT } from "../../lib/subagent-run.ts";
 import { enqueueSupplement } from "../../lib/subagent-supplement.ts";
 
-const CAPABILITY_GUI_TIMEOUT_MS = 3_600_000;
 /**
  * 暂存中的批次：worker 守在检查点上，等主 agent 用 subagent_resume 把它续上。
  *
@@ -164,37 +164,19 @@ async function approveCapability(
     return { grant, review };
   }
 
-  const result = await runGuiWindow(
-    "gate",
-    {
-      kind: "capability",
-      command: validated.command,
-      taskId: validated.taskId,
-      capability: validated.capability,
-      scope: validated.scope,
-      requestReason: validated.reason,
-      rules,
-      review,
-    },
-    { timeoutMs: CAPABILITY_GUI_TIMEOUT_MS, signal },
-  );
-  let allow = result.ok && result.data?.action === "allow";
-  let comment = result.ok && typeof result.data?.comment === "string"
-    ? result.data.comment.trim()
-    : undefined;
-  if (!allow && (!result.ok || result.data?.action !== "deny") && ctx?.hasUI) {
-    // TUI 回退也带审核简报，人工确认前能看到模型意见
-    const reviewNote = review.reason || review.suggestion || review.opinion
-      ? `\n\n${formatReviewNote(review)}`
-      : "";
-    const choice = await ctx.ui.select(
-      `⚠️ subagent 请求额外能力：${validated.capability}\n\n${validated.scope ?? ""}\n${validated.reason}${reviewNote}\n\n命令：${validated.command}`,
-      ["✅ 允许本次命令", "❌ 拒绝"],
-    );
-    allow = choice?.includes("允许") ?? false;
-    // TUI 只有二选一，没有附言输入；保持 comment 未定义。
-    comment = undefined;
-  }
+  const asked = await resolveApprovalChannel()({
+    kind: "capability",
+    command: validated.command,
+    taskId: validated.taskId,
+    capability: validated.capability,
+    scope: validated.scope,
+    requestReason: validated.reason,
+    rules,
+    review,
+    signal,
+  }, ctx);
+  const allow = asked.action === "allow";
+  const comment = asked.comment;
   const action = allow ? "allow" : "deny";
   appendCapabilityApprovalAudit(pi, validated, action, comment, review);
   return allow ? { grant, review, ...(comment ? { comment } : {}) } : { review, ...(comment ? { comment } : {}) };
