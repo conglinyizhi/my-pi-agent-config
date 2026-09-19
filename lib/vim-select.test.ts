@@ -94,6 +94,22 @@ describe("applyVimKey", () => {
     assert.deepStrictEqual(applyVimKey(initial, key("\u001b")).effect, { type: "cancel" });
     assert.deepStrictEqual(applyVimKey(initial, key("\r")).effect, { type: "confirm" });
   });
+
+  it("正常模式 % 跳到当前项，过滤模式把 % 当普通字符", () => {
+    const jumped = applyVimKey(initial, key("%"));
+    assert.deepStrictEqual(jumped, {
+      state: initial,
+      effect: { type: "jump-current" },
+    });
+    const counted = applyVimKey(applyVimKey(initial, key("8")).state, key("%"));
+    assert.strictEqual(counted.state.count, null);
+    assert.deepStrictEqual(counted.effect, { type: "jump-current" });
+
+    let state = applyVimKey(initial, key("/")).state;
+    state = applyVimKey(state, key("%")).state;
+    assert.strictEqual(state.filterMode, true);
+    assert.strictEqual(state.query, "%");
+  });
 });
 
 describe("filterOptions", () => {
@@ -151,7 +167,7 @@ interface Harness {
 }
 
 /** 用假 tui/theme 驱动 ctx.ui.custom 的 factory，拿到组件本体做按键与渲染断言。 */
-async function mount(options: VimSelectOption[]): Promise<Harness> {
+async function mount(options: VimSelectOption[], selectOpts?: { currentValue?: string }): Promise<Harness> {
   let component: { handleInput(data: string): void; render(width: number): string[] } | undefined;
   let selected: string | undefined;
   const ctx = {
@@ -174,7 +190,7 @@ async function mount(options: VimSelectOption[]): Promise<Harness> {
     },
   } as never;
 
-  void vimSelect(ctx, "选择", options);
+  void vimSelect(ctx, "选择", options, selectOpts);
   assert.ok(component);
   return {
     render: () => component!.render(80).join("\n"),
@@ -205,6 +221,26 @@ describe("vimSelect", () => {
     assert.doesNotMatch(ui.render(), /▌/);
     ui.input("\r");
     assert.strictEqual(ui.selected(), "delta");
+  });
+
+  it("正常模式 % 跳到当前项，行尾标 %，过滤后不在列表里则提示", async () => {
+    const ui = await mount(["alpha", "beta", "gamma", "delta", "epsilon", "zeta"], {
+      currentValue: "epsilon",
+    });
+    assert.match(ui.render(), /epsilon\s+%/);
+    assert.match(ui.render(), /% 定位当前/);
+    ui.input("%");
+    ui.input("\r");
+    assert.strictEqual(ui.selected(), "epsilon");
+
+    const missing = await mount(["alpha", "beta", "gamma", "delta", "epsilon", "zeta"], {
+      currentValue: "epsilon",
+    });
+    missing.input("/");
+    for (const ch of "alp") missing.input(ch);
+    missing.input("\r");
+    missing.input("%");
+    assert.match(missing.render(), /当前项不在列表里/);
   });
 
   it("短列表或非 TUI 原样委托内置选择器", async () => {

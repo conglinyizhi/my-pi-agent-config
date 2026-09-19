@@ -539,6 +539,22 @@ function providerListLabel(p: Record<string, unknown>): string {
   return `${id}${name}${baseUrl}`;
 }
 
+function modelListLabel(m: Record<string, unknown>): string {
+  const id = String(m.id);
+  const name = typeof m.name === "string" && m.name !== id ? ` | ${m.name}` : "";
+  return `${id}${name}`;
+}
+
+/** 当前会话正在用的供应商 / 模型，供列表里 % 定位。 */
+function sessionModelOf(ctx: ExtensionCommandContext): { provider: string; id: string } | undefined {
+  const model = ctx.model;
+  if (!model) return undefined;
+  const provider = typeof model.provider === "string" ? model.provider.trim() : "";
+  const id = typeof model.id === "string" ? model.id.trim() : "";
+  if (!provider || !id) return undefined;
+  return { provider, id };
+}
+
 export async function chooseProvider(
   ctx: ExtensionCommandContext,
   providers: Array<Record<string, unknown>>,
@@ -564,7 +580,13 @@ export async function chooseProvider(
     const p = providers.find(pp => String(pp.id) === m.id);
     return p ? providerListLabel(p) : m.id;
   });
-  const selected = await vimSelect(ctx, `找到 ${matches.length} 个匹配项，请选择供应商：`, labels);
+  const current = sessionModelOf(ctx);
+  const currentLabel = current
+    ? labels.find((_, i) => matches[i]?.id === current.provider)
+    : undefined;
+  const selected = await vimSelect(ctx, `找到 ${matches.length} 个匹配项，请选择供应商：`, labels, {
+    currentValue: currentLabel,
+  });
   if (!selected) return null;
   const idx = labels.indexOf(selected);
   if (idx < 0) return null;
@@ -701,14 +723,16 @@ async function editModelFlow(
     return false;
   }
 
-  const options = models.map(m => {
-    const id = String(m.id);
-    const name = typeof m.name === "string" && m.name !== id ? ` | ${m.name}` : "";
-    return `${id}${name}`;
-  });
+  const options = models.map(modelListLabel);
   options.push("↩ 返回");
 
-  const choice = await vimSelect(ctx, `选择 "${provider.id}" 下的模型（${models.length} 个）：`, options);
+  const current = sessionModelOf(ctx);
+  const currentModel = current && String(provider.id) === current.provider
+    ? models.find(m => String(m.id) === current.id)
+    : undefined;
+  const choice = await vimSelect(ctx, `选择 "${provider.id}" 下的模型（${models.length} 个）：`, options, {
+    currentValue: currentModel ? modelListLabel(currentModel) : undefined,
+  });
   if (!choice || choice === "↩ 返回") return false;
 
   const idx = options.indexOf(choice);

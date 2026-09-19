@@ -5,9 +5,10 @@
 //   vimSelect(ctx, "模型参数", [{ label: "思考返回格式 — 未设置", alias: "thinking" }])
 //
 // TUI 模式下支持计数前缀（如 8j / 3k）、j/k 或方向键移动、/ 进入模糊过滤。
+// 提供 currentValue 时，正常模式按 % 跳到当前项（vim :ls 里当前 buffer 的记号）。
 // 选项可以带英文别名（alias）：别名会以淡色附在行尾，也会进入过滤词，
 // 所以中文菜单也能用 / thinking 这样直接敲英文。
-// 过滤模式中可直接输入文字，Enter 保留过滤结果并退出过滤，Esc 清空过滤并退出。
+// 过滤模式中可直接输入文字（% 当普通字符），Enter 保留过滤结果并退出过滤，Esc 清空过滤并退出。
 // 短列表和非 TUI 模式继续使用内置选择器。
 
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
@@ -29,6 +30,8 @@ export interface VimSelectOptions {
   hint?: string;
   /** 不超过该数量时退回内置选择器。 */
   nativeThreshold?: number;
+  /** 当前会话正在用的选项 value；提供后可用 % 跳转，并在该行末尾标 % */
+  currentValue?: string;
 }
 
 /** 选项：纯字符串，或带英文别名的对象 */
@@ -64,6 +67,7 @@ export type VimEffect =
   | { type: "confirm" }
   | { type: "cancel" }
   | { type: "refilter" }
+  | { type: "jump-current" }
   | { type: "none" };
 
 /** 将终端输入归一化为选择器需要的最小按键集合。 */
@@ -137,6 +141,9 @@ export function applyVimKey(state: VimState, key: VimKey): { state: VimState; ef
     if (key.value === "/") {
       return { state: { ...state, filterMode: true, count: null }, effect: { type: "none" } };
     }
+    if (key.value === "%") {
+      return { state: { ...state, count: null }, effect: { type: "jump-current" } };
+    }
     return { state, effect: { type: "none" } };
   }
   if (key.type === "down") {
@@ -208,23 +215,27 @@ export async function vimSelect(
 
   const maxVisible = Math.max(1, opts.maxVisible ?? 14);
   const items = normalizeOptions(options);
+  const currentValue = opts.currentValue;
   const hasAlias = items.some(item => item.alias);
+  const currentHint = currentValue ? " · % 定位当前" : "";
   const defaultHint = hasAlias
-    ? "8j/8k 跳转 · / 过滤（中文或行尾英文别名） · Enter 选中 · Esc 取消"
-    : "8j/8k 计数跳转 · / 过滤 · Enter 选中 · Esc 取消";
+    ? `8j/8k 跳转 · / 过滤（中文或行尾英文别名）${currentHint} · Enter 选中 · Esc 取消`
+    : `8j/8k 计数跳转 · / 过滤${currentHint} · Enter 选中 · Esc 取消`;
 
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const container = new Container();
     let state: VimState = { count: null, filterMode: false, query: "" };
     let filtered = filterItems(items, state.query);
     let selectedIndex = 0;
+    let missMessage = "";
 
-    /** 行尾的淡色别名：写进 label，避开 SelectList 的副列宽度限制 */
+    /** 行尾的淡色别名 / 当前项记号：写进 label，避开 SelectList 的副列宽度限制 */
     const toSelectItems = (list: NormalizedItem[]) =>
-      list.map(item => ({
-        value: item.value,
-        label: item.alias ? `${item.label}${theme.fg("dim", `  ${item.alias}`)}` : item.label,
-      }));
+      list.map(item => {
+        const alias = item.alias ? theme.fg("dim", `  ${item.alias}`) : "";
+        const currentMark = currentValue && item.value === currentValue ? theme.fg("dim", "  %") : "";
+        return { value: item.value, label: `${item.label}${alias}${currentMark}` };
+      });
 
     const buildSelectList = () => {
       const list = new SelectList(toSelectItems(filtered), maxVisible, getSelectListTheme());
@@ -252,6 +263,9 @@ export async function vimSelect(
       if (state.filterMode || state.query) {
         const cursor = state.filterMode ? "▌" : "";
         container.addChild(new Text(theme.fg("dim", `/ ${state.query}${cursor}`), 1, 0));
+      }
+      if (missMessage) {
+        container.addChild(new Text(theme.fg("dim", missMessage), 1, 0));
       }
       if (filtered.length === 0) {
         container.addChild(new Text(theme.fg("dim", "（无匹配，退格或 Ctrl-U 修改过滤词）"), 1, 0));
@@ -295,6 +309,17 @@ export async function vimSelect(
         if (result.effect.type === "move") {
           const max = Math.max(0, filtered.length - 1);
           selectedIndex = Math.max(0, Math.min(max, selectedIndex + result.effect.delta));
+          missMessage = "";
+        } else if (result.effect.type === "jump-current") {
+          const idx = currentValue ? filtered.findIndex(item => item.value === currentValue) : -1;
+          if (idx >= 0) {
+            selectedIndex = idx;
+            missMessage = "";
+          } else {
+            missMessage = currentValue ? "当前项不在列表里" : "";
+          }
+        } else if (result.effect.type !== "none" || key.type !== "char" || !/^[0-9]$/.test(key.value)) {
+          missMessage = "";
         }
         // refilter 需要重建列表；其余按键也可能改变计数提示或过滤模式，统一刷新一次。
         refresh(result.effect.type === "refilter");
