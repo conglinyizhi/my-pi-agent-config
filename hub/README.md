@@ -4,7 +4,7 @@
 
 主线只在 **Linux + systemd --user + Unix socket** 上推进，这边不维护旧形态。
 
-其他系统若还要人工审批，从 tag `pre-linux-hub` 或分支 `archive/pre-linux-hub` 自己接：当时是进程内 GUI→TUI 通道，没有机级 hub。许可窗也可以改用系统对话框（zenity / yad / kdialog），不必跟 Wails 走。
+其他系统若还要人工审批，从 tag `pre-linux-hub` 自己接（没有归档分支，`git checkout pre-linux-hub` 看）：当时是进程内 GUI→TUI 通道，没有机级 hub。许可窗也可以改用系统对话框（zenity / yad / kdialog），不必跟 Wails 走。
 
 ## 做什么
 

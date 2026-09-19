@@ -87,7 +87,7 @@ pi
 - 新机 / 改完代码：`hub/install.sh`（`--reload` 热更，`--status` 看状态）。看服务用 `systemctl --user`，不要用系统级 systemctl
 - 贴码 `/remote:allow-key PIHUB-…`；许可窗 `/remote:gui`（yad）；状态 `/remote:status`
 - 飞书走本机 `lark-cli`（`hub/adapters/feishu/`）。没有 CLI：`pnpm add -g @larksuite/cli && lark-cli config init && lark-cli auth login`，然后 `systemctl --user start pi-hub-feishu.service`。缺 CLI 时适配器退出码 78，不再狂重启
-- 主线只推 Linux。别的系统从 tag `pre-linux-hub` / 分支 `archive/pre-linux-hub` 自己接。未公开 IM 适配器放 `hub/private/`，不入库
+- 主线只推 Linux。别的系统从 tag `pre-linux-hub` 自己接（没有归档分支，checkout tag 看）。未公开 IM 适配器放 `hub/private/`，不入库
 
 ### 沙箱（bash 内核隔离）
 
