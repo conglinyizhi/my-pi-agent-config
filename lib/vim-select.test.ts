@@ -6,6 +6,8 @@ import {
   filterOptions,
   normalizeOptions,
   parseVimKey,
+  relativeLineGutter,
+  relativeLineGutterWidth,
   vimSelect,
   type VimSelectOption,
   type VimState,
@@ -112,6 +114,22 @@ describe("applyVimKey", () => {
   });
 });
 
+describe("relativeLineGutter", () => {
+  it("光标行写绝对序号，其余行写距离，并按宽度右对齐", () => {
+    assert.strictEqual(relativeLineGutter(0, 0), "1");
+    assert.strictEqual(relativeLineGutter(1, 0), "1");
+    assert.strictEqual(relativeLineGutter(2, 0), "2");
+    assert.strictEqual(relativeLineGutter(4, 4), "5");
+    assert.strictEqual(relativeLineGutter(0, 4), "4");
+    assert.strictEqual(relativeLineGutter(3, 4), "1");
+    assert.strictEqual(relativeLineGutter(5, 4), "1");
+    assert.strictEqual(relativeLineGutter(0, 9, 2), " 9");
+    assert.strictEqual(relativeLineGutter(9, 9, 2), "10");
+    assert.strictEqual(relativeLineGutterWidth(9), 1);
+    assert.strictEqual(relativeLineGutterWidth(10), 2);
+  });
+});
+
 describe("filterOptions", () => {
   it("空查询保序，模糊结果按匹配度排序，无匹配为空", () => {
     const options = ["gpt-5.6", "deepseek-v4-flash", "claude-4"];
@@ -209,6 +227,21 @@ describe("vimSelect", () => {
     ui.input("j");
     ui.input("\r");
     assert.strictEqual(ui.selected(), "f");
+  });
+
+  it("行头相对行号跟光标走，提示行文案不变", async () => {
+    const ui = await mount(["a", "b", "c", "d", "e", "f"]);
+    const initial = ui.render();
+    assert.match(initial, /8j\/8k 计数跳转/);
+    assert.match(initial, /→\s+1 a/);
+    assert.match(initial, /\s+1 b/);
+    assert.match(initial, /\s+2 c/);
+    ui.input("j");
+    const moved = ui.render();
+    assert.match(moved, /\s+1 a/);
+    assert.match(moved, /→\s+2 b/);
+    assert.match(moved, /\s+1 c/);
+    assert.match(moved, /8j\/8k 计数跳转/);
   });
 
   it("过滤模式输入后 Enter 保留过滤结果并刷新界面", async () => {

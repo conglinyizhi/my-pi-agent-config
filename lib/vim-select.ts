@@ -5,6 +5,7 @@
 //   vimSelect(ctx, "模型参数", [{ label: "思考返回格式 — 未设置", alias: "thinking" }])
 //
 // TUI 模式下支持计数前缀（如 8j / 3k）、j/k 或方向键移动、/ 进入模糊过滤。
+// 行头是相对行号：光标行写绝对序号，其余行写距离，方便 [n]j / [n]k。
 // 提供 currentValue 时，正常模式按 % 跳到当前项（vim :ls 里当前 buffer 的记号）。
 // 选项可以带英文别名（alias）：别名会以淡色附在行尾，也会进入过滤词，
 // 所以中文菜单也能用 / thinking 这样直接敲英文。
@@ -199,6 +200,21 @@ function filterItems(items: NormalizedItem[], query: string): NormalizedItem[] {
   return fuzzyFilter(items, query, item => item.searchText);
 }
 
+/** 相对行号 gutter 宽度：按列表长度留位，保证列对齐。 */
+export function relativeLineGutterWidth(length: number): number {
+  return String(Math.max(length, 1)).length;
+}
+
+/**
+ * nvim 式相对行号：光标行是 1-based 绝对序号，其余行是与光标的距离。
+ * 数字右对齐，width 缺省按当前这两个数里较大的那个留位。
+ */
+export function relativeLineGutter(index: number, selectedIndex: number, width?: number): string {
+  const n = index === selectedIndex ? index + 1 : Math.abs(index - selectedIndex);
+  const digits = width ?? String(Math.max(n, 1)).length;
+  return String(n).padStart(digits, " ");
+}
+
 /**
  * 长列表选择器。短列表和非 TUI 调用保持内置 select 的返回语义。
  */
@@ -229,13 +245,18 @@ export async function vimSelect(
     let selectedIndex = 0;
     let missMessage = "";
 
-    /** 行尾的淡色别名 / 当前项记号：写进 label，避开 SelectList 的副列宽度限制 */
-    const toSelectItems = (list: NormalizedItem[]) =>
-      list.map(item => {
+    /** 行头相对行号 + 行尾别名 / 当前项记号。写进 label，避开 SelectList 的副列宽度限制。 */
+    const toSelectItems = (list: NormalizedItem[]) => {
+      const gutterWidth = relativeLineGutterWidth(list.length);
+      return list.map((item, index) => {
+        const gutterText = relativeLineGutter(index, selectedIndex, gutterWidth);
+        // 光标行交给 SelectList 的选中色；其余行号暗一档，接近 nvim 的 LineNr
+        const gutter = index === selectedIndex ? gutterText : theme.fg("dim", gutterText);
         const alias = item.alias ? theme.fg("dim", `  ${item.alias}`) : "";
         const currentMark = currentValue && item.value === currentValue ? theme.fg("dim", "  %") : "";
-        return { value: item.value, label: `${item.label}${alias}${currentMark}` };
+        return { value: item.value, label: `${gutter} ${item.label}${alias}${currentMark}` };
       });
+    };
 
     const buildSelectList = () => {
       const list = new SelectList(toSelectItems(filtered), maxVisible, getSelectListTheme());
@@ -248,10 +269,9 @@ export async function vimSelect(
 
     const confirm = (item: NormalizedItem) => done(item.value);
 
-    const rebuildSelectList = () => {
+    const refilter = () => {
       filtered = filterItems(items, state.query);
       selectedIndex = 0;
-      selectList = buildSelectList();
     };
 
     const renderChrome = () => {
@@ -270,14 +290,16 @@ export async function vimSelect(
       if (filtered.length === 0) {
         container.addChild(new Text(theme.fg("dim", "（无匹配，退格或 Ctrl-U 修改过滤词）"), 1, 0));
       } else {
+        // 相对行号跟光标走，每次绘制都按当前下标重建行头
+        selectList = buildSelectList();
         selectList.setSelectedIndex(selectedIndex);
         container.addChild(selectList);
       }
       container.addChild(new DynamicBorder(str => theme.fg("accent", str)));
     };
 
-    const refresh = (refilter: boolean) => {
-      if (refilter) rebuildSelectList();
+    const refresh = (shouldRefilter: boolean) => {
+      if (shouldRefilter) refilter();
       renderChrome();
       tui.requestRender();
     };

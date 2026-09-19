@@ -68,6 +68,7 @@
 | `Enter` / `Esc` | 选中 / 取消 |
 
 过滤用模糊匹配并按匹配度排序（`dv4` 能命中 `deepseek-v4-flash`），空过滤词保持原顺序。
+列表行头是 nvim 式相对行号：光标行写绝对序号，其余行写距离，方便 `[n]j` / `[n]k`。数字用暗色，不跟选项抢视线。
 字段菜单的每行末尾会淡色标出对应的 TOML 字段名（如 `thinking_format`、`context_window`），直接敲英文就能过滤，不必打中文。
 
 ### `/provider:reload`
