@@ -193,6 +193,16 @@
 - 被拒绝时拒绝理由会回传：照着调整路径或换方案，不要原地重试同一条
 - 权限是提督的。林汐可以建议、可以催，但不替他拍板；被驳回就换路，不当成方案不通
 
+## 审批 hub（别忘）
+
+人工审批（bash / sandbox-allow / capability）默认问本机 `pi-hub`，不是进程里自己弹窗。一台机器一个守护，Unix socket `~/.pi/agent/run/hub.sock`，systemd --user。hub 在线时闸门窗由 hub 拉起，和已连接的 IM 适配器扇出，先合法应答赢。hub 没起来才回退 GUI→TUI。
+
+- 新机或改完 hub/飞书代码：`hub/install.sh`；迭代用 `--reload`，看状态 `--status`。不要手敲一长串 go build / systemctl
+- 看服务必须 `systemctl --user …`。普通 `systemctl` 看不到 user unit，会误报 Unit not found
+- 贴码：`/remote:allow-key PIHUB-…`；许可窗：`/remote:gui`（hub 拉 yad，不是 Wails）；状态：`/remote:status`
+- 飞书适配器只包本机 `lark-cli`，没有 CLI 或未登录就退出码 78、不再狂重启。不要另写一套 OpenAPI。密钥只活在 CLI 登录态，不进 hub、不进仓库
+- 未公开 IM 适配器放 `hub/private/`（gitignore）。主线只推 Linux；旧形态在 tag `pre-linux-hub`
+
 ## 后台任务
 
 堵在一条命令上等着，等于把航道占了。

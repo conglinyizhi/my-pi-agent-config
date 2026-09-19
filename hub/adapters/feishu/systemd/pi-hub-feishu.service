@@ -1,0 +1,17 @@
+[Unit]
+Description=pi-hub Feishu adapter (lark-cli)
+After=pi-hub.service
+Requires=pi-hub.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/share/pnpm:%h/.local/bin:/usr/bin
+ExecStart=%h/.local/bin/pi-hub-feishu -lark-cli %h/.local/share/pnpm/lark-cli
+Restart=on-failure
+RestartSec=3
+# 78 = 缺 lark-cli / 未登录，不再狂重启
+RestartPreventExitStatus=78
+# 不要 StandardInput=null：lark-cli event consume 把 stdin EOF 当关机
+
+[Install]
+WantedBy=default.target

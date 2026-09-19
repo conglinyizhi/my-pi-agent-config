@@ -86,6 +86,8 @@ hub/private/
 
 # hub 构建产物
 hub/pi-hub
+hub/adapters/feishu/pi-hub-feishu
+hub/adapters/feishu/feishu
 
 # hub 运行时（socket / 白名单落盘）
 run/

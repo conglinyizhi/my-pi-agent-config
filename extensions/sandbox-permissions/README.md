@@ -185,7 +185,9 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 ### 人工审批通道（lib/approval-channel.ts）
 
-三条闸（bash `audit` / `sandbox-allow` / subagent `capability`）问人时都走 `resolveApprovalChannel()`。默认先连本机 `pi-hub`（`~/.pi/agent/run/hub.sock`）；hub 在线时闸门窗由 hub 拉起并与已连接适配器扇出，先合法应答赢。hub 没起来或连不上，回退本机 wails-gui，窗口异常再回退 `ctx.ui.select`（二选一，无附言、无目录草稿）。测试仍可注入 `channel` / `runGui` / `selectApproval`。规则硬拒、LLM 预审、信任根免审、`/yolo` 仍在通道外面。hub 的安装与协议见 `hub/README.md`。
+三条闸（bash `audit` / `sandbox-allow` / subagent `capability`）问人时都走 `resolveApprovalChannel()`。默认先连本机 `pi-hub`（`~/.pi/agent/run/hub.sock`）；hub 在线时闸门窗由 hub 拉起并与已连接适配器扇出，先合法应答赢。hub 没起来或连不上，回退本机 wails-gui，窗口异常再回退 `ctx.ui.select`（二选一，无附言、无目录草稿）。测试仍可注入 `channel` / `runGui` / `selectApproval`。规则硬拒、LLM 预审、信任根免审、`/yolo` 仍在通道外面。
+
+部署用 `hub/install.sh`（`--reload` 热更）。飞书适配器只包 `lark-cli`，没有 CLI 就退出码 78。贴码 `/remote:allow-key`，许可窗 `/remote:gui`（yad），状态 `/remote:status`。细节见 `hub/README.md`。
 
 通道请求与 GUI `request.json` 同形：`kind` + 命令/规则/审核意见；`sandbox-allow` 另带 writePaths 与各档信任根。响应统一 `{ action, comment?, pathActions? }`。没通道或人没答 = 拒绝，不静默放行。
 

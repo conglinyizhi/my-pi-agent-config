@@ -12,20 +12,20 @@
 - 审批扇出：本机闸门窗 + 已连接的 IM 适配器，**先合法应答赢**，输家关窗 / 改卡
 - hub 没起来：pi 回退现有 GUI→TUI
 - 陌生人找 bot：挡住，给一次性码；**只有本机贴码才授权**（pi 里 `/remote:allow-key`，或 `pi-hub grant`）
+- 飞书适配器走本机 `lark-cli`（`hub/adapters/feishu/`）；没有 CLI 就不启
 - 未公开 IM 适配器不入库，放 `hub/private/`（gitignore）
 
 协议是 JSON 行。适配器用通用 `channel` + `userId`，hub 源码不出现具体软件名。
 
 ## 装
 
+新机或改完代码：
+
 ```bash
-cd ~/.pi/agent/hub
-go test ./...
-go build -o pi-hub .
-install -Dm755 pi-hub ~/.local/bin/pi-hub
-install -Dm644 systemd/pi-hub.service ~/.config/systemd/user/pi-hub.service
-systemctl --user daemon-reload
-systemctl --user enable --now pi-hub.service
+~/.pi/agent/hub/install.sh           # 测、编、enable --now hub；有 lark-cli 才启飞书
+~/.pi/agent/hub/install.sh --reload  # 迭代：编完 restart 已在跑的服务
+~/.pi/agent/hub/install.sh --status  # 只看状态
+~/.pi/agent/hub/install.sh --feishu  # 没有 CLI 也 enable 飞书 unit（缺 CLI 会 78 退出）
 ```
 
 本机贴码（pi 只提供入口，窗由 hub 拉起）：
