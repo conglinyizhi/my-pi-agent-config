@@ -19,7 +19,13 @@ function asRoots(roots) {
     persistentRoots: Array.isArray(roots?.persistentRoots) ? roots.persistentRoots : [],
     sessionTrustedRoots: Array.isArray(roots?.sessionTrustedRoots) ? roots.sessionTrustedRoots : [],
     sessionWriteRoots: Array.isArray(roots?.sessionWriteRoots) ? roots.sessionWriteRoots : [],
+    builtinRoots: Array.isArray(roots?.builtinRoots) ? roots.builtinRoots : [],
+    workspaceRoot: typeof roots?.workspaceRoot === "string" ? roots.workspaceRoot : "",
   };
+}
+
+export function isBuiltinWritable(path, roots) {
+  return isPathCovered(path, asRoots(roots).builtinRoots);
 }
 
 export function hasExactGrant(path, roots) {
@@ -27,8 +33,9 @@ export function hasExactGrant(path, roots) {
   return [lists.persistentRoots, lists.sessionTrustedRoots, lists.sessionWriteRoots].some((list) => list.includes(path));
 }
 
-export function cyclePathDraft(drafts, path, list) {
+export function cyclePathDraft(drafts, path, list, roots) {
   if (typeof path !== "string" || !path || typeof list !== "string" || !list) return { ...asDrafts(drafts) };
+  if (isBuiltinWritable(path, roots)) return { ...asDrafts(drafts) };
   const next = { ...asDrafts(drafts) };
   if (next[path] === list) delete next[path];
   else next[path] = list;
@@ -37,6 +44,7 @@ export function cyclePathDraft(drafts, path, list) {
 
 export function cancelPathAuthorization(drafts, path, roots) {
   if (typeof path !== "string" || !path) return { ...asDrafts(drafts) };
+  if (isBuiltinWritable(path, roots)) return { ...asDrafts(drafts) };
   const next = { ...asDrafts(drafts) };
   if (next[path]) {
     delete next[path];
@@ -59,6 +67,21 @@ export function pathDraftSummary(drafts) {
 export function pathRowModel(path, roots, drafts = {}) {
   const lists = asRoots(roots);
   const draft = asDrafts(drafts)[path] ?? null;
+  if (isBuiltinWritable(path, lists) && draft == null) {
+    return {
+      draft: null,
+      label: pathTrustState(path, lists),
+      pending: false,
+      locked: true,
+      showPersistent: false,
+      showSession: false,
+      showBlock: false,
+      persistentPending: false,
+      sessionPending: false,
+      blockPending: false,
+      cancelLabel: null,
+    };
+  }
   const persistentNow = isPathCovered(path, lists.persistentRoots);
   const sessionTrustNow = isPathCovered(path, lists.sessionTrustedRoots);
   const effectivePersistent = draft === "allow" || (draft == null && persistentNow);
@@ -68,6 +91,7 @@ export function pathRowModel(path, roots, drafts = {}) {
     draft,
     label: DRAFT_LABELS[draft] ?? pathTrustState(path, lists),
     pending: draft !== null,
+    locked: false,
     showPersistent: !effectivePersistent || draft === "allow",
     showSession: (!effectivePersistent && !effectiveSessionTrust) || draft === "session-trust",
     showBlock: true,

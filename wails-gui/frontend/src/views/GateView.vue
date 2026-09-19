@@ -31,6 +31,8 @@
       :persistent-roots="persistentRoots"
       :session-write-roots="sessionWriteRoots"
       :session-trusted-roots="sessionTrustedRoots"
+      :builtin-roots="builtinRoots"
+      :workspace-root="workspaceRoot"
       :path-drafts="pathDrafts"
       :verdict-meta="verdictMeta"
       @stage-path="stagePath"
@@ -68,9 +70,7 @@ const ready = ref(false);
 const cmd = ref("");
 const taskId = ref(null);
 const rules = ref([]);
-// 云端模型审核意见（audit：verdict/reason/suggestion/opinion）
 const review = ref(null);
-// sandbox-allow 升权审批字段（kind=sandbox-allow 时启用）
 const kind = ref("");
 const permission = ref("");
 const writePaths = ref([]);
@@ -80,16 +80,16 @@ const capabilityScope = ref("");
 const requestReason = ref("");
 const timeout = ref(undefined);
 const memoryMb = ref(undefined);
-// 目录白/黑名单候选（sandbox-allow 声明的 writePaths）
 const candidatePaths = ref([]);
 const persistentRoots = ref([]);
 const sessionWriteRoots = ref([]);
 const sessionTrustedRoots = ref([]);
+const builtinRoots = ref([]);
+const workspaceRoot = ref("");
 const pathDrafts = ref({});
 
 const cur = ref(0);
 const reasons = ref([]);
-// 附言由 GateView 持有：普通决定与目录授权动作共用同一份
 const comment = ref("");
 
 const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
@@ -112,11 +112,13 @@ const pathRoots = computed(() => ({
   persistentRoots: persistentRoots.value,
   sessionTrustedRoots: sessionTrustedRoots.value,
   sessionWriteRoots: sessionWriteRoots.value,
+  builtinRoots: builtinRoots.value,
+  workspaceRoot: workspaceRoot.value,
 }));
 const draftSummary = computed(() => pathDraftSummary(pathDrafts.value));
 
 function stagePath({ path, list }) {
-  pathDrafts.value = cyclePathDraft(pathDrafts.value, path, list);
+  pathDrafts.value = cyclePathDraft(pathDrafts.value, path, list, pathRoots.value);
 }
 function cancelPath(path) {
   pathDrafts.value = cancelPathAuthorization(pathDrafts.value, path, pathRoots.value);
@@ -166,11 +168,11 @@ onMounted(async () => {
   persistentRoots.value = data.persistentRoots || [];
   sessionWriteRoots.value = data.sessionWriteRoots || [];
   sessionTrustedRoots.value = data.sessionTrustedRoots || [];
+  builtinRoots.value = data.builtinRoots || [];
+  workspaceRoot.value = data.workspaceRoot || "";
   await refreshReasons();
   ready.value = true;
   await platform.session.markReady();
-  // 子组件在 ready 后挂载并定位第一个高亮点。
-  // 不设自动超时：用户考虑多久都行；扩展侧有 1 小时兑底，关窗口（X）也会让扩展回退 TUI。
 });
 </script>
 

@@ -36,6 +36,7 @@ import {
 	beginSandboxSession,
 	getSessionAccessSnapshot,
 	normalizeSandboxRoot,
+	normalizeSandboxRoots,
 	removeSessionDirs,
 	pathsCoveredByRoots,
 } from "./session-access.ts";
@@ -97,6 +98,11 @@ export function validateSandboxAllowInput(input: SandboxAllowInput, cwd = proces
 	return undefined;
 }
 
+
+/** 沙箱默认已可写的根：工作区、/tmp、/dev/null。请求只落在这些根内时不必再弹窗。 */
+export function builtinWritableRoots(cwd = process.cwd()): string[] {
+	return normalizeSandboxRoots([cwd, "/tmp", "/dev/null"], cwd);
+}
 /**
  * sandbox-allow 免审批判定：请求的每个 writePath 都被任一信任根覆盖即可。
  * 三档信任可混合——长期 allowDirs / 本 session 信任根 / 本 session 可写根，
@@ -108,7 +114,8 @@ export function writePathsFullyTrusted(
 	cwd = process.cwd(),
 ): boolean {
 	if (writePaths.length === 0) return false;
-	return pathsCoveredByRoots(writePaths, [...roots.allowDirs, ...roots.sessionTrustedDirs, ...roots.sessionWriteDirs], cwd);
+	const builtin = builtinWritableRoots(cwd);
+	return pathsCoveredByRoots(writePaths, [...builtin, ...roots.allowDirs, ...roots.sessionTrustedDirs, ...roots.sessionWriteDirs], cwd);
 }
 
 /**
@@ -123,11 +130,13 @@ export function applyPathActions(
 ): ApplyPathActionsResult {
 	const candidates = new Set(writePaths);
 	const extraRoots: string[] = [];
+	const builtin = new Set(builtinWritableRoots(cwd));
 	const grantSafe = !audit || (audit.allow && (audit.rules?.length ?? 0) === 0);
 	for (const pa of actions ?? []) {
 		if (!pa || typeof pa.path !== "string") continue;
 		const path = normalizeSandboxRoot(pa.path, cwd);
 		if (!path || !candidates.has(path)) continue;
+		if (pathsCoveredByRoots([path], builtin, cwd) && pa.list !== "block") continue;
 		if (pa.list === "allow") {
 			if (!grantSafe) continue;
 			addAllowDir(path);
@@ -177,6 +186,7 @@ async function tryGuiApproval(
 	signal: AbortSignal | undefined,
 	audit?: SandboxCheckResult,
 	memoryMb?: number,
+	cwd: string | undefined,
 	runGui: typeof runGuiWindow = runGuiWindow,
 ): Promise<GuiDecision | "gui-unavailable"> {
 	const result = await runGui(
@@ -192,6 +202,8 @@ async function tryGuiApproval(
 			persistentRoots: loadSandboxPaths().allowDirs,
 			sessionWriteRoots: getSessionAccessSnapshot(sessionId).writeDirs,
 			sessionTrustedRoots: getSessionAccessSnapshot(sessionId).trustedDirs,
+			builtinRoots: builtinWritableRoots(cwd),
+			workspaceRoot: cwd ?? process.cwd(),
 			rules: audit?.rules ?? [],
 		},
 		{ timeoutMs: GUI_TIMEOUT_MS, signal },
@@ -266,8 +278,8 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					};
 				}
 			}
+			// 3. 同意门：默认可写根（cwd /tmp）与用户信任根都可免审批。
 
-			// 3. 同意门：长期 allowDirs 与 session 信任根可免重复审批；session 可写根不免审批。
 			let decision: "allow" | "deny" = "deny";
 			let userComment: string | undefined;
 
@@ -301,6 +313,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					signal,
 					audit,
 					memoryMb as number | undefined,
+					cwd,
 					options.approvalDependencies?.runGui,
 				);
 				if (gui !== "gui-unavailable") {

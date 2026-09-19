@@ -8,6 +8,7 @@ import { after, afterEach, describe, it } from "node:test";
 import { Value } from "typebox/value";
 import {
 	applyPathActions,
+	builtinWritableRoots,
 	SANDBOX_ALLOW_PARAMETERS,
 	validateSandboxAllowInput,
 	writePathsFullyTrusted,
@@ -75,8 +76,9 @@ describe("sandbox-allow 免审批判定（混合信任）", () => {
 	it("三档信任混合覆盖请求的全部路径即免审批", () => {
 		assert.equal(
 			writePathsFullyTrusted(
-				["/opt/long/build", "/tmp/trust/cache", "/tmp/write/out"],
-				roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"]),
+				["/opt/long/build", "/var/trust/cache", "/var/write/out"],
+				roots(["/opt/long"], ["/var/trust"], ["/var/write"]),
+				"/work/project",
 			),
 			true,
 		);
@@ -85,19 +87,33 @@ describe("sandbox-allow 免审批判定（混合信任）", () => {
 	it("任一路径不被任何信任根覆盖则仍需审批", () => {
 		assert.equal(
 			writePathsFullyTrusted(
-				["/opt/long/build", "/tmp/unknown/out"],
-				roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"]),
+				["/opt/long/build", "/var/unknown/out"],
+				roots(["/opt/long"], ["/var/trust"], ["/var/write"]),
+				"/work/project",
 			),
 			false,
 		);
 	});
 
 	it("空路径列表不免审批（避免 write-paths 漏填时静默放行）", () => {
-		assert.equal(writePathsFullyTrusted([], roots(["/opt/long"], ["/tmp/trust"], ["/tmp/write"])), false);
+		assert.equal(writePathsFullyTrusted([], roots(["/opt/long"], ["/var/trust"], ["/var/write"]), "/work/project"), false);
 	});
 
 	it("单一档位全覆盖也免审批", () => {
-		assert.equal(writePathsFullyTrusted(["/tmp/write/a", "/tmp/write/b"], roots([], [], ["/tmp/write"])), true);
+		assert.equal(writePathsFullyTrusted(["/var/write/a", "/var/write/b"], roots([], [], ["/var/write"]), "/work/project"), true);
+	});
+
+	it("工作区和 /tmp 这类默认可写根全覆盖时免审批", () => {
+		assert.equal(
+			writePathsFullyTrusted(
+				["/work/project/src", "/tmp/cache", "/dev/null"],
+				roots([], [], []),
+				"/work/project",
+			),
+			true,
+		);
+		assert.ok(builtinWritableRoots("/work/project").includes("/work/project"));
+		assert.ok(builtinWritableRoots("/work/project").includes("/tmp"));
 	});
 });
 
@@ -116,26 +132,26 @@ describe("sandbox-allow 一次审批应用多条目录动作", () => {
 	it("一次提交可混合长期信任、本 session 信任、黑名单和撤销", () => {
 		resetSandboxSessionForTest("session-a");
 		addAllowDir("/opt/old");
-		addSessionTrustedDirs(["/tmp/old-trust"]);
+		addSessionTrustedDirs(["/var/old-trust"]);
 		const result = applyPathActions(
 			[
 				{ path: "/opt/new", list: "allow" },
-				{ path: "/tmp/session", list: "session-trust" },
-				{ path: "/tmp/block", list: "block" },
+				{ path: "/var/session", list: "session-trust" },
+				{ path: "/var/block", list: "block" },
 				{ path: "/opt/old", list: "revoke" },
-				{ path: "/tmp/old-trust", list: "revoke" },
+				{ path: "/var/old-trust", list: "revoke" },
 			],
-			["/opt/new", "/tmp/session", "/tmp/block", "/opt/old", "/tmp/old-trust"],
+			["/opt/new", "/var/session", "/var/block", "/opt/old", "/var/old-trust"],
 			"/work/project",
 			{ allow: true, rules: [] },
 		);
-		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/opt/new"], blockDirs: ["/tmp/block"] });
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/opt/new"], blockDirs: ["/var/block"] });
 		assert.deepEqual(getSessionAccessSnapshot("session-a"), {
-			writeDirs: ["/tmp/session"],
-			trustedDirs: ["/tmp/session"],
+			writeDirs: ["/var/session"],
+			trustedDirs: ["/var/session"],
 		});
 		assert.ok(result.writePaths.includes("/opt/new"));
-		assert.ok(result.writePaths.includes("/tmp/session"));
+		assert.ok(result.writePaths.includes("/var/session"));
 	});
 
 	it("命令审计未通过时跳过信任动作，但仍应用黑名单与撤销", () => {
@@ -144,20 +160,36 @@ describe("sandbox-allow 一次审批应用多条目录动作", () => {
 		applyPathActions(
 			[
 				{ path: "/opt/new", list: "allow" },
-				{ path: "/tmp/session", list: "session-trust" },
-				{ path: "/tmp/block", list: "block" },
+				{ path: "/var/session", list: "session-trust" },
+				{ path: "/var/block", list: "block" },
 				{ path: "/opt/old", list: "revoke" },
 			],
-			["/opt/new", "/tmp/session", "/tmp/block", "/opt/old"],
+			["/opt/new", "/var/session", "/var/block", "/opt/old"],
 			"/work/project",
 			{ allow: false, rules: [{ name: "rm-recursive" }] },
 		);
-		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: ["/tmp/block"] });
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: ["/var/block"] });
 		assert.deepEqual(getSessionAccessSnapshot("session-a"), { writeDirs: [], trustedDirs: [] });
 	});
 
 	it("忽略不在本次 writePaths 里的路径", () => {
-		applyPathActions([{ path: "/tmp/sneaky", list: "allow" }], ["/opt/new"], "/work/project", { allow: true, rules: [] });
+		applyPathActions([{ path: "/var/sneaky", list: "allow" }], ["/opt/new"], "/work/project", { allow: true, rules: [] });
 		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: [] });
+	});
+
+	it("默认可写根上的信任和撤销被忽略，黑名单仍可写入", () => {
+		resetSandboxSessionForTest("session-a");
+		applyPathActions(
+			[
+				{ path: "/tmp/cache", list: "allow" },
+				{ path: "/work/project/out", list: "revoke" },
+				{ path: "/tmp/blocked", list: "block" },
+			],
+			["/tmp/cache", "/work/project/out", "/tmp/blocked"],
+			"/work/project",
+			{ allow: true, rules: [] },
+		);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: ["/tmp/blocked"] });
+		assert.deepEqual(getSessionAccessSnapshot("session-a"), { writeDirs: [], trustedDirs: [] });
 	});
 });

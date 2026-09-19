@@ -35,4 +35,12 @@ describe("Gate command highlights", () => {
     assert.equal(pathTrustState("/repo/a", { persistentRoots: [], sessionTrustedRoots: ["/repo"], sessionWriteRoots: [] }), "本 session 信任");
     assert.equal(pathTrustState("/repo/a", { persistentRoots: ["/repo"], sessionTrustedRoots: ["/repo"], sessionWriteRoots: ["/repo"] }), "长期信任");
   });
+
+  it("labels builtin writable roots before user grants", () => {
+    assert.equal(pathTrustState("/tmp/cache", { builtinRoots: ["/tmp"], persistentRoots: ["/tmp"] }), "已放行");
+    assert.equal(pathTrustState("/work/project/src", {
+      builtinRoots: ["/work/project", "/tmp"],
+      workspaceRoot: "/work/project",
+    }), "工作区可写");
+  });
 });

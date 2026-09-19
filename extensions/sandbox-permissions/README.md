@@ -259,6 +259,8 @@ gate 审核弹窗（sandbox-allow 升权）展示的候选目录就是模型声�
 
 长期 `allowDirs`、本 session 信任根、本 session 可写根共同构成 `sandbox-allow` 的信任根集合：请求的**每个** `writePaths` 都被任一信任根覆盖即可免审批，且各路径可分别命中不同档位（例如 A 长期 + B session 信任 + C session 可写）。命中信任根只免去「写权限」这一层，命令本身的安全审计（危险规则 / 动态构造）仍然保留。
 
+工作区、`/tmp`、`/dev/null` 是沙箱默认可写根。请求的 writePaths 若全部落在这些根或用户信任根内，且命令审计无风险，则不弹 GUI，直接执行；工具结果仍按模型输出返回。夹杂尚未放行的目录时才弹窗：已放行的目录灰显、不能取消授权。
+
 ### 存储
 
 `extensions/sandbox-permissions/sandbox-paths.json`（程序动态写入，与手写静态配置 extensions.toml 分离——JSON 写入不破坏 toml 注释）：

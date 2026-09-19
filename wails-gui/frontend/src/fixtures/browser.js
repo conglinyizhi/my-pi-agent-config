@@ -23,6 +23,8 @@ export const browserFixtures = {
     persistentRoots: ["/home/test/.pnpm"],
     sessionWriteRoots: ["/tmp/session-build"],
     sessionTrustedRoots: ["/tmp/session-trusted"],
+    builtinRoots: ["/workspace/demo", "/tmp"],
+    workspaceRoot: "/workspace/demo",
     rules: [],
   },
   subagents: {

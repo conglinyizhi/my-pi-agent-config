@@ -92,6 +92,8 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["persistentRoots"] = req["persistentRoots"]
 		base["sessionWriteRoots"] = req["sessionWriteRoots"]
 		base["sessionTrustedRoots"] = req["sessionTrustedRoots"]
+		base["builtinRoots"] = req["builtinRoots"]
+		base["workspaceRoot"] = req["workspaceRoot"]
 	case "editor":
 		base["clipHistory"] = req["clipHistory"]
 	}

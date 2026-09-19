@@ -55,7 +55,11 @@ export function isPathCovered(path, roots) {
   return (Array.isArray(roots) ? roots : []).some((root) => path === root || path.startsWith(`${root}/`));
 }
 
-export function pathTrustState(path, { persistentRoots, sessionTrustedRoots, sessionWriteRoots }) {
+export function pathTrustState(path, { persistentRoots, sessionTrustedRoots, sessionWriteRoots, builtinRoots, workspaceRoot } = {}) {
+  if (isPathCovered(path, builtinRoots)) {
+    if (workspaceRoot && (path === workspaceRoot || path.startsWith(`${workspaceRoot}/`))) return "工作区可写";
+    return "已放行";
+  }
   if (isPathCovered(path, persistentRoots)) return "长期信任";
   if (isPathCovered(path, sessionTrustedRoots)) return "本 session 信任";
   if (isPathCovered(path, sessionWriteRoots)) return "本 session 可写";

@@ -5,7 +5,6 @@
       <span>{{ decisionSummary.text }}</span>
     </div>
 
-    <!-- subagent capability：只展示本次命令与能力边界，不提供扩权编辑入口 -->
     <div v-if="isCapability" class="sa-info capability-info">
       <div class="sa-row"><span class="sa-label">能力</span><span>{{ capability }}</span></div>
       <div class="sa-row"><span class="sa-label">范围</span><span>{{ capabilityScope }}</span></div>
@@ -13,7 +12,6 @@
       <div class="sa-row"><span class="sa-label">说明</span><span>只批准当前这条命令；worker 会在批准后重新启动，不会获得持续权限。</span></div>
     </div>
 
-    <!-- sandbox-allow：理由 + 可写路径 -->
     <div v-if="isSandboxAllow" class="sa-info">
       <div v-if="justification" class="sa-row">
         <span class="sa-label">理由</span>
@@ -33,7 +31,6 @@
       </div>
     </div>
 
-    <!-- sandbox-allow 风险提示：full-access 仍要展示命令审计结果。 -->
     <div v-if="isSandboxAllow && permission === 'full-access'" class="sandbox-warning">
       <strong>🔴 完全取消文件系统沙箱</strong>
       <span>本次命令可读写当前用户本来有权限访问的任意路径；这不是“额外开放某个目录”。</span>
@@ -47,7 +44,6 @@
       </div>
     </div>
 
-    <!-- 云端模型审核意见（仅 audit） -->
     <div v-if="!isSandboxAllow && !isCapability && review" class="review-block">
       <div class="review-header">
         🤖 云端模型审核
@@ -58,7 +54,6 @@
       <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
     </div>
 
-    <!-- 规则列表（仅 audit） -->
     <div v-if="!isSandboxAllow && !isCapability" @click="showRules = !showRules" class="collapse-header" title="点击展开/收起规则">
       {{ showRules ? '▼' : '▶' }} {{ rules.length }} 条规则匹配
     </div>
@@ -70,41 +65,42 @@
       </div>
     </div>
 
-    <!-- 目录授权：点允许/拒绝前可多次暂存，不关窗 -->
     <div v-if="isSandboxAllow && permission === 'write-paths' && rules.length === 0 && candidatePaths.length" class="paths-block">
       <div class="paths-header">📁 目录授权 <span class="paths-sub">（可多次标记，随允许/拒绝一并提交）</span></div>
-      <div v-for="path in candidatePaths" :key="path" class="path-row" :class="{ pending: rowOf(path).pending }">
+      <div v-for="path in candidatePaths" :key="path" class="path-row" :class="{ pending: rowOf(path).pending, locked: rowOf(path).locked }">
         <code class="path-dir">{{ path }}</code>
-        <span class="path-state" :class="{ pending: rowOf(path).pending }">{{ rowOf(path).label }}</span>
-        <button
-          v-if="rowOf(path).showPersistent"
-          data-name="path-persistent"
-          :class="['btn', 'btn-allow', 'btn-sm', { pending: rowOf(path).persistentPending }]"
-          title="标记为长期可写；命中后 sandbox-allow 可免审批。再次点击清除这条暂存。"
-          @click="stagePath(path, 'allow')"
-        >长期信任</button>
-        <button
-          v-if="rowOf(path).showSession"
-          data-name="path-session-trust"
-          :class="['btn', 'btn-trust', 'btn-sm', { pending: rowOf(path).sessionPending }]"
-          title="标记为本 session 可写并可免审批。再次点击清除这条暂存。"
-          @click="stagePath(path, 'session-trust')"
-        >本 session 信任</button>
-        <button
-          data-name="path-block"
-          :class="['btn', 'btn-deny', 'btn-sm', { pending: rowOf(path).blockPending }]"
-          title="标记为黑名单。再次点击清除这条暂存。"
-          @click="stagePath(path, 'block')"
-        >黑名单</button>
-        <button
-          v-if="rowOf(path).cancelLabel"
-          data-name="path-cancel"
-          class="btn btn-cancel btn-sm"
-          :title="rowOf(path).cancelLabel === '取消授权' ? '提交时撤销该目录已有的长期/本 session 授权' : '清除这条暂存标记'"
-          @click="cancelPath(path)"
-        >{{ rowOf(path).cancelLabel }}</button>
+        <span class="path-state" :class="{ pending: rowOf(path).pending, locked: rowOf(path).locked }">{{ rowOf(path).label }}</span>
+        <template v-if="!rowOf(path).locked">
+          <button
+            v-if="rowOf(path).showPersistent"
+            data-name="path-persistent"
+            :class="['btn', 'btn-allow', 'btn-sm', { pending: rowOf(path).persistentPending }]"
+            title="标记为长期可写；命中后 sandbox-allow 可免审批。再次点击清除这条暂存。"
+            @click="stagePath(path, 'allow')"
+          >长期信任</button>
+          <button
+            v-if="rowOf(path).showSession"
+            data-name="path-session-trust"
+            :class="['btn', 'btn-trust', 'btn-sm', { pending: rowOf(path).sessionPending }]"
+            title="标记为本 session 可写并可免审批。再次点击清除这条暂存。"
+            @click="stagePath(path, 'session-trust')"
+          >本 session 信任</button>
+          <button
+            data-name="path-block"
+            :class="['btn', 'btn-deny', 'btn-sm', { pending: rowOf(path).blockPending }]"
+            title="标记为黑名单。再次点击清除这条暂存。"
+            @click="stagePath(path, 'block')"
+          >黑名单</button>
+          <button
+            v-if="rowOf(path).cancelLabel"
+            data-name="path-cancel"
+            class="btn btn-cancel btn-sm"
+            :title="rowOf(path).cancelLabel === '取消授权' ? '提交时撤销该目录已有的长期/本 session 授权' : '清除这条暂存标记'"
+            @click="cancelPath(path)"
+          >{{ rowOf(path).cancelLabel }}</button>
+        </template>
       </div>
-      <div class="paths-hint">目录操作先暂存，不关窗。可给多个目录分别标记长期信任、本 session 信任、黑名单或取消已有授权，再点允许或拒绝一次提交。允许/拒绝仍决定当前命令是否执行。</div>
+      <div class="paths-hint">灰色行是工作区或 /tmp 这类已经默认可写的目录，不能在这里取消。其余目录先暂存，再点允许或拒绝一次提交。</div>
     </div>
   </div>
 </template>
@@ -131,6 +127,8 @@ const props = defineProps({
   persistentRoots: { type: Array, default: () => [] },
   sessionWriteRoots: { type: Array, default: () => [] },
   sessionTrustedRoots: { type: Array, default: () => [] },
+  builtinRoots: { type: Array, default: () => [] },
+  workspaceRoot: { type: String, default: "" },
   pathDrafts: { type: Object, default: () => ({}) },
   verdictMeta: { type: Object, required: true },
   defaultMemoryMb: { type: Number, default: 1024 },
@@ -149,6 +147,8 @@ const pathRoots = computed(() => ({
   persistentRoots: props.persistentRoots,
   sessionTrustedRoots: props.sessionTrustedRoots,
   sessionWriteRoots: props.sessionWriteRoots,
+  builtinRoots: props.builtinRoots,
+  workspaceRoot: props.workspaceRoot,
 }));
 
 function rowOf(path) {
@@ -176,7 +176,10 @@ function cancelPath(path) {
 .sa-path { color: #7aa2f7; background: #1a1a3e; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
 .path-state { flex-shrink: 0; color: #aaa; font-size: 11px; }
 .path-state.pending { color: #f0c674; }
+.path-state.locked { color: #666; }
 .path-row.pending { background: #1c1c32; border-radius: 4px; padding: 4px 6px; }
+.path-row.locked { opacity: 0.72; }
+.path-row.locked .path-dir { color: #888; }
 .btn-trust { color: #c792ea; background: #241b32; border-color: #c792ea55; }
 .btn.pending { outline: 1px solid currentColor; filter: brightness(1.15); }
 .sandbox-warning { padding: 10px 16px; border-top: 1px solid #ff6b6b55; background: #3a1a1a; color: #ffb4b4; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 1.5; }
