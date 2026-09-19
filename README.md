@@ -79,6 +79,12 @@ pi
 
 停用原因：因为不再使用 opencode，也没有 opencode go 套餐，唤醒 opencode 的流程已经不再必要
 
+### 审批 hub（本机守护）
+
+人工审批（bash / sandbox-allow / subagent capability）优先问本机 `pi-hub`，一台机器一个，Unix socket，systemd --user 管。hub 在线时本机闸门窗和已连接的 IM 适配器扇出，先合法应答赢。hub 没起来回退原来的 GUI→TUI。贴码用 `/remote:allow-key PIHUB-…`；`/remote:gui` 让 hub 用 yad 打开本机许可窗。
+
+主线只在 Linux 上推进（systemd --user + Unix socket）。别的系统这边不维护：可以从 tag `pre-linux-hub` 或分支 `archive/pre-linux-hub` 自己接 GUI / 脚本对话框。安装见 `hub/README.md`。未公开 IM 适配器不入库。
+
 ### 沙箱（bash 内核隔离）
 
 **landlock-shell** — pi 的 bash 工具默认经 `scripts/sandbox-shell.mjs` 包装进

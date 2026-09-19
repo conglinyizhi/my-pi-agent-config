@@ -77,3 +77,16 @@ model-selection.toml
 
 # 本机临时备忘（subagent 审批链路排查笔记，不入库）
 warn.txt
+
+# 本机设计草稿（防压缩丢上下文，不入库）
+.local-drafts/
+
+# 未公开 IM 适配器与本机私有对接（不入库）
+hub/private/
+
+# hub 构建产物
+hub/pi-hub
+
+# hub 运行时（socket / 白名单落盘）
+run/
+hub-state/

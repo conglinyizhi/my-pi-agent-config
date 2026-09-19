@@ -12,7 +12,7 @@
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
 | `yolo.ts` | `/yolo` 会话级沙箱墙开关（全部降零，仅当前 session） | `pi.registerCommand("yolo")` |
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
-| `lib/approval-channel.ts` | 人工审批通道（默认 GUI→TUI；可 `setApprovalChannel` 换成 IM） | bash / sandbox-allow / capability 共用 |
+| `lib/approval-channel.ts` | 人工审批通道（优先连本机 hub，挂了回退 GUI→TUI） | bash / sandbox-allow / capability 共用 |
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
@@ -61,6 +61,7 @@ node --experimental-strip-types extensions/sandbox-permissions/paths.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/session-access.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/allow.test.ts
 node --experimental-strip-types lib/approval-channel.test.ts
+node --experimental-strip-types lib/hub-channel.test.ts
 node --experimental-strip-types lib/bash-approval.test.ts
 node --test wails-gui/frontend/src/domain/gate/path-actions.test.js
 node --experimental-strip-types lib/subagent-capability.test.ts
@@ -184,7 +185,7 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 ### 人工审批通道（lib/approval-channel.ts）
 
-三条闸（bash `audit` / `sandbox-allow` / subagent `capability`）问人时都走 `resolveApprovalChannel()`，不各自 spawn 窗口。默认实现仍是本机 wails-gui，窗口异常或超时再回退 `ctx.ui.select`（二选一，无附言、无目录草稿）。后续接 IM / RPC 面板只需 `setApprovalChannel`，或在测试里注入 `channel` / `runGui` / `selectApproval`；规则硬拒、LLM 预审、信任根免审、`/yolo` 仍在通道外面。
+三条闸（bash `audit` / `sandbox-allow` / subagent `capability`）问人时都走 `resolveApprovalChannel()`。默认先连本机 `pi-hub`（`~/.pi/agent/run/hub.sock`）；hub 在线时闸门窗由 hub 拉起并与已连接适配器扇出，先合法应答赢。hub 没起来或连不上，回退本机 wails-gui，窗口异常再回退 `ctx.ui.select`（二选一，无附言、无目录草稿）。测试仍可注入 `channel` / `runGui` / `selectApproval`。规则硬拒、LLM 预审、信任根免审、`/yolo` 仍在通道外面。hub 的安装与协议见 `hub/README.md`。
 
 通道请求与 GUI `request.json` 同形：`kind` + 命令/规则/审核意见；`sandbox-allow` 另带 writePaths 与各档信任根。响应统一 `{ action, comment?, pathActions? }`。没通道或人没答 = 拒绝，不静默放行。
 

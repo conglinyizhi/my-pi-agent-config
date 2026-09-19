@@ -1,0 +1,13 @@
+[Unit]
+Description=pi approval hub
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/pi-hub
+Restart=on-failure
+RestartSec=2
+# 不把 stdout 当日志洪水；journal 够用
+
+[Install]
+WantedBy=default.target

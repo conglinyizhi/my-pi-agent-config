@@ -1,8 +1,8 @@
 // lib/approval-channel.ts — 人工审批通道
 //
 // 三条闸（bash audit / sandbox-allow / subagent capability）共用这一层：
-// 请求进、allow|deny 出。默认实现仍是本机 wails-gui，窗口异常再回退
-// ctx.ui.select。后续 IM / RPC 面板只需 setApprovalChannel，不必改闸门本身。
+// 请求进、allow|deny 出。默认先连本机 hub；挂了回退 wails-gui，窗口异常再
+// ctx.ui.select。测试注入 channel / runGui / selectApproval 仍可用。
 //
 // 通道只负责「问人」。规则硬拒、LLM 预审、信任根免审、/yolo 都在通道外面。
 
@@ -10,6 +10,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runner.ts";
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
+import { createHubThenLocalChannel } from "./hub-channel.ts";
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
@@ -93,11 +94,14 @@ export interface ResolveApprovalChannelOptions {
 	selectApproval?: ApprovalSelect;
 }
 
-/** 单次注入 > 全局通道 > 默认 GUI→TUI。 */
+/** 单次注入 > 全局通道 > 测试注入的 GUI/TUI > hub（挂了回退 GUI→TUI）。 */
 export function resolveApprovalChannel(opts: ResolveApprovalChannelOptions = {}): ApprovalChannel {
 	if (opts.channel) return opts.channel;
 	if (overrideChannel) return overrideChannel;
-	return createGuiTuiApprovalChannel({ runGui: opts.runGui, selectApproval: opts.selectApproval });
+	if (opts.runGui || opts.selectApproval) {
+		return createGuiTuiApprovalChannel({ runGui: opts.runGui, selectApproval: opts.selectApproval });
+	}
+	return createHubThenLocalChannel();
 }
 
 export function createGuiTuiApprovalChannel(opts: {
@@ -120,7 +124,7 @@ export function normalizeApprovalComment(comment: unknown): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function toGuiPayload(request: ApprovalRequest): unknown {
+export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> {
 	if (request.kind === "audit") {
 		return {
 			kind: "audit",
@@ -159,7 +163,7 @@ function toGuiPayload(request: ApprovalRequest): unknown {
 	};
 }
 
-function parseGuiDecision(data: { action: "allow" | "deny"; comment?: unknown; pathActions?: ApprovalPathAction[] }): ApprovalDecision {
+export function parseGuiDecision(data: { action: "allow" | "deny"; comment?: unknown; pathActions?: ApprovalPathAction[] }): ApprovalDecision {
 	const comment = normalizeApprovalComment(data.comment);
 	const pathActions = Array.isArray(data.pathActions) ? data.pathActions : undefined;
 	return {
