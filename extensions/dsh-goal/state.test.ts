@@ -61,6 +61,24 @@ describe("CAS 与转换", () => {
 		);
 	});
 
+	it("get_goal 展示用的短 id 可以 complete", () => {
+		const domain = freshDomain();
+		const first = createGoal(domain);
+		const short = `${first.view!.id.slice(0, 12)}…` as typeof first.view.id;
+		const done = domain.mutate({ operation: "complete", ref: { id: short, revision: 1 } });
+		const view = done.result.kind === "view" ? done.result.view : undefined;
+		assert.equal(view!.phase, "complete");
+	});
+
+	it("过短前缀或别的 id 仍按陈旧拒绝", () => {
+		const domain = freshDomain();
+		createGoal(domain);
+		assert.throws(
+			() => domain.mutate({ operation: "complete", ref: { id: "goal" as never, revision: 1 } }),
+			(e: unknown) => e instanceof GoalError && e.code === "GOAL_STALE_REVISION",
+		);
+	});
+
 	it("edit：改 objective/上限，revision+1，保 phase/activation", () => {
 		const domain = freshDomain();
 		const first = createGoal(domain);

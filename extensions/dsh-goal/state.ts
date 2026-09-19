@@ -25,6 +25,16 @@ export function GoalId(raw: string): GoalId {
 	return raw as GoalId;
 }
 
+/** get_goal 展示行会把 id 截成前缀加省略号；update_goal 认这个前缀。 */
+export const GOAL_SHORT_ID_MIN = 8;
+
+export function goalIdMatches(given: string, current: string): boolean {
+	if (given === current) return true;
+	const short = given.replace(/…+$/u, "").replace(/\.+$/u, "");
+	if (short.length < GOAL_SHORT_ID_MIN) return false;
+	return current.startsWith(short);
+}
+
 /** CAS 标识：一次精确修订 */
 export interface GoalRef {
 	readonly id: GoalId;
@@ -430,7 +440,7 @@ export class GoalDomain {
 	private expectCurrent(ref: GoalRef | undefined): GoalSnapshot {
 		const current = this.state.goal;
 		if (current === undefined) throw new GoalError("no current goal", "GOAL_NOT_FOUND");
-		if (ref === undefined || ref.id !== current.id || ref.revision !== current.revision) {
+		if (ref === undefined || !goalIdMatches(ref.id, current.id) || ref.revision !== current.revision) {
 			throw new GoalError(
 				`stale goal ref "${ref?.id}" revision ${ref?.revision}; current is "${current.id}" revision ${current.revision}`,
 				"GOAL_STALE_REVISION",
