@@ -229,10 +229,10 @@ describe("vimSelect", () => {
     assert.strictEqual(ui.selected(), "f");
   });
 
-  it("行头相对行号跟光标走，提示行文案不变", async () => {
+  it("行头相对行号跟光标走", async () => {
     const ui = await mount(["a", "b", "c", "d", "e", "f"]);
     const initial = ui.render();
-    assert.match(initial, /8j\/8k 计数跳转/);
+    assert.match(initial, /\[num\]j\/\[num\]k 跳转/);
     assert.match(initial, /→\s+1 a/);
     assert.match(initial, /\s+1 b/);
     assert.match(initial, /\s+2 c/);
@@ -241,7 +241,7 @@ describe("vimSelect", () => {
     assert.match(moved, /\s+1 a/);
     assert.match(moved, /→\s+2 b/);
     assert.match(moved, /\s+1 c/);
-    assert.match(moved, /8j\/8k 计数跳转/);
+    assert.match(moved, /\[num\]j\/\[num\]k 跳转/);
   });
 
   it("过滤模式输入后 Enter 保留过滤结果并刷新界面", async () => {

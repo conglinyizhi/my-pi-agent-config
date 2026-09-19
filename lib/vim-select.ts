@@ -4,7 +4,7 @@
 //   vimSelect(ctx, "选择模型", options)
 //   vimSelect(ctx, "模型参数", [{ label: "思考返回格式 — 未设置", alias: "thinking" }])
 //
-// TUI 模式下支持计数前缀（如 8j / 3k）、j/k 或方向键移动、/ 进入模糊过滤。
+// TUI 模式下支持计数前缀（如 [num]j / [num]k）、j/k 或方向键移动、/ 进入模糊过滤。
 // 行头是相对行号：光标行写绝对序号，其余行写距离，方便 [n]j / [n]k。
 // 提供 currentValue 时，正常模式按 % 跳到当前项（vim :ls 里当前 buffer 的记号）。
 // 选项可以带英文别名（alias）：别名会以淡色附在行尾，也会进入过滤词，
@@ -235,8 +235,8 @@ export async function vimSelect(
   const hasAlias = items.some(item => item.alias);
   const currentHint = currentValue ? " · % 定位当前" : "";
   const defaultHint = hasAlias
-    ? `8j/8k 跳转 · / 过滤（中文或行尾英文别名）${currentHint} · Enter 选中 · Esc 取消`
-    : `8j/8k 计数跳转 · / 过滤${currentHint} · Enter 选中 · Esc 取消`;
+    ? `[num]j/[num]k 跳转 · / 过滤（中文或行尾英文别名）${currentHint} · Enter 选中 · Esc 取消`
+    : `[num]j/[num]k 跳转 · / 过滤${currentHint} · Enter 选中 · Esc 取消`;
 
   return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const container = new Container();
