@@ -28,7 +28,7 @@ import {
 import { runGuiWindow } from "../../lib/gui-runner.ts";
 import { normalizeApprovalComment } from "../../lib/bash-approval.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
-import { addAllowDir, addBlockDir, loadSandboxPaths } from "./paths.ts";
+import { addAllowDir, addBlockDir, loadSandboxPaths, removeAllowDir } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
 	addSessionWriteDirs,
@@ -36,6 +36,7 @@ import {
 	beginSandboxSession,
 	getSessionAccessSnapshot,
 	normalizeSandboxRoot,
+	removeSessionDirs,
 	pathsCoveredByRoots,
 } from "./session-access.ts";
 import { yoloEnabled } from "./yolo.ts";
@@ -58,7 +59,16 @@ export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 	memoryMb: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_MEMORY_MB, description: "Memory limit (MB) for this command's process tree. Default 1 GiB (1024). Specify a concrete MB value only when the command needs more than the default; larger values raise the cap, subject to approval." })),
 }, { additionalProperties: false });
 
-type PathActionList = "allow" | "block" | "session-write" | "session-trust";
+type PathActionList = "allow" | "block" | "session-write" | "session-trust" | "revoke";
+
+export interface PathAction {
+	path: string;
+	list: PathActionList;
+}
+
+export interface ApplyPathActionsResult {
+	writePaths: string[];
+}
 
 export interface SandboxAllowInput {
 	command?: unknown;
@@ -99,6 +109,46 @@ export function writePathsFullyTrusted(
 ): boolean {
 	if (writePaths.length === 0) return false;
 	return pathsCoveredByRoots(writePaths, [...roots.allowDirs, ...roots.sessionTrustedDirs, ...roots.sessionWriteDirs], cwd);
+}
+
+/**
+ * 一次审批里的多条目录操作。只接受本次声明的 writePaths；
+ * 信任类动作在命令审计未通过时跳过，revoke/block 始终生效。
+ */
+export function applyPathActions(
+	actions: PathAction[] | undefined,
+	writePaths: string[],
+	cwd: string,
+	audit?: SandboxCheckResult,
+): ApplyPathActionsResult {
+	const candidates = new Set(writePaths);
+	const extraRoots: string[] = [];
+	const grantSafe = !audit || (audit.allow && (audit.rules?.length ?? 0) === 0);
+	for (const pa of actions ?? []) {
+		if (!pa || typeof pa.path !== "string") continue;
+		const path = normalizeSandboxRoot(pa.path, cwd);
+		if (!path || !candidates.has(path)) continue;
+		if (pa.list === "allow") {
+			if (!grantSafe) continue;
+			addAllowDir(path);
+			extraRoots.push(path);
+		} else if (pa.list === "block") {
+			addBlockDir(path);
+		} else if (pa.list === "session-write") {
+			// 兼容旧 GUI 响应：三档信任都免审批后，session-write 与 session-trust 行为等价。
+			if (!grantSafe) continue;
+			addSessionWriteDirs([path], cwd);
+			extraRoots.push(path);
+		} else if (pa.list === "session-trust") {
+			if (!grantSafe) continue;
+			addSessionTrustedDirs([path], cwd);
+			extraRoots.push(path);
+		} else if (pa.list === "revoke") {
+			removeAllowDir(path);
+			removeSessionDirs([path], cwd);
+		}
+	}
+	return { writePaths: [...new Set([...writePaths, ...extraRoots])] };
 }
 
 interface GuiDecision {
@@ -254,34 +304,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					options.approvalDependencies?.runGui,
 				);
 				if (gui !== "gui-unavailable") {
-					// 只接受模型声明并已规范化的 writePaths，不从 command 拆路径。
-					const candidates = new Set(writePaths);
-					const currentCommandRoots: string[] = [];
-					// 走到 GUI 分支说明非 yolo，audit 必已计算（非空）
-					const auditResolved = audit!;
-					for (const pa of gui.pathActions ?? []) {
-						if (!pa || typeof pa.path !== "string") continue;
-						const path = normalizeSandboxRoot(pa.path, cwd);
-						if (!path || !candidates.has(path)) continue;
-						if (pa.list === "allow") {
-							// 目录信任只能减少安全命令的重复审批，不能批准风险命令。
-							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
-							addAllowDir(path);
-							currentCommandRoots.push(path);
-						} else if (pa.list === "block") {
-							addBlockDir(path);
-						} else if (pa.list === "session-write") {
-							// 兼容旧 GUI 响应：三档信任都免审批后，session-write 与 session-trust 行为等价。
-							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
-							addSessionWriteDirs([path], cwd);
-							currentCommandRoots.push(path);
-						} else if (pa.list === "session-trust") {
-							if (!auditResolved.allow || (auditResolved.rules?.length ?? 0) > 0) continue;
-							addSessionTrustedDirs([path], cwd);
-							currentCommandRoots.push(path);
-						}
-					}
-					writePaths = [...new Set([...writePaths, ...currentCommandRoots])];
+					writePaths = applyPathActions(gui.pathActions, writePaths, cwd, audit).writePaths;
 					decision = gui.action;
 					userComment = normalizeApprovalComment(gui.comment);
 				} else if (ctx.hasUI || options.approvalDependencies?.selectApproval) {
@@ -292,8 +315,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 				}
 			}
 
-			// session-write/session-trust 的路径动作已同时批准当前命令；
-			// writePaths 已并入本次执行环境，后续命令通过 session 状态继续继承。
+			// 目录草稿随允许/拒绝一并提交；信任类动作只减少后续审批，不代替本次决定。
 
 			if (decision !== "allow") {
 				const userNote = userComment ? `用户理由：${userComment}。` : "";

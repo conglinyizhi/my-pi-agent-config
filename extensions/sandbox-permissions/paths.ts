@@ -143,6 +143,30 @@ export function addBlockDir(dir: string): boolean {
 	return true;
 }
 
+/** 从白名单移除一个目录；不存在则返回 false */
+export function removeAllowDir(dir: string): boolean {
+	const d = normalizeDir(dir);
+	if (!d || d === "/") return false;
+	const paths = loadSandboxPaths();
+	const next = paths.allowDirs.filter((path) => path !== d);
+	if (next.length === paths.allowDirs.length) return false;
+	paths.allowDirs = next;
+	saveSandboxPaths(paths);
+	return true;
+}
+
+/** 从黑名单移除一个目录；不存在则返回 false */
+export function removeBlockDir(dir: string): boolean {
+	const d = normalizeDir(dir);
+	if (!d || d === "/") return false;
+	const paths = loadSandboxPaths();
+	const next = paths.blockDirs.filter((path) => path !== d);
+	if (next.length === paths.blockDirs.length) return false;
+	paths.blockDirs = next;
+	saveSandboxPaths(paths);
+	return true;
+}
+
 /** 测试注入：重设文件路径（避免测试读写真实用户文件） */
 export function setPathsFileForTest(filePath: string): void {
 	pathsFile = filePath;

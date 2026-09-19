@@ -12,6 +12,7 @@ import {
 	getSessionAccessSnapshot,
 	normalizeSandboxRoot,
 	pathsCoveredByRoots,
+	removeSessionDirs,
 	resetSandboxSessionForTest,
 } from "./session-access.ts";
 
@@ -43,6 +44,16 @@ describe("session sandbox access", () => {
 		assert.deepEqual(access.writeDirs, ["/tmp/moon"]);
 		assert.equal(pathsCoveredByRoots(["/tmp/moon/build"], access.trustedDirs), true);
 		assert.equal(pathsCoveredByRoots(["/tmp/moon2"], access.trustedDirs), false);
+	});
+
+	it("removeSessionDirs 只删精确路径，不删父根", () => {
+		resetSandboxSessionForTest("session-a");
+		addSessionTrustedDirs(["/tmp/moon", "/tmp/other"]);
+		assert.deepEqual(removeSessionDirs(["/tmp/moon/build", "/tmp/moon"]), ["/tmp/moon"]);
+		assert.deepEqual(getSessionAccessSnapshot("session-a"), {
+			writeDirs: ["/tmp/other"],
+			trustedDirs: ["/tmp/other"],
+		});
 	});
 
 	it("session ID 变化或结束时清空临时授权", () => {

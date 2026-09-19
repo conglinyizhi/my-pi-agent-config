@@ -253,6 +253,7 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
       command: "install -m 755 /tmp/build/bin/tool /usr/local/bin/tool",
       permission: "write-paths",
       writePaths: ["/usr/local/bin"],
+      candidatePaths: ["/usr/local/bin", "/opt/cache"],
       justification: "需要把编译产物安装到系统 PATH 目录",
       persistentRoots: ["/home/test/.pnpm"],
       sessionWriteRoots: ["/tmp/session-build"],

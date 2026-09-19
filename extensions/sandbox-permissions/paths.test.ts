@@ -17,6 +17,8 @@ import {
 	addBlockDir,
 	normalizeDir,
 	setPathsFileForTest,
+	removeAllowDir,
+	removeBlockDir,
 } from "./paths.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "sandbox-paths-test-"));
@@ -105,6 +107,13 @@ describe("sandbox-paths 文件读写", () => {
 		const p = loadSandboxPaths();
 		assert.deepEqual(p.allowDirs, ["/tmp/build"]);
 		assert.deepEqual(p.blockDirs, ["/home/secret"]);
+	});
+	it("removeAllowDir / removeBlockDir 精确删除", () => {
+		saveSandboxPaths({ allowDirs: ["/tmp/build", "/opt/long"], blockDirs: ["/home/secret", "/var/secret"] });
+		assert.equal(removeAllowDir("/tmp/build"), true);
+		assert.equal(removeAllowDir("/tmp/build"), false);
+		assert.equal(removeBlockDir("/home/secret"), true);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/opt/long"], blockDirs: ["/var/secret"] });
 	});
 	it("损坏文件 → 空名单（容错）", () => {
 		saveSandboxPaths({ allowDirs: [], blockDirs: [] });

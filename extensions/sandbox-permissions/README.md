@@ -56,6 +56,10 @@ node --experimental-strip-types extensions/sandbox-permissions/rule-engine.test.
 node --experimental-strip-types extensions/sandbox-permissions/inline-script.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/helpers.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/llm-review.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/paths.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/session-access.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/allow.test.ts
+node --test wails-gui/frontend/src/domain/gate/path-actions.test.js
 node --experimental-strip-types lib/subagent-capability.test.ts
 node --experimental-strip-types lib/subagent-env.test.ts
 ```
@@ -181,7 +185,7 @@ LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request
 
 ### 审批附言（三个窗口通用）
 
-三个 gate 窗口（`audit` / `capability` / `sandbox-allow`）底部都有一条常驻附言输入框（`data-name=gate-comment-input`）：点「🚫 拒绝」或允许按钮时，框里有内容就随响应带上 `{ action, comment }`，空则不带（不发空 `comment` 字段）。输入框有内容时右侧出现 `✕` 清空按钮（等同 Esc）；`Ctrl/Cmd+Enter` = 允许。sandbox-allow 的目录授权动作也会带上当前附言。
+三个 gate 窗口（`audit` / `capability` / `sandbox-allow`）底部都有一条常驻附言输入框（`data-name=gate-comment-input`）：点「🚫 拒绝」或允许按钮时，框里有内容就随响应带上 `{ action, comment }`，空则不带（不发空 `comment` 字段）。输入框有内容时右侧出现 `✕` 清空按钮（等同 Esc）；`Ctrl/Cmd+Enter` = 允许。sandbox-allow 的目录操作先暂存，随允许/拒绝一并提交，也会带上当前附言。
 
 「▾ 历史」展开 chip 面板（`gate-history-toggle`）：点 chip 文本回填到输入框（`gate-history-chip`），悬停 chip 显示 `✎` 原地编辑（`gate-history-edit`）与 `✕` 删除单条（`gate-history-delete`）；没有批量清空能力。历史读写走 `wails-gui/app.go` 的 `LoadReasons` / `SaveReason` / `UpdateReason` / `DeleteReason`，落盘仍是 `permission-gate-reasons.csv`（去重 + 上限 20 条）。
 
@@ -284,17 +288,16 @@ worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`
 - 长期根只减少重复审批，不绕过 `autoReject` 硬拒绝规则
 - 含动态构造（`$()` / 变量引用 `$dir` 等）→ 不豁免（路径无法静态确认，避免 `cd /tmp/build && rm -rf $dir` 误放行）
 - 提取不到目标路径 → 不豁免；autoReject 硬拦优先于白名单（白名单不豁免 autoReject）
-
 ### GUI 交互
 
-GateView.vue 的「📁 目录授权」区块提供三种动作：
+GateView.vue 的「📁 目录授权」区块在点允许/拒绝前可对多个目录反复标记，不关窗：
 
-- 「长期信任」→ 写入 `allowDirs`，当前命令放行
-- 「本 session 信任」→ 写入当前内存信任根，当前命令放行
-- 「黑名单」→ 写入 `blockDirs`，当前命令拒绝
+- 「长期信任」→ 暂存 `allow`，提交后写入 `allowDirs`
+- 「本 session 信任」→ 暂存 `session-trust`，提交后写入当前内存信任根
+- 「黑名单」→ 暂存 `block`，提交后写入 `blockDirs`
+- 「取消授权 / 取消标记」→ 已有精确授权暂存 `revoke`；已有草稿则清除该条
 
-返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次声明的 writePaths，再应用授权；命令字符串里多出来的绝对路径不会扩大这一枪。
-
+同一目录后点的动作覆盖前面的暂存。允许/拒绝仍决定当前命令是否执行；目录草稿随同一次响应提交。返回 `pathActions: [{ path, list }]`，allow 收到后只接受本次声明的 writePaths，再应用授权；命令字符串里多出来的绝对路径不会扩大这一枪。
 ### sandbox-allow 使用语义
 
 `sandbox-allow` 只在普通 bash 确实因为沙箱写保护无法完成时使用。它执行的是一整条 shell 命令字符串；`&&`、`;`、管道、重定向和子 shell 都包含在同一次审批与同一个 timeout 内。
@@ -316,13 +319,14 @@ GateView.vue 的「📁 目录授权」区块提供三种动作：
 - **前置审批**：`bash_background` 与内建 bash 共用 `lib/bash-approval.ts` 的审批链——黑名单/内联脚本/全 autoReject 硬拒；需确认类先 LLM 预审，`safe`+auto 直接启动，否则弹 GUI/TUI 人工（批准在 `registry.start` 之前完成，等待发生在本次工具调用内）。审批条目写入 `bash-audit` 并带 `origin: "bash_background"`。
 - **局限**：内存墙依赖 `/proc`，仅 Linux 生效；macOS/Windows 无 `/proc` 时采样恒为 0，内存墙自动失效（不误杀、不报错）。
 
-GUI 中的目录动作会同时批准当前命令：
+GUI 中的目录动作先暂存，随允许/拒绝一次提交：
 
 - **长期信任**：写入 `allowDirs`，跨 session 可写并可免后续 `sandbox-allow` 审批
 - **本 session 信任**：当前 session 可写并可免后续 `sandbox-allow` 审批
 - **黑名单**：写入 `blockDirs`，后续敏感路径拦截
+- **取消授权**：从长期 `allowDirs` 与当前 session 信任/可写根里移除该精确路径
 
-长期根、session 根和本次声明的 `paths` 都会在执行前合并；GUI 响应中的路径只接受这次声明的 writePaths。
+长期根、session 根和本次声明的 `paths` 都会在执行前合并；GUI 响应中的路径只接受这次声明的 writePaths。目录授权不代替本次允许/拒绝。
 
 ### 生效与同步
 

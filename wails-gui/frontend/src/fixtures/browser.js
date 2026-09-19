@@ -13,6 +13,18 @@ export const browserFixtures = {
     review: { verdict: "risky", reason: "递归删除构建缓存需要确认范围", suggestion: "确认目标目录是否可安全重建" },
     kind: "audit",
   },
+  "gate-sandbox-allow": {
+    command: "install -m 755 /tmp/build/bin/tool /usr/local/bin/tool",
+    kind: "sandbox-allow",
+    permission: "write-paths",
+    writePaths: ["/usr/local/bin", "/opt/cache"],
+    candidatePaths: ["/usr/local/bin", "/opt/cache"],
+    justification: "需要把编译产物安装到系统 PATH 目录",
+    persistentRoots: ["/home/test/.pnpm"],
+    sessionWriteRoots: ["/tmp/session-build"],
+    sessionTrustedRoots: ["/tmp/session-trusted"],
+    rules: [],
+  },
   subagents: {
     workers: [
       {

@@ -70,24 +70,48 @@
       </div>
     </div>
 
-    <!-- 目录授权（仅升权申请窗口；命令链整体作为一次审批单元） -->
+    <!-- 目录授权：点允许/拒绝前可多次暂存，不关窗 -->
     <div v-if="isSandboxAllow && permission === 'write-paths' && rules.length === 0 && candidatePaths.length" class="paths-block">
-      <div class="paths-header">📁 目录授权 <span class="paths-sub">（当前命令链整体一次执行）</span></div>
-      <div v-for="path in candidatePaths" :key="path" class="path-row">
+      <div class="paths-header">📁 目录授权 <span class="paths-sub">（可多次标记，随允许/拒绝一并提交）</span></div>
+      <div v-for="path in candidatePaths" :key="path" class="path-row" :class="{ pending: rowOf(path).pending }">
         <code class="path-dir">{{ path }}</code>
-        <span class="path-state">{{ pathState(path) }}</span>
-        <button v-if="!coveredBy(path, persistentRoots)" data-name="path-persistent" @click="pathAction(path, 'allow')" class="btn btn-allow btn-sm" title="长期可写；命中后 sandbox-allow 可免审批">长期信任</button>
-        <button v-if="!coveredBy(path, sessionTrustedRoots) && !coveredBy(path, sessionWriteRoots) && !coveredBy(path, persistentRoots)" data-name="path-session-trust" @click="pathAction(path, 'session-trust')" class="btn btn-trust btn-sm" title="本 session 可写，后续 sandbox-allow 可免审批">本 session 信任</button>
-        <button data-name="path-block" @click="pathAction(path, 'block')" class="btn btn-deny btn-sm" title="该目录以后直接拦截">黑名单</button>
+        <span class="path-state" :class="{ pending: rowOf(path).pending }">{{ rowOf(path).label }}</span>
+        <button
+          v-if="rowOf(path).showPersistent"
+          data-name="path-persistent"
+          :class="['btn', 'btn-allow', 'btn-sm', { pending: rowOf(path).persistentPending }]"
+          title="标记为长期可写；命中后 sandbox-allow 可免审批。再次点击清除这条暂存。"
+          @click="stagePath(path, 'allow')"
+        >长期信任</button>
+        <button
+          v-if="rowOf(path).showSession"
+          data-name="path-session-trust"
+          :class="['btn', 'btn-trust', 'btn-sm', { pending: rowOf(path).sessionPending }]"
+          title="标记为本 session 可写并可免审批。再次点击清除这条暂存。"
+          @click="stagePath(path, 'session-trust')"
+        >本 session 信任</button>
+        <button
+          data-name="path-block"
+          :class="['btn', 'btn-deny', 'btn-sm', { pending: rowOf(path).blockPending }]"
+          title="标记为黑名单。再次点击清除这条暂存。"
+          @click="stagePath(path, 'block')"
+        >黑名单</button>
+        <button
+          v-if="rowOf(path).cancelLabel"
+          data-name="path-cancel"
+          class="btn btn-cancel btn-sm"
+          :title="rowOf(path).cancelLabel === '取消授权' ? '提交时撤销该目录已有的长期/本 session 授权' : '清除这条暂存标记'"
+          @click="cancelPath(path)"
+        >{{ rowOf(path).cancelLabel }}</button>
       </div>
-      <div class="paths-hint">目录授权只对无风险命令提供快捷设置。长期信任 = 跨 session 可写并可免 sandbox-allow 审批；本 session 信任 = 当前 session 可写并可免审；黑名单 = 长期拦截。点击授权动作会同时批准当前命令链，&&、;、管道和重定向也包含在内。</div>
+      <div class="paths-hint">目录操作先暂存，不关窗。可给多个目录分别标记长期信任、本 session 信任、黑名单或取消已有授权，再点允许或拒绝一次提交。允许/拒绝仍决定当前命令是否执行。</div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from "vue";
-import { isPathCovered, pathTrustState } from "../../domain/gate/highlights.js";
+import { pathRowModel } from "../../domain/gate/path-actions.js";
 import { gateDecisionSummary } from "../../domain/gate/summary.js";
 
 const props = defineProps({
@@ -107,11 +131,12 @@ const props = defineProps({
   persistentRoots: { type: Array, default: () => [] },
   sessionWriteRoots: { type: Array, default: () => [] },
   sessionTrustedRoots: { type: Array, default: () => [] },
+  pathDrafts: { type: Object, default: () => ({}) },
   verdictMeta: { type: Object, required: true },
   defaultMemoryMb: { type: Number, default: 1024 },
 });
 
-const emit = defineEmits(["path-action"]);
+const emit = defineEmits(["stage-path", "cancel-path"]);
 const showRules = ref(false);
 const decisionSummary = computed(() => gateDecisionSummary({
   kind: props.isCapability ? "capability" : props.isSandboxAllow ? "sandbox-allow" : "audit",
@@ -120,19 +145,20 @@ const decisionSummary = computed(() => gateDecisionSummary({
   rules: props.rules,
   review: props.review,
 }));
+const pathRoots = computed(() => ({
+  persistentRoots: props.persistentRoots,
+  sessionTrustedRoots: props.sessionTrustedRoots,
+  sessionWriteRoots: props.sessionWriteRoots,
+}));
 
-function coveredBy(path, roots) {
-  return isPathCovered(path, roots);
+function rowOf(path) {
+  return pathRowModel(path, pathRoots.value, props.pathDrafts);
 }
-function pathState(path) {
-  return pathTrustState(path, {
-    persistentRoots: props.persistentRoots,
-    sessionTrustedRoots: props.sessionTrustedRoots,
-    sessionWriteRoots: props.sessionWriteRoots,
-  });
+function stagePath(path, list) {
+  emit("stage-path", { path, list });
 }
-function pathAction(path, list) {
-  emit("path-action", { path, list });
+function cancelPath(path) {
+  emit("cancel-path", path);
 }
 </script>
 
@@ -149,7 +175,10 @@ function pathAction(path, list) {
 .sa-paths { display: flex; flex-wrap: wrap; gap: 6px; }
 .sa-path { color: #7aa2f7; background: #1a1a3e; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
 .path-state { flex-shrink: 0; color: #aaa; font-size: 11px; }
+.path-state.pending { color: #f0c674; }
+.path-row.pending { background: #1c1c32; border-radius: 4px; padding: 4px 6px; }
 .btn-trust { color: #c792ea; background: #241b32; border-color: #c792ea55; }
+.btn.pending { outline: 1px solid currentColor; filter: brightness(1.15); }
 .sandbox-warning { padding: 10px 16px; border-top: 1px solid #ff6b6b55; background: #3a1a1a; color: #ffb4b4; display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 1.5; }
 .sandbox-risk { padding: 8px 16px; border-top: 1px solid #e67e2255; background: #2a1a0a; }
 .paths-block { padding: 8px 16px; border-top: 1px solid #2a2a4a; background: #14142a; }

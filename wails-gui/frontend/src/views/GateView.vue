@@ -31,8 +31,10 @@
       :persistent-roots="persistentRoots"
       :session-write-roots="sessionWriteRoots"
       :session-trusted-roots="sessionTrustedRoots"
+      :path-drafts="pathDrafts"
       :verdict-meta="verdictMeta"
-      @path-action="pathAction"
+      @stage-path="stagePath"
+      @cancel-path="cancelPath"
     />
 
     <GateActionBar
@@ -40,6 +42,7 @@
       :is-capability="isCapability"
       :reasons="reasons"
       :comment="comment"
+      :path-draft-summary="draftSummary"
       @update:comment="comment = $event"
       @respond="respondFromAction"
       @save-reason="saveReason"
@@ -54,6 +57,7 @@ import "../gui-theme.css";
 import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import { findHighlights } from "../domain/gate/highlights.js";
+import { cancelPathAuthorization, cyclePathDraft, pathDraftsToActions, pathDraftSummary } from "../domain/gate/path-actions.js";
 import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
 import GateCommandPreview from "../components/gate/GateCommandPreview.vue";
@@ -76,12 +80,12 @@ const capabilityScope = ref("");
 const requestReason = ref("");
 const timeout = ref(undefined);
 const memoryMb = ref(undefined);
-const DEFAULT_MEMORY_MB = 1024;
 // 目录白/黑名单候选（sandbox-allow 声明的 writePaths）
 const candidatePaths = ref([]);
 const persistentRoots = ref([]);
 const sessionWriteRoots = ref([]);
 const sessionTrustedRoots = ref([]);
+const pathDrafts = ref({});
 
 const cur = ref(0);
 const reasons = ref([]);
@@ -104,14 +108,21 @@ const verdictMeta = computed(() => {
   return { label: "❌ 审核失败", cls: "v-error" };
 });
 const highlights = computed(() => findHighlights(cmd.value, rules.value));
+const pathRoots = computed(() => ({
+  persistentRoots: persistentRoots.value,
+  sessionTrustedRoots: sessionTrustedRoots.value,
+  sessionWriteRoots: sessionWriteRoots.value,
+}));
+const draftSummary = computed(() => pathDraftSummary(pathDrafts.value));
 
-function pathAction({ path, list }) {
-  // 选择目录授权并结束本次审核；授权动作同时放行当前命令链，附言一并带上。
-  const note = comment.value.trim();
-  respond(list === "block" ? "deny" : "allow", note || undefined, [{ path, list }]);
+function stagePath({ path, list }) {
+  pathDrafts.value = cyclePathDraft(pathDrafts.value, path, list);
 }
-function respondFromAction({ action, comment: note, pathActions }) {
-  respond(action, note, pathActions);
+function cancelPath(path) {
+  pathDrafts.value = cancelPathAuthorization(pathDrafts.value, path, pathRoots.value);
+}
+function respondFromAction({ action, comment: note }) {
+  respond(action, note, pathDraftsToActions(pathDrafts.value));
 }
 async function respond(action, comment, pathActions) {
   const response = { action };

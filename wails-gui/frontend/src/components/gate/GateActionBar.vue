@@ -14,6 +14,7 @@
       </div>
       <button data-name="gate-history-toggle" class="ghost" title="历史附言" @click.stop="toggleHistory">▾ 历史</button>
       <span class="chip-mark" :class="{ show: comment.trim().length > 0 }">将附带附言</span>
+      <span v-if="pathDraftSummary" data-name="path-draft-summary" class="chip-mark show draft-mark">{{ pathDraftSummary }}</span>
       <span class="spacer"></span>
       <button v-if="isSandboxAllow" data-name="sa-deny" class="btn btn-deny" @click="respond('deny')">🚫 拒绝</button>
       <button v-else data-name="action-deny" class="btn btn-deny" @click="respond('deny')">🚫 拒绝</button>
@@ -52,9 +53,10 @@ const props = defineProps({
   isCapability: Boolean,
   reasons: { type: Array, default: () => [] },
   comment: { type: String, default: "" },
+  pathDraftSummary: { type: String, default: "" },
 });
 const emit = defineEmits(["respond", "save-reason", "update-reason", "delete-reason", "update:comment"]);
-// 附言状态提升到 GateView：sandbox-allow 的目录授权动作也要能带上附言
+// 附言状态提升到 GateView：允许/拒绝提交时带上当前附言与目录草稿
 const comment = computed({
   get: () => props.comment,
   set: (value) => emit("update:comment", value),
@@ -149,6 +151,7 @@ onUnmounted(() => {
 .ghost:hover { color: #e0e0e0; border-color: #444; }
 .chip-mark { font-size: 11px; color: #2ecc71; background: #12261a; border: 1px solid #2ecc7155; padding: 2px 8px; border-radius: 10px; white-space: nowrap; opacity: 0; }
 .chip-mark.show { opacity: 1; }
+.chip-mark.draft-mark { color: #f0c674; background: #2a1a0a; border-color: #f0c67455; }
 .spacer { flex: 1; }
 .btn { padding: 8px 20px; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; font-family: inherit; }
 .btn:hover { filter: brightness(1.1); }

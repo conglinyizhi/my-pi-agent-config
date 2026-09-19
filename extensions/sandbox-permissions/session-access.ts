@@ -88,6 +88,17 @@ export function addSessionTrustedDirs(paths: Iterable<string>, cwd = process.cwd
 	return added;
 }
 
+/** 撤销当前 session 对该目录的可写根与信任根；只删精确路径，不删父根。 */
+export function removeSessionDirs(paths: Iterable<string>, cwd = process.cwd()): string[] {
+	const removed: string[] = [];
+	for (const path of normalizeSandboxRoots(paths, cwd)) {
+		const hadWrite = state.writeDirs.delete(path);
+		const hadTrust = state.trustedDirs.delete(path);
+		if (hadWrite || hadTrust) removed.push(path);
+	}
+	return removed;
+}
+
 export function getSessionWriteDirs(sessionId?: string): string[] {
 	if (!sessionId || state.sessionId !== sessionId) return [];
 	return [...state.writeDirs].sort();
