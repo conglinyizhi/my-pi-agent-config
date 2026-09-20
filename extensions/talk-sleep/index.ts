@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { appendFile, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { OSC52_TOOL, copyToClipboard } from "../../lib/clipboard.ts";
+import { OSC52_TOOL, copyToClipboard, describeClipboardResult } from "../../lib/clipboard.ts";
 
 const STORE_PATH = join(homedir(), ".pi", "talk-sleep.jsonl");
 
@@ -260,21 +260,14 @@ export default function (pi: ExtensionAPI) {
             },
           });
           ctx.ui.setStatus("talk-sleep", undefined);
-          if (result.ok && result.tool === OSC52_TOOL) {
-            // OSC 52 兜底：序列发出去了，但终端认不认由终端决定，不能报成「已复制」
-            ctx.ui.notify(
-              "已通过 OSC 52 发给终端，能否生效取决于终端是否支持。若粘贴不到，用「仅显示恢复指令」手动复制:\n" + fullCmd,
-              "warning",
-            );
-          } else if (result.ok) {
-            ctx.ui.notify("已复制到剪贴板: " + fullCmd, "info");
-          } else {
-            const failures = result.attempts.filter((a) => !a.ok);
-            const detail = failures.length > 0
-              ? `\n尝试了 ${failures.length} 个工具均失败：\n${failures.map((a) => `  · ${a.tool}: ${a.reason ?? "未知错误"}`).join("\n")}`
-              : "";
-            ctx.ui.notify("复制失败，未找到可用的剪贴板工具" + detail + "\n" + fullCmd, "warning");
-          }
+          // 三种结局的判断收在 lib 里（與 /get-clyzhi-debug-info 共用一份），
+          // 这里只补它不知道的那样：恢复指令本身
+          const report = describeClipboardResult(result);
+          const wroteToClipboard = result.ok && result.tool !== OSC52_TOOL;
+          const tail = wroteToClipboard
+            ? `：${fullCmd}`
+            : `　粘不到就用「仅显示恢复指令」手动复制\n${fullCmd}`;
+          ctx.ui.notify(report.message + tail, report.level);
         } else {
           ctx.ui.notify(fullCmd, "info");
         }
