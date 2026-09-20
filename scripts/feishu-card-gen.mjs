@@ -1,4 +1,8 @@
-// 飞书审批卡生成器（schema 2.0）。
+// 飞书卡片生成器（审批卡 + 提问卡，schema 2.0）。
+//
+// 审批卡：sandbox-allow / audit / capability 的待决断与决断后版式，见下。
+// 提问卡：ask_question 扇出到飞书，一题一张，回调契约见文件内的 question 段与
+//         hub/adapters/feishu/card-design/README.md。
 //
 // 本体放在 scripts/ 下，跟 loop-guard-calibrate.mjs 同理：这里的 console 输出
 // 就是它的交付物，提交前检查器也只把 scripts/ 下的文件当脚本看。
@@ -129,7 +133,8 @@ const actionBar = (allowLabel = "✅ 允许（仅此一次）") =>
     weighted(1, [submitButton(allowLabel, "btn_approve", "primary_filled")]),
   ]);
 
-const form = (elements) => ({ tag: "form", name: "gate_form", elements });
+// 表单名默认沿用审批卡的 gate_form；提问卡一题一个表单，名字带题号
+const form = (elements, name = "gate_form") => ({ tag: "form", name, elements });
 
 // 资源申请超出默认才标注，值得用户注意的事进 subtitle（plain_text，只能靠 ⚠ 提示）
 function resourceNote({ timeout, memoryMb } = {}) {
@@ -261,6 +266,99 @@ const capability = shell(
   header("审批 · capability", "subagent 申请能力", "indigo"),
 );
 
+// ── question（ask_question 扇出到飞书）───────────────────────────────
+//
+// 契约（适配器按它解析，字段名不要改）：问题一题一张卡，第 i 张 header 写「提问 [i/N]」，
+// subtitle 是该题的 label（没 label 就写「共 N 个问题」）。答题走 form 提交，
+// 名字里的题号就是适配器把 form_value 认回哪一题的钥匙：q_form_i / sel_i / custom_i。
+// 两个按钮都 form_action_type=submit，回调一次带回 action.name（按了哪个）与 action.form_value（选了什么）。
+//
+// allowOther 为 false 时才省掉自由输入框 —— 没有自由输入还留着输入框，
+// 用户就会往一个不会被采纳的地方写字。
+
+const QUESTIONS = [
+  {
+    label: "隔离方式",
+    question_text: "这次改造会动共享的构建脚本。改之前先定怎么隔离工作区？",
+    options: [
+      { value: "worktree", label: "用 git worktree 隔离" },
+      { value: "branch", label: "在当前工作区直接开分支" },
+      { value: "copy", label: "整个仓库复制到 /var/tmp 再改" },
+    ],
+    allowOther: true,
+  },
+  {
+    label: "验收范围",
+    question_text: "改完跑哪一层测试就算过？",
+    options: [
+      { value: "unit", label: "只跑改动目录的单测（约 2 分钟）" },
+      { value: "integration", label: "单测 + 集成（约 8 分钟）" },
+      { value: "all", label: "全量，含 e2e（约 20 分钟）" },
+    ],
+    allowOther: false,
+  },
+  {
+    label: "回滚预案",
+    question_text: "新脚本万一把 CI 挂了，先回滚还是先热修？",
+    options: [
+      { value: "revert", label: "直接回滚到上一版" },
+      { value: "hotfix", label: "先热修，超过 30 分钟没头绪再回滚" },
+      { value: "freeze", label: "停住流水线，等你看过再说" },
+    ],
+    allowOther: true,
+  },
+];
+
+// 灰字提示跟着有没有自由输入走，别在没输入框的卡上写「在下面自己写」
+const HINT_WITH_OTHER = "选一个，或在下面自己写；自己写的优先";
+const HINT_ONLY_SELECT = "选一个，点「提交本题」回传";
+
+const optionSelect = (index, options) => ({
+  tag: "select_static",
+  placeholder: { tag: "plain_text", content: "选择" },
+  options: options.map((o) => ({ text: { tag: "plain_text", content: o.label }, value: o.value })),
+  type: "default",
+  width: "fill",
+  required: false,
+  name: `sel_${index}`,
+});
+
+const customInput = (index) => ({
+  tag: "input",
+  name: `custom_${index}`,
+  placeholder: { tag: "plain_text", content: "或者自己写…" },
+  default_value: "",
+  width: "fill",
+  max_length: 200,
+  required: false,
+});
+
+// 按钮名不分题号：适配器要判断的是「提交还是取消」，哪一题由 q_form_i / sel_i 认
+const questionActions = () => cols([
+  weighted(1, [submitButton("🚫 取消", "btn_deny", "danger")]),
+  weighted(1, [submitButton("✅ 提交本题", "btn_answer", "primary_filled")]),
+]);
+
+function questionCard(index, total, q) {
+  const allowOther = q.allowOther !== false;
+  return shell(
+    [
+      form(
+        [
+          md(q.question_text, { text_size: "normal" }),
+          md(grey(allowOther ? HINT_WITH_OTHER : HINT_ONLY_SELECT)),
+          optionSelect(index, q.options),
+          ...(allowOther ? [customInput(index)] : []),
+          questionActions(),
+        ],
+        `q_form_${index}`,
+      ),
+      metaLine(),
+    ],
+    header(`提问 [${index}/${total}]`, q.label ?? `共 ${total} 个问题`, "turquoise"),
+  );
+}
+
 // ── 决断后（sandbox-allow）────────────────────────────────────────────
 
 const APPLIED = new Map([
@@ -291,6 +389,10 @@ const allowed = settled({ template: "green", title: "已允许 · sandbox-allow"
 const denied = settled({ template: "purple", title: "已拒绝 · sandbox-allow", subtitle: "feishu / 丛林 · 12:45", decision: "🚫 已决断：拒绝", color: "red" });
 
 const cards = { "pending.json": pending, "audit.json": audit, "capability.json": capability, "allowed.json": allowed, "denied.json": denied };
+// 提问卡按题号展开，文件名自带 i-of-N，跟 header 上的进度一致
+QUESTIONS.forEach((q, i) => {
+  cards[`question-${i + 1}of${QUESTIONS.length}.json`] = questionCard(i + 1, QUESTIONS.length, q);
+});
 for (const [name, card] of Object.entries(cards)) {
   writeFileSync(join(DIR, name), JSON.stringify(card, null, 2) + "\n");
   console.log("写好", name);

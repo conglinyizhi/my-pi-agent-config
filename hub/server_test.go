@@ -257,3 +257,199 @@ func TestDecideRepliesAck(t *testing.T) {
 		t.Fatalf("settled %+v", settled)
 	}
 }
+
+// startTestHub 起一个跳过 SO_PEERCRED 的本机测试 hub，返回 socket 与 Server。
+func startTestHub(t *testing.T) (string, *Server) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "hub.sock")
+	h := newHub("", time.Hour, 15*time.Minute, nil)
+	s := newServer(h, sock)
+	s.skipPeer = true
+	if err := s.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	go s.Serve()
+	return sock, s
+}
+
+// grantPrincipal 直接走 hub 内部接口造一个已授权账号，省掉配对码那段。
+func grantPrincipal(t *testing.T, s *Server, channel, userID string) *Principal {
+	t.Helper()
+	pair, _, err := s.hub.Pair(channel, userID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.hub.Grant(pair.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// mustRecvRaw 用已注册的 Decoder 把整行收成字段表，用来核对线上字段名和 omitempty。
+func mustRecvRaw(t *testing.T, c net.Conn) map[string]json.RawMessage {
+	t.Helper()
+	testDecoders.Lock()
+	dec, ok := testDecoders.m[c]
+	if !ok {
+		dec = json.NewDecoder(c)
+		testDecoders.m[c] = dec
+	}
+	testDecoders.Unlock()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var raw map[string]json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// 结构化应答要一字不差地进 settled，包括 wasCustom 那条。
+func TestSettledCarriesAnswers(t *testing.T) {
+	sock, s := startTestHub(t)
+	p := grantPrincipal(t, s, "im", "u1")
+
+	adapter := dial(t, sock)
+	defer adapter.Close()
+	mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapter)
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "question", RequestID: "req-answers",
+		SessionID: "sess", Payload: map[string]any{"title": "怎么发"},
+		TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Type != typeAskOK {
+		t.Fatalf("ask-ok %+v", ok)
+	}
+	if ev := mustRecv(t, adapter); ev.Type != typeEvent {
+		t.Fatalf("event %+v", ev)
+	}
+
+	answers := []Answer{
+		{ID: "q1", Value: "canary", Label: "先灰度"},
+		{ID: "q2", Value: "我自己填的", Label: "其他", WasCustom: true},
+	}
+	mustSend(t, adapter, Envelope{
+		V: 1, Type: typeDecide, RequestID: "req-answers", Action: "allow",
+		Principal: p, Answers: answers,
+	})
+	if ack := mustRecv(t, adapter); ack.Type != typeDecideOK {
+		t.Fatalf("回执 %+v", ack)
+	}
+
+	raw := mustRecvRaw(t, pi)
+	if string(raw["type"]) != `"settled"` {
+		t.Fatalf("pi 没收到 settled：%v", raw)
+	}
+	want, err := json.Marshal(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw["answers"]); got != string(want) {
+		t.Fatalf("answers 没原样透传\n got %s\nwant %s", got, want)
+	}
+
+	var settled Envelope
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &settled); err != nil {
+		t.Fatal(err)
+	}
+	if len(settled.Answers) != 2 || settled.Answers[1].ID != "q2" || !settled.Answers[1].WasCustom {
+		t.Fatalf("settled.answers %+v", settled.Answers)
+	}
+}
+
+// 老路径不带 answers，settled 里连字段都不该出现。
+func TestSettledWithoutAnswers(t *testing.T) {
+	sock, s := startTestHub(t)
+	p := grantPrincipal(t, s, "im", "u1")
+
+	adapter := dial(t, sock)
+	defer adapter.Close()
+	mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapter)
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "bash", RequestID: "req-noanswers",
+		SessionID: "sess", Payload: map[string]any{"command": "echo hi"},
+		TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Type != typeAskOK {
+		t.Fatalf("ask-ok %+v", ok)
+	}
+	if ev := mustRecv(t, adapter); ev.Type != typeEvent {
+		t.Fatalf("event %+v", ev)
+	}
+	mustSend(t, adapter, Envelope{
+		V: 1, Type: typeDecide, RequestID: "req-noanswers", Action: "allow",
+		Principal: p,
+	})
+	if ack := mustRecv(t, adapter); ack.Type != typeDecideOK {
+		t.Fatalf("回执 %+v", ack)
+	}
+
+	raw := mustRecvRaw(t, pi)
+	if string(raw["type"]) != `"settled"` || string(raw["action"]) != `"allow"` {
+		t.Fatalf("settled %v", raw)
+	}
+	if got, ok := raw["answers"]; ok {
+		t.Fatalf("旧路径不该带 answers：%s", got)
+	}
+}
+
+// ask-ok 要回报适配器数：0 个要说 0，2 个要说 2，role=pi 的连接不算。
+func TestAskOKReportsAdapterCount(t *testing.T) {
+	sock, _ := startTestHub(t)
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+
+	// 还没有适配器接入
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "question", RequestID: "req-noadapter",
+		SessionID: "sess", TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Adapters != 0 {
+		t.Fatalf("没有适配器时 adapters=%d", ok.Adapters)
+	}
+
+	for i := 0; i < 2; i++ {
+		adapter := dial(t, sock)
+		defer adapter.Close()
+		mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+		if hello := mustRecv(t, adapter); hello.Type != typeHelloOK {
+			t.Fatalf("hello-ok %+v", hello)
+		}
+	}
+
+	// 再加一条 pi 连接，它不该被算进去
+	pi2 := dial(t, sock)
+	defer pi2.Close()
+	mustSend(t, pi2, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi2)
+
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "question", RequestID: "req-twoadapters",
+		SessionID: "sess", TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Adapters != 2 {
+		t.Fatalf("两个适配器时 adapters=%d", ok.Adapters)
+	}
+}

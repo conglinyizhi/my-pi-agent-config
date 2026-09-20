@@ -43,7 +43,7 @@ func main() {
 		gui := newGUILauncher(bin)
 		s.launchGUI = func(ask *Ask) {
 			gui.launch(ask, func(action, comment string, pa []PathAction) {
-				settled, err := s.hub.Decide(ask.RequestID, byGUI, nil, action, comment, pa)
+				settled, err := s.hub.Decide(ask.RequestID, byGUI, nil, action, comment, pa, nil)
 				if err == nil {
 					s.onSettled(settled)
 				}

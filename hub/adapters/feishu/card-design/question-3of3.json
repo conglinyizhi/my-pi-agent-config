@@ -1,0 +1,146 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "提问 [3/3]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "回滚预案"
+    },
+    "template": "turquoise",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "form",
+        "name": "q_form_3",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "新脚本万一把 CI 挂了，先回滚还是先热修？",
+            "text_size": "normal"
+          },
+          {
+            "tag": "markdown",
+            "content": "<font color='grey'>选一个，或在下面自己写；自己写的优先</font>",
+            "text_size": "notation"
+          },
+          {
+            "tag": "select_static",
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "选择"
+            },
+            "options": [
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "直接回滚到上一版"
+                },
+                "value": "revert"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "先热修，超过 30 分钟没头绪再回滚"
+                },
+                "value": "hotfix"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "停住流水线，等你看过再说"
+                },
+                "value": "freeze"
+              }
+            ],
+            "type": "default",
+            "width": "fill",
+            "required": false,
+            "name": "sel_3"
+          },
+          {
+            "tag": "input",
+            "name": "custom_3",
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "或者自己写…"
+            },
+            "default_value": "",
+            "width": "fill",
+            "max_length": 200,
+            "required": false
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 取消"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 提交本题"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_answer"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

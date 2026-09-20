@@ -1,0 +1,146 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "提问 [1/3]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "隔离方式"
+    },
+    "template": "turquoise",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "form",
+        "name": "q_form_1",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "这次改造会动共享的构建脚本。改之前先定怎么隔离工作区？",
+            "text_size": "normal"
+          },
+          {
+            "tag": "markdown",
+            "content": "<font color='grey'>选一个，或在下面自己写；自己写的优先</font>",
+            "text_size": "notation"
+          },
+          {
+            "tag": "select_static",
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "选择"
+            },
+            "options": [
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "用 git worktree 隔离"
+                },
+                "value": "worktree"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "在当前工作区直接开分支"
+                },
+                "value": "branch"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "整个仓库复制到 /var/tmp 再改"
+                },
+                "value": "copy"
+              }
+            ],
+            "type": "default",
+            "width": "fill",
+            "required": false,
+            "name": "sel_1"
+          },
+          {
+            "tag": "input",
+            "name": "custom_1",
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "或者自己写…"
+            },
+            "default_value": "",
+            "width": "fill",
+            "max_length": 200,
+            "required": false
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 取消"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 提交本题"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_answer"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "提问 [2/3]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "验收范围"
+    },
+    "template": "turquoise",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "form",
+        "name": "q_form_2",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "改完跑哪一层测试就算过？",
+            "text_size": "normal"
+          },
+          {
+            "tag": "markdown",
+            "content": "<font color='grey'>选一个，点「提交本题」回传</font>",
+            "text_size": "notation"
+          },
+          {
+            "tag": "select_static",
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "选择"
+            },
+            "options": [
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "只跑改动目录的单测（约 2 分钟）"
+                },
+                "value": "unit"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "单测 + 集成（约 8 分钟）"
+                },
+                "value": "integration"
+              },
+              {
+                "text": {
+                  "tag": "plain_text",
+                  "content": "全量，含 e2e（约 20 分钟）"
+                },
+                "value": "all"
+              }
+            ],
+            "type": "default",
+            "width": "fill",
+            "required": false,
+            "name": "sel_2"
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 取消"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 提交本题"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_answer"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

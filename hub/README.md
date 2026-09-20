@@ -18,7 +18,7 @@
 
 协议是 JSON 行。适配器用通用 `channel` + `userId`，hub 源码不出现具体软件名。
 
-`decide` 会收到一条 `decide-ok` 回执（适配器那边是按 RPC 等的，等不到就要干耗到超时）；`settled` 另走广播，两者不混。
+`decide` 会收到一条 `decide-ok` 回执（适配器那边是按 RPC 等的，等不到就要干耗到超时）；`settled` 另走广播，两者不混。`decide` 可以带通用 `answers`（结构化应答，hub 不解释内容，原样透传进 `settled`），提问类审批靠它回传；`ask-ok` 会报当前在线适配器数，pi 据此决定要不要立刻回退本地 TUI。
 
 ## 装
 

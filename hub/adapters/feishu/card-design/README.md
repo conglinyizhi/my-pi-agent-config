@@ -16,6 +16,7 @@ node scripts/feishu-card-gen.mjs <输出目录>    # 写到别处
 | `capability.json` | subagent 能力请求 | `indigo` |
 | `allowed.json` | 决断为允许后 patch 上去 | `green` |
 | `denied.json` | 决断为拒绝后 patch 上去 | `purple` |
+| `question-<i>of<N>.json` | `ask_question` 扇出到飞书，一题一张（示例 3 题，见 `question-1of3.json`） | `turquoise` |
 
 ## 版式（待决断）
 
@@ -71,6 +72,47 @@ node scripts/feishu-card-gen.mjs <输出目录>    # 写到别处
 注意 `overflow`（折叠按钮组）与 `collapsible_panel`（折叠面板）是两个不同组件，别混：前者是「⋯ 展开一组按钮」，后者是「一块可折叠的内容区」，而且两者都不支持内嵌 form。
 
 历史目前只做展示。点条目已经会回传 `{action: "use-history"}` 加条目正文，回填到输入框也能做，但那需要为每次点击重画一次卡片，而且会把用户已经打的半截字冲掉，所以没接。
+
+## 提问卡（`ask_question` 扇出到飞书）
+
+一题一张卡，第 i 张 header 写「提问 [i/N]」，subtitle 是该题的 `label`（没有 label 就写「共 N 个问题」）。三题示例：`question-1of3.json` / `question-2of3.json` / `question-3of3.json`。
+
+```
+┌ header：提问 [1/3] / 隔离方式 ────────────────────────┐
+│ 这次改造会动共享的构建脚本。改之前先定怎么隔离工作区？   │
+│ 选一个，或在下面自己写；自己写的优先                    │   ← notation 灰字
+│ ┌ form q_form_1 ───────────────────────────────────┐ │
+│ │ sel_1   用 git worktree 隔离 / 直接开分支 / … ▾   │ │
+│ │ [ custom_1  或者自己写…                         ] │ │
+│ │ [🚫 取消]              [✅ 提交本题]              │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ask-preview · sess-1 · 至 12:30                      │   ← notation 灰字
+└──────────────────────────────────────────────────────┘
+```
+
+### 回调契约
+
+表单名与控件名都带题号（i 从 1 开始），适配器靠它把回调认回具体哪一题：
+
+| 元素 | `name` | 回调里的位置 | 说明 |
+|---|---|---|---|
+| 表单 | `q_form_<i>` | 不出现在回调里 | 一题一个表单，互不干扰 |
+| 下拉 | `sel_<i>` | `action.form_value.sel_i` | 值就是该题 `options[].value`（字符串）；`placeholder` 是「选择」 |
+| 自由输入 | `custom_<i>` | `action.form_value.custom_i` | 只在 `allowOther` 为 true 时存在，`max_length` 200，非必填 |
+| 取消 | `btn_deny` | `action.name` | 文案 `🚫 取消`，`danger` |
+| 提交本题 | `btn_answer` | `action.name` | 文案 `✅ 提交本题`，`primary_filled` |
+
+两个按钮都是 `form_action_type: submit`，点哪个都会带回整张表单的 `form_value`。**只有 `action.name === "btn_answer"` 的那次才算答案**：点取消同样会带 `form_value`，适配器不能看见 `form_value` 就当成回答。`custom_i` 非空时优先于 `sel_i`（卡上的灰字也是这么提示的），两个都空就是没作答。
+
+按钮名不带题号：适配器要判断的是「提交还是取消」，是哪一题由表单名与 `sel_i` / `custom_i` 认。
+
+`allowOther` 为 false 时省掉 `custom_i`，灰字提示也跟着换成「选一个，点「提交本题」回传」——没有输入框就不该提示用户去写。三题示例里第 2 题就是这种。
+
+### 设计决定
+
+1. **一题一张卡**，不把 N 题堆进一张：飞书卡片没有标签页组件，塞进一张要么纵向很高，要么得自己实现翻页状态；一题一张天然对应「答完一题算一题」，每题的 `q_form_i` 也各自独立。
+2. **header 用 `turquoise`**：审批卡的状态色已经占了 blue / orange / indigo / green / purple，提问是另一类卡，用一个没被占的颜色。
+3. **选项只走 `label`**：官方 `select_static` 的选项文本是 `text`，题目自带的 `description` 不进选项（塞进去会把卡撑高，且回调里也用不上）；要补充说明就写进 `question_text`。
 
 ## 适配器要改的地方
 

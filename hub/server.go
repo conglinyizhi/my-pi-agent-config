@@ -94,16 +94,37 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) add(c *client) {
-	s.mu.Lock()
-	s.clients[c] = struct{}{}
-	s.mu.Unlock()
-}
-
 func (s *Server) remove(c *client) {
 	s.mu.Lock()
 	delete(s.clients, c)
 	s.mu.Unlock()
+}
+
+// adapterCount 数当前在线的适配器。pi 拿这个数决定要不要立刻回退本地 TUI：
+// 没有适配器还硬等，用户就只看到一条不动的审批。
+func (s *Server) adapterCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for c := range s.clients {
+		if c.role == roleAdapter {
+			n++
+		}
+	}
+	return n
+}
+
+// greet 回 hello-ok，并且整段握着 clients 锁。
+//
+// 入册必须在回 hello-ok 之前：对端看到 hello-ok 就认为自己在册，若入册晚一步，
+// 恰好此刻扇出的 ask 事件会整条漏掉（适配器那边表现为卡没来）。
+// 但入册之后广播就可能抢写，对端先收到 event 再收到 hello-ok，它的 hello 校验
+// 会直接失败（表现为「连不上 hub」）。两个窗口一起关：入册与回 hello-ok 同一把锁。
+func (s *Server) greet(c *client) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clients[c] = struct{}{}
+	return c.send(Envelope{Type: typeHelloOK, Role: c.role, PeerUID: s.ourUID})
 }
 
 func (s *Server) broadcast(env Envelope, roles ...string) {
@@ -141,10 +162,6 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	c := &client{conn: conn, role: hello.Role, enc: enc}
-	if err := c.send(Envelope{Type: typeHelloOK, Role: hello.Role, PeerUID: s.ourUID}); err != nil {
-		return
-	}
-	s.add(c)
 	defer func() {
 		s.remove(c)
 		if c.role == rolePI {
@@ -158,6 +175,9 @@ func (s *Server) handle(conn net.Conn) {
 			}
 		}
 	}()
+	if err := s.greet(c); err != nil {
+		return
+	}
 
 	for {
 		var env Envelope
@@ -209,7 +229,7 @@ func (s *Server) dispatch(c *client, env Envelope) error {
 		} else if c.role == roleAdmin {
 			by = byAdmin
 		}
-		settled, err := s.hub.Decide(env.RequestID, by, env.Principal, env.Action, env.Comment, env.PathActions)
+		settled, err := s.hub.Decide(env.RequestID, by, env.Principal, env.Action, env.Comment, env.PathActions, env.Answers)
 		if err != nil {
 			return err
 		}
@@ -294,7 +314,10 @@ func (s *Server) onAsk(c *client, env Envelope) error {
 	}
 	ask := s.hub.SubmitAsk(requestID, env.SessionID, env.Kind, payload, timeout)
 	c.asks = append(c.asks, requestID)
-	if err := c.send(Envelope{Type: typeAskOK, ID: env.ID, RequestID: requestID, ExpiresAt: rfc3339(ask.ExpiresAt)}); err != nil {
+	if err := c.send(Envelope{
+		Type: typeAskOK, ID: env.ID, RequestID: requestID,
+		ExpiresAt: rfc3339(ask.ExpiresAt), Adapters: s.adapterCount(),
+	}); err != nil {
 		return err
 	}
 	s.broadcast(Envelope{

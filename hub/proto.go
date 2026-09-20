@@ -63,22 +63,37 @@ type Envelope struct {
 	Action      string         `json:"action,omitempty"`
 	Comment     string         `json:"comment,omitempty"`
 	PathActions []PathAction   `json:"pathActions,omitempty"`
-	Principal   *Principal     `json:"principal,omitempty"`
-	Channel     string         `json:"channel,omitempty"`
-	UserID      string         `json:"userId,omitempty"`
-	DisplayName string         `json:"displayName,omitempty"`
-	Code        string         `json:"code,omitempty"`
-	Event       string         `json:"event,omitempty"`
-	Reason      string         `json:"reason,omitempty"`
-	By          string         `json:"by,omitempty"`
-	ExpiresAt   string         `json:"expiresAt,omitempty"`
-	Message     string         `json:"message,omitempty"`
-	Items       []ListItem     `json:"items,omitempty"`
-	Pairs       []PairItem     `json:"pairs,omitempty"`
+	// Answers 是提问类审批的结构化应答。hub 不解释其中含义，只原样透传：
+	// 解析规则只有发起方和适配器知道，hub 中途插一道转换，两边就对不上了。
+	Answers     []Answer   `json:"answers,omitempty"`
+	Principal   *Principal `json:"principal,omitempty"`
+	Channel     string     `json:"channel,omitempty"`
+	UserID      string     `json:"userId,omitempty"`
+	DisplayName string     `json:"displayName,omitempty"`
+	Code        string     `json:"code,omitempty"`
+	Event       string     `json:"event,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	By          string     `json:"by,omitempty"`
+	ExpiresAt   string     `json:"expiresAt,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	// Adapters 只在 ask-ok 里回填，让 pi 知道此刻有几个适配器接单：
+	// 一个都没有就得立刻回退本地 TUI，等适配器稍后自己连上就晚了。
+	Adapters int        `json:"adapters,omitempty"`
+	Items    []ListItem `json:"items,omitempty"`
+	Pairs    []PairItem `json:"pairs,omitempty"`
 	// Principals 是随审批事件下发的当前授权名单，适配器据此决定审批卡推给谁。
 	// 不能只靠适配器自己见过的 chat：它一重启那张表就空了，卡会静默地推不出去。
 	Principals []Principal `json:"principals,omitempty"`
 	PeerUID    uint32      `json:"peerUid,omitempty"`
+}
+
+// Answer 是提问审批的一条应答。样式由发起方给，用户填了什么由适配器带回，
+// hub 不认 id，也不认 value 的取值空间。
+type Answer struct {
+	ID        string `json:"id"`
+	Value     string `json:"value"`
+	Label     string `json:"label"`
+	WasCustom bool   `json:"wasCustom,omitempty"`
 }
 
 type PathAction struct {
