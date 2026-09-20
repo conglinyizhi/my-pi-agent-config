@@ -12,10 +12,13 @@
 - 审批扇出：本机闸门窗 + 已连接的 IM 适配器，**先合法应答赢**，输家关窗 / 改卡
 - hub 没起来：pi 回退现有 GUI→TUI
 - 陌生人找 bot：挡住，给一次性码；**只有本机贴码才授权**（pi 里 `/remote:allow-key`，或 `pi-hub grant`）
+- 审批卡推给谁由 hub 的授权名单决定，随 `ask` 事件一起下发。适配器不需要账号先跟 bot 说过话，也不用自己的内存表（一重启就空）
 - 飞书适配器走本机 `lark-cli`（`hub/adapters/feishu/`）；没有 CLI 就不启
 - 未公开 IM 适配器不入库，放 `hub/private/`（gitignore）
 
 协议是 JSON 行。适配器用通用 `channel` + `userId`，hub 源码不出现具体软件名。
+
+`decide` 会收到一条 `decide-ok` 回执（适配器那边是按 RPC 等的，等不到就要干耗到超时）；`settled` 另走广播，两者不混。
 
 ## 装
 
@@ -38,6 +41,15 @@
 `/remote:gui` 让 hub 用 yad 打开 IM 许可窗。命令行备用：`pi-hub grant`、`pi-hub list`、`pi-hub pairs`。旧 Wails 许可窗源码在 `archive/wails-allowlist/`。
 
 覆盖 socket：`PI_HUB_SOCKET` 或 `-socket`。
+
+## systemd 两处坑
+
+hub 由 `default.target` 拉起，比图形会话导入环境要早，这两件事都得当心：
+
+1. **unit 里别写 `After=default.target`。** 凡 `WantedBy=default.target` 的单元，systemd 都隐含 `Before=default.target`；自己再写一条 `After=default.target` 就成了自指，再叠上飞书适配器的 `After=`+`Requires=`，会凑成
+   `default.target → pi-hub → pi-hub-feishu → default.target`。
+   开机时 systemd 为了破环会**删掉飞书那条 start job**：unit 停在 enabled 却没 active，于是 pi 每次开会话弹一次「飞书通道需要 lark-cli」——那句话跟 CLI 装没装无关。要等图形会话就写 `After=graphical-session.target`。
+2. **hub 拿不到 `DISPLAY` / `WAYLAND_DISPLAY`。** 本机实测 hub 比环境导入早约 20 秒起来，`After=graphical-session.target` 治不了这个：开机时 `graphical-session.target` 常常不在 `default.target` 那个事务里，`After=` 指向不在同一事务的 unit 等于空转。所以 hub 在拉 `wails-gui` / `yad` 之前，自己向 `systemctl --user show-environment` 要一次当前会话环境，只补白名单里的显示变量（`sessionenv.go`）。journal 里出现「会话环境缺失，已从 systemd 补入」就是这个路径在干活。
 
 ## 超时
 

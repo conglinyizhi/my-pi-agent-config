@@ -93,6 +93,7 @@ func runAllowDialog(yad string, pairs []PairItem, asks []ListItem) (string, erro
 		"--button=授权:0",
 	)
 	var stdout bytes.Buffer
+	cmd.Env = guiEnv()
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil
 	err := cmd.Run()

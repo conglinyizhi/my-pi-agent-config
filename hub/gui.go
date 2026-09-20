@@ -57,6 +57,7 @@ func (g *guiLauncher) launch(ask *Ask, decide func(action, comment string, pa []
 		return
 	}
 	cmd := exec.Command(g.bin, "gate", reqFile, respFile)
+	cmd.Env = guiEnv()
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {

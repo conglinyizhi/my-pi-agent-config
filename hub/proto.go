@@ -18,6 +18,7 @@ const (
 	typeAskOK        = "ask-ok"
 	typeEvent        = "event"
 	typeDecide       = "decide"
+	typeDecideOK     = "decide-ok"
 	typeSettled      = "settled"
 	typeList         = "list"
 	typeListOK       = "list-ok"
@@ -74,7 +75,10 @@ type Envelope struct {
 	Message     string         `json:"message,omitempty"`
 	Items       []ListItem     `json:"items,omitempty"`
 	Pairs       []PairItem     `json:"pairs,omitempty"`
-	PeerUID     uint32         `json:"peerUid,omitempty"`
+	// Principals 是随审批事件下发的当前授权名单，适配器据此决定审批卡推给谁。
+	// 不能只靠适配器自己见过的 chat：它一重启那张表就空了，卡会静默地推不出去。
+	Principals []Principal `json:"principals,omitempty"`
+	PeerUID    uint32      `json:"peerUid,omitempty"`
 }
 
 type PathAction struct {

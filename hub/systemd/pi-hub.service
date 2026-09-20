@@ -1,6 +1,10 @@
 [Unit]
 Description=pi approval hub
-After=default.target
+# 等图形会话环境（yad / wails-gui 要 DISPLAY）。
+# 不能写 After=default.target：WantedBy=default.target 的单元隐含 Before=default.target，
+# 而飞书适配器 After+Requires 本单元，会凑成 default.target 的启动环，
+# 开机时 systemd 会删掉飞书那条 start job。
+After=graphical-session.target
 
 [Service]
 Type=simple

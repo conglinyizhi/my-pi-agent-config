@@ -2,6 +2,12 @@
 
 本机 `lark-cli` 的薄包装：收事件、发卡片，翻译成 hub 的 pair / decide / list。
 
+**审批卡推给谁，以 hub 随 `ask` 事件下发的授权名单为准**（`envelope.principals`）。适配器自己记的 `a.chats`（谁跟 bot 说过话）只用来拿 `chat_id`；不知道就直接按 `open_id` 发——实测 bot 可以不经“先说话”直发 open_id。
+
+之所以不能只看 `a.chats`：那张表在进程内存里，适配器一重启就空，推卡循环一次不跑、也不打日志，表现为「本机窗弹了但飞书静悄悄」。现在那种情况会写一行 `ask …：本通道没有已授权账号，审批卡没推出去`。
+
+**决断后改卡要用 `im messages patch`，不能用 `im +messages-edit`**：后者只吃文本 / 富文本（its own help 也这么写），对互动卡片消息会返回 `230054 This operation is not supported for this message type`，卡就留在原地、按钮还能点。
+
 没有 `lark-cli` 或未登录就退出码 78，systemd 不再狂重启。pi 里 `/remote:status` 能看见；若 unit 已 enable 却没在跑，开新会话会 notify 一次安装说明。不另写一套 OpenAPI。密钥只活在 CLI 登录态里。
 
 ## 前置

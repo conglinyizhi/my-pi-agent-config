@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -127,12 +128,132 @@ func mustSend(t *testing.T, c net.Conn, env Envelope) {
 	}
 }
 
+// 每条连接一个 Decoder：Decoder 会预读，每次新键一个就会把上一次缓冲住的字节丢掉，
+// 并发的两条消息同一次到达时，第二条只能读到半截 JSON。
+var testDecoders = struct {
+	sync.Mutex
+	m map[net.Conn]*json.Decoder
+}{m: map[net.Conn]*json.Decoder{}}
+
 func mustRecv(t *testing.T, c net.Conn) Envelope {
 	t.Helper()
+	testDecoders.Lock()
+	dec, ok := testDecoders.m[c]
+	if !ok {
+		dec = json.NewDecoder(c)
+		testDecoders.m[c] = dec
+	}
+	testDecoders.Unlock()
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var env Envelope
-	if err := json.NewDecoder(c).Decode(&env); err != nil {
+	if err := dec.Decode(&env); err != nil {
 		t.Fatal(err)
 	}
 	return env
+}
+
+func TestAskEventCarriesPrincipals(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "hub.sock")
+	h := newHub("", time.Hour, 15*time.Minute, nil)
+	s := newServer(h, sock)
+	s.skipPeer = true
+	if err := s.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	go s.Serve()
+
+	// 配对码本来只在本机贴；这里直接走 hub 内部接口造一个已授权账号
+	pair, _, err := h.Pair("feishu", "ou_1", "丛林")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Grant(pair.Code); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := dial(t, sock)
+	defer adapter.Close()
+	mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapter)
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "bash", RequestID: "req-principals",
+		SessionID: "sess", Payload: map[string]any{"command": "rm -rf /"},
+		TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Type != typeAskOK {
+		t.Fatalf("ask-ok %+v", ok)
+	}
+
+	ev := mustRecv(t, adapter)
+	if ev.Type != typeEvent || ev.RequestID != "req-principals" {
+		t.Fatalf("event %+v", ev)
+	}
+	if len(ev.Principals) != 1 || ev.Principals[0].Channel != "feishu" || ev.Principals[0].UserID != "ou_1" {
+		t.Fatalf("授权名单没随审批事件下发：%+v", ev.Principals)
+	}
+}
+
+func TestDecideRepliesAck(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "hub.sock")
+	h := newHub("", time.Hour, 15*time.Minute, nil)
+	s := newServer(h, sock)
+	s.skipPeer = true
+	if err := s.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	go s.Serve()
+
+	pair, _, err := h.Pair("feishu", "ou_1", "丛林")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Grant(pair.Code); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := dial(t, sock)
+	defer adapter.Close()
+	mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapter)
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "bash", RequestID: "req-ack",
+		SessionID: "sess", Payload: map[string]any{"command": "echo hi"},
+		TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Type != typeAskOK {
+		t.Fatalf("ask-ok %+v", ok)
+	}
+	if ev := mustRecv(t, adapter); ev.Type != typeEvent {
+		t.Fatalf("event %+v", ev)
+	}
+
+	mustSend(t, adapter, Envelope{
+		V: 1, Type: typeDecide, RequestID: "req-ack", Action: "allow",
+		Principal: &Principal{Channel: "feishu", UserID: "ou_1"},
+	})
+	// 回执要立刻到，不能等适配器那边 8 秒 RPC 超时
+	ack := mustRecv(t, adapter)
+	if ack.Type != typeDecideOK || ack.RequestID != "req-ack" || ack.Action != "allow" {
+		t.Fatalf("回执 %+v", ack)
+	}
+	// 随后还要有 settled 广播，适配器靠它改卡
+	settled := mustRecv(t, adapter)
+	if settled.Type != typeSettled || settled.RequestID != "req-ack" {
+		t.Fatalf("settled %+v", settled)
+	}
 }

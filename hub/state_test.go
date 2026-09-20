@@ -128,3 +128,23 @@ func TestExpireSettles(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestPrincipalsSnapshot(t *testing.T) {
+	h := newHub("", time.Hour, 15*time.Minute, nil)
+	pair, _, err := h.Pair("feishu", "ou_1", "丛林")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Grant(pair.Code); err != nil {
+		t.Fatal(err)
+	}
+	got := h.Principals()
+	if len(got) != 1 || got[0].Channel != "feishu" || got[0].UserID != "ou_1" {
+		t.Fatalf("principals %+v", got)
+	}
+	// 快照要能随便改，不许反手写回白名单
+	got[0].UserID = "改坏了"
+	if again := h.Principals(); len(again) != 1 || again[0].UserID != "ou_1" {
+		t.Fatalf("快照不是副本：%+v", again)
+	}
+}

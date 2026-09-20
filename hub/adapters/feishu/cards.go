@@ -81,6 +81,40 @@ func settledMarkdown(action, reason, by string) string {
 	return line
 }
 
+// settledCard 是决断后拿去替换原卡的卡：按钮换掉，免得过期按钮还能点。
+// 用同一种 schema 2.0 结构，因为改卡走的是 messages patch。
+func settledCard(action, reason, by string) string {
+	template := "green"
+	if action == "deny" {
+		template = "red"
+	}
+	card := map[string]any{
+		"schema": "2.0",
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": settledTitle(action)},
+			"template": template,
+		},
+		"body": map[string]any{
+			"elements": []any{
+				map[string]any{"tag": "markdown", "content": settledMarkdown(action, reason, by)},
+			},
+		},
+	}
+	raw, _ := json.Marshal(card)
+	return string(raw)
+}
+
+func settledTitle(action string) string {
+	switch action {
+	case "allow":
+		return "已决断 · 允许"
+	case "deny":
+		return "已决断 · 拒绝"
+	default:
+		return "已决断 · " + action
+	}
+}
+
 func pairingText(code, message, expiresAt string) string {
 	if message == "" {
 		message = "当前账号未授权，请等待核心授权。若你就是机主，把下面这段复制给核心。"

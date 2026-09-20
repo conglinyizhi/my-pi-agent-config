@@ -41,6 +41,8 @@ type envelope struct {
 	ExpiresAt   string         `json:"expiresAt,omitempty"`
 	Message     string         `json:"message,omitempty"`
 	Items       []listItem     `json:"items,omitempty"`
+	// Principals 是 hub 随审批事件下发的授权名单；推卡目标以它为准。
+	Principals []principal `json:"principals,omitempty"`
 }
 
 type principal struct {

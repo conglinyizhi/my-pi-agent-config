@@ -101,28 +101,52 @@ func (a *adapter) consume(key string, handle func(map[string]any)) {
 	log.Printf("consume %s 退出", key)
 }
 
+// onAskEvent 把审批卡推给本通道已授权账号。目标名单以 hub 下发的授权名单为准，
+// 不能只看 a.chats：那张表是适配器进程内的，一重启就空，卡会静默地送不出去。
 func (a *adapter) onAskEvent(env envelope) {
 	if env.Event != "ask" || env.RequestID == "" {
 		return
 	}
-	cmd := commandOf(env.Payload)
-	a.mu.Lock()
-	chats := make(map[string]string, len(a.chats))
-	for u, c := range a.chats {
-		chats[u] = c
+	targets := a.pushTargets(env.Principals)
+	if len(targets) == 0 {
+		log.Printf("ask %s：本通道没有已授权账号，审批卡没推出去", env.RequestID)
+		return
 	}
-	a.mu.Unlock()
-	for userID, chatID := range chats {
+	cmd := commandOf(env.Payload)
+	for _, t := range targets {
 		card := approvalCard(env.RequestID, env.Kind, cmd, env.SessionID, env.ExpiresAt)
-		mid, err := a.lark.sendCard(chatID, userID, card)
+		mid, err := a.lark.sendCard(t.ChatID, t.UserID, card)
 		if err != nil {
-			log.Printf("push card %s: %v", userID, err)
+			log.Printf("push card %s: %v", t.UserID, err)
 			continue
 		}
 		a.mu.Lock()
-		a.cards[env.RequestID] = askTarget{ChatID: chatID, UserID: userID, MessageID: mid}
+		a.cards[env.RequestID] = askTarget{ChatID: t.ChatID, UserID: t.UserID, MessageID: mid}
 		a.mu.Unlock()
 	}
+}
+
+// pushTargets 挑出这次要推卡的人：只认 hub 的授权名单，本通道之外的、重复的都不要。
+// 跟 bot 说过话就用已知 chat，不知道就直接按 open_id 发——bot 直发 open_id 是通的，
+// 所以不要求账号先主动开过会话。
+func (a *adapter) pushTargets(principals []principal) []askTarget {
+	a.mu.Lock()
+	known := make(map[string]string, len(a.chats))
+	for u, c := range a.chats {
+		known[u] = c
+	}
+	a.mu.Unlock()
+
+	targets := make([]askTarget, 0, len(principals))
+	seen := make(map[string]bool, len(principals))
+	for _, p := range principals {
+		if p.Channel != channelName || p.UserID == "" || seen[p.UserID] {
+			continue
+		}
+		seen[p.UserID] = true
+		targets = append(targets, askTarget{ChatID: known[p.UserID], UserID: p.UserID})
+	}
+	return targets
 }
 
 func (a *adapter) onSettled(env envelope) {
@@ -135,8 +159,8 @@ func (a *adapter) onSettled(env envelope) {
 	if !ok || t.MessageID == "" {
 		return
 	}
-	if err := a.lark.editMarkdown(t.MessageID, settledMarkdown(env.Action, env.Reason, env.By)); err != nil {
-		log.Printf("edit settled: %v", err)
+	if err := a.lark.patchCard(t.MessageID, settledCard(env.Action, env.Reason, env.By)); err != nil {
+		log.Printf("patch settled: %v", err)
 	}
 }
 
@@ -229,6 +253,12 @@ func (a *adapter) handleDecide(userID, chatID, action, requestID, comment string
 	}
 	if out.Type == "error" {
 		a.handlePair(userID, chatID)
+		return
+	}
+	if out.Type != "decide-ok" {
+		// 意外回执：hub 的 pending 通道没按请求 id 匹配，并发 RPC 时可能串号。
+		// 宁可写日志，也不要错报「已提交」。
+		log.Printf("decide: 意外回执 %s（%s）", out.Type, out.Message)
 		return
 	}
 	_ = a.lark.sendText(chatID, userID, fmt.Sprintf("已提交 %s %s", action, requestID))

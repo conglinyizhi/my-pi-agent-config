@@ -78,11 +78,18 @@ func (c *larkCLI) sendCard(chatID, userID, cardJSON string) (messageID string, e
 	return extractMessageID(out), nil
 }
 
-func (c *larkCLI) editMarkdown(messageID, markdown string) error {
+// patchCard 更新已发出的互动卡片。改卡不能用 +messages-edit：那个只吃文本/富文本，
+// 对 interactive 消息会报 230054（This operation is not supported for this message type），
+// 卡改不动。要用 messages patch，且 content 得是 JSON 序列化后的字符串。
+func (c *larkCLI) patchCard(messageID, cardJSON string) error {
 	if messageID == "" {
 		return fmt.Errorf("没有 message_id")
 	}
-	_, err := c.run("im", "+messages-edit", "--as", c.as, "--message-id", messageID, "--markdown", markdown, "--json")
+	body, err := json.Marshal(map[string]string{"content": cardJSON})
+	if err != nil {
+		return err
+	}
+	_, err = c.run("im", "messages", "patch", "--as", c.as, "--message-id", messageID, "--data", string(body), "--json")
 	return err
 }
 

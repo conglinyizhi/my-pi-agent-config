@@ -213,6 +213,12 @@ func (s *Server) dispatch(c *client, env Envelope) error {
 		if err != nil {
 			return err
 		}
+		// 回执发给发起方：适配器那边是按 RPC 等的，没有回执就要干等到 8 秒超时，
+		// 期间它那条事件读循环还被占着。注意不能拿 settled 当回执——适配器把
+		// type=settled 当事件处理，收不到 pending 里。
+		if err := c.send(Envelope{Type: typeDecideOK, ID: env.ID, RequestID: env.RequestID, Action: env.Action}); err != nil {
+			return err
+		}
 		s.onSettled(settled)
 		return nil
 	case typeList:
@@ -292,13 +298,14 @@ func (s *Server) onAsk(c *client, env Envelope) error {
 		return err
 	}
 	s.broadcast(Envelope{
-		Type:      typeEvent,
-		Event:     "ask",
-		RequestID: requestID,
-		SessionID: env.SessionID,
-		Kind:      env.Kind,
-		Payload:   payload,
-		ExpiresAt: rfc3339(ask.ExpiresAt),
+		Type:       typeEvent,
+		Event:      "ask",
+		RequestID:  requestID,
+		SessionID:  env.SessionID,
+		Kind:       env.Kind,
+		Payload:    payload,
+		ExpiresAt:  rfc3339(ask.ExpiresAt),
+		Principals: s.hub.Principals(),
 	}, roleAdapter, roleGUI, roleAdmin)
 	if s.launchGUI != nil {
 		go s.launchGUI(ask)

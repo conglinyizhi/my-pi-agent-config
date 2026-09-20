@@ -123,6 +123,18 @@ func (h *Hub) allowed(p Principal) bool {
 	return ok
 }
 
+// Principals 返回授权名单的快照，供随审批事件下发给适配器。
+// 返回的是副本：调用方改它不会动到 hub 的白名单。
+func (h *Hub) Principals() []Principal {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Principal, 0, len(h.allow))
+	for _, p := range h.allow {
+		out = append(out, p)
+	}
+	return out
+}
+
 func (h *Hub) SubmitAsk(requestID, sessionID, kind string, payload map[string]any, timeout time.Duration) *Ask {
 	h.mu.Lock()
 	defer h.mu.Unlock()
