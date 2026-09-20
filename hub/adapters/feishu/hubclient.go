@@ -41,6 +41,9 @@ type envelope struct {
 	ExpiresAt   string         `json:"expiresAt,omitempty"`
 	Message     string         `json:"message,omitempty"`
 	Items       []listItem     `json:"items,omitempty"`
+	// Answers 是提问类审批的结构化应答。hub 不解释它，只原样透传给 pi；
+	// 所以这里的字段名必须与 hub/proto.go 的 Answer 对齐
+	Answers []hubAnswer `json:"answers,omitempty"`
 	// Principals 是 hub 随审批事件下发的授权名单；推卡目标以它为准。
 	Principals []principal `json:"principals,omitempty"`
 }
@@ -140,12 +143,13 @@ func (h *hubClient) pair(userID, displayName string) (envelope, error) {
 	})
 }
 
-func (h *hubClient) decide(requestID, action, comment, userID, displayName string) (envelope, error) {
+func (h *hubClient) decide(requestID, action, comment, userID, displayName string, answers []hubAnswer) (envelope, error) {
 	return h.rpc(envelope{
 		Type:      "decide",
 		RequestID: requestID,
 		Action:    action,
 		Comment:   comment,
+		Answers:   answers,
 		Principal: &principal{Channel: channelName, UserID: userID, DisplayName: displayName},
 	})
 }

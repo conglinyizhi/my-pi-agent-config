@@ -104,15 +104,39 @@ node scripts/feishu-card-gen.mjs <输出目录>    # 写到别处
 
 两个按钮都是 `form_action_type: submit`，点哪个都会带回整张表单的 `form_value`。**只有 `action.name === "btn_answer"` 的那次才算答案**：点取消同样会带 `form_value`，适配器不能看见 `form_value` 就当成回答。`custom_i` 非空时优先于 `sel_i`（卡上的灰字也是这么提示的），两个都空就是没作答。
 
-按钮名不带题号：适配器要判断的是「提交还是取消」，是哪一题由表单名与 `sel_i` / `custom_i` 认。
+按钮名不带题号，认题也不靠键名：**靠回调里的 `message_id`**（lark-cli 的卡片回调会带）。
+理由是下拉没被碰过时 `form_value` 里可能根本没有 `sel_i` 这个键，靠键名推题号会漏；
+而适配器本来就逐题存着 message_id，反查最稳。
+
+lark-cli 把回调摊平后，适配器实际能读到这几个键（见 `skills/lark-bootloader/upstream/lark-im/references/lark-im-card-action-reply.md`）：
+
+| 键 | 类型 | 用途 |
+|---|---|---|
+| `message_id` | string | 认回是哪张卡（哪一题） |
+| `action_name` | string | `btn_answer` / `btn_deny` |
+| `form_value` | **JSON 字符串** | 键是控件 `name`（`sel_i` / `custom_i`），要二次 `json.Unmarshal` |
+| `operator_id` / `chat_id` | string | 谁答的、在哪个会话 |
+
+审批卡走的是 `action_value`（也是 JSON 字符串），提问卡走 `form_value`：适配器先试
+`form_value`，认得出是我们发的提问卡就交给提问那条路，认不出再按审批卡处理。
 
 `allowOther` 为 false 时省掉 `custom_i`，灰字提示也跟着换成「选一个，点「提交本题」回传」——没有输入框就不该提示用户去写。三题示例里第 2 题就是这种。
+
+### 决断后的形态
+
+`question-settled.json` 是已答样本。按钮全撤，只留题面与答案：
+
+- 已答：header `已答 [i/N]`，模板 `green`，正文第二行 `✅ 选择：<label>`；自己写的写 `✍️ 自己写：<文本>`
+- 取消 / 超时的题：header `已取消 [i/N]`，模板 `grey`，正文第二行灰字 `未作答`
+
+**没答的题不能看起来像答了**：一组题里答了一半就取消，答过的那张绿、没答的那张灰，
+用户回头翻记录时不会误读。
 
 ### 设计决定
 
 1. **一题一张卡**，不把 N 题堆进一张：飞书卡片没有标签页组件，塞进一张要么纵向很高，要么得自己实现翻页状态；一题一张天然对应「答完一题算一题」，每题的 `q_form_i` 也各自独立。
 2. **header 用 `turquoise`**：审批卡的状态色已经占了 blue / orange / indigo / green / purple，提问是另一类卡，用一个没被占的颜色。
-3. **选项只走 `label`**：官方 `select_static` 的选项文本是 `text`，题目自带的 `description` 不进选项（塞进去会把卡撑高，且回调里也用不上）；要补充说明就写进 `question_text`。
+3. **选项的 `description` 放在卡面，不进下拉**：下拉选项文本会被截，取舍信息（“互不干扰，但依赖要重装一遍”这类）塞进选项里就看不清了。所以合成一块灰字列在题面下面 —— 一条一行，整块只占一个元素，条数涨了元素间距也不涨。
 
 ## 适配器要改的地方
 

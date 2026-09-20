@@ -281,9 +281,9 @@ const QUESTIONS = [
     label: "隔离方式",
     question_text: "这次改造会动共享的构建脚本。改之前先定怎么隔离工作区？",
     options: [
-      { value: "worktree", label: "用 git worktree 隔离" },
-      { value: "branch", label: "在当前工作区直接开分支" },
-      { value: "copy", label: "整个仓库复制到 /var/tmp 再改" },
+      { value: "worktree", label: "用 git worktree 隔离", description: "互不干扰，但依赖要重装一遍" },
+      { value: "branch", label: "在当前工作区直接开分支", description: "最快，但构建产物会互相覆盖" },
+      { value: "copy", label: "整个仓库复制到 /var/tmp 再改", description: "最干净，占地最大" },
     ],
     allowOther: true,
   },
@@ -339,6 +339,16 @@ const questionActions = () => cols([
   weighted(1, [submitButton("✅ 提交本题", "btn_answer", "primary_filled")]),
 ]);
 
+// 选项自带的说明放卡面：下拉选项文本会被截，取舍信息只能放这儿。
+// 合成一个富文本元素，条数与元素间距都不会跟着涨
+function optionNotes(options) {
+  // 每行各自包 <font>：一个标签跨多行时闭合会丢，最后一行会把 </font> 当字面量显示出来
+  const lines = (options ?? [])
+    .filter((o) => o.description?.trim())
+    .map((o) => grey(`- ${o.label}：${o.description}`));
+  return lines.length ? [md(lines.join("\n"))] : [];
+}
+
 function questionCard(index, total, q) {
   const allowOther = q.allowOther !== false;
   return shell(
@@ -347,6 +357,7 @@ function questionCard(index, total, q) {
         [
           md(q.question_text, { text_size: "normal" }),
           md(grey(allowOther ? HINT_WITH_OTHER : HINT_ONLY_SELECT)),
+          ...optionNotes(q.options),
           optionSelect(index, q.options),
           ...(allowOther ? [customInput(index)] : []),
           questionActions(),
@@ -397,3 +408,33 @@ for (const [name, card] of Object.entries(cards)) {
   writeFileSync(join(DIR, name), JSON.stringify(card, null, 2) + "\n");
   console.log("写好", name);
 }
+
+// ── 提问卡：决断后的形态 ──────────────────────────────────────────────
+// 与适配器 questions.go 的 questionSettledCard 一致：按钮全撤，只留题面与答案。
+// 答过的绿、取消/没答的灰——「没答」不能看起来像「答了」。
+function questionSettledCard(index, total, q, answer, action) {
+  const answered = action === "allow";
+  const lines = [q.question_text];
+  if (!answered) {
+    lines.push(grey("未作答"));
+  } else if (answer?.wasCustom) {
+    lines.push(`✍️ 自己写：${answer.label}`);
+  } else if (answer) {
+    lines.push(`✅ 选择：${answer.label}`);
+  } else {
+    lines.push(grey("未作答"));
+  }
+  return shell(
+    [md(block(lines), { text_size: "normal" })],
+    header(
+      answered ? `已答 [${index}/${total}]` : `已取消 [${index}/${total}]`,
+      q.label ?? `共 ${total} 个问题`,
+      answered ? "green" : "grey",
+    ),
+  );
+}
+
+// 这一段在写入循环之后，所以自己落盘（放进 cards 已经晚了）
+const settledQuestion = questionSettledCard(1, QUESTIONS.length, QUESTIONS[0], { value: "worktree", label: "用 git worktree 隔离" }, "allow");
+writeFileSync(join(DIR, "question-settled.json"), JSON.stringify(settledQuestion, null, 2) + "\n");
+console.log("写好 question-settled.json");

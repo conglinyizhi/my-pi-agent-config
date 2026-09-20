@@ -26,6 +26,9 @@ type adapter struct {
 	mu    sync.Mutex
 	chats map[string]string // userID -> chatID
 	cards map[string]askTarget
+	// questions 是一次提问的现场（一题一张卡，集齐答案才提交）。
+	// 与 cards 分开存：两者的生命周期不同，混在一起会让结算路径互相牵连
+	questions map[string]*questionState
 }
 
 func main() {
@@ -52,10 +55,11 @@ func main() {
 	defer hub.close()
 
 	a := &adapter{
-		hub:   hub,
-		lark:  cli,
-		chats: map[string]string{},
-		cards: map[string]askTarget{},
+		hub:       hub,
+		lark:      cli,
+		chats:     map[string]string{},
+		cards:     map[string]askTarget{},
+		questions: map[string]*questionState{},
 	}
 	hub.onEvent = a.onAskEvent
 	hub.onSettle = a.onSettled
@@ -113,6 +117,11 @@ func (a *adapter) onAskEvent(env envelope) {
 		return
 	}
 	cmd := commandOf(env.Payload)
+	// 提问：一题一张卡，集齐答案才提交，走单独一条路
+	if env.Kind == "question" {
+		a.pushQuestionCards(env, targets)
+		return
+	}
 	for _, t := range targets {
 		card := approvalCard(env.RequestID, env.Kind, cmd, env.SessionID, env.ExpiresAt)
 		mid, err := a.lark.sendCard(t.ChatID, t.UserID, card)
@@ -155,12 +164,19 @@ func (a *adapter) onSettled(env envelope) {
 	if ok {
 		delete(a.cards, env.RequestID)
 	}
-	a.mu.Unlock()
-	if !ok || t.MessageID == "" {
-		return
+	q, qok := a.questions[env.RequestID]
+	if qok {
+		delete(a.questions, env.RequestID)
 	}
-	if err := a.lark.patchCard(t.MessageID, settledCard(env.Action, env.Reason, env.By)); err != nil {
-		log.Printf("patch settled: %v", err)
+	a.mu.Unlock()
+
+	if ok && t.MessageID != "" {
+		if err := a.lark.patchCard(t.MessageID, settledCard(env.Action, env.Reason, env.By)); err != nil {
+			log.Printf("patch settled: %v", err)
+		}
+	}
+	if qok {
+		a.patchQuestionSettled(q, env)
 	}
 }
 
@@ -186,11 +202,20 @@ func (a *adapter) onMessage(ev map[string]any) {
 func (a *adapter) onCard(ev map[string]any) {
 	userID := str(ev["operator_id"])
 	chatID := str(ev["chat_id"])
+	a.rememberChat(userID, chatID)
+
+	// 提问卡的提交带 form_value。先让提问那条路认领；认不出来（不是我们发的提问卡）
+	// 再按审批卡的 action_value 处理。两条路的回调长得很像，靠这个顺序分开
+	if formJSON := str(ev["form_value"]); formJSON != "" {
+		if a.handleQuestionSubmit(userID, chatID, str(ev["message_id"]), str(ev["action_name"]), formJSON) {
+			return
+		}
+	}
+
 	action, requestID := parseCardValue(str(ev["action_value"]))
 	if userID == "" || action == "" || requestID == "" {
 		return
 	}
-	a.rememberChat(userID, chatID)
 	a.handleDecide(userID, chatID, action, requestID, "")
 }
 
@@ -246,7 +271,7 @@ func (a *adapter) handleDecide(userID, chatID, action, requestID, comment string
 		_ = a.lark.sendText(chatID, userID, "用法：/allow <requestId> [附言]")
 		return
 	}
-	out, err := a.hub.decide(requestID, action, comment, userID, "")
+	out, err := a.hub.decide(requestID, action, comment, userID, "", nil)
 	if err != nil {
 		log.Printf("decide: %v", err)
 		return

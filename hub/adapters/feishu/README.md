@@ -12,6 +12,16 @@
 
 没有 `lark-cli` 或未登录就退出码 78，systemd 不再狂重启。pi 里 `/remote:status` 能看见；若 unit 已 enable 却没在跑，开新会话会 notify 一次安装说明。不另写一套 OpenAPI。密钥只活在 CLI 登录态里。
 
+## 提问（kind=question）
+
+pi 的 `ask_question` 也扇出到飞书：一题一张卡，答完一题算一题。
+
+- 认题靠回调里的 `message_id`（不靠控件名里的题号：下拉没碰过时 `form_value` 里可能没有 `sel_i`）
+- `form_value` 是 JSON **字符串**，键是控件 `name`；自由输入非空即优先于下拉选择
+- **集齐所有题才 decide**：收到一半就提交，等于把半截答案当成完整答复
+- 取消按钮在每张卡上，停在任意一题都能撤；撤了就整场作废
+- 结算后现场留到 hub 的 `settled` 广播到达才清 —— 提前清掉，剩下几题的卡就改不了
+
 ## 前置
 
 ```bash

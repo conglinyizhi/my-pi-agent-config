@@ -43,6 +43,11 @@
             "text_size": "notation"
           },
           {
+            "tag": "markdown",
+            "content": "<font color='grey'>- 用 git worktree 隔离：互不干扰，但依赖要重装一遍</font>\n<font color='grey'>- 在当前工作区直接开分支：最快，但构建产物会互相覆盖</font>\n<font color='grey'>- 整个仓库复制到 /var/tmp 再改：最干净，占地最大</font>",
+            "text_size": "notation"
+          },
+          {
             "tag": "select_static",
             "placeholder": {
               "tag": "plain_text",

@@ -1,0 +1,38 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "已答 [1/3]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "隔离方式"
+    },
+    "template": "green",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "这次改造会动共享的构建脚本。改之前先定怎么隔离工作区？\n✅ 选择：用 git worktree 隔离",
+        "text_size": "normal"
+      }
+    ]
+  }
+}
