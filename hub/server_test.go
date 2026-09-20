@@ -453,3 +453,56 @@ func TestAskOKReportsAdapterCount(t *testing.T) {
 		t.Fatalf("两个适配器时 adapters=%d", ok.Adapters)
 	}
 }
+
+func TestAskNoLocalGUISkipsGateWindow(t *testing.T) {
+	sock, s := startTestHub(t)
+
+	var mu sync.Mutex
+	var launched []string
+	s.launchGUI = func(ask *Ask) {
+		mu.Lock()
+		launched = append(launched, ask.RequestID)
+		mu.Unlock()
+	}
+
+	pi := dial(t, sock)
+	defer pi.Close()
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, pi)
+
+	send := func(requestID string, noLocalGUI bool) {
+		mustSend(t, pi, Envelope{
+			V: 1, Type: typeAsk, Kind: "question", RequestID: requestID,
+			SessionID: "sess", Payload: map[string]any{"questions": []any{}},
+			TimeoutMs: 60_000, NoLocalGUI: noLocalGUI,
+		})
+		if ok := mustRecv(t, pi); ok.Type != typeAskOK {
+			t.Fatalf("ask-ok %+v", ok)
+		}
+	}
+
+	// 发起方声明了就不拉窗：本机闸门窗只有审批形态，提问弹出来是读不懂的空表
+	send("q-skip-gui", true)
+	// 没声明的照旧拉起（审批路径不受影响）
+	send("q-with-gui", false)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		got := append([]string(nil), launched...)
+		mu.Unlock()
+		if len(got) > 0 || time.Now().After(deadline) {
+			// 断言到具体是哪条：只数总数的话，「该弹的没弹、不该弹的弹了」也会凑出 1
+			for _, id := range got {
+				if id == "q-skip-gui" {
+					t.Fatalf("声明了 noLocalGUI 还是弹了窗：%v", got)
+				}
+			}
+			if len(got) != 1 || got[0] != "q-with-gui" {
+				t.Fatalf("该弹的只有 q-with-gui，实际 %v", got)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -330,7 +330,9 @@ func (s *Server) onAsk(c *client, env Envelope) error {
 		ExpiresAt:  rfc3339(ask.ExpiresAt),
 		Principals: s.hub.Principals(),
 	}, roleAdapter, roleGUI, roleAdmin)
-	if s.launchGUI != nil {
+	// 发起方声明了不上本机窗就不拉：本机闸门窗只有审批形态，
+	// 换成提问这种没有对应版式的请求，弹出来就是一张读不懂的空表
+	if s.launchGUI != nil && !env.NoLocalGUI {
 		go s.launchGUI(ask)
 	}
 	go func() {
