@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import {
   copyToClipboard,
+  describeClipboardResult,
   emitOsc52,
   isRemoteSession,
   OSC52_TOOL,
@@ -365,6 +366,36 @@ await test("emitOsc52 纯函数：超限返回 false 且不写", () => {
   assert.deepEqual(outs, [`\x1b]52;c;${Buffer.from("hi", "utf-8").toString("base64")}\x07`]);
   assert.equal(emitOsc52("A".repeat(80_000), (c) => outs.push(c)), false);
   assert.equal(outs.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// describeClipboardResult：三种结局分开报
+// ---------------------------------------------------------------------------
+
+await test("本地工具成功：info 且带工具名", () => {
+  const d = describeClipboardResult({ ok: true, tool: "wl-copy", attempts: [], osc52: false });
+  assert.equal(d.level, "info");
+  assert.ok(d.message.includes("wl-copy"), d.message);
+});
+
+await test("只发了 OSC 52：warning，且不说「已复制」", () => {
+  const d = describeClipboardResult({ ok: true, tool: OSC52_TOOL, attempts: [], osc52: true });
+  assert.equal(d.level, "warning");
+  assert.equal(d.message.includes("已复制"), false, d.message);
+});
+
+await test("全失败：逐条带上通道与原因", () => {
+  const d = describeClipboardResult({
+    ok: false,
+    tool: null,
+    osc52: false,
+    attempts: [
+      { tool: "wl-copy", ok: false, code: 1, signal: null, reason: "退出码 1" },
+      { tool: "xclip", ok: false, code: null, signal: "SIGKILL", reason: "超时 5000ms 未退出" },
+    ],
+  });
+  assert.equal(d.level, "warning");
+  assert.ok(d.message.includes("xclip: 超时 5000ms 未退出"), d.message);
 });
 
 console.log(failed === 0 ? "\n全部 PASS" : `\n${failed} 项 FAIL`);

@@ -237,3 +237,32 @@ export async function copyToClipboard(text: string, opts: CopyToClipboardOptions
   if (osc52) return { ok: true, tool: OSC52_TOOL, attempts, osc52: true };
   return { ok: false, tool: null, attempts, osc52: false };
 }
+
+/**
+ * 把一次复制的结果翻成给用户看的一句话。
+ *
+ * 三种结局必须分开报，尤其后两种不能合并（合并过一次：把 OSC 52 当成功报「已复制」，
+ * 用户粘不出来又不知道差在哪）：
+ *  - 本地工具退出码 0 → 真的写进去了
+ *  - 只发了 OSC 52 → 序列发出去了，但终端认不认由终端决定
+ *  - 全失败 → 逐条带上失败原因，用户才知道缺哪个工具
+ *
+ * 纯函数，不碰 UI：调用方自己决定往哪报（notify / 状态栏 / 日志）。
+ */
+export function describeClipboardResult(result: ClipboardResult): { level: "info" | "warning"; message: string } {
+  if (result.ok && result.tool !== OSC52_TOOL) {
+    return { level: "info", message: `已复制到剪贴板（${result.tool}）` };
+  }
+  if (result.ok) {
+    return {
+      level: "warning",
+      message: "已通过 OSC 52 发给终端，能否生效取决于终端是否支持。粘不到就手动复制",
+    };
+  }
+  const failures = result.attempts.filter((a) => !a.ok);
+  const detail =
+    failures.length > 0
+      ? `\n尝试了 ${failures.length} 个工具均失败：\n${failures.map((a) => `  · ${a.tool}: ${a.reason ?? "未知错误"}`).join("\n")}`
+      : "";
+  return { level: "warning", message: `复制失败，没找到可用的剪贴板工具${detail}` };
+}
