@@ -1,0 +1,646 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "审批 · sandbox-allow"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "agent 申请工作区外的目录可写　⚠ 时限 300s（默认 30s） · 内存 2048MB（默认 1024MB）"
+    },
+    "template": "blue",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```\npnpm install && node scripts/build.mjs --out /var/tmp/pi-build\n```",
+        "text_size": "normal"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>工作区外才算提权。下拉留空 = 不动该目录。共 7 项，其中工作区外 5 项。</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "form",
+        "name": "gate_form",
+        "elements": [
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='yellow'>未标记</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`/var/tmp/pi-build`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 2
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "select_static",
+                    "placeholder": {
+                      "tag": "plain_text",
+                      "content": "标记"
+                    },
+                    "options": [
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "长期信任"
+                        },
+                        "value": "allow",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "pin_filled",
+                          "color": "green"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "本会话信任"
+                        },
+                        "value": "session-trust",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "time_outlined",
+                          "color": "blue"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "拉黑"
+                        },
+                        "value": "block",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "ban_outlined",
+                          "color": "red"
+                        }
+                      }
+                    ],
+                    "type": "default",
+                    "width": "fill",
+                    "required": false,
+                    "name": "sel_0"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='yellow'>未标记</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`$HOME/.cache/pi-build`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 2
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "select_static",
+                    "placeholder": {
+                      "tag": "plain_text",
+                      "content": "标记"
+                    },
+                    "options": [
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "长期信任"
+                        },
+                        "value": "allow",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "pin_filled",
+                          "color": "green"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "本会话信任"
+                        },
+                        "value": "session-trust",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "time_outlined",
+                          "color": "blue"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "拉黑"
+                        },
+                        "value": "block",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "ban_outlined",
+                          "color": "red"
+                        }
+                      }
+                    ],
+                    "type": "default",
+                    "width": "fill",
+                    "required": false,
+                    "name": "sel_1"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='yellow'>未标记</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`$HOME/.cache/secret`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 2
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "select_static",
+                    "placeholder": {
+                      "tag": "plain_text",
+                      "content": "标记"
+                    },
+                    "options": [
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "长期信任"
+                        },
+                        "value": "allow",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "pin_filled",
+                          "color": "green"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "本会话信任"
+                        },
+                        "value": "session-trust",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "time_outlined",
+                          "color": "blue"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "拉黑"
+                        },
+                        "value": "block",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "ban_outlined",
+                          "color": "red"
+                        }
+                      }
+                    ],
+                    "type": "default",
+                    "width": "fill",
+                    "required": false,
+                    "name": "sel_2"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='green'>已长期信任</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`$HOME/go/pkg/mod`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 2
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "select_static",
+                    "placeholder": {
+                      "tag": "plain_text",
+                      "content": "改为…"
+                    },
+                    "options": [
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "长期信任"
+                        },
+                        "value": "allow",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "pin_filled",
+                          "color": "green"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "本会话信任"
+                        },
+                        "value": "session-trust",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "time_outlined",
+                          "color": "blue"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "拉黑"
+                        },
+                        "value": "block",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "ban_outlined",
+                          "color": "red"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "取消授权"
+                        },
+                        "value": "revoke",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "undo_outlined",
+                          "color": "orange"
+                        }
+                      }
+                    ],
+                    "type": "default",
+                    "width": "fill",
+                    "required": false,
+                    "name": "sel_3"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='blue'>已本会话信任</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`$HOME/agent-out`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 2
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "select_static",
+                    "placeholder": {
+                      "tag": "plain_text",
+                      "content": "改为…"
+                    },
+                    "options": [
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "长期信任"
+                        },
+                        "value": "allow",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "pin_filled",
+                          "color": "green"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "本会话信任"
+                        },
+                        "value": "session-trust",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "time_outlined",
+                          "color": "blue"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "拉黑"
+                        },
+                        "value": "block",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "ban_outlined",
+                          "color": "red"
+                        }
+                      },
+                      {
+                        "text": {
+                          "tag": "plain_text",
+                          "content": "取消授权"
+                        },
+                        "value": "revoke",
+                        "icon": {
+                          "tag": "standard_icon",
+                          "token": "undo_outlined",
+                          "color": "orange"
+                        }
+                      }
+                    ],
+                    "type": "default",
+                    "width": "fill",
+                    "required": false,
+                    "name": "sel_4"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='neutral'>工作区</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`<工作区>/out`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "104px",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "<text_tag color='neutral'>工作区</text_tag>",
+                    "text_size": "notation"
+                  }
+                ]
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "markdown",
+                    "content": "`<工作区>`",
+                    "text_size": "notation"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          },
+          {
+            "tag": "input",
+            "name": "comment",
+            "required": false,
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "附言（可选，随按钮一起提交）"
+            },
+            "default_value": "",
+            "width": "fill",
+            "max_length": 200,
+            "margin": "8px 0px 0px 0px"
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 拒绝"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 允许（仅此一次）"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_approve"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

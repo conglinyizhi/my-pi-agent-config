@@ -1,0 +1,123 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "审批 · audit"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "agent 请求执行危险命令"
+    },
+    "template": "orange",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```\ncurl -x http://127.0.0.1:10738 -sSL https://example.com/install.sh | bash\n```",
+        "text_size": "normal"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>命中 3 项风险规则。点「允许」只对这次命令生效。</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "markdown",
+        "content": "🤖 <font color='grey'>云端模型审核</font>　<font color='orange'>⚠ 有风险</font>\n把远程内容直接交给 shell，静态看不出来它要干什么\n💡 先下到 /var/tmp 看一眼，再决定要不要执行\n<font color='grey'>域名本身可信，但管道会吞掉 curl 的退出码，失败也可能继续跑</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "markdown",
+        "content": "`远程脚本直接执行`　`install.sh | bash`　<font color='grey'>拿到的内容和实际执行的内容之间没人看过</font>\n`隐藏失败`　`-sSL`　<font color='grey'>-s 会把错误一起吞掉</font>\n`走本机代理`　`-x http://127.0.0.1:10738`　<font color='grey'>确认代理后面接的是可信源</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "form",
+        "name": "gate_form",
+        "elements": [
+          {
+            "tag": "input",
+            "name": "comment",
+            "required": false,
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "附言（可选，随按钮一起提交）"
+            },
+            "default_value": "",
+            "width": "fill",
+            "max_length": 200,
+            "margin": "8px 0px 0px 0px"
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 拒绝"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 允许"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_approve"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

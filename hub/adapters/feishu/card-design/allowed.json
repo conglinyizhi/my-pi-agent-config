@@ -1,0 +1,54 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "已允许 · sandbox-allow"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "feishu / 丛林 · 12:45"
+    },
+    "template": "green",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```\npnpm install && node scripts/build.mjs --out /var/tmp/pi-build\n```",
+        "text_size": "normal"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='green'>**✅ 已决断：允许（仅此一次）**</font>",
+        "text_size": "normal"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>2 项有改动，其余 5 项未动</font>\n<text_tag color='yellow'>未标记</text_tag>　`/var/tmp/pi-build`\n<text_tag color='green'>已长期信任</text_tag>　`$HOME/.cache/pi-build`　<font color='grey'>本次</font>\n<text_tag color='red'>已拉黑</text_tag>　`$HOME/.cache/secret`　<font color='grey'>本次</font>\n<text_tag color='green'>已长期信任</text_tag>　`$HOME/go/pkg/mod`\n<text_tag color='blue'>已本会话信任</text_tag>　`$HOME/agent-out`\n<text_tag color='neutral'>工作区</text_tag>　`<工作区>/out`\n<text_tag color='neutral'>工作区</text_tag>　`<工作区>`",
+        "text_size": "notation"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30 · feishu / 丛林 决断 · 附言「先别动 /var/tmp」</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "style": {
+      "text_size": {
+        "normal_v2": {
+          "default": "normal",
+          "pc": "normal",
+          "mobile": "heading"
+        }
+      }
+    }
+  },
+  "header": {
+    "title": {
+      "tag": "plain_text",
+      "content": "审批 · capability"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "subagent 申请能力"
+    },
+    "template": "indigo",
+    "padding": "12px 8px 12px 8px"
+  },
+  "body": {
+    "direction": "vertical",
+    "vertical_spacing": "4px",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```\nsudo pacman -S --noconfirm podman\n```",
+        "text_size": "normal"
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "60px",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>能力</font>",
+                "text_size": "notation"
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "sandbox-allow",
+                "text_size": "notation"
+              }
+            ],
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "60px",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>范围</font>",
+                "text_size": "notation"
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "仅本次命令",
+                "text_size": "notation"
+              }
+            ],
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "60px",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>理由</font>",
+                "text_size": "notation"
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "vertical_align": "center",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "worker 要装一个容器运行时，才能跑完验收里的集成测试",
+                "text_size": "notation"
+              }
+            ],
+            "weight": 1
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>只批准当前这条命令；worker 会在批准后重新启动，不会获得持续权限。</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "form",
+        "name": "gate_form",
+        "elements": [
+          {
+            "tag": "input",
+            "name": "comment",
+            "required": false,
+            "placeholder": {
+              "tag": "plain_text",
+              "content": "附言（可选，随按钮一起提交）"
+            },
+            "default_value": "",
+            "width": "fill",
+            "max_length": 200,
+            "margin": "8px 0px 0px 0px"
+          },
+          {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "🚫 拒绝"
+                    },
+                    "type": "danger",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_deny"
+                  }
+                ],
+                "weight": 1
+              },
+              {
+                "tag": "column",
+                "width": "weighted",
+                "vertical_align": "center",
+                "elements": [
+                  {
+                    "tag": "button",
+                    "text": {
+                      "tag": "plain_text",
+                      "content": "✅ 允许本次命令"
+                    },
+                    "type": "primary_filled",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "name": "btn_approve"
+                  }
+                ],
+                "weight": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>ask-preview · sess-1 · 至 12:30</font>",
+        "text_size": "notation",
+        "margin": "6px 0px 0px 0px"
+      }
+    ]
+  }
+}
