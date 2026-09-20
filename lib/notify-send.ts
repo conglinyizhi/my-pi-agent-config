@@ -7,7 +7,7 @@ import { type ExecFileOptions, type ExecOptions, exec, execFile } from "node:chi
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { getOS, isWindows } from "./get-os";
+import { getOS, isWindows } from "./get-os.ts";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);

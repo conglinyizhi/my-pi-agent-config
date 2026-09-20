@@ -30,6 +30,9 @@ type HubMsg = {
 	action?: "allow" | "deny";
 	comment?: string;
 	pathActions?: ApprovalDecision["pathActions"];
+	answers?: HubAnswer[];
+	adapters?: number;
+	by?: string;
 	message?: string;
 };
 
@@ -97,9 +100,11 @@ async function askHub(socketPath: string, request: ApprovalRequest, ctx: Extensi
 					return;
 				}
 				if (msg.type === "settled" && msg.requestId === requestId) {
-					if (msg.action === "allow" || msg.action === "deny") {
+					// 取局部常量：闭包里 TS 认不出 msg.action 的收窄（msg 是可重新赋值的变量）
+					const action = msg.action;
+					if (action === "allow" || action === "deny") {
 						finish(() => resolve(parseGuiDecision({
-							action: msg.action,
+							action,
 							comment: msg.comment,
 							pathActions: msg.pathActions,
 						})));
@@ -122,6 +127,134 @@ async function askHub(socketPath: string, request: ApprovalRequest, ctx: Extensi
 			kind: request.kind,
 			timeoutMs,
 			payload: toGuiPayload(request),
+		});
+	});
+}
+
+/** 适配器带回的一条应答。样式由发起方给，用户填了什么由适配器填 */
+export interface HubAnswer {
+	id: string;
+	value: string;
+	label: string;
+	wasCustom?: boolean;
+}
+
+/**
+ * 提问走 hub 的三种结局。
+ *
+ * 「没人能答」必须能和「用户拒绝」分开：前者要回退本地 TUI，后者是用户的明确答复，
+ * 回退反而会把同一个问题再问一遍。
+ */
+export type HubQuestionOutcome =
+	| { status: "answered"; answers: HubAnswer[]; by: string }
+	| { status: "denied"; comment: string; by: string }
+	| { status: "unavailable"; reason: string };
+
+export interface HubQuestionOptions {
+	socketPath?: string;
+	signal?: AbortSignal;
+}
+
+/**
+ * 把结构化提问扇出给 hub，等适配器（IM 卡）作答。
+ *
+ * 与审批不同的地方：审批只关心 allow/deny，这里要把整条 settled 里的 answers 带回来。
+ * 没有适配器在线时主动 abort 并报 unavailable —— 不撤的话这条 ask 会挂到超时，
+ * 而调用方那边什么也看不到。
+ */
+export async function askHubQuestion(
+	questions: unknown,
+	ctx: ExtensionContext,
+	opts: HubQuestionOptions = {},
+): Promise<HubQuestionOutcome> {
+	const socketPath = opts.socketPath ?? hubSocketPath();
+	const requestId = `ask-${randomUUID()}`;
+	const timeoutMs = opts.signal ? remainingMs(opts.signal) : 3_600_000;
+
+	let conn: Awaited<ReturnType<typeof connectUnix>>;
+	try {
+		conn = await connectUnix(socketPath, CONNECT_MS);
+	} catch (err) {
+		return { status: "unavailable", reason: `连不上 hub：${err instanceof Error ? err.message : String(err)}` };
+	}
+
+	return new Promise<HubQuestionOutcome>((resolve) => {
+		let buf = "";
+		let done = false;
+		const finish = (outcome: HubQuestionOutcome) => {
+			if (done) return;
+			done = true;
+			opts.signal?.removeEventListener("abort", onAbort);
+			// 用 end() 而不是 destroy()：abort 那一行先写完再 FIN。
+			// destroy() 会直接丢链接，还没冲刷出去的 abort 就没了，hub 里那条 ask
+			// 只能挂到超时——而这正是撤回要避免的事
+			conn.end();
+			resolve(outcome);
+		};
+		const onAbort = () => {
+			writeLine(conn, { v: PROTOCOL_V, type: "abort", requestId });
+			finish({ status: "unavailable", reason: "提问被中止" });
+		};
+
+		if (opts.signal?.aborted) {
+			onAbort();
+			return;
+		}
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+		conn.on("error", (err) => finish({ status: "unavailable", reason: `hub 连接出错：${err.message}` }));
+		conn.on("close", () => finish({ status: "unavailable", reason: "hub 关掉了连接" }));
+
+		conn.on("data", (chunk) => {
+			buf += chunk.toString("utf8");
+			let nl: number;
+			while ((nl = buf.indexOf("\n")) >= 0) {
+				const line = buf.slice(0, nl);
+				buf = buf.slice(nl + 1);
+				if (!line.trim()) continue;
+				let msg: HubMsg;
+				try {
+					msg = JSON.parse(line) as HubMsg;
+				} catch {
+					continue;
+				}
+				if (msg.type === "error") {
+					finish({ status: "unavailable", reason: msg.message || "hub error" });
+					return;
+				}
+				if (msg.type === "ask-ok" && msg.requestId === requestId) {
+					if ((msg.adapters ?? 0) === 0) {
+						writeLine(conn, { v: PROTOCOL_V, type: "abort", requestId });
+						finish({ status: "unavailable", reason: "没有适配器在线" });
+					}
+					continue;
+				}
+				if (msg.type === "settled" && msg.requestId === requestId) {
+					if (msg.action === "allow") {
+						finish({ status: "answered", answers: msg.answers ?? [], by: msg.by ?? "" });
+						return;
+					}
+					if (msg.action === "deny") {
+						finish({ status: "denied", comment: msg.comment ?? "", by: msg.by ?? "" });
+						return;
+					}
+					finish({ status: "unavailable", reason: "hub 结算了但没有动作" });
+				}
+			}
+		});
+
+		writeLine(conn, { v: PROTOCOL_V, type: "hello", role: "pi" });
+		writeLine(conn, {
+			v: PROTOCOL_V,
+			type: "ask",
+			requestId,
+			sessionId: ctx.sessionManager?.getSessionId?.() ?? "",
+			kind: "question",
+			payload: { questions },
+			// 提问形状与本机闸门窗对不上：不声明的话 hub 会拉起一个
+			// 空白的「危险命令审计」窗，用户看不懂也没法操作
+			noLocalGUI: true,
+			timeoutMs,
 		});
 	});
 }

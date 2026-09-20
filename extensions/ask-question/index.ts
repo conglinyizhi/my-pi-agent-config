@@ -4,7 +4,8 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import { notifyQuestion } from "../../lib/notify-send";
+import { askHubQuestion, type HubAnswer, type HubQuestionOptions, type HubQuestionOutcome } from "../../lib/hub-channel.ts";
+import { notifyQuestion } from "../../lib/notify-send.ts";
 
 interface QuestionOption {
   value: string;
@@ -126,11 +127,21 @@ function errorResult(message: string, questions: Question[] = []): AskQuestionTo
 
 /**
  * 处理提问交互逻辑
+ *
+ * 顺序是「先 hub、后本地 TUI」：用户可能在飞书那头，本地弹窗他看不见。
+ * answered / denied 都是明确答复，直接采用；只有「hub 没人能答」才回退 TUI，
+ * 因为那意味着同一个问题没人看过，而不是用户拒绝了。
  */
-async function handleAskQuestion(ctx: ExtensionContext, params: AskQuestionInput): Promise<AskQuestionToolResult> {
-  if (ctx.mode !== "tui") {
-    return errorResult("Error: UI not available (running in non-interactive mode)");
-  }
+export interface AskQuestionDeps {
+  /** 测试注入；生产走 lib/hub-channel 的 askHubQuestion */
+  askHub?: (questions: Question[], ctx: ExtensionContext, opts?: HubQuestionOptions) => Promise<HubQuestionOutcome>;
+}
+
+async function handleAskQuestion(
+  ctx: ExtensionContext,
+  params: AskQuestionInput,
+  deps: AskQuestionDeps = {},
+): Promise<AskQuestionToolResult> {
   if (params.questions.length === 0) {
     return errorResult("Error: No questions provided");
   }
@@ -151,10 +162,26 @@ async function handleAskQuestion(ctx: ExtensionContext, params: AskQuestionInput
     allowOther: q.allowOther !== false,
   }));
 
+  // 两条路同时开着：用户在哪台设备上就用哪边，先答的算。
+  //
+  // 只走 hub 会有一个很难受的后果：用户就坐在终端前，会话却被一个他看不见的
+  // 提问阻塞住，干等手机上的卡。所以 hub 发出去之后不 await，本地 TUI 照常开。
+  const abort = new AbortController();
+  const hubPromise = (deps.askHub ?? askHubQuestion)(questions, ctx, { signal: abort.signal });
+
+  if (ctx.mode !== "tui") {
+    // 没有本地 UI（RPC 等）：只能靠 hub
+    return outcomeToResult(questions, await hubPromise);
+  }
+
   const isMulti = questions.length > 1;
   const totalTabs = questions.length + 1; // 问题数量 + 提交按钮
 
-  const result = await ctx.ui.custom<AskQuestionResult>((tui: TUI, theme: Theme, _kb: KeybindingsManager, done: (result: AskQuestionResult) => void) => {
+  // 留住 done：hub 先答时要把本地这个界面收掉，不然用户会对着一个
+  // 已经不需要的界面继续打字
+  let closeTui: ((result: AskQuestionResult) => void) | undefined;
+  const resultPromise = ctx.ui.custom<AskQuestionResult>((tui: TUI, theme: Theme, _kb: KeybindingsManager, done: (result: AskQuestionResult) => void) => {
+    closeTui = done;
     // 状态变量
     let currentTab = 0;
     let optionIndex = 0;
@@ -450,6 +477,92 @@ async function handleAskQuestion(ctx: ExtensionContext, params: AskQuestionInput
     };
   });
 
+  // 先给出明确答复的那条算
+  const winner = await raceFirstDecisive(hubPromise, resultPromise);
+  if (winner.from === "tui") {
+    // 本地先答了：撤回 hub 那条，飞书上的卡会被 hub 标成已取消
+    abort.abort();
+    return toToolResult(winner.result);
+  }
+  // hub 先答了：把本地界面收掉，别让用户对着一个已经不需要的界面继续打字
+  closeTui?.({ questions, answers: [], cancelled: true });
+  return outcomeToResult(questions, winner.outcome);
+}
+
+/** hub 的结果 → 工具结果。与 TUI 那条路共用 toToolResult，保证文案一致 */
+function outcomeToResult(questions: Question[], outcome: HubQuestionOutcome): AskQuestionToolResult {
+  if (outcome.status === "answered") {
+    return toToolResult({ questions, answers: answersFromHub(questions, outcome.answers), cancelled: false });
+  }
+  if (outcome.status === "denied") {
+    return toToolResult({ questions, answers: [], cancelled: true });
+  }
+  // 没人能答，本地也没有 UI：只能报不可用
+  return errorResult("Error: UI not available (running in non-interactive mode)", questions);
+}
+
+/**
+ * 等两条路里先给出明确答复的那条。
+ *
+ * - hub 的 answered / denied 算答复；unavailable 不算（那只是没人能答，
+ *   用户仍可能在终端前作答，过早判定会把本地这条也一并放弃）
+ * - 本地 TUI 无论返回什么（包括用户取消）都算答复
+ */
+function raceFirstDecisive(hub: Promise<HubQuestionOutcome>, tui: Promise<AskQuestionResult>): Promise<Decisive> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (win: Decisive) => {
+      if (settled) return;
+      settled = true;
+      resolve(win);
+    };
+    // 两条路都把失败翻成了自己的终态（hub 那边是 unavailable），
+    // 这里 catch 只是保险，不让未捕获的 rejection 把进程带走
+    hub.then((outcome) => {
+      if (outcome.status === "unavailable") return;
+      settle({ from: "hub", outcome });
+    }, () => {});
+    tui.then((result) => {
+      // 空结果不算答复：本地界面被收掉时不该把「没结果」当成用户的选择
+      if (!result) return;
+      settle({ from: "tui", result });
+    }, () => {});
+  });
+}
+
+type Decisive = { from: "hub"; outcome: HubQuestionOutcome } | { from: "tui"; result: AskQuestionResult };
+function firstDecisive(hub: Promise<HubQuestionOutcome>, tuiRef: { current?: AskQuestionResult }): Promise<AskQuestionToolResult> {
+  return new Promise((resolve) => {
+    resolve; // 占位：下面用 race 实现，保留函数签名便于将来换成可取消版本
+  });
+}
+
+/**
+ * hub 带回的应答 → 内部 Answer。
+ * 没答到的题不塞空值：宁可少一条，也不要让调用方看见一个「空答案」还以为用户答了。
+ * index 只在命中原选项时填：自己写的内容没对号入座那回事。
+ */
+export function answersFromHub(questions: Question[], answers: HubAnswer[]): Answer[] {
+  const byId = new Map(answers.map((a) => [a.id, a]));
+  const out: Answer[] = [];
+  for (const q of questions) {
+    const a = byId.get(q.id);
+    if (!a) continue;
+    const index = q.options.findIndex((o) => o.value === a.value);
+    const label = a.label || (index >= 0 ? q.options[index].label : a.value);
+    out.push({
+      id: q.id,
+      value: a.value,
+      label,
+      wasCustom: Boolean(a.wasCustom),
+      ...(index >= 0 && !a.wasCustom ? { index: index + 1 } : {}),
+    });
+  }
+  return out;
+}
+
+/** 内部结果 → 工具结果。hub 与 TUI 两条路共用，保证结果文案一致 */
+function toToolResult(result: AskQuestionResult): AskQuestionToolResult {
   if (result.cancelled) {
     return {
       content: [{ type: "text", text: "User cancelled the question" }],
@@ -459,7 +572,7 @@ async function handleAskQuestion(ctx: ExtensionContext, params: AskQuestionInput
 
   // 结果带回完整问题文本，便于事后在对话流中回看
   const answerLines = result.answers.map((a: Answer) => {
-    const q = questions.find((qq) => qq.id === a.id);
+    const q = result.questions.find((qq) => qq.id === a.id);
     const qLabel = q?.label || a.id;
     const qText = q?.question_text ? ` — ${q.question_text}` : "";
     if (a.wasCustom) {
@@ -485,7 +598,6 @@ export default function askQuestion(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return handleAskQuestion(ctx, params);
     },
-
     renderCall(args, theme, _context) {
       const qs = (args.questions as Question[]) || [];
       const count = qs.length;
