@@ -180,8 +180,8 @@ export const REVIEW_TOOL: Tool = {
 	description: "汇报对 shell 命令的安全审核结论。",
 	parameters: Type.Object({
 		verdict: Type.Union([Type.Literal("safe"), Type.Literal("risky"), Type.Literal("dangerous")]),
-		reason: Type.String({ description: "一句话理由（中文）" }),
-		suggestion: Type.String({ description: "更安全的替代写法或注意点（无则空字符串）" }),
+		reason: Type.String({ description: "一句话理由（简体中文，不超过 20 字）" }),
+		suggestion: Type.String({ description: "更安全的替代写法或注意点（简体中文，不超过 20 字；没有则空字符串）" }),
 	}),
 };
 
@@ -236,13 +236,42 @@ export function buildReviewPrompt(
 // 输出解析（纯函数，容错）
 // ═══════════════════════════════════════════════════
 
+const BULLET_LEAD = /^[-*•·]\s+|^#{1,6}\s+|^\d+[.、)]\s*/;
+
+function clip(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** 把模型的正文规整成给人工审核者看的无序列表。
+ *  提示词已经要求「- 开头、1 到 3 条、每条不超过 30 字」，这里是兜底：
+ *  模型写散文或编号列表时，仍然裁成短列表，不让一坨文字把卡片撑满。
+ *  单独一段长句会先按句读切开再裁，而不是直接砍成半句话。 */
+export function normalizeBullets(text: string, maxItems = 3, maxCharsPerItem = 30): string {
+	const lines = text
+		.split("\n")
+		.map((line) => line.trim().replace(BULLET_LEAD, "").trim())
+		.filter(Boolean);
+	const pieces =
+		lines.length === 1 && lines[0].length > maxCharsPerItem
+			? lines[0]
+				.split(/[。；;！？!?]+/)
+				.map((s) => s.trim())
+				.filter(Boolean)
+			: lines;
+	return pieces
+		.slice(0, maxItems)
+		.map((s) => `- ${clip(s, maxCharsPerItem)}`)
+		.join("\n");
+}
+
 /** 从完整响应中提取审核结论（纯函数；传 response.content）：
  *  结论通过 report_review_verdict 工具调用提交（结构化 verdict，schema 约束）；
- *  模型回复的自由文本一律不做 JSON 解析，原样作为 opinion（看法）展示给人工审核者，
- *  允许像日常交流一样自然表述；
- *  未调用工具 → 无法结构化判定（verdict=error，回退弹窗），文本仍作为 opinion 附带展示。 */
+ *  模型回复的自由文本作为 opinion（看法）展示给人工审核者，提交给审核者的版本会被
+ *  normalizeBullets 裁成短列表（提示词要求的形态，代码兜底）；
+ *  未调用工具 → 无法结构化判定（verdict=error，回退弹窗），此时文本**不**裁，
+ *  原样附带展示 —— 那种情况下这几行字就是排查证据。 */
 export function extractReviewResult(content: AssistantMessage["content"]): ReviewResult {
-	const opinion = content
+	const raw = content
 		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
 		.join("\n")
@@ -257,17 +286,18 @@ export function extractReviewResult(content: AssistantMessage["content"]): Revie
 				reason: typeof reason === "string" ? reason.slice(0, 300) : "",
 				suggestion: typeof suggestion === "string" ? suggestion.slice(0, 300) : "",
 			};
-			if (opinion) result.opinion = opinion;
+			const bullets = raw ? normalizeBullets(raw) : "";
+			if (bullets) result.opinion = bullets;
 			return result;
 		}
-		return { verdict: "error", reason: "invalid tool call arguments", suggestion: "", ...(opinion ? { opinion } : {}) };
+		return { verdict: "error", reason: "invalid tool call arguments", suggestion: "", ...(raw ? { opinion: raw } : {}) };
 	}
 	// 未调用工具：不把文本当 JSON 解析，文本作为看法展示；verdict 按无法判定回退弹窗
 	return {
 		verdict: "error",
 		reason: "模型未给出结构化结论（未调用审核工具）",
 		suggestion: "",
-		...(opinion ? { opinion } : {}),
+		...(raw ? { opinion: raw } : {}),
 	};
 }
 
@@ -503,9 +533,10 @@ export function formatReviewNote(review: ReviewResult): string {
 				: review.verdict === "safe"
 					? "安全"
 					: "审核失败";
-	const parts = [`🤖 LLM 审查：${label}`];
-	if (review.reason) parts.push(review.reason);
-	if (review.suggestion) parts.push(`建议：${review.suggestion}`);
-	if (review.opinion) parts.push(`看法：${review.opinion}`);
-	return parts.join(" —— ");
+	// 结论与理由占第一行；建议与看法各占后面几行。
+	// opinion 已是短列表（extract 里规整过），所以这里不再加「看法：」前缀
+	const lines = [`🤖 LLM 审查：${label}${review.reason ? ` —— ${review.reason}` : ""}`];
+	if (review.suggestion) lines.push(`建议：${review.suggestion}`);
+	if (review.opinion) lines.push(review.opinion);
+	return lines.join("\n");
 }

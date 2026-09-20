@@ -209,23 +209,35 @@ const AUDIT_RULES = [
   { name: "隐藏失败", matched: "-sSL", tip: "-s 会把错误一起吞掉" },
   { name: "走本机代理", matched: "-x http://127.0.0.1:10738", tip: "确认代理后面接的是可信源" },
 ];
-const REVIEW = { verdict: "有风险", verdictColor: "orange", reason: "把远程内容直接交给 shell，静态看不出来它要干什么", suggestion: "先下到 /var/tmp 看一眼，再决定要不要执行", opinion: "域名本身可信，但管道会吞掉 curl 的退出码，失败也可能继续跑" };
+const REVIEW = {
+  verdict: "有风险",
+  verdictColor: "orange",
+  reason: "远程内容直接进 shell",
+  suggestion: "先下到 /var/tmp 看一眼再执行",
+  bullets: ["拿到的内容和执行的内容之间没人看过", "管道会吞掉 curl 退出码，失败也可能继续跑"],
+};
 
 const audit = shell(
   [
     md(fence(AUDIT_CMD), { text_size: "normal" }),
     md(grey(`命中 ${AUDIT_RULES.length} 项风险规则。点「允许」只对这次命令生效。`)),
-    // 云端审核整块合成一个富文本元素
+    // 云端审核：结论行 + 模型的短列表 + 建议。清单与建议之间留一个空行，
+    // 否则 markdown 会把建议当成最后一条列表的续行（表现为 💡 粘在句尾）
+    md(
+      [
+        `🤖 ${grey("云端模型审核")}　<font color='${REVIEW.verdictColor}'>⚠ ${REVIEW.verdict}</font>　${grey(REVIEW.reason)}`,
+        ...REVIEW.bullets.map((b) => `- ${b}`),
+        "",
+        `💡 ${REVIEW.suggestion}`,
+      ].join("\n"),
+    ),
+    // 风险规则：中文规则名用灰字，代码体只留给真正的命令片段
     md(
       block([
-        `🤖 ${grey("云端模型审核")}　<font color='${REVIEW.verdictColor}'>⚠ ${REVIEW.verdict}</font>`,
-        REVIEW.reason,
-        `💡 ${REVIEW.suggestion}`,
-        grey(REVIEW.opinion),
+        ...AUDIT_RULES.slice(0, 3).map((r) => `${grey(r.name)}　${code(r.matched)}`),
+        AUDIT_RULES.length > 3 ? grey(`另有 ${AUDIT_RULES.length - 3} 项`) : "",
       ]),
     ),
-    // 风险规则也合成一块
-    md(block(AUDIT_RULES.map((r) => `${code(r.name)}　${code(r.matched)}　${grey(r.tip)}`))),
     form([commentInput(), actionBar("✅ 允许")]),
     metaLine(),
   ],

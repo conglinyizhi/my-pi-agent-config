@@ -49,6 +49,7 @@ node scripts/feishu-card-gen.mjs <输出目录>    # 写到别处
 5. **决断后隐藏按钮、header 换色**：`allowed` 绿、`denied` 紫；正文顶加「已决断」并带决断人、时间、附言；决断后卡上没有任何可点元素。
 6. **用不到的信息压成灰字**：requestId、会话、过期、时限、内存放在底部一行 notation。
 7. **下拉四个动作**：`session-write` 在当前权限模型里与 `session-trust` 行为等价（见 `session-access.ts` 注释与 `applyPathActions`），不单列。已有授权的目录给「取消授权 / 拉黑」—— 灰色标签不等于不可操作。
+8. **audit 卡的信息密度**：审核结论排成「结论行 + 短列表」而不是一整段散文（列表由提示词要求、`normalizeBullets` 兑底）；风险规则只留规则名与命中片段，去掉 tip —— tip 与模型那几条语义重叠，去掉能把这块砍一半，超过 3 项只报数量。
 
 ## 交互：一次点击带走全部选择，含附言
 

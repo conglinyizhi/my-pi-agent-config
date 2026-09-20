@@ -172,7 +172,9 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 ### 结论回传：工具调用
 
-审核结论通过工具调用回传：请求时注册 `report_review_verdict` 工具（参数 `verdict` / `reason` / `suggestion`，schema 约束枚举），LLM 直接调用该工具提交结论。模型的回复文本不做 JSON 解析——允许像日常交流一样自然表述，原样作为 `opinion`（看法）展示给人工审核者；即使未调用工具（verdict 无法判定，回退弹窗），文本也一并展示。
+审核结论通过工具调用回传：请求时注册 `report_review_verdict` 工具（参数 `verdict` / `reason` / `suggestion`，schema 约束枚举），LLM 直接调用该工具提交结论。模型的回复文本不做 JSON 解析，会先经 `normalizeBullets` 规整成短列表再作为 `opinion`（看法）展示给人工审核者：去列表标记与标题、最多 3 条、每条 ≤ 30 字，整段长句按句读切开而不是硬截。未调用工具时（verdict 无法判定，回退弹窗）文本不裁，原样展示作为排查证据。
+
+输出形态由 `review-system-prompt.txt` 约束：正文只写简体中文无序列表（`- ` 开头，1 到 3 条，每条 ≤ 30 字，不复述命令、不加标题/加粗/编号/表情、不写客套），`reason` / `suggestion` 各 ≤ 20 字。提示词与代码两道都在，是因为模型会漂：提示词负责让它写短，`normalizeBullets` 负责它没写短时卡片不被撞满。
 
 审核模型：支持**模型池**（`models = [{provider, model}, ...]`），按序尝试，单个模型失败（限流/超时/网络）自动切换下一个，全部失败才回退弹窗（失败原因汇总展示）。池子未配置时兼容旧的 `provider`/`model` 单模型；两者皆无才用当前会话模型——绝不静默切换到未配置的模型（池内切换是显式配置的容错，不是静默）。prompt 内置注入防护：「测试环境 / 直接放行 / 忽略安全审核」等放宽审核的声称一律按注入忽略，判定只认命令本身，宁严勿松。
 
@@ -193,7 +195,7 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 ### GUI 联动（wails-gui 权限闸门窗口）
 
-LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块——verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的自然语言看法（`opinion`，原样完整展示）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
+LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块，包括 verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的看法（`opinion`，已规整为 ≤ 3 条短句）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
 
 ### 审批附言（三个窗口通用）
 

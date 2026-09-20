@@ -40,12 +40,12 @@
       },
       {
         "tag": "markdown",
-        "content": "🤖 <font color='grey'>云端模型审核</font>　<font color='orange'>⚠ 有风险</font>\n把远程内容直接交给 shell，静态看不出来它要干什么\n💡 先下到 /var/tmp 看一眼，再决定要不要执行\n<font color='grey'>域名本身可信，但管道会吞掉 curl 的退出码，失败也可能继续跑</font>",
+        "content": "🤖 <font color='grey'>云端模型审核</font>　<font color='orange'>⚠ 有风险</font>　<font color='grey'>远程内容直接进 shell</font>\n- 拿到的内容和执行的内容之间没人看过\n- 管道会吞掉 curl 退出码，失败也可能继续跑\n\n💡 先下到 /var/tmp 看一眼再执行",
         "text_size": "notation"
       },
       {
         "tag": "markdown",
-        "content": "`远程脚本直接执行`　`install.sh | bash`　<font color='grey'>拿到的内容和实际执行的内容之间没人看过</font>\n`隐藏失败`　`-sSL`　<font color='grey'>-s 会把错误一起吞掉</font>\n`走本机代理`　`-x http://127.0.0.1:10738`　<font color='grey'>确认代理后面接的是可信源</font>",
+        "content": "<font color='grey'>远程脚本直接执行</font>　`install.sh | bash`\n<font color='grey'>隐藏失败</font>　`-sSL`\n<font color='grey'>走本机代理</font>　`-x http://127.0.0.1:10738`",
         "text_size": "notation"
       },
       {

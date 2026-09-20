@@ -137,7 +137,26 @@ describe("extractReviewResult", () => {
 	});
 	const text = (t: string) => ({ type: "text" as const, text: t });
 
-	it("优先取工具调用参数，工具调用后的文本收集为 opinion", () => {
+	it("工具调用后的文本被规整成列表：去标记、限 3 条", () => {
+		const r = extractReviewResult([
+			text("- 路径含通配符\n* 目标不是临时目录\n1. 建议先 ls 确认\n2. 第四条应当被丢掉"),
+			toolCall({ verdict: "risky", reason: "通配符", suggestion: "" }),
+		]);
+		assert.equal(r.opinion, "- 路径含通配符\n- 目标不是临时目录\n- 建议先 ls 确认");
+	});
+
+	it("工具调用后的文本是整段长句：按句读切条", () => {
+		const r = extractReviewResult([
+			text("这条命令把远程内容交给 shell，看不出来它要干什么；管道会吞掉退出码。"),
+			toolCall({ verdict: "risky", reason: "管道执行", suggestion: "" }),
+		]);
+		assert.equal(
+			r.opinion,
+			"- 这条命令把远程内容交给 shell，看不出来它要干什么\n- 管道会吞掉退出码",
+		);
+	});
+
+	it("优先取工具调用参数，工具调用后的文本收集为 opinion（已带列表标记）", () => {
 		const r = extractReviewResult([
 			text("命令拼接方式有隐患，建议人工确认后再执行。"),
 			toolCall({ verdict: "risky", reason: "路径含通配符", suggestion: "先 ls 确认" }),
@@ -146,7 +165,7 @@ describe("extractReviewResult", () => {
 			verdict: "risky",
 			reason: "路径含通配符",
 			suggestion: "先 ls 确认",
-			opinion: "命令拼接方式有隐患，建议人工确认后再执行。",
+			opinion: "- 命令拼接方式有隐患，建议人工确认后再执行。",
 		});
 	});
 	it("工具调用无自由文本 → 不带 opinion 字段", () => {
@@ -156,12 +175,14 @@ describe("extractReviewResult", () => {
 		assert.deepEqual(r, { verdict: "safe", reason: "", suggestion: "" });
 		assert.equal("opinion" in r, false);
 	});
-	it("opinion 超长截断到 500 字符", () => {
+	it("opinion 超长：先截 500 字符原文，再规整成 3 条以内的短列表", () => {
 		const r = extractReviewResult([
 			text("x".repeat(600)),
 			toolCall({ verdict: "safe", reason: "ok", suggestion: "" }),
 		]);
-		assert.equal(r.opinion?.length, 500);
+		assert.equal((r.opinion ?? "").split("\n").length, 1);
+		assert.ok((r.opinion ?? "").startsWith("- "), r.opinion);
+		assert.ok((r.opinion ?? "").length <= 33, r.opinion);
 	});
 	it("工具调用 verdict 非法值 → error", () => {
 		const r = extractReviewResult([toolCall({ verdict: "maybe", reason: "x", suggestion: "" })]);
@@ -238,15 +259,14 @@ describe("formatReviewNote", () => {
 		assert.ok(note.includes("路径含通配符"));
 		assert.ok(note.includes("先 ls 确认"));
 	});
-	it("含 opinion 看法", () => {
+	it("含 opinion 列表（单独成行，不加前缀）", () => {
 		const note = formatReviewNote({
 			verdict: "safe",
 			reason: "ok",
 			suggestion: "",
-			opinion: "写法上动态拼接，建议下次显式列出路径",
+			opinion: "- 写法上动态拼接，建议下次显式列出路径",
 		});
-		assert.ok(note.includes("看法"));
-		assert.ok(note.includes("建议下次显式列出路径"));
+		assert.ok(note.includes("\n- 写法上动态拼接，建议下次显式列出路径"));
 	});
 	it("error 结论明确标示审核失败", () => {
 		const note = formatReviewNote({
