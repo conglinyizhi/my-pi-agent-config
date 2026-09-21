@@ -40,16 +40,7 @@ func main() {
 	h := newHub(*statePath, *askTTL, *pairTTL, nil)
 	s := newServer(h, *socketPath)
 	if bin := findGUIBinary(); bin != "" {
-		gui := newGUILauncher(bin)
-		s.launchGUI = func(ask *Ask) {
-			gui.launch(ask, func(action, comment string, pa []PathAction) {
-				settled, err := s.hub.Decide(ask.RequestID, byGUI, nil, action, comment, pa, nil)
-				if err == nil {
-					s.onSettled(settled)
-				}
-			})
-		}
-		s.killGUI = gui.kill
+		s.launchGateGUI(bin)
 		log.Printf("gate gui: %s", bin)
 	} else {
 		log.Printf("gate gui: 未找到 wails-gui，审批只扇出已连接适配器")

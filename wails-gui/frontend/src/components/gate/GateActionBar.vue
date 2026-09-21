@@ -15,11 +15,12 @@
       <button data-name="gate-history-toggle" class="ghost" title="历史附言" @click.stop="toggleHistory">▾ 历史</button>
       <span class="chip-mark" :class="{ show: comment.trim().length > 0 }">将附带附言</span>
       <span v-if="pathDraftSummary" data-name="path-draft-summary" class="chip-mark show draft-mark">{{ pathDraftSummary }}</span>
+      <span v-if="scopeBlockReason" data-name="scope-blocked" class="chip-mark show block-mark">{{ scopeBlockReason }}</span>
       <span class="spacer"></span>
       <button v-if="isSandboxAllow" data-name="sa-deny" class="btn btn-deny" @click="respond('deny')">🚫 拒绝</button>
       <button v-else data-name="action-deny" class="btn btn-deny" @click="respond('deny')">🚫 拒绝</button>
-      <button v-if="isSandboxAllow" data-name="sa-allow" class="btn btn-allow" @click="respond('allow')">{{ allowLabel }}</button>
-      <button v-else data-name="action-allow" class="btn btn-allow" @click="respond('allow')">{{ allowLabel }}</button>
+      <button v-if="isSandboxAllow" data-name="sa-allow" class="btn btn-allow" :disabled="!!scopeBlockReason" :title="scopeBlockReason" @click="respond('allow')">{{ allowLabel }}</button>
+      <button v-else data-name="action-allow" class="btn btn-allow" :disabled="!!scopeBlockReason" :title="scopeBlockReason" @click="respond('allow')">{{ allowLabel }}</button>
 
       <div v-if="historyOpen" class="panel" @click.stop>
         <div class="panel-head"><span>历史附言</span><span class="count">{{ reasons.length }} 条</span></div>
@@ -54,6 +55,8 @@ const props = defineProps({
   reasons: { type: Array, default: () => [] },
   comment: { type: String, default: "" },
   pathDraftSummary: { type: String, default: "" },
+  // 执行范围没通过护栅时的说明：非空则禁用「允许」，避免提交一个后端会丢掉的范围
+  scopeBlockReason: { type: String, default: "" },
 });
 const emit = defineEmits(["respond", "save-reason", "update-reason", "delete-reason", "update:comment"]);
 // 附言状态提升到 GateView：允许/拒绝提交时带上当前附言与目录草稿
@@ -152,11 +155,13 @@ onUnmounted(() => {
 .chip-mark { font-size: 11px; color: #2ecc71; background: #12261a; border: 1px solid #2ecc7155; padding: 2px 8px; border-radius: 10px; white-space: nowrap; opacity: 0; }
 .chip-mark.show { opacity: 1; }
 .chip-mark.draft-mark { color: #f0c674; background: #2a1a0a; border-color: #f0c67455; }
+.chip-mark.block-mark { color: #e74c3c; background: #3a1a1a; border-color: #e74c3c55; }
 .spacer { flex: 1; }
 .btn { padding: 8px 20px; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; font-family: inherit; }
 .btn:hover { filter: brightness(1.1); }
 .btn-deny { background: #e74c3c; color: #fff; }
 .btn-allow { background: #2ecc71; color: #fff; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .panel { position: absolute; left: 16px; bottom: calc(100% + 6px); width: 460px; max-height: 280px; overflow: auto; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.6); z-index: 20; }
 .panel-head { padding: 8px 12px; font-size: 11px; color: #888; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; background: #1a1a2e; }
 .count { margin-left: auto; color: #666; }

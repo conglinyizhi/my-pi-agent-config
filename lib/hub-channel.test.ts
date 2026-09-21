@@ -333,3 +333,54 @@ describe("createHubThenLocalChannel 的提前回退", () => {
 	});
 });
 
+
+// ---------------------------------------------------------------------------
+// settled 里的 writePaths：闸门窗里编辑过的执行范围不能丢在 hub 这一跳
+// ---------------------------------------------------------------------------
+
+describe("hub settled 的 writePaths 透传", () => {
+	it("settled 带 writePaths：跟 action / pathActions 一起带出来", async () => {
+		const hub = await fakeHub("wp-settled.sock", (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters: 1 })}\n`);
+			conn.write(`${JSON.stringify({
+				v: 1,
+				type: "settled",
+				requestId: msg.requestId,
+				action: "allow",
+				comment: "只批这两个",
+				pathActions: [{ path: "/opt/a", list: "allow" }],
+				writePaths: ["/opt/a", "/srv/b"],
+			})}\n`);
+		});
+		try {
+			const channel = createHubThenLocalChannel({ socketPath: hub.sock });
+			const decision = await channel(request, ctx());
+			assert.equal(decision.action, "allow");
+			assert.equal(decision.comment, "只批这两个");
+			// 丢在这里就等于用户白改：pi 那边会退回按申请值算护栅
+			assert.deepEqual(decision.writePaths, ["/opt/a", "/srv/b"]);
+			assert.deepEqual(decision.pathActions, [{ path: "/opt/a", list: "allow" }]);
+		} finally {
+			await hub.close();
+		}
+	});
+
+	it("旧 hub 的 settled 不带 writePaths：字段根本不出现", async () => {
+		const hub = await fakeHub("wp-absent.sock", (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters: 1 })}\n`);
+			conn.write(`${JSON.stringify({ v: 1, type: "settled", requestId: msg.requestId, action: "allow" })}\n`);
+		});
+		try {
+			const channel = createHubThenLocalChannel({ socketPath: hub.sock });
+			const decision = await channel(request, ctx());
+			assert.equal(decision.action, "allow");
+			assert.ok(!("writePaths" in decision), "没编辑过就该是 undefined，让 pi 沿用申请值");
+		} finally {
+			await hub.close();
+		}
+	});
+});

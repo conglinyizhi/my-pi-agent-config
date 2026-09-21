@@ -18,6 +18,8 @@ type guiDecision struct {
 	Action      string       `json:"action"`
 	Comment     string       `json:"comment"`
 	PathActions []PathAction `json:"pathActions"`
+	// WritePaths 是窗口里编辑后的执行范围；旧版 GUI 不写这个字段，读出来就是 nil
+	WritePaths []string `json:"writePaths"`
 }
 
 type guiLauncher struct {
@@ -30,7 +32,7 @@ func newGUILauncher(bin string) *guiLauncher {
 	return &guiLauncher{bin: bin, by: map[string]*guiProc{}}
 }
 
-func (g *guiLauncher) launch(ask *Ask, decide func(action, comment string, pa []PathAction)) {
+func (g *guiLauncher) launch(ask *Ask, decide func(action, comment string, pa []PathAction, writePaths []string)) {
 	if g.bin == "" || ask == nil {
 		return
 	}
@@ -80,14 +82,14 @@ func (g *guiLauncher) launch(ask *Ask, decide func(action, comment string, pa []
 		select {
 		case <-done:
 			if d := readGUIDecision(respFile); d != nil && decide != nil {
-				decide(d.Action, d.Comment, d.PathActions)
+				decide(d.Action, d.Comment, d.PathActions, d.WritePaths)
 			}
 			g.cleanup(ask.RequestID, cmd, tmp)
 			return
 		case <-ticker.C:
 			if d := readGUIDecision(respFile); d != nil {
 				if decide != nil {
-					decide(d.Action, d.Comment, d.PathActions)
+					decide(d.Action, d.Comment, d.PathActions, d.WritePaths)
 				}
 				return
 			}

@@ -2,17 +2,19 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { Value } from "typebox/value";
 import {
 	applyPathActions,
 	builtinWritableRoots,
+	resolveEditedWritePaths,
 	SANDBOX_ALLOW_PARAMETERS,
 	validateSandboxAllowInput,
 	writePathsFullyTrusted,
 } from "./allow.ts";
+import { parseGuiDecision, toGuiPayload } from "../../lib/approval-channel.ts";
 import { addAllowDir, loadSandboxPaths, saveSandboxPaths, setPathsFileForTest } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
@@ -191,5 +193,164 @@ describe("sandbox-allow 一次审批应用多条目录动作", () => {
 		);
 		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: ["/tmp/blocked"] });
 		assert.deepEqual(getSessionAccessSnapshot("session-a"), { writeDirs: [], trustedDirs: [] });
+	});
+
+	it("workspace 可把任意目录设为副工作区，路径不必在候选里", () => {
+		const result = applyPathActions(
+			[{ path: "/srv/scratch", list: "workspace" }],
+			["/opt/new"],
+			"/work/project",
+			{ allow: true, rules: [] },
+		);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/srv/scratch"], blockDirs: [] });
+		assert.deepEqual(result.writePaths, ["/opt/new", "/srv/scratch"]);
+	});
+
+	it("workspace 拒绝 / 与家目录根，家目录的子目录合法", () => {
+		const home = "/home/tester";
+		const denied = applyPathActions(
+			[
+				{ path: "/", list: "workspace" },
+				{ path: "/.", list: "workspace" },
+				{ path: home, list: "workspace" },
+			],
+			["/opt/new"],
+			"/work/project",
+			{ allow: true, rules: [] },
+			{ homeDir: home },
+		);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: [] });
+		assert.deepEqual(denied.writePaths, ["/opt/new"]);
+
+		const allowed = applyPathActions(
+			[{ path: `${home}/scratch`, list: "workspace" }],
+			["/opt/new"],
+			"/work/project",
+			{ allow: true, rules: [] },
+			{ homeDir: home },
+		);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [`${home}/scratch`], blockDirs: [] });
+		assert.deepEqual(allowed.writePaths, ["/opt/new", `${home}/scratch`]);
+	});
+
+	it("命令审计未通过时 workspace 不授予，也不改写本次范围", () => {
+		const result = applyPathActions(
+			[{ path: "/srv/scratch", list: "workspace" }],
+			["/opt/new"],
+			"/work/project",
+			{ allow: false, rules: [{ name: "rm-recursive", tip: "危险删除操作", matched: ["rm", "-rf"] }] },
+		);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: [] });
+		assert.deepEqual(result.writePaths, ["/opt/new"]);
+	});
+});
+
+describe("sandbox-allow 响应里编辑后的执行范围", () => {
+	const tmp = mkdtempSync(join(tmpdir(), "sandbox-allow-scope-"));
+	setPathsFileForTest(join(tmp, "sandbox-paths.json"));
+	after(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+	afterEach(() => {
+		saveSandboxPaths({ allowDirs: [], blockDirs: [] });
+	});
+	const audit = { allow: true, rules: [] };
+
+	it("编辑成父目录：候选被覆盖，本次可写根就是那个父目录", () => {
+		const result = applyPathActions([], ["/opt/cache"], "/work/project", audit, {
+			editedWritePaths: ["/opt"],
+		});
+		assert.deepEqual(result.writePaths, ["/opt"]);
+	});
+
+	it("编辑成子目录：缩窄到子目录", () => {
+		const result = applyPathActions([], ["/opt/cache"], "/work/project", audit, {
+			editedWritePaths: ["/opt/cache/sub"],
+		});
+		assert.deepEqual(result.writePaths, ["/opt/cache/sub"]);
+	});
+
+	it("与候选无关的项丢弃，对应原候选保留", () => {
+		const result = applyPathActions([], ["/opt/cache"], "/work/project", audit, {
+			editedWritePaths: ["/etc"],
+		});
+		assert.deepEqual(result.writePaths, ["/opt/cache"]);
+	});
+
+	it("以闸门窗的完整列表为准：删掉的候选不再自己长回来", () => {
+		const result = applyPathActions([], ["/opt/a", "/opt/b"], "/work/project", audit, {
+			editedWritePaths: ["/opt/a/sub"],
+		});
+		assert.deepEqual(result.writePaths, ["/opt/a/sub"]);
+	});
+
+	it("无关项被护栅丢后，剩下有效项按列表生效", () => {
+		const result = applyPathActions([], ["/opt/a", "/opt/b"], "/work/project", audit, {
+			editedWritePaths: ["/opt/a/sub", "/etc"],
+		});
+		assert.deepEqual(result.writePaths, ["/opt/a/sub"]);
+	});
+
+	it("编辑值缺省、非数组或全被丢弃时退回申请值", () => {
+		assert.deepEqual(
+			applyPathActions([], ["/opt/cache"], "/work/project", audit).writePaths,
+			["/opt/cache"],
+		);
+		assert.deepEqual(
+			applyPathActions([], ["/opt/cache"], "/work/project", audit, { editedWritePaths: [] }).writePaths,
+			["/opt/cache"],
+		);
+		assert.deepEqual(
+			applyPathActions([], ["/opt/cache"], "/work/project", audit, { editedWritePaths: "not-an-array" }).writePaths,
+			["/opt/cache"],
+		);
+		assert.deepEqual(
+			applyPathActions([], [], "/work/project", audit, { editedWritePaths: ["/opt"] }).writePaths,
+			[],
+		);
+	});
+
+	it("编辑值同样过 normalize：相对路径按 cwd 解析，不相关项丢弃", () => {
+		assert.deepEqual(resolveEditedWritePaths(["sub"], ["/opt/cache"], "/opt/cache"), ["/opt/cache/sub"]);
+		assert.deepEqual(resolveEditedWritePaths([`${homedir()}/cache`], ["/opt/cache"], "/work"), ["/opt/cache"]);
+		assert.deepEqual(resolveEditedWritePaths(["/"], ["/opt/cache"], "/work"), ["/opt/cache"]);
+		assert.deepEqual(resolveEditedWritePaths(["  ", 7], ["/opt/cache"], "/work"), ["/opt/cache"]);
+	});
+
+	it("授权候选仍只认申请值：编辑出来的新路径不能被长期信任", () => {
+		applyPathActions([{ path: "/opt/edited", list: "allow" }], ["/opt/cache"], "/work/project", audit, {
+			editedWritePaths: ["/opt/edited"],
+		});
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: [] });
+	});
+
+	it("GUI 响应经 parseGuiDecision 带出 writePaths，payload 带 homeDir", () => {
+		const payload = toGuiPayload({
+			kind: "sandbox-allow",
+			command: "touch /opt/x",
+			permission: "write-paths",
+			writePaths: ["/opt/x"],
+			justification: "写缓存",
+			candidatePaths: ["/opt/x"],
+			persistentRoots: [],
+			sessionWriteRoots: [],
+			sessionTrustedRoots: [],
+			builtinRoots: [],
+			workspaceRoot: "/work",
+		});
+		assert.equal(payload.homeDir, homedir());
+
+		const decision = parseGuiDecision({
+			action: "allow",
+			writePaths: ["  /opt  ", "", 7],
+			pathActions: [{ path: "/opt", list: "workspace" }],
+		});
+		assert.deepEqual(decision.writePaths, ["/opt"]);
+		const result = applyPathActions(decision.pathActions, ["/opt/x"], "/work", audit, {
+			editedWritePaths: decision.writePaths,
+			homeDir: "/home/tester",
+		});
+		assert.deepEqual(result.writePaths, ["/opt"]);
+		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/opt"], blockDirs: [] });
 	});
 });

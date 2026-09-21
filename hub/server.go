@@ -61,6 +61,21 @@ func newServer(hub *Hub, socketPath string, opts ...func(*Server)) *Server {
 	return s
 }
 
+// launchGateGUI 把本机闸门窗接到 hub 的决断路径上。main 与测试共用这一段接线：
+// 各自写一份的话，测的就只是测试里那份拷贝，真接线错了看不出来。
+func (s *Server) launchGateGUI(bin string) {
+	gui := newGUILauncher(bin)
+	s.launchGUI = func(ask *Ask) {
+		gui.launch(ask, func(action, comment string, pa []PathAction, writePaths []string) {
+			settled, err := s.hub.Decide(ask.RequestID, byGUI, nil, action, comment, pa, writePaths, nil)
+			if err == nil {
+				s.onSettled(settled)
+			}
+		})
+	}
+	s.killGUI = gui.kill
+}
+
 func (s *Server) Listen() error {
 	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -229,7 +244,7 @@ func (s *Server) dispatch(c *client, env Envelope) error {
 		} else if c.role == roleAdmin {
 			by = byAdmin
 		}
-		settled, err := s.hub.Decide(env.RequestID, by, env.Principal, env.Action, env.Comment, env.PathActions, env.Answers)
+		settled, err := s.hub.Decide(env.RequestID, by, env.Principal, env.Action, env.Comment, env.PathActions, env.WritePaths, env.Answers)
 		if err != nil {
 			return err
 		}

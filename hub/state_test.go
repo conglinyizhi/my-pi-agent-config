@@ -10,7 +10,7 @@ import (
 func TestDecideFirstWins(t *testing.T) {
 	h := newHub("", time.Hour, 15*time.Minute, nil)
 	ask := h.SubmitAsk("req-1", "sess", "audit", map[string]any{"command": "sudo ls"}, 0)
-	env, err := h.Decide("req-1", byGUI, nil, "allow", "ok", nil, nil)
+	env, err := h.Decide("req-1", byGUI, nil, "allow", "ok", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestDecideFirstWins(t *testing.T) {
 	if _, err := h.Grant(pair.Code); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.Decide("req-1", byAdapter, &Principal{Channel: "x", UserID: "1"}, "deny", "", nil, nil)
+	_, err = h.Decide("req-1", byAdapter, &Principal{Channel: "x", UserID: "1"}, "deny", "", nil, nil, nil)
 	if err != errUnknownAsk && err != errAlreadySettled {
 		t.Fatalf("second decide: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestDecideFirstWins(t *testing.T) {
 func TestAdapterNeedsAllowlist(t *testing.T) {
 	h := newHub("", time.Hour, 15*time.Minute, nil)
 	h.SubmitAsk("req-2", "sess", "audit", map[string]any{"command": "rm"}, 0)
-	_, err := h.Decide("req-2", byAdapter, &Principal{Channel: "im", UserID: "u1"}, "allow", "", nil, nil)
+	_, err := h.Decide("req-2", byAdapter, &Principal{Channel: "im", UserID: "u1"}, "allow", "", nil, nil, nil)
 	if err != errUnauthorized {
 		t.Fatalf("want unauthorized, got %v", err)
 	}

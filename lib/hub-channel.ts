@@ -35,6 +35,8 @@ type HubMsg = {
 	action?: "allow" | "deny";
 	comment?: string;
 	pathActions?: ApprovalDecision["pathActions"];
+	// 闸门窗里编辑后的执行范围；旧 GUI 不写，hub 也就不带这个字段
+	writePaths?: string[];
 	answers?: HubAnswer[];
 	adapters?: number;
 	by?: string;
@@ -165,6 +167,9 @@ async function askHub(
 							action,
 							comment: msg.comment,
 							pathActions: msg.pathActions,
+							// 编辑后的执行范围要跟着 settled 一起过 hub：漏在这里，
+							// 用户改了申报范围也白改，pi 那边还是按申请值算护栅
+							writePaths: msg.writePaths,
 						})));
 					} else {
 						finish(() => reject(new Error("hub settled without action")));

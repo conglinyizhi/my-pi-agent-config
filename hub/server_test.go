@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -504,5 +506,117 @@ func TestAskNoLocalGUISkipsGateWindow(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// writeFakeGate 造一个假闸门窗：不弹真窗口，只按 hub 的调用约定把 response.json 写出去
+// （$1=gate，$2=request.json，$3=response.json）。
+func writeFakeGate(t *testing.T, response map[string]any) string {
+	t.Helper()
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "fake-gate.sh")
+	script := "#!/bin/sh\ncat > \"$3\" <<'PIHUB_GATE_EOF'\n" + string(data) + "\nPIHUB_GATE_EOF\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// askSandboxAllow 让假 pi 提一条 sandbox-allow，返回收到 settled 的连接。
+func askSandboxAllow(t *testing.T, sock, requestID string) net.Conn {
+	t.Helper()
+	pi := dial(t, sock)
+	t.Cleanup(func() { pi.Close() })
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	if hello := mustRecv(t, pi); hello.Type != typeHelloOK {
+		t.Fatalf("hello-ok %+v", hello)
+	}
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "sandbox-allow", RequestID: requestID,
+		SessionID: "sess",
+		Payload: map[string]any{
+			"command": "touch /opt/a", "permission": "write-paths",
+			"writePaths": []string{"/opt/a", "/srv/b", "/etc/c"},
+		},
+		TimeoutMs: 60_000,
+	})
+	if ok := mustRecv(t, pi); ok.Type != typeAskOK || ok.RequestID != requestID {
+		t.Fatalf("ask-ok %+v", ok)
+	}
+	return pi
+}
+
+// 闸门窗里编辑过的执行范围要一路跟到 pi：窗口写 response.json → hub 解析 → Decide → settled。
+// 直连 GUI 时这段本来是通的，走 hub 时最容易在半路丢成「pi 只看到申请值」。
+func TestGateGUIWritePathsReachSettled(t *testing.T) {
+	sock, s := startTestHub(t)
+	s.launchGateGUI(writeFakeGate(t, map[string]any{
+		"action":      "allow",
+		"comment":     "只批这两个",
+		"pathActions": []map[string]any{{"path": "/opt/a", "list": "allow"}},
+		"writePaths":  []string{"/opt/a", "/srv/b"},
+	}))
+
+	pi := askSandboxAllow(t, sock, "req-gui-wp")
+	settled := mustRecv(t, pi)
+	if settled.Type != typeSettled || settled.Action != "allow" || settled.By != byGUI {
+		t.Fatalf("settled %+v", settled)
+	}
+	if !slices.Equal(settled.WritePaths, []string{"/opt/a", "/srv/b"}) {
+		t.Fatalf("编辑后的执行范围没透传到 pi：%v", settled.WritePaths)
+	}
+	if len(settled.PathActions) != 1 || settled.PathActions[0].List != "allow" || settled.PathActions[0].Path != "/opt/a" {
+		t.Fatalf("pathActions 也跟着一起核对：%+v", settled.PathActions)
+	}
+}
+
+// 旧版 GUI 的响应里没有 writePaths：settled 里连字段都不该出现，
+// pi 侧 parseGuiDecision 看到 undefined 才会沿用申请值。
+func TestGateGUIWithoutWritePaths(t *testing.T) {
+	sock, s := startTestHub(t)
+	s.launchGateGUI(writeFakeGate(t, map[string]any{"action": "allow", "comment": "旧窗口"}))
+
+	pi := askSandboxAllow(t, sock, "req-gui-nowp")
+	raw := mustRecvRaw(t, pi)
+	if string(raw["type"]) != `"settled"` || string(raw["action"]) != `"allow"` {
+		t.Fatalf("settled %v", raw)
+	}
+	if got, ok := raw["writePaths"]; ok {
+		t.Fatalf("旧 GUI 不该带出 writePaths：%s", got)
+	}
+}
+
+// 远端（适配器 / 本机 GUI 连 socket）的 decide 带 writePaths，settled 也要带。
+func TestSettledCarriesDecideWritePaths(t *testing.T) {
+	sock, s := startTestHub(t)
+	p := grantPrincipal(t, s, "im", "u1")
+
+	adapter := dial(t, sock)
+	defer adapter.Close()
+	mustSend(t, adapter, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapter)
+
+	pi := askSandboxAllow(t, sock, "req-decide-wp")
+	if ev := mustRecv(t, adapter); ev.Type != typeEvent {
+		t.Fatalf("event %+v", ev)
+	}
+
+	mustSend(t, adapter, Envelope{
+		V: 1, Type: typeDecide, RequestID: "req-decide-wp", Action: "allow",
+		Principal: p, WritePaths: []string{"/opt/a"},
+	})
+	if ack := mustRecv(t, adapter); ack.Type != typeDecideOK {
+		t.Fatalf("回执 %+v", ack)
+	}
+
+	raw := mustRecvRaw(t, pi)
+	if string(raw["type"]) != `"settled"` {
+		t.Fatalf("pi 没收到 settled：%v", raw)
+	}
+	if got := string(raw["writePaths"]); got != `["/opt/a"]` {
+		t.Fatalf("writePaths 没原样透传：%s", got)
 	}
 }

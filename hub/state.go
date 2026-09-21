@@ -169,7 +169,9 @@ func (h *Hub) wait(ask *Ask) *Envelope {
 	return ask.decision
 }
 
-func (h *Hub) Decide(requestID, by string, principal *Principal, action, comment string, pathActions []PathAction, answers []Answer) (*Envelope, error) {
+// Decide 定格一次决断。writePaths 是用户在闸门窗里编辑后的执行范围，
+// 与 pathActions 一样原样进 settled：hub 不解释内容，也不替 pi 做归一化。
+func (h *Hub) Decide(requestID, by string, principal *Principal, action, comment string, pathActions []PathAction, writePaths []string, answers []Answer) (*Envelope, error) {
 	if action != "allow" && action != "deny" {
 		return nil, errInvalidDecision
 	}
@@ -183,13 +185,13 @@ func (h *Hub) Decide(requestID, by string, principal *Principal, action, comment
 			return nil, errUnauthorized
 		}
 	}
-	return h.settleLocked(requestID, action, comment, pathActions, answers, settleDecided, by)
+	return h.settleLocked(requestID, action, comment, pathActions, writePaths, answers, settleDecided, by)
 }
 
 func (h *Hub) Abort(requestID string) (*Envelope, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.settleLocked(requestID, "deny", "", nil, nil, settleAborted, byAbort)
+	return h.settleLocked(requestID, "deny", "", nil, nil, nil, settleAborted, byAbort)
 }
 
 func (h *Hub) Expire(requestID string) (*Envelope, error) {
@@ -200,14 +202,14 @@ func (h *Hub) Expire(requestID string) (*Envelope, error) {
 		return nil, errUnknownAsk
 	}
 	if !h.now().Before(ask.ExpiresAt) {
-		return h.settleLocked(requestID, "deny", "", nil, nil, settleExpired, byTimeout)
+		return h.settleLocked(requestID, "deny", "", nil, nil, nil, settleExpired, byTimeout)
 	}
 	return nil, nil
 }
 
-// settleLocked 把 ask 定格成一份 settled。answers 只有本人应答的路径才带，
+// settleLocked 把 ask 定格成一份 settled。answers 与 writePaths 只有本人应答的路径才带，
 // 超时和 abort 没有用户填过的东西，传 nil。
-func (h *Hub) settleLocked(requestID, action, comment string, pathActions []PathAction, answers []Answer, reason, by string) (*Envelope, error) {
+func (h *Hub) settleLocked(requestID, action, comment string, pathActions []PathAction, writePaths []string, answers []Answer, reason, by string) (*Envelope, error) {
 	ask := h.pending[requestID]
 	if ask == nil {
 		return nil, errUnknownAsk
@@ -226,6 +228,7 @@ func (h *Hub) settleLocked(requestID, action, comment string, pathActions []Path
 		Action:      action,
 		Comment:     comment,
 		PathActions: pathActions,
+		WritePaths:  writePaths,
 		Answers:     answers,
 		Reason:      reason,
 		By:          by,

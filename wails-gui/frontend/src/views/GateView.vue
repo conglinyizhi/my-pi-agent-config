@@ -33,10 +33,18 @@
       :session-trusted-roots="sessionTrustedRoots"
       :builtin-roots="builtinRoots"
       :workspace-root="workspaceRoot"
+      :home-dir="homeDir"
+      :scope-rows="scopeRows"
+      :workspace-dirs="workspaceDirs"
       :path-drafts="pathDrafts"
       :verdict-meta="verdictMeta"
       @stage-path="stagePath"
       @cancel-path="cancelPath"
+      @edit-scope="editScope"
+      @remove-scope="removeScope"
+      @add-scope="addScope"
+      @add-workspace="addWorkspace"
+      @remove-workspace="removeWorkspace"
     />
 
     <GateActionBar
@@ -45,6 +53,7 @@
       :reasons="reasons"
       :comment="comment"
       :path-draft-summary="draftSummary"
+      :scope-block-reason="scopeBlockReason"
       @update:comment="comment = $event"
       @respond="respondFromAction"
       @save-reason="saveReason"
@@ -59,7 +68,7 @@ import "../gui-theme.css";
 import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import { findHighlights } from "../domain/gate/highlights.js";
-import { cancelPathAuthorization, cyclePathDraft, pathDraftsToActions, pathDraftSummary } from "../domain/gate/path-actions.js";
+import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow, appendScopeRow, pathDraftsToActions, pathDraftSummary, removeScopeRow, scopeChanged, scopeIssues, scopeWritePaths, workspaceActions } from "../domain/gate/path-actions.js";
 import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
 import GateCommandPreview from "../components/gate/GateCommandPreview.vue";
@@ -86,7 +95,11 @@ const sessionWriteRoots = ref([]);
 const sessionTrustedRoots = ref([]);
 const builtinRoots = ref([]);
 const workspaceRoot = ref("");
+const homeDir = ref("");
 const pathDrafts = ref({});
+// 执行范围行（可改路径）与待提交的副工作区列表
+const scopeRows = ref([]);
+const workspaceDirs = ref([]);
 
 const cur = ref(0);
 const reasons = ref([]);
@@ -116,6 +129,10 @@ const pathRoots = computed(() => ({
   workspaceRoot: workspaceRoot.value,
 }));
 const draftSummary = computed(() => pathDraftSummary(pathDrafts.value));
+const pathOptions = computed(() => ({ homeDir: homeDir.value, workspaceRoot: workspaceRoot.value }));
+// 只列没有通过护栅的行，非空时不允许提交 allow（后端会自行再算一遍）
+const scopeIssuesList = computed(() => (isSandboxAllow.value ? scopeIssues(scopeRows.value, candidatePaths.value, pathOptions.value) : []));
+const scopeBlockReason = computed(() => (scopeIssuesList.value.length > 0 ? `${scopeIssuesList.value.length} 行执行路径无效，先修正再允许` : ""));
 
 function stagePath({ path, list }) {
   pathDrafts.value = cyclePathDraft(pathDrafts.value, path, list, pathRoots.value);
@@ -123,13 +140,36 @@ function stagePath({ path, list }) {
 function cancelPath(path) {
   pathDrafts.value = cancelPathAuthorization(pathDrafts.value, path, pathRoots.value);
 }
+function editScope({ key, path }) {
+  scopeRows.value = editScopeRow(scopeRows.value, key, path);
+}
+function removeScope(key) {
+  scopeRows.value = removeScopeRow(scopeRows.value, key);
+}
+function addScope(path) {
+  scopeRows.value = appendScopeRow(scopeRows.value, path);
+}
+function addWorkspace(path) {
+  if (workspaceDirs.value.includes(path)) return;
+  workspaceDirs.value = [...workspaceDirs.value, path];
+}
+function removeWorkspace(path) {
+  workspaceDirs.value = workspaceDirs.value.filter((dir) => dir !== path);
+}
 function respondFromAction({ action, comment: note }) {
-  respond(action, note, pathDraftsToActions(pathDrafts.value));
+  if (action === "allow" && scopeBlockReason.value) return;
+  const pathActions = [...pathDraftsToActions(pathDrafts.value), ...workspaceActions(workspaceDirs.value)];
+  respond(action, note, pathActions);
 }
 async function respond(action, comment, pathActions) {
   const response = { action };
   if (comment) response.comment = comment;
   if (pathActions && pathActions.length > 0) response.pathActions = pathActions;
+  // 动过执行范围才发完整列表；没动过就不带这个字段，后端沿用申请值
+  if (isSandboxAllow.value && scopeChanged(scopeRows.value, candidatePaths.value, pathOptions.value)) {
+    const writePaths = scopeWritePaths(scopeRows.value, pathOptions.value);
+    if (writePaths.length > 0) response.writePaths = writePaths;
+  }
   await platform.session.submit(response);
   await platform.session.close();
 }
@@ -170,6 +210,8 @@ onMounted(async () => {
   sessionTrustedRoots.value = data.sessionTrustedRoots || [];
   builtinRoots.value = data.builtinRoots || [];
   workspaceRoot.value = data.workspaceRoot || "";
+  homeDir.value = data.homeDir || "";
+  scopeRows.value = createScopeRows(candidatePaths.value);
   await refreshReasons();
   ready.value = true;
   await platform.session.markReady();

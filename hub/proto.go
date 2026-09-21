@@ -63,6 +63,10 @@ type Envelope struct {
 	Action      string         `json:"action,omitempty"`
 	Comment     string         `json:"comment,omitempty"`
 	PathActions []PathAction   `json:"pathActions,omitempty"`
+	// WritePaths 是用户在闸门窗里编辑后的执行范围（完整列表，覆盖申请值）。
+	// 与 Answers 一样只做透传：归一化与护栅在 pi 侧，hub 中途自己再算一遍，
+	// 同一条决策就会各有各的解释。旧 GUI 不写这个字段，settled 里也就没有。
+	WritePaths []string `json:"writePaths,omitempty"`
 	// Answers 是提问类审批的结构化应答。hub 不解释其中含义，只原样透传：
 	// 解析规则只有发起方和适配器知道，hub 中途插一道转换，两边就对不上了。
 	Answers     []Answer   `json:"answers,omitempty"`

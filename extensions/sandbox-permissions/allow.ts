@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
 import { Type } from "typebox";
 import {
 	buildEscalationEnv,
@@ -32,7 +33,7 @@ import {
 	type ApprovalSelect,
 } from "../../lib/approval-channel.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
-import { addAllowDir, addBlockDir, loadSandboxPaths, removeAllowDir } from "./paths.ts";
+import { addAllowDir, addBlockDir, isDirInside, loadSandboxPaths, removeAllowDir } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
 	addSessionWriteDirs,
@@ -61,7 +62,7 @@ export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 	memoryMb: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_MEMORY_MB, description: "Memory limit (MB) for this command's process tree. Default 1 GiB (1024). Specify a concrete MB value only when the command needs more than the default; larger values raise the cap, subject to approval." })),
 }, { additionalProperties: false });
 
-type PathActionList = "allow" | "block" | "session-write" | "session-trust" | "revoke";
+type PathActionList = "allow" | "block" | "session-write" | "session-trust" | "revoke" | "workspace";
 
 export interface PathAction {
 	path: string;
@@ -119,8 +120,47 @@ export function writePathsFullyTrusted(
 	return pathsCoveredByRoots(writePaths, [...builtin, ...roots.allowDirs, ...roots.sessionTrustedDirs, ...roots.sessionWriteDirs], cwd);
 }
 
+/** 编辑后的执行范围是否互为祖先/后代（同路径也算） */
+function isRelatedPath(a: string, b: string): boolean {
+	return a === b || isDirInside(a, b) || isDirInside(b, a);
+}
+
+/** 家目录根本身（子目录合法）。"/" 由 normalizeSandboxRoot 先挡掉。 */
+function isHomeRootPath(path: string, homeDir: string | undefined, cwd: string): boolean {
+	const home = normalizeSandboxRoot(homeDir ?? homedir(), cwd);
+	return home !== undefined && path === home;
+}
+
 /**
- * 一次审批里的多条目录操作。只接受本次声明的 writePaths；
+ * 响应里编辑后的执行范围（完整列表，覆盖申请值）。
+ *
+ * 护栅在后端自己算，不依赖 GUI 先拦：每一项必须与某个原始候选路径互为祖先或后代
+ * （同路径也算）。不满足的项丢弃，对应原候选路径保留，让本次执行范围仍可用；
+ * 一个有效项都没有时退回申请值。"/" 之类的根路径在这里就 normalize 掉了。
+ */
+export function resolveEditedWritePaths(edited: unknown, candidates: string[], cwd = process.cwd()): string[] {
+	const base = [...new Set(candidates)];
+	if (!Array.isArray(edited)) return base;
+	const accepted = normalizeSandboxRoots(
+		edited.filter((path): path is string => typeof path === "string"),
+		cwd,
+	).filter((path) => base.some((candidate) => isRelatedPath(path, candidate)));
+	// 闸门窗提交的是完整列表（含没动过的原候选），所以以它为准：删掉的行就该消失。
+	// 只有一项有效项都没有时才退回申请值——那多半是误传，或整列被护栅刷掉，
+	// 这时把范围清空会让审计 entry 与所见不一致
+	return accepted.length === 0 ? base : accepted;
+}
+
+export interface ApplyPathActionsOptions {
+	/** 响应里编辑后的执行范围（完整列表，覆盖申请值）；不给则沿用申请值。 */
+	editedWritePaths?: unknown;
+	/** os.homedir()：workspace 护栅拒绝家目录根，缺省取本机 homedir。 */
+	homeDir?: string;
+}
+
+/**
+ * 一次审批里的多条目录操作。授权候选只认本次声明的 writePaths；
+ * workspace（副工作区）例外——它是「任意目录」的持久信任根，不受候选集限制。
  * 信任类动作在命令审计未通过时跳过，revoke/block 始终生效。
  */
 export function applyPathActions(
@@ -128,17 +168,25 @@ export function applyPathActions(
 	writePaths: string[],
 	cwd: string,
 	audit?: SandboxCheckResult,
+	options: ApplyPathActionsOptions = {},
 ): ApplyPathActionsResult {
+	// 候选仍是申请里声明的路径：编辑只改本次执行范围，不改授权判定的基准。
 	const candidates = new Set(writePaths);
+	const scope = resolveEditedWritePaths(options.editedWritePaths, [...candidates], cwd);
 	const extraRoots: string[] = [];
 	const builtin = new Set(builtinWritableRoots(cwd));
 	const grantSafe = !audit || (audit.allow && (audit.rules?.length ?? 0) === 0);
 	for (const pa of actions ?? []) {
 		if (!pa || typeof pa.path !== "string") continue;
 		const path = normalizeSandboxRoot(pa.path, cwd);
-		if (!path || !candidates.has(path)) continue;
+		if (!path || (pa.list !== "workspace" && !candidates.has(path))) continue;
 		if (pathsCoveredByRoots([path], builtin, cwd) && pa.list !== "block") continue;
-		if (pa.list === "allow") {
+		if (pa.list === "workspace") {
+			// 任意目录都可设为副工作区，但 "/"（上面 normalize 已挡）与家目录根本身不授予，也不改写本次范围
+			if (!grantSafe || isHomeRootPath(path, options.homeDir, cwd)) continue;
+			addAllowDir(path);
+			extraRoots.push(path);
+		} else if (pa.list === "allow") {
 			if (!grantSafe) continue;
 			addAllowDir(path);
 			extraRoots.push(path);
@@ -158,7 +206,7 @@ export function applyPathActions(
 			removeSessionDirs([path], cwd);
 		}
 	}
-	return { writePaths: [...new Set([...writePaths, ...extraRoots])] };
+	return { writePaths: [...new Set([...scope, ...extraRoots])] };
 }
 
 /** 通过审批通道问人（默认 GUI→TUI，kind=sandbox-allow） */
@@ -269,10 +317,15 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					sessionTrustedRoots: sessionAccess.trustedDirs,
 					builtinRoots: builtinWritableRoots(cwd),
 					workspaceRoot: cwd ?? process.cwd(),
+					homeDir: homedir(),
 					rules: audit?.rules ?? [],
 					signal,
 				}, ctx);
-				writePaths = applyPathActions(asked.pathActions as PathAction[] | undefined, writePaths, cwd, audit).writePaths;
+				// 目录草稿与「编辑后的执行范围」都在后端重新过一遍护栅：GUI 拦过不算数。
+				writePaths = applyPathActions(asked.pathActions as PathAction[] | undefined, writePaths, cwd, audit, {
+					editedWritePaths: asked.writePaths,
+					homeDir: homedir(),
+				}).writePaths;
 				decision = asked.action;
 				userComment = normalizeApprovalComment(asked.comment);
 			}

@@ -11,6 +11,7 @@
 | `paths.ts` | 目录白/黑名单（GUI 动态维护，sandbox-paths.json） | gate/guard/allow 内部调用 |
 | `allow.ts` | 一次性沙箱升权工具 `sandbox-allow`（含长期/session 目录授权） | `pi.registerTool("sandbox-allow")` |
 | `yolo.ts` | `/yolo` 会话级沙箱墙开关（全部降零，仅当前 session） | `pi.registerCommand("yolo")` |
+| `workspace-command.ts` | `/sandbox:workspaces` 副工作区（持久 `allowDirs`）列出/添加/移除 | `pi.registerCommand("sandbox:workspaces")` |
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 | `lib/approval-channel.ts` | 人工审批通道（优先连本机 hub，挂了回退 GUI→TUI） | bash / sandbox-allow / capability 共用 |
 
@@ -28,6 +29,8 @@ sandbox-permissions/
 ├── guard.test.ts
 ├── yolo.ts              # /yolo 会话级沙箱墙开关（全部降零）
 ├── yolo.test.ts
+├── workspace-command.ts # /sandbox:workspaces 副工作区管理（列出/添加/移除）
+├── workspace-command.test.ts
 ├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
 ├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
 ├── llm-review.test.ts
@@ -58,6 +61,7 @@ node --experimental-strip-types extensions/sandbox-permissions/inline-script.tes
 node --experimental-strip-types extensions/sandbox-permissions/helpers.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/llm-review.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/paths.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/workspace-command.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/session-access.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/allow.test.ts
 node --experimental-strip-types lib/approval-channel.test.ts
@@ -284,6 +288,34 @@ gate 审核弹窗（sandbox-allow 升权）展示的候选目录就是模型声�
 ```
 
 `allowDirs` 是长期生效的**可写根 + sandbox-allow 信任根**：普通 bash 会把它们作为常驻 `--rw` 根；`sandbox-allow` 的 `write-paths` 请求若完全落在其中，可免重复审批。它不改变当前用户的系统身份，也不能绕过 `autoReject` 硬拒绝规则。
+
+### /sandbox:workspaces：TUI 侧副工作区管理（workspace-command.ts）
+
+「副工作区」就是 `sandbox-paths.json` 的 `allowDirs`：长期可写根 + `sandbox-allow` 信任根。GUI 的「📁 目录授权」区块是主路；`/sandbox:workspaces` 是**回退通道**——TUI 下没有 GUI 窗口时，这是唯一能管理副工作区的手段。它只用 `ctx.ui` 的 `notify` / `select` / `input` / `confirm`，不依赖 wails GUI 窗口，也不改动 `allow.ts` 的升权语义。
+
+```
+/sandbox:workspaces                     # 列出（编号 + 存储路径）
+/sandbox:workspaces add <目录>           # 添加（写盘前二次确认）
+/sandbox:workspaces remove <目录|序号>   # 移除
+/sandbox:workspaces <裸路径>             # 裸路径视作 add，便于直接粘贴
+/sandbox:workspaces help                # 用法
+```
+
+列出输出示例：
+
+```
+副工作区（allowDirs：长期可写根 + sandbox-allow 信任根）：2 个
+  1. /home/user/go
+  2. /home/user/work/scratch
+存储：/home/user/.pi/agent/extensions/sandbox-permissions/sandbox-paths.json（即时生效，下一条 bash 即按新名单）
+用法：/sandbox:workspaces add <目录> | remove <目录|序号>
+```
+
+- **添加**：目录走 `paths.ts` 的 `normalizeDir`（trim / 展开 `~` / 消 `..` / 绝对化 / 去尾斜杠），再经两条护栏——拒绝 `/`，拒绝家目录本身（家目录**子目录**合法）。通过后用 `ctx.ui.confirm` 展示作用与写入位置，确认才落盘（`addAllowDir`）；重复目录、无 UI 环境不做静默写入
+- **移除**：`remove 2` 按列表序号，`remove /home/user/go` 按规范化路径；无参数时用 `ctx.ui.select` 从当前列表里挑。走 `removeAllowDir`，只动 `allowDirs`
+- **生效时机**：`allowDirs` 每条命令实时读取（`scripts/sandbox-shell.mjs` / `allow.ts`），所以**下一条 bash 即生效**，不需要重启会话；已批准的一次性 `sandbox-allow` 与 session 内授权不受影响
+- **无 UI 环境**（自动化 / 管道模式）：`pi` 注入全 no-op 的 `ctx.ui`，`confirm` 恒为 `false`。命令遇到无 UI 时直接报错，要求带参数或改用 GUI / 带界面的会话
+- 参数补全：子命令 + 现有副工作区（`remove` 后可补全目录）
 
 ### Subagent 自动审核
 

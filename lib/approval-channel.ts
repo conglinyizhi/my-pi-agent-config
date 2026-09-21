@@ -7,6 +7,7 @@
 // 通道只负责「问人」。规则硬拒、LLM 预审、信任根免审、/yolo 都在通道外面。
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
 import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runner.ts";
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
@@ -21,7 +22,7 @@ import {
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
-export type ApprovalPathActionList = "allow" | "block" | "session-write" | "session-trust" | "revoke";
+export type ApprovalPathActionList = "allow" | "block" | "session-write" | "session-trust" | "revoke" | "workspace";
 
 export interface ApprovalPathAction {
 	path: string;
@@ -32,6 +33,8 @@ export interface ApprovalDecision {
 	action: "allow" | "deny";
 	comment?: string;
 	pathActions?: ApprovalPathAction[];
+	/** 响应里编辑后的执行范围（完整列表，覆盖申请值）。护栅在 applyPathActions 里再算一遍。 */
+	writePaths?: string[];
 }
 
 interface ApprovalRequestBase {
@@ -62,6 +65,8 @@ export interface SandboxAllowApprovalRequest extends ApprovalRequestBase {
 	sessionTrustedRoots: string[];
 	builtinRoots: string[];
 	workspaceRoot: string;
+	/** GUI 用它挡家目录根；缺省由 toGuiPayload 填本机 homedir()。 */
+	homeDir?: string;
 	rules?: unknown[];
 }
 
@@ -168,6 +173,8 @@ export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> 
 			sessionTrustedRoots: request.sessionTrustedRoots,
 			builtinRoots: request.builtinRoots,
 			workspaceRoot: request.workspaceRoot,
+			// 家目录根（GUI 护栅用）：请求没带就填本机值，payload 里始终是 string
+			homeDir: request.homeDir ?? homedir(),
 			rules: request.rules,
 		};
 	}
@@ -183,13 +190,23 @@ export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> 
 	};
 }
 
-export function parseGuiDecision(data: { action: "allow" | "deny"; comment?: unknown; pathActions?: ApprovalPathAction[] }): ApprovalDecision {
+export function parseGuiDecision(data: {
+	action: "allow" | "deny";
+	comment?: unknown;
+	pathActions?: ApprovalPathAction[];
+	writePaths?: unknown;
+}): ApprovalDecision {
 	const comment = normalizeApprovalComment(data.comment);
 	const pathActions = Array.isArray(data.pathActions) ? data.pathActions : undefined;
+	// 只做「是字符串且非空」这一层清洗；祖先/后代护栅在 applyPathActions 里算
+	const writePaths = Array.isArray(data.writePaths)
+		? [...new Set(data.writePaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0).map((p) => p.trim()))]
+		: undefined;
 	return {
 		action: data.action,
 		...(comment ? { comment } : {}),
 		...(pathActions && pathActions.length > 0 ? { pathActions } : {}),
+		...(writePaths && writePaths.length > 0 ? { writePaths } : {}),
 	};
 }
 

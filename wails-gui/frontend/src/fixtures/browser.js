@@ -25,6 +25,7 @@ export const browserFixtures = {
     sessionTrustedRoots: ["/tmp/session-trusted"],
     builtinRoots: ["/workspace/demo", "/tmp"],
     workspaceRoot: "/workspace/demo",
+    homeDir: "/home/test",
     rules: [],
   },
   subagents: {

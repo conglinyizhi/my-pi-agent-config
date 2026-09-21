@@ -14,6 +14,7 @@ import guard from "./guard";
 import gate from "./gate";
 import allow from "./allow";
 import { poolAddHandler, poolRemoveHandler } from "./review-pool";
+import { workspaceArgumentCompletions, workspaceCommandHandler } from "./workspace-command.ts";
 import { beginSandboxSession } from "./session-access.ts";
 import {
 	YOLO_STATUS_KEY,
@@ -73,5 +74,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	pi.registerCommand("provider:fast-pop", {
 		description: "从审核池移除一个模型：/provider:fast-pop [provider/model 或模型名]",
 		handler: (args, ctx) => poolRemoveHandler(args, ctx),
+	});
+
+	// 副工作区管理（持久 allowDirs）：/sandbox:workspaces 列出 / add / remove
+	// GUI 的目录授权是另一路；本命令是 TUI 回退时唯一能管理副工作区的手段，
+	// 只用 ctx.ui（notify/select/input/confirm），不依赖 GUI 窗口。
+	pi.registerCommand("sandbox:workspaces", {
+		description: "管理副工作区（持久可写根 allowDirs）：列出 / add <目录> / remove <目录|序号>",
+		getArgumentCompletions: (prefix) => workspaceArgumentCompletions(prefix),
+		handler: (args, ctx) => workspaceCommandHandler(args, ctx),
 	});
 }
