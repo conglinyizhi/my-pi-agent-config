@@ -3,16 +3,48 @@ import { createServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, afterEach, describe, it } from "node:test";
 import { askHubQuestion, createHubThenLocalChannel } from "./hub-channel.ts";
+import { resetGuiFallbackNotices, type GuiDiagnosis } from "./gui-diagnosis.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-hub-channel-"));
 after(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
+// 回退提示按原因在进程内去重，用例之间必须清一遍，否则后一个用例看不到 notify
+afterEach(() => {
+	resetGuiFallbackNotices();
+});
+
+/** 诊断存根：真跑 collectGuiDiagnosis 会起 systemctl / pkg-config，单测里不碰 */
+function diag(overrides: Partial<GuiDiagnosis> = {}): GuiDiagnosis {
+	return {
+		binary: null,
+		candidates: [],
+		repoRoot: "/repo",
+		hasHubSocket: true,
+		hubUnitActive: true,
+		hasWailsCli: false,
+		hasGo: false,
+		hasFrontendDist: false,
+		hasWebkit2Gtk41: null,
+		hasDisplayEnv: true,
+		...overrides,
+	};
+}
+
 function ctx() {
 	return { sessionManager: { getSessionId: () => "sess-1" }, hasUI: false, ui: undefined } as never;
+}
+
+/** 要接 notify 的用这个：回退说明走通知，标题走 select */
+function ctxWithNotify(notices: string[]) {
+	return {
+		sessionManager: { getSessionId: () => "sess-1" },
+		hasUI: true,
+		ui: { select: async () => undefined, notify: (message: string) => void notices.push(message) },
+	} as never;
 }
 
 const request = {
@@ -181,3 +213,123 @@ describe("askHubQuestion", () => {
 		assert.equal(outcome.status, "unavailable");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// ask-ok 里的 adapters：hub 在线但没人能应答时不要挂满 TTL
+// ---------------------------------------------------------------------------
+
+describe("createHubThenLocalChannel 的提前回退", () => {
+	const abortCount = (received: unknown[]) => received.filter(m => (m as { type?: string }).type === "abort").length;
+
+	/** 只会回一句 ask-ok 的假 hub；没人能应答时不会再有 settled */
+	async function askOkOnly(name: string, adapters: number) {
+		return fakeHub(name, (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters })}\n`);
+		});
+	}
+
+	it("adapters:0 且本机拉不起窗：提前回退本地，并给 hub 发 abort", { timeout: 5000 }, async () => {
+		const hub = await askOkOnly("a-nogui.sock", 0);
+		let localHits = 0;
+		try {
+			const channel = createHubThenLocalChannel({
+				socketPath: hub.sock,
+				hasLocalGui: () => false,
+				local: async () => {
+					localHits += 1;
+					return { action: "deny" };
+				},
+			});
+			const decision = await channel(request, ctx());
+			assert.equal(decision.action, "deny");
+			assert.equal(localHits, 1, "没人能应答就该回退本地，而不是等 1 小时 TTL");
+			assert.ok(
+				await waitFor(() => hub.received.some(m => (m as { type?: string }).type === "abort")),
+				"回退前必须发 abort，否则 hub 侧这条 ask 只能挂到超时",
+			);
+		} finally {
+			await hub.close();
+		}
+	});
+
+	it("adapters:0 但本机能拉窗：不提前回退，等 hub 结算", { timeout: 5000 }, async () => {
+		const hub = await fakeHub("a-localgui.sock", (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters: 0 })}\n`);
+			// 闸门窗要人来点，结算一定晚于 ask-ok：只写在同一块里的话，
+			// 错误的提前回退会先判完，这条用例就验不出东西了
+			setTimeout(() => {
+				conn.write(`${JSON.stringify({ v: 1, type: "settled", requestId: msg.requestId, action: "allow", comment: "本机窗" })}\n`);
+			}, 150);
+		});
+		let localHits = 0;
+		try {
+			const channel = createHubThenLocalChannel({
+				socketPath: hub.sock,
+				hasLocalGui: () => true,
+				local: async () => {
+					localHits += 1;
+					return { action: "deny" };
+				},
+			});
+			const decision = await channel(request, ctx());
+			assert.equal(decision.action, "allow");
+			assert.equal(decision.comment, "本机窗");
+			assert.equal(localHits, 0, "hub 自己能拉窗，回退掉就是白问一遍");
+			assert.equal(abortCount(hub.received), 0, "能拉窗就不能撤回这条 ask");
+		} finally {
+			await hub.close();
+		}
+	});
+
+	it("adapters 在线：本机没窗也不提前回退，等适配器", { timeout: 5000 }, async () => {
+		const hub = await fakeHub("a-adapter.sock", (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters: 1 })}\n`);
+			setTimeout(() => {
+				conn.write(`${JSON.stringify({ v: 1, type: "settled", requestId: msg.requestId, action: "deny", comment: "IM 拒了" })}\n`);
+			}, 150);
+		});
+		try {
+			const channel = createHubThenLocalChannel({ socketPath: hub.sock, hasLocalGui: () => false });
+			const decision = await channel(request, ctx());
+			// 适配器能答就不能撤回：用户拒绝不是「没人能应」，回退 TUI 会把同一个请求再问一遍
+			assert.equal(decision.action, "deny");
+			assert.equal(decision.comment, "IM 拒了");
+			assert.equal(abortCount(hub.received), 0);
+		} finally {
+			await hub.close();
+		}
+	});
+
+	it("提前回退报的是 hub-no-channel，不推给 wails-gui", { timeout: 5000 }, async () => {
+		const hub = await askOkOnly("a-chain.sock", 0);
+		const notices: string[] = [];
+		const titles: string[] = [];
+		try {
+			const channel = createHubThenLocalChannel({
+				socketPath: hub.sock,
+				hasLocalGui: () => false,
+				diagnosis: diag(),
+				runGui: async () => ({ ok: false, reason: "unavailable" }),
+				selectApproval: async (title) => {
+					titles.push(title);
+					return "❌ 拒绝";
+				},
+			});
+			const decision = await channel(request, ctxWithNotify(notices));
+			assert.equal(decision.action, "deny");
+			assert.match(titles[0], /hub 在跑，但本机 GUI 和 IM 适配器都不在线/);
+			assert.match(notices[0], /接一个 IM 适配器/);
+			// hub 明明在跑，不能反过来劝人去装 hub
+			assert.doesNotMatch(notices[0], /起 hub/);
+		} finally {
+			await hub.close();
+		}
+	});
+});
+

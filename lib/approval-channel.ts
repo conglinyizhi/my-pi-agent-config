@@ -11,6 +11,13 @@ import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runne
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
 import { createHubThenLocalChannel } from "./hub-channel.ts";
+import {
+	announceGuiFallback,
+	classifyGuiFailure,
+	guiFallbackTitleHint,
+	type GuiDiagnosis,
+	type GuiFallbackReason,
+} from "./gui-diagnosis.ts";
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
@@ -104,17 +111,30 @@ export function resolveApprovalChannel(opts: ResolveApprovalChannelOptions = {})
 	return createHubThenLocalChannel();
 }
 
-export function createGuiTuiApprovalChannel(opts: {
+export interface GuiTuiApprovalOptions {
 	runGui?: ApprovalRunGui;
 	selectApproval?: ApprovalSelect;
-} = {}): ApprovalChannel {
+	/**
+	 * 上游已经知道的原因。这一跳常常是「hub 连不上」之后才走的，只报
+	 * 本跳工位上的 no-binary 会把真正的病因盖掉，用户照着提示也修不好。
+	 */
+	upstreamReason?: GuiFallbackReason;
+	/** 诊断存根：不传才真去查二进制位 / systemctl / pkg-config */
+	diagnosis?: GuiDiagnosis;
+}
+
+export function createGuiTuiApprovalChannel(opts: GuiTuiApprovalOptions = {}): ApprovalChannel {
 	const runGui = opts.runGui ?? runGuiWindow;
 	return async (request, ctx) => {
 		const gui = await runGui("gate", toGuiPayload(request), { timeoutMs: GUI_TIMEOUT_MS, signal: request.signal });
 		if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
 			return parseGuiDecision(gui.data);
 		}
-		return tuiFallback(request, ctx, opts.selectApproval);
+		// 撤单不是故障：这时候既不该报修复步骤，也不该在标题里挂原因，
+		// 否则用户每按一次取消都要先读一遍「图形界面坏了」
+		const aborted = gui.reason === "aborted" || request.signal?.aborted === true;
+		const reason = aborted ? undefined : opts.upstreamReason ?? classifyGuiFailure(gui.reason);
+		return tuiFallback(request, ctx, opts.selectApproval, reason, opts.diagnosis);
 	};
 }
 
@@ -173,14 +193,35 @@ export function parseGuiDecision(data: { action: "allow" | "deny"; comment?: unk
 	};
 }
 
-function tuiFallback(request: ApprovalRequest, ctx: ExtensionContext, selectApproval: ApprovalSelect | undefined): Promise<ApprovalDecision> {
-	if (!canUseTui(request.kind, ctx, selectApproval)) {
+function tuiFallback(
+	request: ApprovalRequest,
+	ctx: ExtensionContext,
+	selectApproval: ApprovalSelect | undefined,
+	reason: GuiFallbackReason | undefined,
+	diagnosis: GuiDiagnosis | undefined,
+): Promise<ApprovalDecision> {
+	// 提示分两处：notify 里给完整修复步骤（长），标题里给一行短原因。
+	// 只在这个理由说给人听的时候才去诊断：既弹不出 TUI 也没有通知出口时，
+	// 查一遍系统白花时间，还会把去重位占掉，让下一次真能看到的提示被吞
+	const canTui = canUseTui(request.kind, ctx, selectApproval);
+	const hint = reason && (canTui || ctx?.ui) ? explainFallback(ctx, reason, diagnosis) : "";
+	if (!canTui) {
 		return Promise.resolve({ action: "deny" });
 	}
 	const select = selectApproval ?? ((title, choices) => ctx.ui.select(title, choices));
-	return select(tuiTitle(request), tuiChoices(request.kind)).then((choice) => ({
+	return select(tuiTitle(request, hint), tuiChoices(request.kind)).then((choice) => ({
 		action: choice?.includes("允许") ? "allow" : "deny",
 	}));
+}
+
+/**
+ * announceGuiFallback 自带进程内去重：同一个原因在一个进程里只弹一次通知，
+ * 审批回退会连着发生，每次重弹同一条会把真正要看的那条命令淹掉。
+ * 标题那一行不做去重——它跟着这次审批走，用户看的不是同一条消息。
+ */
+function explainFallback(ctx: ExtensionContext, reason: GuiFallbackReason, diagnosis: GuiDiagnosis | undefined): string {
+	announceGuiFallback(ctx, reason, diagnosis ? { diagnosis } : {});
+	return guiFallbackTitleHint(reason, diagnosis);
 }
 
 function canUseTui(kind: ApprovalRequest["kind"], ctx: ExtensionContext, selectApproval: ApprovalSelect | undefined): boolean {
@@ -195,21 +236,25 @@ function tuiChoices(kind: ApprovalRequest["kind"]): string[] {
 	return ["✅ 允许执行", "❌ 拒绝"];
 }
 
-function tuiTitle(request: ApprovalRequest): string {
+function tuiTitle(request: ApprovalRequest, hint = ""): string {
+	// 提示一律靠前：用户先要知道「为什么在终端里问」，再读这次要批什么
+	const head = hint ? `${hint}\n\n` : "";
+	// 紧跟标题行时用单换行：中间空一行会把「为什么在终端里问」和事件本身分开
+	const under = hint ? `\n${hint}` : "";
 	if (request.kind === "audit") {
-		return `⚠️ 命令需确认：\n\n  ${request.reason ?? "命中风险规则"}${reviewNote(request.review)}\n\n是否允许执行？`;
+		return `⚠️ 命令需确认：${under}\n\n  ${request.reason ?? "命中风险规则"}${reviewNote(request.review)}\n\n是否允许执行？`;
 	}
 	if (request.kind === "sandbox-allow") {
-		return buildApprovalTitle(
+		return `${head}${buildApprovalTitle(
 			request.command,
 			request.permission,
 			request.writePaths,
 			request.justification,
 			request.timeout,
 			request.memoryMb,
-		);
+		)}`;
 	}
-	return `⚠️ subagent 请求额外能力：${request.capability}\n\n${request.scope ?? ""}\n${request.requestReason}${reviewNote(request.review)}\n\n命令：${request.command}`;
+	return `⚠️ subagent 请求额外能力：${request.capability}${under}\n\n${request.scope ?? ""}\n${request.requestReason}${reviewNote(request.review)}\n\n命令：${request.command}`;
 }
 
 function reviewNote(review: unknown): string {

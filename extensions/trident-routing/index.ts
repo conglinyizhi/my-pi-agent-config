@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
+import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis";
 import { isPromptSectionsEnabled, registerSection } from "../../lib/prompt-sections.ts";
 import { scanTodos, type TodoItem, type ScanState, type ScanTodosOptions } from "./todo-scan";
 
@@ -200,11 +201,16 @@ export default function (pi: ExtensionAPI) {
     if (todos.length === 0) { ctx.ui.notify("没有 TODO", "info"); return; }
 
     // 启动 Wails GUI
-    if (!findGuiBinary()) { ctx.ui.notify("未找到 wails-gui，请先构建", "error"); return; }
+    if (!findGuiBinary()) { announceGuiFallback(ctx, "no-binary", { force: true }); return; }
 
     const result = await runGuiWindow("routing", { todos, cwd: ctx.cwd }, { timeoutMs: 300_000 });
 
-    if (!result.ok || result.data?.action === "cancel" || !result.data?.todos?.length) return;
+    // 用户主动执行命令：每次都该看到原因和修法（aborted 是撤单，不算故障）
+    if (!result.ok) {
+      if (result.reason !== "aborted") announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
+      return;
+    }
+    if (result.data?.action === "cancel" || !result.data?.todos?.length) return;
 
     const itemsBlock = result.data.todos.map((item: { file: string; line: number; text: string }) =>
       `- \`${item.file}:${item.line}\`\n  > ${item.text}`).join("\n");

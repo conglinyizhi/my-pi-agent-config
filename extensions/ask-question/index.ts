@@ -4,7 +4,8 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import { askHubQuestion, type HubAnswer, type HubQuestionOptions, type HubQuestionOutcome } from "../../lib/hub-channel.ts";
+import { askHubQuestion, type HubAnswer, type HubQuestionOptions, type HubQuestionOutcome, type HubUnavailableCode } from "../../lib/hub-channel.ts";
+import { announceGuiFallback, type GuiFallbackReason } from "../../lib/gui-diagnosis.ts";
 import { notifyQuestion } from "../../lib/notify-send.ts";
 
 interface QuestionOption {
@@ -171,7 +172,7 @@ async function handleAskQuestion(
 
   if (ctx.mode !== "tui") {
     // 没有本地 UI（RPC 等）：只能靠 hub
-    return outcomeToResult(questions, await hubPromise);
+    return outcomeToResult(questions, await hubPromise, ctx);
   }
 
   const isMulti = questions.length > 1;
@@ -486,19 +487,38 @@ async function handleAskQuestion(
   }
   // hub 先答了：把本地界面收掉，别让用户对着一个已经不需要的界面继续打字
   closeTui?.({ questions, answers: [], cancelled: true });
-  return outcomeToResult(questions, winner.outcome);
+  return outcomeToResult(questions, winner.outcome, ctx);
+}
+
+/**
+ * 没人能答的细分原因 → 诊断层的固定原因。
+ * 「适配器一个都不在线」不等于 hub 挂了：认成 hub-unreachable 会把病因说反；
+ * aborted 是本地先答后的撤回，不是故障，不给提示。
+ */
+function hubUnavailableReason(code: HubUnavailableCode): GuiFallbackReason | undefined {
+  if (code === "aborted") return undefined;
+  return code === "no-adapter" ? "hub-no-channel" : "hub-unreachable";
 }
 
 /** hub 的结果 → 工具结果。与 TUI 那条路共用 toToolResult，保证文案一致 */
-function outcomeToResult(questions: Question[], outcome: HubQuestionOutcome): AskQuestionToolResult {
+function outcomeToResult(questions: Question[], outcome: HubQuestionOutcome, ctx?: ExtensionContext): AskQuestionToolResult {
   if (outcome.status === "answered") {
     return toToolResult({ questions, answers: answersFromHub(questions, outcome.answers), cancelled: false });
   }
   if (outcome.status === "denied") {
     return toToolResult({ questions, answers: [], cancelled: true });
   }
-  // 没人能答，本地也没有 UI：只能报不可用
-  return errorResult("Error: UI not available (running in non-interactive mode)", questions);
+  // 没人能答，本地也没有 UI：只回一句「UI not available」用户没法修。
+  // 带上 hub 的具体原因和诊断层的修复步骤（force：这条工具结果就是唯一一次提示机会，
+  // 去重命中会让它变成空话）
+  const reason = hubUnavailableReason(outcome.code);
+  const notice = reason ? announceGuiFallback(ctx, reason, { force: true }) : "";
+  return errorResult(
+    ["Error: UI not available (running in non-interactive mode)", `hub 说：${outcome.reason}`, notice]
+      .filter((line) => line.length > 0)
+      .join("\n"),
+    questions,
+  );
 }
 
 /**

@@ -11,7 +11,8 @@
 //
 // runGuiWindow 语义：
 //   ok: true   — 读到响应文件（用户操作或窗口正常写出）
-//   ok: false  — reason: "unavailable" 未找到 wails-gui / "timeout" 超时 / "aborted" 被中止 / "exited" 进程退出但无响应
+//   ok: false  — reason: "unavailable" 未找到 wails-gui / "spawn" 进程起不来 /
+//                "timeout" 超时 / "aborted" 被中止 / "exited" 进程退出但无响应
 //
 // launchGuiWindow 语义：
 //   写入 request.json → detached spawn → unref → 立即返回；临时目录在子进程 close/error 后清理。
@@ -26,15 +27,26 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** 测试注入：替代 node:child_process 的 spawn */
+export type GuiSpawnFn = (bin: string, args: string[], opts: SpawnOptions) => ChildProcess;
+
+/** 测试注入：替代二进制查找（不传则用 findGuiBinary） */
+export type GuiFindBinFn = () => string | null;
+
 export interface GuiRunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** 测试注入：替代 node:child_process 的 spawn（不传则用真实 spawn） */
+  spawnFn?: GuiSpawnFn;
+  /** 测试注入：替代二进制查找（不传则用 findGuiBinary） */
+  findBin?: GuiFindBinFn;
 }
 
 export interface GuiRunResult {
   ok: boolean;
   data?: any;
-  reason?: "timeout" | "aborted" | "exited" | "unavailable";
+  /** "spawn" 表示子进程没起来（spawn 同步抛错或 emit 'error'），可回退到别的审批通道 */
+  reason?: "timeout" | "aborted" | "exited" | "unavailable" | "spawn";
 }
 
 /** 查找 wails-gui 二进制（优先安装位，其次仓库构建位） */
@@ -53,9 +65,9 @@ export function findGuiBinary(): string | null {
 
 export interface GuiLaunchOptions {
   /** 测试注入：替代 node:child_process 的 spawn（不传则用真实 spawn） */
-  spawnFn?: (bin: string, args: string[], opts: SpawnOptions) => ChildProcess;
+  spawnFn?: GuiSpawnFn;
   /** 测试注入：替代二进制查找（不传则用 findGuiBinary） */
-  findBin?: () => string | null;
+  findBin?: GuiFindBinFn;
 }
 
 export interface GuiLaunchResult {
@@ -106,7 +118,7 @@ export async function runGuiWindow(
   request: unknown,
   opts: GuiRunOptions = {},
 ): Promise<GuiRunResult> {
-  const bin = findGuiBinary();
+  const bin = (opts.findBin ?? findGuiBinary)();
   if (!bin) return { ok: false, reason: "unavailable" };
 
   const timeoutMs = opts.timeoutMs ?? 300_000;
@@ -118,63 +130,92 @@ export async function runGuiWindow(
   try {
     fs.writeFileSync(requestFile, JSON.stringify(request));
 
-    const proc = spawn(bin, [windowName, requestFile, responseFile], {
-      stdio: "ignore",
-      detached: true,
+    // 结算装置先于 spawn 建好：'error' 监听必须紧跟着 spawn 挂上，
+    // 挂晚了会让 ChildProcess 的未监听 'error' 直接抛穿当前进程
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let check: ReturnType<typeof setInterval> | null = null;
+    let cleanupAbort: () => void = () => {};
+    let resolveResult: (r: GuiRunResult) => void = () => {};
+    const result = new Promise<GuiRunResult>((resolve) => {
+      resolveResult = resolve;
+    });
+    // 任何一路结算都顺手把定时器和轮询收干净，不留挂着的定时器
+    const finish = (r: GuiRunResult) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (check) clearInterval(check);
+      cleanupAbort();
+      resolveResult(r);
+    };
+
+    let proc: ChildProcess;
+    try {
+      proc = (opts.spawnFn ?? spawn)(bin, [windowName, requestFile, responseFile], {
+        stdio: "ignore",
+        detached: true,
+      });
+    } catch {
+      // spawn 同步抛错（参数非法之类）：按「进程起不来」处理，交给上层回退
+      return { ok: false, reason: "spawn" };
+    }
+
+    // 二进制存在但不可执行（EACCES）、路径失效（ENOENT）时 spawn 会 emit 'error'，
+    // 无监听就是未捕获异常，会直接带走整个进程。这里按 reason:"spawn" 结算，不再等 close
+    proc.on("error", () => {
+      finish({ ok: false, reason: "spawn" });
     });
 
-    return await new Promise<GuiRunResult>((resolve) => {
-      let settled = false;
-      const finish = (r: GuiRunResult) => {
-        if (!settled) {
-          settled = true;
-          resolve(r);
-        }
-      };
+    // 'error' 可能同步触发（注入场景），已结算就不要再挂定时器
+    if (settled) return await result;
 
-      const timeout = timeoutMs > 0
-        ? setTimeout(() => {
-            try { proc.kill("SIGTERM"); } catch {}
-            finish({ ok: false, reason: "timeout" });
-          }, timeoutMs)
-        : null; // 不设超时：一直等到响应或进程退出
+    timeout = timeoutMs > 0
+      ? setTimeout(() => {
+          try { proc.kill("SIGTERM"); } catch {}
+          finish({ ok: false, reason: "timeout" });
+        }, timeoutMs)
+      : null; // 不设超时：一直等到响应或进程退出
 
-      const check = setInterval(() => {
+    check = setInterval(() => {
+      try {
+        const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
+        finish({ ok: true, data });
+      } catch {
+        // response 还没写完，继续等
+      }
+    }, 300);
+
+    proc.on("close", () => {
+      // 已按 spawn 失败结算：close 后再补读 response 没有意义
+      if (settled) return;
+      // 进程退出：兜底读一次（窗口可能已写响应并退出）
+      setTimeout(() => {
         try {
           const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-          clearTimeout(timeout ?? undefined);
-          clearInterval(check);
           finish({ ok: true, data });
         } catch {
-          // response 还没写完，继续等
+          finish({ ok: false, reason: "exited" });
         }
-      }, 300);
-
-      proc.on("close", () => {
-        // 进程退出：兜底读一次（窗口可能已写响应并退出）
-        setTimeout(() => {
-          clearTimeout(timeout ?? undefined);
-          clearInterval(check);
-          try {
-            const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
-            finish({ ok: true, data });
-          } catch {
-            finish({ ok: false, reason: "exited" });
-          }
-        }, 100);
-      });
-
-      if (opts.signal) {
-        const onAbort = () => {
-          clearTimeout(timeout ?? undefined);
-          clearInterval(check);
-          try { proc.kill("SIGTERM"); } catch {}
-          finish({ ok: false, reason: "aborted" });
-        };
-        if (opts.signal.aborted) onAbort();
-        else opts.signal.addEventListener("abort", onAbort, { once: true });
-      }
+      }, 100);
     });
+
+    if (opts.signal) {
+      const signal = opts.signal;
+      const onAbort = () => {
+        try { proc.kill("SIGTERM"); } catch {}
+        finish({ ok: false, reason: "aborted" });
+      };
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        cleanupAbort = () => {
+          try { signal.removeEventListener("abort", onAbort); } catch {}
+        };
+      }
+    }
+
+    return await result;
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
   }

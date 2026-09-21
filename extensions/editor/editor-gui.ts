@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { runGuiWindow, findGuiBinary } from "../../lib/gui-runner";
+import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis";
 
 const HIST_FILE = path.join(os.homedir(), ".pi", "agent", "queue", "cliphist.json");
 const MAX_HISTORY = 15;
@@ -19,7 +20,8 @@ function loadHistory(): string[] {
 export default function (pi: ExtensionAPI) {
 	const promptEditGuiHandler = async (args: string, ctx: any) => {
 		if (!findGuiBinary()) {
-			ctx.ui.notify("未找到 wails-gui。请先构建：cd wails-gui && wails build -tags webkit2_41", "error");
+			// 用户主动执行命令：每次都该看到原因和修法，跳过去重
+			announceGuiFallback(ctx, "no-binary", { force: true });
 			return;
 		}
 
@@ -36,7 +38,13 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify("正在启动提示词编辑工具...", "info");
 
 		const result = await runGuiWindow("editor", request, { timeoutMs: 300000 });
-		if (!result.ok || result.data?.cancelled) {
+		if (!result.ok) {
+			// aborted 是用户撤单，不是故障；真失败才报原因
+			if (result.reason !== "aborted") announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
+			return;
+		}
+
+		if (result.data?.cancelled) {
 			return;
 		}
 

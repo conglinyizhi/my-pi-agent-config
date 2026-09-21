@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { launchGuiWindow } from "../../lib/gui-runner.ts";
+import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis.ts";
 import { resolveApprovalChannel } from "../../lib/approval-channel.ts";
 import { normalizeSubagentArgs } from "./tool-args.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
@@ -638,10 +639,8 @@ export default function (pi: ExtensionAPI) {
     });
 
     if (!result.ok) {
-      ctx.ui.notify(
-        result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
-        "error",
-      );
+      // 用户主动执行命令：每次都该看到原因和修法，跳过去重
+      announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
     }
   };
 
@@ -664,10 +663,8 @@ export default function (pi: ExtensionAPI) {
       statusPath: files[at].path,
     });
     if (!result.ok) {
-      ctx.ui.notify(
-        result.reason === "unavailable" ? "未找到 wails-gui，请先构建" : "GUI 启动失败（spawn 错误）",
-        "error",
-      );
+      // 用户主动执行命令：每次都该看到原因和修法，跳过去重
+      announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
     }
   };
 

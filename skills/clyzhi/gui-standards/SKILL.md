@@ -48,15 +48,35 @@ lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + ru
 
 ```typescript
 import { findGuiBinary, runGuiWindow } from "../../lib/gui-runner";
+import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis";
 
 if (!findGuiBinary()) {
-  ctx.ui.notify("未找到 wails-gui，请先构建", "error");
+  // 用户主动执行的命令：force 跳过去重，每次都给原因与修法
+  announceGuiFallback(ctx, "no-binary", { force: true });
   return;
 }
 const result = await runGuiWindow("gate", { command, taskId, rules }, { timeoutMs: 120_000, signal });
-// result = { ok, data?, reason?: "timeout" | "aborted" | "exited" | "unavailable" }
-// ok=false 时按 reason 区分语义：aborted/unavailable → 回退 TUI；timeout/exited → 视为取消
+// result = { ok, data?, reason?: "unavailable" | "spawn" | "timeout" | "exited" | "aborted" }
+// ok=false 时：aborted 是用户撤单（静默）；其余交 classifyGuiFailure 分类后提示
+if (!result.ok) {
+  if (result.reason !== "aborted") announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
+  return;
+}
 ```
+
+## 回退 TUI 时的提示
+
+不要自己拼「未找到 wails-gui，请先构建」这类一句话——用户看不出是二进制没构建、
+依赖缺失、hub 没起来，还是窗口被别人挡住了。统一走 `lib/gui-diagnosis.ts`：
+
+- `announceGuiFallback(ctx, reason, { force })`：弹一条含原因 + 修复命令 + 排查文档路径的通知。
+  默认按原因进程内去重（审批回退会连着发生，重弹会淹掉真正要看的命令）；
+  用户主动执行的命令入口传 `force: true`
+- `classifyGuiFailure(runGuiWindow.reason)`：`unavailable|spawn|timeout|exited` → 诊断原因
+- 提示正文里自带修复步骤和排查清单（`skills/clyzhi/_internal/gui-fallback-recovery.md`），不要再手写一套
+
+审批通道（`lib/approval-channel.ts` → `lib/hub-channel.ts`）已经内置：回退 TUI 前会说明
+原因，并把一行短提示挂在选择框标题上。新写的 GUI 入口只需要接上面两行。
 
 ## 浏览器 mock shell
 
