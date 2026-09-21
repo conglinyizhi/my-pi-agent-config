@@ -346,8 +346,9 @@ export function isNotifyDisabled(): boolean {
 export const TEST_NOTIFY_TITLE_PREFIX = "[测试] ";
 
 /**
- * 测试模式的通知正文首行。
- * 原正文留在下面：看得出内容是哪一条，但不会再被当成真提问去处理。
+ * 测试模式的通知正文。
+ * 整条替掉原正文：测试通知只负责「让你认出这是测试」，不需要带真实内容，
+ * 否则原文会被当成真提问读
  */
 export const TEST_NOTIFY_MESSAGE = "这是一个模拟测试，就像一艘快艇划过海岸线";
 
@@ -366,7 +367,7 @@ function withTestMark(options: NotifyOptions): NotifyOptions {
   return {
     ...options,
     title: `${TEST_NOTIFY_TITLE_PREFIX}${options.title}`,
-    message: `${TEST_NOTIFY_MESSAGE}\n${options.message}`,
+    message: TEST_NOTIFY_MESSAGE,
     sound: false,
     soundFile: undefined,
   };
