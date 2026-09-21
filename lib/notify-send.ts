@@ -333,12 +333,36 @@ async function playMacSound(soundFile: string): Promise<void> {
 }
 
 /**
- * 桌面通知是否被环境变量关掉。测试与脚本里跑扩展逻辑时用：
+ * 桌面通知是否被环境变量关掉。无头环境、CI 或不想被任何弹窗打扰的脚本里用：
  * 不关的话，fixture 里的文本会原样弹到用户屏幕上（ask-question 的冒烟测试踩过）。
+ * 只想给通知打个测试标记、顺便静音，用 PI_NOTIFY_TEST（见 isNotifyTestMode）
  */
 export function isNotifyDisabled(): boolean {
   const raw = process.env.PI_NO_DESKTOP_NOTIFY?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
+}
+
+/** 测试模式的通知标题前缀：一眼能看出这条不是真事件 */
+export const TEST_NOTIFY_TITLE_PREFIX = "[测试] ";
+
+/**
+ * 是否处于「测试通知」模式：通知照发，但标题带 [测试] 前缀，且强制静音
+ * （包括不带声音文件，否则 paplay / ffplay 还是会响）。
+ */
+export function isNotifyTestMode(): boolean {
+  const raw = process.env.PI_NOTIFY_TEST?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+/** 测试模式下改写标题与声音字段；生产环境原样返回 */
+function withTestMark(options: NotifyOptions): NotifyOptions {
+  if (!isNotifyTestMode()) return options;
+  return {
+    ...options,
+    title: `${TEST_NOTIFY_TITLE_PREFIX}${options.title}`,
+    sound: false,
+    soundFile: undefined,
+  };
 }
 
 /**
@@ -355,17 +379,19 @@ export async function sendNotification(options: NotifyOptions): Promise<boolean>
     options.sound && !options.soundFile
       ? { ...options, soundFile: DEFAULT_NOTIFICATION_SOUND }
       : options;
+  // 标记放在补默认声音之后：补过再静音，才不会漏掉「sound=true 没带文件」那条路
+  const marked = withTestMark(resolved);
 
   try {
     switch (os) {
       case "linux":
-        await sendLinuxNotification(resolved);
+        await sendLinuxNotification(marked);
         break;
       case "windows":
-        await sendWindowsNotification(resolved);
+        await sendWindowsNotification(marked);
         break;
       case "macos":
-        await sendMacNotification(resolved);
+        await sendMacNotification(marked);
         break;
       default:
         return false;
