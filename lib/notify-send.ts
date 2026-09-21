@@ -346,6 +346,12 @@ export function isNotifyDisabled(): boolean {
 export const TEST_NOTIFY_TITLE_PREFIX = "[测试] ";
 
 /**
+ * 测试模式的通知正文首行。
+ * 原正文留在下面：看得出内容是哪一条，但不会再被当成真提问去处理。
+ */
+export const TEST_NOTIFY_MESSAGE = "这是一个模拟测试，就像一艘快艇划过海岸线";
+
+/**
  * 是否处于「测试通知」模式：通知照发，但标题带 [测试] 前缀，且强制静音
  * （包括不带声音文件，否则 paplay / ffplay 还是会响）。
  */
@@ -354,12 +360,13 @@ export function isNotifyTestMode(): boolean {
   return raw === "1" || raw === "true" || raw === "yes";
 }
 
-/** 测试模式下改写标题与声音字段；生产环境原样返回 */
+/** 测试模式下改写标题、正文与声音字段；生产环境原样返回 */
 function withTestMark(options: NotifyOptions): NotifyOptions {
   if (!isNotifyTestMode()) return options;
   return {
     ...options,
     title: `${TEST_NOTIFY_TITLE_PREFIX}${options.title}`,
+    message: `${TEST_NOTIFY_MESSAGE}\n${options.message}`,
     sound: false,
     soundFile: undefined,
   };
