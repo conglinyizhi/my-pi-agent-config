@@ -260,7 +260,7 @@ export default function (pi: ExtensionAPI) {
             },
           });
           ctx.ui.setStatus("talk-sleep", undefined);
-          // 三种结局的判断收在 lib 里（與 /get-clyzhi-debug-info 共用一份），
+          // 三种结局的判断收在 lib 里（與 /get-session-debug-info 共用一份），
           // 这里只补它不知道的那样：恢复指令本身
           const report = describeClipboardResult(result);
           const wroteToClipboard = result.ok && result.tool !== OSC52_TOOL;

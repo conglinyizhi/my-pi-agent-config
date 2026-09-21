@@ -1,4 +1,4 @@
-// get-clyzhi-debug-info 冒烟测试：node --test extensions/get-clyzhi-debug-info/smoke.test.ts
+// get-session-debug-info 冒烟测试：node --test extensions/get-session-debug-info/smoke.test.ts
 //
 // 不 spawn 真剪贴板工具：copy 是注入的假实现，断言的是「展示的文本与复制的文本同源」
 // 以及三种复制结局各自怎么报。真机剪贴板路径由 lib/clipboard.test.ts 覆盖。

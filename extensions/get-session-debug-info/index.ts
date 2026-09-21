@@ -1,4 +1,4 @@
-// get-clyzhi-debug-info：把排查要用的会话信息摊在 TUI 里，用户点同意才写进剪贴板。
+// get-session-debug-info：把排查要用的会话信息摊在 TUI 里，用户点同意才写进剪贴板。
 //
 // 为什么中间要隔一道确认：剪贴板是出口 —— 东西进了剪贴板，下一步往往就是粘进聊天发给别人。
 // 让用户先看到「将要复制的是什么」，比复制完再解释省事得多。
@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { OSC52_TOOL, copyToClipboard, describeClipboardResult } from "../../lib/clipboard.ts";
 
-const STATUS_ID = "get-clyzhi-debug-info";
+const STATUS_ID = "get-session-debug-info";
 
 /** 这几行要展示给用户，也是最后复制出去的东西 —— 两者必须同源，免得展示的和复制的悄悄不一致 */
 export interface DebugInfoSource {
@@ -79,8 +79,8 @@ export function createDebugInfoHandler(deps: DebugInfoDeps = {}) {
   };
 }
 
-export default function getClyzhiDebugInfo(pi: ExtensionAPI): void {
-  pi.registerCommand("get-clyzhi-debug-info", {
+export default function getSessionDebugInfo(pi: ExtensionAPI): void {
+  pi.registerCommand("get-session-debug-info", {
     description: "展示当前会话与路径，确认后复制到剪贴板",
     handler: createDebugInfoHandler(),
   });

@@ -1,8 +1,8 @@
-# get-clyzhi-debug-info
+# get-session-debug-info
 
 ## 功能概述
 
-`/get-clyzhi-debug-info`：弹一个 TUI 展示当前会话与路径，用户点同意后整段复制到剪贴板。
+`/get-session-debug-info`：弹一个 TUI 展示当前会话与路径，用户点同意后整段复制到剪贴板。
 
 排查时常用：会话文件在哪、cwd 是什么、会话 ID 是多少，一次性拿全并粘出去。
 
@@ -39,7 +39,7 @@
 ## 测试
 
 ```bash
-node --test extensions/get-clyzhi-debug-info/smoke.test.ts   # 9 条：信息行、对齐、四种流程分支
+node --test extensions/get-session-debug-info/smoke.test.ts   # 9 条：信息行、对齐、四种流程分支
 node --experimental-strip-types lib/clipboard.test.ts        # 含 describeClipboardResult 三条
 ```
 
