@@ -6,6 +6,7 @@
 //
 // 注意：必须改 PI_HUB_SOCKET。本机 ~/.pi/agent/run/hub.sock 是真 hub，
 // 忘了改的话测试会往真实 hub 里塞一条提问，然后挂在那儿等回答。
+// 同理必须关掉桌面通知（PI_NO_DESKTOP_NOTIFY），否则每跑一次就往屏幕上弹一条。
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,10 +17,18 @@ import { after, describe, it } from "node:test";
 
 const dir = mkdtempSync(join(tmpdir(), "ask-question-hub-"));
 const savedSocket = process.env.PI_HUB_SOCKET;
+const savedNotify = process.env.PI_NO_DESKTOP_NOTIFY;
+
+// 这里是真跑 handleAskQuestion，它开头会发一条桌面通知。跑测试时不该拿用户
+// 的桌面当输出设备：fixture 里的问题文本会原样弹到屏幕上（已经是真事）
+process.env.PI_NO_DESKTOP_NOTIFY = "1";
+
 after(() => {
 	rmSync(dir, { recursive: true, force: true });
 	if (savedSocket === undefined) delete process.env.PI_HUB_SOCKET;
 	else process.env.PI_HUB_SOCKET = savedSocket;
+	if (savedNotify === undefined) delete process.env.PI_NO_DESKTOP_NOTIFY;
+	else process.env.PI_NO_DESKTOP_NOTIFY = savedNotify;
 });
 
 type ToolDef = { name: string; execute: (...args: unknown[]) => Promise<unknown> };

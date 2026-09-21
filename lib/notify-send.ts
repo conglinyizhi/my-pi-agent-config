@@ -333,10 +333,22 @@ async function playMacSound(soundFile: string): Promise<void> {
 }
 
 /**
+ * 桌面通知是否被环境变量关掉。测试与脚本里跑扩展逻辑时用：
+ * 不关的话，fixture 里的文本会原样弹到用户屏幕上（ask-question 的冒烟测试踩过）。
+ */
+export function isNotifyDisabled(): boolean {
+  const raw = process.env.PI_NO_DESKTOP_NOTIFY?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+/**
  * 发送跨平台通知
  * 自动检测操作系统并使用相应的通知机制
  */
 export async function sendNotification(options: NotifyOptions): Promise<boolean> {
+  // 单行写法是有意的：notify-send.test.mjs 用「到第一个闭括号行」的正则取本函数体，
+  // 这里加一个带花括号的 if 会把那个函数体截短
+  if (isNotifyDisabled()) return false;
   const os = getOS();
   // sound=true 但未指定 soundFile 时，统一使用默认 ogg，避免各调用方忘记带文件
   const resolved: NotifyOptions =
