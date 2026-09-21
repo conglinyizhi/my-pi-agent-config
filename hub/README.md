@@ -13,7 +13,7 @@
 - hub 没起来：pi 回退现有 GUI→TUI
 - 陌生人找 bot：挡住，给一次性码；**只有本机贴码才授权**（pi 里 `/remote:allow-key`，或 `pi-hub grant`）
 - 审批卡推给谁由 hub 的授权名单决定，随 `ask` 事件一起下发。适配器不需要账号先跟 bot 说过话，也不用自己的内存表（一重启就空）
-- 飞书适配器走本机 `lark-cli`（`hub/adapters/feishu/`）；没有 CLI 就不启
+- 飞书适配器走本机 `lark-cli`（`hub/adapters/feishu/`）；没有 CLI 就不启。决策卡默认压 2 分钟再推（`-card-delay`），期间本机窗 / 本地 TUI 已答就撤单，见该目录 README
 - 未公开 IM 适配器不入库，放 `hub/private/`（gitignore）
 
 协议是 JSON 行。适配器用通用 `channel` + `userId`，hub 源码不出现具体软件名。

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type askTarget struct {
@@ -29,12 +30,18 @@ type adapter struct {
 	// questions 是一次提问的现场（一题一张卡，集齐答案才提交）。
 	// 与 cards 分开存：两者的生命周期不同，混在一起会让结算路径互相牵连
 	questions map[string]*questionState
+	// delay 攒着还没到点的决策卡。审批与提问共用一条队列：撤单条件一样
+	// （都是 settled 广播），分开反而多一处要维护的状态
+	delay *cardQueue
 }
 
 func main() {
 	home, _ := os.UserHomeDir()
 	socketPath := flag.String("socket", filepath.Join(home, ".pi", "agent", "run", "hub.sock"), "hub Unix socket")
 	larkBin := flag.String("lark-cli", "lark-cli", "lark-cli 路径")
+	// 决策卡（审批 / 提问）延迟多久再推。用户常就在屏幕前，本机闸门窗或本地 TUI
+	// 已经把决策拿走了；压这两分钟能省掉一次打扰和一次飞书 API 调用。0 = 立刻推
+	cardDelay := flag.Duration("card-delay", 2*time.Minute, "决策卡延迟多久再推给 IM；0 = 立刻")
 	flag.Parse()
 
 	bin, err := exec.LookPath(*larkBin)
@@ -60,6 +67,7 @@ func main() {
 		chats:     map[string]string{},
 		cards:     map[string]askTarget{},
 		questions: map[string]*questionState{},
+		delay:     newCardQueue(*cardDelay),
 	}
 	hub.onEvent = a.onAskEvent
 	hub.onSettle = a.onSettled
@@ -67,7 +75,7 @@ func main() {
 	go a.consume("im.message.receive_v1", a.onMessage)
 	go a.consume("card.action.trigger", a.onCard)
 
-	log.Printf("feishu adapter ready cli=%s hub=%s", bin, *socketPath)
+	log.Printf("feishu adapter ready cli=%s hub=%s card-delay=%s", bin, *socketPath, *cardDelay)
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -105,10 +113,25 @@ func (a *adapter) consume(key string, handle func(map[string]any)) {
 	log.Printf("consume %s 退出", key)
 }
 
-// onAskEvent 把审批卡推给本通道已授权账号。目标名单以 hub 下发的授权名单为准，
-// 不能只看 a.chats：那张表是适配器进程内的，一重启就空，卡会静默地送不出去。
+// onAskEvent 收下决策请求，先压 card-delay 再推卡。
+//
+// 压这一段的理由：用户就在屏幕前时，本机闸门窗（审批）或本地 TUI（提问）已经把决策
+// 拿走了，这张卡既多余又费一次飞书 API。到点前结算的话，settled 广播会来撤单；
+// 撤不到（卡已经发了）也没关系，照常走改卡那条路。
 func (a *adapter) onAskEvent(env envelope) {
 	if env.Event != "ask" || env.RequestID == "" {
+		return
+	}
+	a.delay.push(env.RequestID, func() { a.pushCards(env) })
+}
+
+// pushCards 到点后真正推卡。目标名单以 hub 下发的授权名单为准，
+// 不能只看 a.chats：那张表是适配器进程内的，一重启就空，卡会静默地送不出去。
+func (a *adapter) pushCards(env envelope) {
+	// 到点时已经过期就别发了：hub 的 expired 结算（5 秒一跳）可能还在路上，
+	// 推出去就是一张按钮按不动的死卡
+	if askExpired(env.ExpiresAt) {
+		log.Printf("ask %s 已过期，不发卡", env.RequestID)
 		return
 	}
 	targets := a.pushTargets(env.Principals)
@@ -159,6 +182,12 @@ func (a *adapter) pushTargets(principals []principal) []askTarget {
 }
 
 func (a *adapter) onSettled(env envelope) {
+	// 还没到点的卡先撤掉：用户已经答过了（本机窗、本地 TUI，或其他收件人先答），
+	// 再推一张卡纯属多余。撤不到说明卡已经发出去了，下面照常改卡
+	if a.delay.cancel(env.RequestID) {
+		log.Printf("ask %s 在发卡前已结算，撤掉卡片", env.RequestID)
+	}
+
 	a.mu.Lock()
 	t, ok := a.cards[env.RequestID]
 	if ok {

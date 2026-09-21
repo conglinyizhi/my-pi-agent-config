@@ -201,6 +201,7 @@
 - 看服务必须 `systemctl --user …`。普通 `systemctl` 看不到 user unit，会误报 Unit not found
 - 贴码：`/remote:allow-key PIHUB-…`；许可窗：`/remote:gui`（hub 拉 yad，不是 Wails）；状态：`/remote:status`
 - 飞书适配器只包本机 `lark-cli`，没有 CLI 或未登录就退出码 78、不再狂重启。不要另写一套 OpenAPI。密钥只活在 CLI 登录态，不进 hub、不进仓库
+- 决策卡（审批 / 提问）不立刻推 IM：飞书适配器默认压 2 分钟再发（`-card-delay`，0 = 立刻），期间本机闸门窗或本地 TUI 已经答了就撤单。卡没来先看这个，不是通道坏了
 - 未公开 IM 适配器放 `hub/private/`（gitignore）。主线只推 Linux；旧形态在 tag `pre-linux-hub`
 - hub 的 unit 里**不能写 `After=default.target`**：`WantedBy=default.target` 的单元隐含 `Before=default.target`，配上飞书适配器的 `After=`+`Requires=` 就成了启动环，开机时 systemd 会删掉飞书那条 start job（表现为 unit enabled 却没 active，然后反复弹「需要 lark-cli」，其实跟 CLI 无关）。要等图形会话写 `After=graphical-session.target`。详见 `hub/README.md`
 - hub 比图形会话的环境导入早起，自己拿不到 `DISPLAY` / `WAYLAND_DISPLAY`；拉 GUI 前由 `hub/sessionenv.go` 从 `systemctl --user show-environment` 补齐。GUI 不弹窗先看 journal 里有没有「会话环境缺失，已从 systemd 补入」

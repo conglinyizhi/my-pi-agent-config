@@ -6,7 +6,7 @@ Requires=pi-hub.service
 [Service]
 Type=simple
 Environment=PATH=%h/.local/share/pnpm:%h/.local/bin:/usr/bin
-ExecStart=%h/.local/bin/pi-hub-feishu -lark-cli %h/.local/share/pnpm/lark-cli
+ExecStart=%h/.local/bin/pi-hub-feishu -lark-cli %h/.local/share/pnpm/lark-cli -card-delay 2m
 Restart=on-failure
 RestartSec=3
 # 78 = 缺 lark-cli / 未登录，不再狂重启
