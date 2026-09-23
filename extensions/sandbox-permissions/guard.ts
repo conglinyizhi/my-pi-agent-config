@@ -10,9 +10,10 @@
 //   - 读取时机：session_start（初始化与 /reload 都会触发）时读取并编译
 //
 // 拦截点（pi.on("tool_call")，返回 { block: true, reason } 阻止执行）：
-//   read    → 参数 path
-//   write   → 参数 path（黑名单 + 仅写保护路径）
-//   edit    → 参数 path（黑名单 + 仅写保护路径）
+//   read / be-read                     → 参数 path / file（黑名单）
+//   write / edit / be-write / be-replace / be-insert / be-delete / be-insert-chip
+//                                      → 参数 path / file / to（黑名单 + 仅写保护路径 + worker 沙箱可写根）
+//   （be-* 是 MCP 直挂的写通道，不挂上来就绕过了这一层；见 targetPathOf）
 //   bash    → 2026-08 起不再在此拦截：bash 检查移至 extensions/bash-guard.ts
 //             的 bash 工具内部（checkCommand 前置调用 commandBlocked）。
 //             纯函数 commandBlocked/loadBlacklist 仍保留，供 lib/sandbox-check.ts 复用。
@@ -21,15 +22,19 @@
 //   .git/ 与 node_modules/ 是工程级路径，模型需要读（如查 node_modules 类型），
 //   但不应写；.env* 比黑名单（.env / .env.local）更宽，覆盖 .env.production 等。
 //
-// 注意：本扩展加载于主进程；subagent 子进程（--no-extensions）不加载本扩展，
-// 但其 bash 已由沙箱限制在 worktree，且子进程的敏感读取由主进程的 skill
-// 注入场景经本拦截兜底（模型在主进程的 read/bash 已被拦）。
+// worker 沙箱可写根（2026-09 起）：subagent 派工的 readonly / sandbox_dir 过去只约束
+// bash（sandbox-shell 的 landlock grants），worker 的写入类工具直接绕过，
+// 「只读」档位名不符实。现在按同一份 env 契约在工具层补齐（见 readWorkerWriteScope）。
+//
+// 加载面：主进程加载本扩展；subagent 子进程由 lib/subagent-run.ts 经 `--extension`
+// 显式加载 guard.ts（见该文件的 SANDBOX_GUARD_EXT），所以 worker 的读写拦截走的是同一份代码、
+// 同一张黑名单；worker 的 bash 另有 subagent-bash-guard.ts 负责无 UI 审批链。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { loadSandboxPaths } from "./paths.ts";
 import { yoloEnabled } from "./yolo.ts";
@@ -187,6 +192,136 @@ export function writePathBlocked(path: string): boolean {
   return WRITE_ONLY_PATTERNS.some((p) => p.re.test(path));
 }
 
+// ── worker 沙箱可写根（subagent 派工的 readonly / worktree 档位） ──
+// readonly 与 sandbox_dir 过去只约束 bash（由 scripts/sandbox-shell.mjs 的 landlock
+// grants 执行），而 worker 白名单里的写入类工具不过那一层：标了「只读」的 worker
+// 照样能把文件写进工作区，名不符实（2026-09-23 实测）。这里把同一份边界补到
+// 写入类工具上，可写根与 sandbox-shell 的 grants 对齐：
+//   /tmp（内置临时区）+（非只读时）PI_SANDBOX_RW + PI_SANDBOX_RW_EXTRA
+// RW_EXTRA 在只读档位下也生效：它是 sandbox-allow 一次性升权的通道，与 bash 一致。
+
+/** worker 沙箱可写范围；主进程 / 未设档位 / 已降零时返回 undefined（不做额外拦截） */
+export interface WorkerWriteScope {
+  /** 绝对路径形式的可写根 */
+  roots: string[];
+  /** true = 只读档位（除内置临时区与显式 RW_EXTRA 外一律不可写） */
+  readonly: boolean;
+}
+
+/** 与 sandbox-shell 的内置可写根对齐（/dev/null 不是写入类工具的目标，不列） */
+const WORKER_BUILTIN_WRITABLE = ["/tmp"];
+
+function splitRoots(raw: string | undefined): string[] {
+  return (raw ?? "").split(":").map((p) => p.trim()).filter(Boolean);
+}
+
+/** 绝对化 + 尽量消解符号链接（目标不存在时回溯到最近的已存在祖先） */
+function canonicalize(path: string, cwd: string): string {
+  const expanded = expand(path);
+  let abs: string;
+  try {
+    abs = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+  } catch {
+    return expanded;
+  }
+  const tail: string[] = [];
+  let current = abs;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
+    } catch {
+      /* 不存在：退一级继续找已存在的祖先 */
+    }
+    const parent = dirname(current);
+    if (parent === current) return abs;
+    tail.push(basename(current));
+    current = parent;
+  }
+}
+
+/** 读 worker 沙箱可写范围（纯函数，env 可注入便于单测） */
+export function readWorkerWriteScope(env: NodeJS.ProcessEnv = process.env): WorkerWriteScope | undefined {
+  if (env.PI_SUBAGENT !== "1") return undefined;
+  // 降零（/yolo 或 full-access 升权）：不在这里拦
+  if (env.PI_SANDBOX_DISABLE === "1") return undefined;
+  const readonly = env.PI_SANDBOX_READONLY === "1";
+  const declared = [...(readonly ? [] : splitRoots(env.PI_SANDBOX_RW)), ...splitRoots(env.PI_SANDBOX_RW_EXTRA)];
+  if (!readonly && declared.length === 0) return undefined;
+  const roots = [...WORKER_BUILTIN_WRITABLE];
+  for (const root of declared) {
+    const abs = canonicalize(root, process.cwd());
+    if (!roots.includes(abs)) roots.push(abs);
+  }
+  return { roots, readonly };
+}
+
+/** 路径是否落在某个可写根内（按路径段边界，防 /tmpfoo 冒充 /tmp） */
+function withinRoot(path: string, root: string): boolean {
+  if (path === root) return true;
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return path.startsWith(prefix);
+}
+
+/**
+ * worker 的写入是否越出沙箱可写根；越界时返回给模型看的拒绝理由。
+ */
+export function workerWriteBlocked(path: string, cwd: string, scope: WorkerWriteScope): string | undefined {
+  if (!path) return undefined;
+  const target = canonicalize(path, cwd);
+  if (scope.roots.some((root) => withinRoot(target, root))) return undefined;
+  const mode = scope.readonly
+    ? `只读档位（可写：${scope.roots.join("、")}）`
+    : `worktree 档位（可写：${scope.roots.join("、")}）`;
+  return `[sandbox-guard] ${path} 不在本批 worker 的沙箱可写根内（${mode}）。`
+    + `worker 的写入被限制在派工时指定的范围，需要改这里就把改动范围报给主 agent，由主 agent 调整 sandbox_dir 或自己动手。`;
+}
+
+// ── 目标路径提取（内置 read/write/edit 与 better-edit-tools 的 be-*） ──
+// be-* 是 MCP 直挂工具，参数用的是 `file`（可带 `:行范围` / `:ALL` 后缀），
+// 只挂内置 write/edit 会留下一条完全绕开黑名单与 worker 写入边界的通道
+// （2026-09-23 实测：readonly worker 用 be-write 成功写了工作区）。
+
+/** 工具名 → 目标路径字段+是否剥 `:行范围` 后缀 */
+const READ_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
+  read: { field: "path", rangeSuffix: false },
+  "be-read": { field: "file", rangeSuffix: true },
+  // be-insert-chip 的 from 可以是 file://（从某文件取内容插到另一处）——取内容也是读
+  "be-insert-chip": { field: "from", rangeSuffix: false },
+};
+
+const WRITE_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
+  write: { field: "path", rangeSuffix: false },
+  edit: { field: "path", rangeSuffix: false },
+  "be-write": { field: "file", rangeSuffix: true },
+  "be-replace": { field: "file", rangeSuffix: true },
+  "be-insert": { field: "file", rangeSuffix: true },
+  "be-delete": { field: "file", rangeSuffix: true },
+  // 插入目标写成 file:///abs/path:line
+  "be-insert-chip": { field: "to", rangeSuffix: true },
+};
+
+/**
+ * 取本次工具调用的目标路径；不是读写类工具或没带路径就返回 undefined。
+ *
+ * be-trx 的 rollback/status 不带路径（它只能回滚本会话已经写过的快照，
+ * 而那些写已经过一次同样的边界检查），所以不在表里。
+ */
+export function targetPathOf(
+  toolName: string,
+  input: unknown,
+  kind: "read" | "write",
+): string | undefined {
+  const spec = (kind === "read" ? READ_TARGET : WRITE_TARGET)[toolName];
+  if (!spec || !input || typeof input !== "object") return undefined;
+  const raw = (input as Record<string, unknown>)[spec.field];
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  // chip 缓存不是文件系统路径，不参与路径拦截
+  if (raw.startsWith("chip://")) return undefined;
+  const stripped = raw.startsWith("file://") ? raw.slice("file://".length) : raw;
+  return spec.rangeSuffix ? stripped.replace(/:(?:\d+(?:-\d+)?|ALL)$/i, "") : stripped;
+}
+
 // ── 扩展入口 ──
 
 export default function (pi: ExtensionAPI) {
@@ -210,24 +345,32 @@ export default function (pi: ExtensionAPI) {
     if (yoloEnabled()) return undefined;
 
     const input = event.input as Record<string, unknown>;
-    const path = typeof input?.path === "string" ? input.path : undefined;
+    // 读写表分开查：同一个工具只可能在一张表里，用错 kind 会让整条写入通道静默失效
+    const readPath = targetPathOf(event.toolName, input, "read");
+    const writePath = targetPathOf(event.toolName, input, "write");
 
-    // read：仅黑名单（敏感凭据路径防读也防写）
-    if (path !== undefined && event.toolName === "read") {
-      const hit = rules.find((r) => pathBlocked(path, ctx.cwd, [r]));
+    // read / be-read：仅黑名单（敏感凭据路径防读也防写）
+    if (readPath !== undefined) {
+      const hit = rules.find((r) => pathBlocked(readPath, ctx.cwd, [r]));
       if (hit) {
-        return { block: true, reason: blockedReason(`工具 ${event.toolName}`, path, hit) };
+        return { block: true, reason: blockedReason(`工具 ${event.toolName}`, readPath, hit) };
       }
     }
-    // write / edit：黑名单 + 仅写保护路径（.git/、node_modules/、.env*）
-    if (path !== undefined && (event.toolName === "write" || event.toolName === "edit")) {
-      const hit = rules.find((r) => pathBlocked(path, ctx.cwd, [r]));
+    // write / edit（含 be-* 写入通道）：黑名单 + 仅写保护路径（.git/、node_modules/、.env*）+ worker 可写根
+    if (writePath !== undefined) {
+      const hit = rules.find((r) => pathBlocked(writePath, ctx.cwd, [r]));
       if (hit) {
-        return { block: true, reason: blockedReason(`工具 ${event.toolName}`, path, hit) };
+        return { block: true, reason: blockedReason(`工具 ${event.toolName}`, writePath, hit) };
       }
-      const wp = WRITE_ONLY_PATTERNS.find((p) => p.re.test(path));
+      const wp = WRITE_ONLY_PATTERNS.find((p) => p.re.test(writePath));
       if (wp) {
-        return { block: true, reason: `[sandbox-guard] ${event.toolName} 目标路径受保护（${wp.label}）：${path}。为防止误改工程/配置路径已拒绝。` };
+        return { block: true, reason: `[sandbox-guard] ${event.toolName} 目标路径受保护（${wp.label}）：${writePath}。为防止误改工程/配置路径已拒绝。` };
+      }
+      // worker 的写入边界：readonly / sandbox_dir 对 bash 生效的那一套，在写入类工具上同样强制
+      const scope = readWorkerWriteScope();
+      if (scope) {
+        const outside = workerWriteBlocked(writePath, ctx.cwd, scope);
+        if (outside) return { block: true, reason: outside };
       }
     }
     // bash：命令中的路径引用（保守拦截）
