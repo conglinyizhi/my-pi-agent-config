@@ -16,7 +16,8 @@ import { join } from "node:path";
 import { launchGuiWindow } from "../../lib/gui-runner.ts";
 import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis.ts";
 import { resolveApprovalChannel } from "../../lib/approval-channel.ts";
-import { normalizeSubagentArgs } from "./tool-args.ts";
+import { prepareSubagentArgs, taskHeadline } from "./tool-args.ts";
+import { planSubagentSandbox } from "./sandbox-params.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
 import { formatUnclaimedReturn } from "./return-notice.ts";
@@ -261,12 +262,14 @@ export default function (pi: ExtensionAPI) {
     name: "subagent",
     label: "Dispatch Subagent",
     description:
-      "将完整任务简报派给一个或多个隔离 worker。复杂任务请显式传 objective、context、constraints、required_files、skills、acceptance、output_format；同步等待所有 worker 进入终态后返回。",
+      "将完整任务简报派给一个或多个隔离 worker。复杂任务请显式传 objective、context、constraints、required_files、skills、acceptance、output_format；同步等待所有 worker 进入终态后返回。task 传数组时每个元素都必须是结构化简报对象。",
     promptSnippet: "Dispatch side-quests with complete context, required files, skills, acceptance criteria, and wait for all results",
     promptGuidelines: [
+      "沙箱档位：要让 worker 写文件就传 sandbox_dir（目录必须已存在，且不能与 readonly 同传）；不传就是只读，worker 只能写 /tmp。",
       "不要把用户原话原封不动转发；先整理成 worker 可直接执行的完整简报。",
       "复杂任务优先传结构化 task：objective 必填；context 写已知现状；constraints 写边界；required_files 写必看文件；skills 只填确实需要的 skill；acceptance 写可验证标准；output_format 写回报格式。",
       "如果多个任务互相独立，传结构化对象数组并行执行；每项都要自洽，不能依赖主 agent 中途补背景。",
+      "task 数组的每个元素都必须是结构化简报对象（至少含非空 objective）；数组里不接受裸字符串，误写的裸字符串会被当场报错拦住。",
       "subagent 的参数名固定是 task（单数，可直接传数组）：多个独立任务写 task: [briefA, briefB]，没有 tasks 这个参数。",
       "模型优先级是：显式 model 参数 > 用户通过 /subagent:select-change-switch-default-worker-model 设置的独立默认 > 当前主 session 模型。显式参数只影响本次 worker；独立默认不修改主 session。",
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
@@ -279,7 +282,7 @@ export default function (pi: ExtensionAPI) {
       task: Type.Union([
         Type.String({ description: "兼容：单个完整任务说明；复杂任务应使用结构化简报。" }),
         briefSchema,
-        Type.Array(Type.Union([Type.String(), briefSchema]), { description: "多个独立任务简报，并行执行；每项都应包含完整上下文与验收标准。" }),
+        Type.Array(briefSchema, { description: "多个独立任务简报，并行执行；每项都应包含完整上下文与验收标准。元素必须是对象，不接受裸字符串。" }),
       ]),
       skills: Type.Optional(
         Type.Array(Type.String(), {
@@ -292,18 +295,18 @@ export default function (pi: ExtensionAPI) {
           Type.Literal("worktree"),
         ], {
           description:
-            "worker 沙箱档位：readonly=默认只读 workspace；worktree=只能写 sandbox_dir。未指定时，有 sandbox_dir 则按 worktree，否则按 readonly。",
+            "worker 沙箱档位：readonly=只有 /tmp 可写（工作区与工程均不可写）；worktree=只能写 sandbox_dir 及其子目录。未指定时，有 sandbox_dir 则按 worktree，否则按 readonly。写入边界对 bash 与写入类工具一起生效。",
         }),
       ),
       sandbox_dir: Type.Optional(
         Type.String({
           description:
-            "worktree 档位必填的绝对路径：worker 只能写该目录及其子目录，工程其余部分只读。",
+            "worktree 档位的可写根（绝对路径，必须已存在）：worker 只能写该目录及其子目录，工程其余部分只读。与只读档位互斥。",
         }),
       ),
       readonly: Type.Optional(
         Type.Boolean({
-          description: "兼容字段：true 强制 readonly；安全默认是不传 sandbox_dir 时自动 readonly。",
+          description: "兼容字段：true 强制 readonly（worker 只能写 /tmp）。与 sandbox_dir 互斥。",
         }),
       ),
       model: Type.Optional(
@@ -319,14 +322,16 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     // 模型偶尔把参数名写成复数的 tasks（schema 里装的就是数组，很容易滑）。
-    // 这里在 schema 校验之前折回 task，省掉一个「报错 → 重发」的来回。
+    // 这里在 schema 校验之前折回 task，顺手校验数组元素形状——两件事都在抛错时
+    // 直接变成工具错误结果，worker 一个都不会 spawn（报错即拦住派工）。
     prepareArguments(args) {
-      return normalizeSubagentArgs(args) as never;
+      return prepareSubagentArgs(args) as never;
     },
     renderCall(args, theme, context) {
       const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
       const raw = args.task;
-      const count = Array.isArray(raw) ? raw.length : 1;
+      const list: unknown[] = Array.isArray(raw) ? raw : [raw];
+      const count = list.length;
       let content = theme.fg("toolTitle", theme.bold("subagent "));
       content += theme.fg("muted", `${count} 个 worker`);
       if (typeof args.model === "string" && args.model) content += theme.fg("dim", ` · ${args.model}`);
@@ -338,6 +343,14 @@ export default function (pi: ExtensionAPI) {
       }
       if (Array.isArray(args.skills) && args.skills.length > 0) {
         content += theme.fg("dim", ` · skills ${args.skills.length}`);
+      }
+      // 逐 worker 回显目标首 40 字：派错（简报复制错位、漏写某个 ] 把参数漏进数组）
+      // 在派工那一刻就能看见，不用等 worker 跑完才发现白烧了一个预算。
+      const heads = list.map((item) => taskHeadline(item));
+      if (heads.length > 1) {
+        content += `\n${heads.map((head, i) => theme.fg("dim", `  #${i + 1} ${head}`)).join("\n")}`;
+      } else if (heads[0]) {
+        content += theme.fg("dim", ` · ${heads[0]}`);
       }
       text.setText(content);
       return text;
@@ -404,15 +417,13 @@ export default function (pi: ExtensionAPI) {
         };
       }
       const workerSkills = perWorkerSkills.map((r) => r.paths);
-      const profile = params.sandbox_profile
-        ?? (params.sandbox_dir ? "worktree" : "readonly");
-      if (profile === "worktree" && !params.sandbox_dir) {
-        return {
-          content: [{ type: "text", text: "错误：sandbox_profile=worktree 必须同时提供 sandbox_dir。" }],
-          details: { error: "missing_sandbox_dir" },
-        };
+      // 沙箱参数一次性校验（worktree 缺目录 / 只读与 sandbox_dir 冲突 / 目录不存在）。
+      // 过去的失败模式全是静默降级：报错文本会说明修法，绝不 spawn 半批。
+      const sandbox = planSubagentSandbox(params);
+      if (!sandbox.ok) {
+        return { content: [{ type: "text", text: sandbox.text }], details: { error: sandbox.error } };
       }
-      const workerReadonly = profile === "readonly" || params.readonly === true;
+      const { sandboxDir, readonly: workerReadonly } = sandbox.plan;
       const activeTools = pi.getActiveTools();
       const safeTools = buildSafeWorkerTools(activeTools);
       if (!safeTools.includes("bash") || !safeTools.includes("read")) {
@@ -465,7 +476,7 @@ export default function (pi: ExtensionAPI) {
         : undefined;
       const batchRuntime = startBatch(tasks, {
         cwd: ctx.cwd,
-        sandboxDir: params.sandbox_dir,
+        sandboxDir,
         readonly: workerReadonly,
         model: workerModel,
         timeout: workerTimeout,
