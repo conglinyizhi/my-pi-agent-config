@@ -31,7 +31,7 @@ pi
 
 **session-browse** — 跨 workdir 浏览与恢复历史 session。`/sessions` 命令列出所有对话，选中即切过去。
 
-**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。复杂任务可传结构化简报：`objective`、`context`、`constraints`、`required_files`、`skills`、`acceptance`、`output_format`，让 worker 一次拿齐背景与验收标准；模型优先级为显式 `model: provider/model` > 用户通过 `/subagent:select-change-switch-default-worker-model` 设置的独立 worker 默认 > 当前 session。独立默认不改变当前 session，选择器内可恢复继承。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式（不写 workspace）。实时监视使用 `/subagent:gui`。
+**subagent** — 把任务委派给子 agent 并行执行，支持 single / parallel 两种模式。复杂任务可传结构化简报：`objective`、`context`、`constraints`、`required_files`、`skills`、`acceptance`、`output_format`，让 worker 一次拿齐背景与验收标准；`task` 传数组时每个元素都必须是结构化简报对象（裸字符串会被派工前校验当场拒绝——长简报漏写数组收尾的 `]` 时，后面的 `"timeout"` 会掉进数组被当成一个完整任务派出去，白烧一个 worker 预算）。模型优先级为显式 `model: provider/model` > 用户通过 `/subagent:select-change-switch-default-worker-model` 设置的独立 worker 默认 > 当前 session。独立默认不改变当前 session，选择器内可恢复继承。可选沙箱细粒度限制（配合 landlock-shell）：`sandbox_dir` 限制 worker 只能写指定目录（工程其余只读，适用于 worktree 隔离）、`readonly` 只读模式。沙箱参数在派工前校验：`sandbox_dir` 必须已存在、与只读档位互斥，不做静默降级。写入边界对 bash 与 write/edit 一起生效（readonly 只有 `/tmp` 可写，worktree 是 `sandbox_dir` 及其子目录）。实时监视使用 `/subagent:gui`。
 
 **confirm-destructive** — 在切换/分叉 session 前提醒，防手滑。
 
@@ -54,7 +54,7 @@ pi
 **sysinfo** — `/sysinfo` 一键收集系统信息发给 LLM。
 
 **sandbox-permissions** — 沙箱权限三合一扩展（`guard` 防读 + `gate` 审批 + `allow` 升权，一个目录三个子模块）：
-- `guard`：敏感路径黑名单防护（恶意 skill 防护），初始化/reload 时读取 `sandbox-blacklist.json`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截 read/write/edit/bash 触碰黑名单路径
+- `guard`：敏感路径黑名单防护（恶意 skill 防护），初始化/reload 时读取 `sandbox-blacklist.json`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截读写触碰黑名单路径——覆盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 `be-read`/`be-write`/`be-replace`/`be-insert`/`be-delete` 等直挂通道；同时把 subagent 的 `readonly` / `sandbox_dir` 边界补到写入类工具上（worker 只能写 `/tmp` 或派工指定的可写根，越界直接拒绝）
 - `gate`：危险 bash 命令审批（token 化规则引擎判定 rm-recursive/find-delete/sudo/dd 等 gap 规则 + 动态构造降级），GUI 审计面板 + TUI 回退
 - `allow`：DSH 升权移植，`sandbox-allow` 工具临时同意「单一指令」跨越沙箱（等价 `sandbox_permissions` + `justification`），审批并入 `gate` 窗口（`kind=sandbox-allow` 分支），授权只此一次、fail-closed，审计写会话日志
 

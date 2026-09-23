@@ -4,7 +4,7 @@
 
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
-| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
+| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄）+ worker 写入边界（写入类工具只能写 `/tmp` 或派工指定的可写根） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
 | `subagent-bash-guard.ts` | worker 无 UI bash 防线：硬拒绝或生成 capability request | `pi.registerTool("bash")`（仅 PI_SUBAGENT） |
 | `gate.ts` | 启动时依赖检测；交互式 bash 审批已内聚到 `bash-guard.ts` | `pi.on("session_start")` |
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
@@ -15,9 +15,15 @@
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 | `lib/approval-channel.ts` | 人工审批通道（优先连本机 hub，挂了回退 GUI→TUI） | bash / sandbox-allow / capability 共用 |
 
+拦截面涵盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 MCP 直挂工具：`be-read`、
+`be-write`、`be-replace`、`be-insert`、`be-delete`，以及 `be-insert-chip` 的 `to`（写）与 `from`（`file://` 时算读）。
+参数名与 `:行范围` 后缀的解析统一在 `targetPathOf` 里，新增写通道时必须同时补上——
+只挂内置工具会让整条 MCP 写通道绕过这一层（2026-09-23 实测：readonly worker 用 `be-write` 成功写了工作区）。
+
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
-注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。风险命令由 guard 写结构化 capability request，父进程经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI），批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
+注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。这套写入边界对 **bash 与写入类工具一起生效**：bash 由 `scripts/sandbox-shell.mjs` 的 landlock grants 执行，
+write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI），批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -263,7 +269,7 @@ max_cache = 200         # 内存缓存上限（同命令同规则不重复调 AP
 
 - 状态只存内存（`yolo.ts`），不开新 session、不写盘；新 session 自动复位为关闭
 - 状态通过 status bar（key=`sandbox-yolo`）显示在 session 中：开启显示 `🚀 YOLO`，关闭清除
-- 仅主进程生效：subagent 子进程经 `--extension` 单独加载 guard.ts，yolo 默认关闭，子进程保持防护
+- 仅主进程生效：subagent 子进程经 `--extension` 单独加载 guard.ts，yolo 默认关闭，子进程保持防护（包括 worker 的写入边界）
 
 ## 目录授权（paths.ts，GUI 动态维护）
 
