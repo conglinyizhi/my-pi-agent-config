@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 import {
   analyzeCommand,
-  BREAKER_THRESHOLD,
+  BREAKER_TRANSIENT_THRESHOLD,
   clearPreshellCache,
   describeUnavailable,
   formatFacts,
@@ -155,7 +155,7 @@ describe("analyzeCommand", () => {
 });
 
 describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超时", () => {
-  it("连续失败到阈值后不再起子进程，原因保留首次的", () => {
+  it("瞬时失败（非零退出）要连续到阈值才断，原因保留首次的", () => {
     const log = join(dir, "breaker.log");
     const bin = stub("breaker.sh", `${VERSION_OK}\necho x >> "${log}"\ncat >/dev/null\nexit 1`);
     clearPreshellCache();
@@ -163,25 +163,45 @@ describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超�
     resetPreshellBreaker();
     const config = configFor(bin);
 
-    for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+    // 阈值之前：每次都会去 spawn
+    for (let i = 1; i < BREAKER_TRANSIENT_THRESHOLD; i++) {
       const outcome = analyzeCommand(`echo cmd-${i}`, { config });
       assert.equal(outcome.ok, false);
       if (!outcome.ok) assert.equal(outcome.reason, "exit");
+      assert.equal(preshellBreakerState().broken, undefined, `第 ${i} 次不该已熔断`);
     }
-    const state = preshellBreakerState();
-    assert.equal(state.broken, "exit");
-    const callsAfterThreshold = readFileSync(log, "utf8").trim().split("\n").length;
+    const beforeTrip = readFileSync(log, "utf8").trim().split("\n").length;
 
-    // 阈值之后的命令：不再 spawn（）
+    // 第 5 次：断
+    analyzeCommand("echo cmd-trip", { config });
+    assert.equal(preshellBreakerState().broken, "exit");
+    const afterTrip = readFileSync(log, "utf8").trim().split("\n").length;
+    assert.equal(afterTrip, beforeTrip + 1);
+
+    // 断后不再 spawn
     const after = analyzeCommand("echo another", { config });
     assert.equal(after.ok, false);
     if (!after.ok) assert.match(after.detail ?? "", /熔断/);
-    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, callsAfterThreshold);
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, afterTrip);
 
     // 重置后重试
     resetPreshellBreaker();
     analyzeCommand("echo retry", { config });
-    assert.ok(readFileSync(log, "utf8").trim().split("\n").length > callsAfterThreshold);
+    assert.ok(readFileSync(log, "utf8").trim().split("\n").length > afterTrip);
+    resetPreshellBreaker();
+  });
+
+  it("确定性失败（缺件/schema）一次就断，不再白白 spawn", () => {
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    resetPreshellBreaker();
+    const config = configFor(join(dir, "根本没有这个文件"));
+    const first = analyzeCommand("echo a", { config });
+    assert.equal(first.ok, false);
+    if (!first.ok) assert.equal(first.reason, "missing");
+    assert.equal(preshellBreakerState().broken, "missing");
+    const second = analyzeCommand("echo b", { config });
+    if (!second.ok) assert.match(second.detail ?? "", /熔断/);
     resetPreshellBreaker();
   });
 
@@ -265,6 +285,10 @@ describe("配置与二进制解析", () => {
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.bin, "~/.pi/runtime/preshell");
     assert.equal(cfg.schema, 1);
+  });
+
+  it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {
+    assert.equal(loadPreshellConfig().timeoutMs, 100);
   });
 
   it("读本仓真实配置：启用且指向 runtime 下的二进制", () => {

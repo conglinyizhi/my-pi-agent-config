@@ -102,8 +102,9 @@ hint = "碰调试设备（adb、串口、烧录器这类独占目标）时，同
 [preshell]
 enabled = true
 bin = "~/.pi/runtime/preshell"
-# 单次调用上限（毫秒）；实测 p95 约 8ms，超时按不可用处理
-timeoutMs = 2000
+# 实测分析 5µs/命令、起进程约 2ms、本机最大命令 22KB 对应几毫秒，所以 100ms 是十几倍余量
+# 定这么小的真正收益在坏情况：二进制卡住时每条命令的阻塞从 2s 降到 100ms
+timeoutMs = 100
 # 契约版本，只认这个值；工具换 schema 就得先在影子模式里复测再改这里
 schema = 1
 

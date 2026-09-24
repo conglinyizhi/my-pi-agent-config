@@ -76,7 +76,15 @@ export interface PreshellConfig {
 
 /** 缺省二进制位置：重启不丢（/tmp 是内存盘） */
 export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
-export const DEFAULT_TIMEOUT_MS = 2000;
+/**
+ * 单次调用上限（毫秒）。
+ *
+ * 定 100ms 的依据（本机实测）：分析本身 5µs/命令（它自己的 --bench：20000 条 112ms），
+ * 起进程约 2ms，本机 4.7 万条真实命令里 p99.9 是 8KB、最大 22KB，对应几毫秒；
+ * 病态输入也只是：1MB heredoc 18ms、5000 段串联 11ms。100ms 是它们的十几倍。
+ * 真正的收益在坏情况：二进制卡住时，每条命令的阻塞从 2s 降到 100ms。
+ */
+export const DEFAULT_TIMEOUT_MS = 100;
 /** 我们验证过的 v0.1 契约版本 */
 export const EXPECTED_SCHEMA = 1;
 
@@ -174,12 +182,17 @@ const MAX_CACHE = 200;
 const cache = new Map<string, PreshellOutcome>();
 
 /**
- * 熔断：连续失败到阈值就不再试。
+ * 熔断：失败到阈值就不再试。
  *
- * 卡住或崩掉的二进制不能把每次审计都拖成一个超时：连续失败 3 次就认定它本进程不可用，
- * 剩下的命令直接走保守兼底（reason 保留首次的原因）。`/reload` 或重启 pi 后重试。
+ * 分两类，因为两类失败的代价不一样：
+ *   - 确定性失败（缺件、schema 不符）：不会自愈，一次就断（但每进程只试一次）
+ *   - 瞬时失败（超时、坏 JSON、非零退出）：可能只是机器忙了一下。
+ *     超时 100ms 之后这类更容易碰上，而误熔断的代价是整个会话退回旧匹配（误报全回来），
+ *     所以要求连续 5 次。真卡死的二进制最多担误 5 × 100ms。
+ * `/reload` 或重启后重试。
  */
-export const BREAKER_THRESHOLD = 3;
+export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "schema"]);
+export const BREAKER_TRANSIENT_THRESHOLD = 5;
 let consecutiveFailures = 0;
 let breakerReason: PreshellUnavailableReason | undefined;
 
@@ -272,12 +285,14 @@ export function analyzeCommand(command: string, opts: { config?: PreshellConfig 
   }
   cache.set(key, outcome);
 
-  // 熔断计数：成功清零；失败累加，到阈值就停手
+  // 熔断计数：成功清零；确定性失败一次就断，瞬时失败要连续到阈值
   if (outcome.ok) {
     consecutiveFailures = 0;
   } else if (outcome.reason !== "disabled") {
     consecutiveFailures++;
-    if (consecutiveFailures >= BREAKER_THRESHOLD) breakerReason = outcome.reason;
+    if (BREAKER_IMMEDIATE.has(outcome.reason) || consecutiveFailures >= BREAKER_TRANSIENT_THRESHOLD) {
+      breakerReason = outcome.reason;
+    }
   }
   return outcome;
 }
