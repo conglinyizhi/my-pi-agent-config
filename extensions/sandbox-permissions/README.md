@@ -4,7 +4,7 @@
 
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
-| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄）+ worker 写入边界（写入类工具只能写 `/tmp` 或派工指定的可写根） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
+| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄；命令命中片段可供审批窗高亮）+ worker 写入边界（写入类工具只能写 `/tmp` 或派工指定的可写根） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
 | `subagent-bash-guard.ts` | worker 无 UI bash 防线：硬拒绝或生成 capability request | `pi.registerTool("bash")`（仅 PI_SUBAGENT） |
 | `gate.ts` | 启动时依赖检测；交互式 bash 审批已内聚到 `bash-guard.ts` | `pi.on("session_start")` |
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
@@ -30,7 +30,7 @@ write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SAND
 ```
 sandbox-permissions/
 ├── index.ts             # 合成入口（方案 B：真融合）
-├── guard.ts             # 敏感路径黑名单拦截
+├── guard.ts             # 敏感路径黑名单拦截（含命令命中片段的抽取，供审批窗高亮）
 ├── subagent-bash-guard.ts # worker 无 UI bash 覆盖 + capability request
 ├── guard.test.ts
 ├── yolo.ts              # /yolo 会话级沙箱墙开关（全部降零）
@@ -135,7 +135,9 @@ bash 命令
 }
 ```
 
-内置规则：`sudo` / `rm` 递归 / `chmod|chown 777` / `uv --system` / 裸 `pip install` / `python -m pip install` / `npm|npx`（强制 pnpm）/ `tsx`（强制 node 原生跑 TS，含带路径调用）。命中时返回 `matched`（命中的 token 列表），供 GUI 高亮危险点。
+内置规则：`sudo` / `rm` 递归 / `chmod|chown 777` / `uv --system` / 裸 `pip install` / `python -m pip install` / `tsx`（强制 node 原生跑 TS，含带路径调用）。命中时返回 `matched`（命中的 token 列表），供 GUI 高亮危险点。
+
+`npm`/`npx` 不在这里强制改写了（沙箱兜底）：pnpm 约定现在写在提示里——主 agent 走 `tool-checker` 的 `pnpm` hint，subagent 走 worker 系统提示（子进程 `--no-extensions`，拿不到 tool-checker）。
 
 ### venv 白名单
 
@@ -361,6 +363,20 @@ GateView.vue 的「📁 目录授权」区块在点允许/拒绝前可对多个�
 - `justification`：非空理由会展示给审批者
 - `timeout`：用户批准后整条命令链的最长执行时间（秒），不限制用户查看审批窗口的时间
 - `memoryMb`：可选正整数（MB），设置该命令进程树的内存上限；缺省 `sandbox-shell` 按默认 1GiB 执行。**需要超过默认 1GiB 的命令必须由模型给出具体 MB 数值**（上限 `MAX_MEMORY_MB=32768`，更大拒绝）。数值会随审批标题展示给用户，并经用户同意后注入 `PI_SANDBOX_MEMORY_MB`。
+
+### 敏感路径：硬拒 or 问人
+
+敏感路径黑名单（`extensions.toml` 的 `[sandbox-guard]`）默认是硬拒——但同一条规则在不同通道里的出路不一样：
+
+| 通道 | 命中敏感路径时 |
+|------|----------------|
+| 普通 bash / `bash_background` / worker bash | 硬拒，不给人工放行口子（判定层 `checkCommand` 的默认 `sensitivePaths="block"`） |
+| `sandbox-allow` | 不在判定层拒，转成这次人工审批（`sensitivePaths="ask"`） |
+
+理由：升权工具存在的意义就是让用户对「越界但正当」的操作拍板，而 `.env` 这类项目配置文件正是最常被黑名单误伤的一类；但它仍不能静默放行，所以降为「要人点头」。命中项分两条路走：
+
+- **审批展示**：`toGuiPayload` 把它合成一条 `name=sensitive-path` 的规则并进 `rules`（审批窗已有「命中 N 项 + 高亮命中片段」的渲染），TUI 回退标题另行写明命中的模式。命中片段由 `matchBlacklistHits` 从命令里抠出来，GUI 靠它定位高亮
+- **目录授权**：`auditForPathGrants` 只命中敏感路径时把 `allow` 折回 `true`，用户对某个可写目录的长期/本次授权照旧可用（风险在目标路径，不在命令写法）；命令真命中规则时仍原样传下去，信任类动作照旧跳过
 
 ## 内存限制（内存墙）
 
