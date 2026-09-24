@@ -221,6 +221,8 @@ export type HubQuestionOutcome =
 export interface HubQuestionOptions {
 	socketPath?: string;
 	signal?: AbortSignal;
+	/** 立刻推卡，不等适配器的 card-delay（详见 ApprovalRequestBase.urgent） */
+	urgent?: boolean;
 }
 
 /**
@@ -318,7 +320,7 @@ export async function askHubQuestion(
 			requestId,
 			sessionId: ctx.sessionManager?.getSessionId?.() ?? "",
 			kind: "question",
-			payload: { questions },
+			payload: { questions, ...(opts.urgent ? { urgent: true } : {}) },
 			// 提问形状与本机闸门窗对不上：不声明的话 hub 会拉起一个
 			// 空白的「危险命令审计」窗，用户看不懂也没法操作
 			noLocalGUI: true,

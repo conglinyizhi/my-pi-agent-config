@@ -52,6 +52,14 @@ func (q *cardQueue) push(requestID string, send func()) {
 	q.mu.Unlock()
 }
 
+// pushNow 立刻发卡：先撤掉同 id 的待发条目（免得一张卡发两遍），再直接 send。
+// 用在发起方声明 urgent 的场景：本地没人能答，或者这件事本来就要人马上到场，
+// 那种时候 card-delay 只会担误事。
+func (q *cardQueue) pushNow(requestID string, send func()) {
+	q.cancel(requestID)
+	send()
+}
+
 // cancel 撤单，返回有没有撤到。结算（用户答了、超时、abort）都走这条。
 func (q *cardQueue) cancel(requestID string) bool {
 	q.mu.Lock()
@@ -78,6 +86,13 @@ func (q *cardQueue) claim(requestID string, item *queuedCard) bool {
 	}
 	delete(q.items, requestID)
 	return true
+}
+
+// payloadFlag 读 payload 里的布尔标记。缺省、类型不对、或显式 false 都当没开：
+// 这类开关宁可不生效，也不要因为一个脏值把卡强行推出去。
+func payloadFlag(payload map[string]any, key string) bool {
+	v, ok := payload[key].(bool)
+	return ok && v
 }
 
 // askExpired 判断这条 ask 的有效期是不是已经过去了。

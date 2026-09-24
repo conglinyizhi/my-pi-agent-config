@@ -39,6 +39,12 @@ export interface ApprovalDecision {
 
 interface ApprovalRequestBase {
 	signal?: AbortSignal;
+	/**
+	 * 立刻推到远程（IM 卡）不走适配器的默认延迟。
+	 * 默认延迟是为了「人就在屏幕前，本地已经答了」的情形省一次推送；
+	 * 当发起方知道本地没人能答（或这件事本来就要人马上到场）时，延迟只会担误事。
+	 */
+	urgent?: boolean;
 }
 
 export interface AuditApprovalRequest extends ApprovalRequestBase {
@@ -156,6 +162,12 @@ export function normalizeApprovalComment(comment: unknown): string | undefined {
 }
 
 export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> {
+	const payload = buildKindPayload(request);
+	// urgent 随 payload 下发：适配器据此跳过度延迟（见 hub/adapters/feishu/main.go 的 onAskEvent）
+	return request.urgent ? { ...payload, urgent: true } : payload;
+}
+
+function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {
 	if (request.kind === "audit") {
 		return {
 			kind: "audit",

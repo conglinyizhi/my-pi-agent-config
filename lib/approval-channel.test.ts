@@ -300,6 +300,17 @@ describe("sandbox-allow 的敏感路径命中", () => {
 		assert.deepEqual(names, ["dynamic-construct", "sensitive-path"]);
 	});
 
+	// 适配器靠 payload.urgent 跳过 card-delay；不带就不能凭空多出这个字段
+	it("urgent 随 payload 下发，不设时不下发", () => {
+		assert.equal(toGuiPayload(request).urgent, undefined);
+		assert.equal(toGuiPayload({ ...request, urgent: true }).urgent, true);
+		// 其余字段照旧（包装不能丢东西）
+		const payload = toGuiPayload({ ...request, urgent: true });
+		assert.equal(payload.kind, "sandbox-allow");
+		assert.equal(payload.permission, "write-paths");
+		assert.deepEqual(payload.writePaths, ["/work/project"]);
+	});
+
 	it("TUI 回退标题写明命中的敏感路径", async () => {
 		let seenTitle = "";
 		const channel = createGuiTuiApprovalChannel({

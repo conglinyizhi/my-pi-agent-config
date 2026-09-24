@@ -94,6 +94,53 @@ func TestCardQueueKeepsLatestOnDuplicate(t *testing.T) {
 	}
 }
 
+// ── pushNow / payloadFlag：urgent 跳过 card-delay ───────────────────────
+
+func TestCardQueuePushNowIgnoresDelay(t *testing.T) {
+	q := newCardQueue(time.Hour)
+	fired := make(chan struct{}, 1)
+	q.pushNow("ask-urgent", func() { fired <- struct{}{} })
+
+	if !waitFired(fired, 50*time.Millisecond) {
+		t.Fatal("urgent 应当立刻发卡，不受 delay 影响")
+	}
+	if n := len(q.items); n != 0 {
+		t.Fatalf("立刻发出的这条不该留在队列里，剩余 %d 条", n)
+	}
+}
+
+// 同一 id 先入队、后来变成 urgent：旧的定时器必须作废，否则一张卡发两遍
+func TestCardQueuePushNowCancelsPending(t *testing.T) {
+	q := newCardQueue(40 * time.Millisecond)
+	var queued, urgent atomic.Int32
+	q.push("ask-1", func() { queued.Add(1) })
+	q.pushNow("ask-1", func() { urgent.Add(1) })
+
+	if urgent.Load() != 1 {
+		t.Fatalf("urgent 那条应当立刻发一次，实际 %d", urgent.Load())
+	}
+	time.Sleep(120 * time.Millisecond)
+	if n := queued.Load(); n != 0 {
+		t.Fatalf("被 urgent 顶掉的延迟条目不该再发，实际发了 %d 次", n)
+	}
+}
+
+func TestPayloadFlag(t *testing.T) {
+	if !payloadFlag(map[string]any{"urgent": true}, "urgent") {
+		t.Fatal("显式 true 应当算开启")
+	}
+	for name, payload := range map[string]map[string]any{
+		"缺字段":     {},
+		"显式 false": {"urgent": false},
+		"类型不对":    {"urgent": "true"},
+		"null":     {"urgent": nil},
+	} {
+		if payloadFlag(payload, "urgent") {
+			t.Fatalf("%s 不该算开启（宁可不推，也不能把脏值当开启）", name)
+		}
+	}
+}
+
 // ── askExpired：到点时已经过期的卡不发 ─────────────────────────────────
 
 func TestAskExpired(t *testing.T) {

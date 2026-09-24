@@ -70,6 +70,12 @@ const AskQuestionParams = Type.Object({
     minItems: 1,
     description: "One or more questions to ask the user",
   }),
+  urgent: Type.Optional(
+    Type.Boolean({
+      description:
+        "Push the remote (IM) card immediately instead of after the adapter's default delay. Use when the local window cannot be attended, or when the answer is time-critical.",
+    }),
+  ),
 });
 
 type AskQuestionInput = Static<typeof AskQuestionParams>;
@@ -168,7 +174,7 @@ async function handleAskQuestion(
   // 只走 hub 会有一个很难受的后果：用户就坐在终端前，会话却被一个他看不见的
   // 提问阻塞住，干等手机上的卡。所以 hub 发出去之后不 await，本地 TUI 照常开。
   const abort = new AbortController();
-  const hubPromise = (deps.askHub ?? askHubQuestion)(questions, ctx, { signal: abort.signal });
+  const hubPromise = (deps.askHub ?? askHubQuestion)(questions, ctx, { signal: abort.signal, urgent: params.urgent === true });
 
   if (ctx.mode !== "tui") {
     // 没有本地 UI（RPC 等）：只能靠 hub

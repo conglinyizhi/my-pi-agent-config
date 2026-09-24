@@ -118,8 +118,15 @@ func (a *adapter) consume(key string, handle func(map[string]any)) {
 // 压这一段的理由：用户就在屏幕前时，本机闸门窗（审批）或本地 TUI（提问）已经把决策
 // 拿走了，这张卡既多余又费一次飞书 API。到点前结算的话，settled 广播会来撤单；
 // 撤不到（卡已经发了）也没关系，照常走改卡那条路。
+//
+// 例外：发起方在 payload 里标了 urgent（本地没人能答，或这件事要人马上到场），
+// 就不压这一段，直接推。
 func (a *adapter) onAskEvent(env envelope) {
 	if env.Event != "ask" || env.RequestID == "" {
+		return
+	}
+	if payloadFlag(env.Payload, "urgent") {
+		a.delay.pushNow(env.RequestID, func() { a.pushCards(env) })
 		return
 	}
 	a.delay.push(env.RequestID, func() { a.pushCards(env) })

@@ -157,6 +157,53 @@ describe("ask_question 走 hub", () => {
 		}
 	});
 
+	it("urgent：立刻推远程的标记随 ask 下发（适配器据此跳过 card-delay）", async () => {
+		// 用容器装「收到的 ask」：闭包里赋值、外面读，直接 let 变量会被 TS 的控制流收窄成 never
+		interface AskMsg { payload?: { urgent?: unknown; questions?: unknown } }
+		const seen: { first?: AskMsg; second?: AskMsg } = {};
+		const answerWith = (value: string) => (msg: { requestId?: string }, conn: { write(c: string): void }) => {
+			conn.write(`${JSON.stringify({ v: 1, type: "ask-ok", requestId: msg.requestId, adapters: 1 })}\n`);
+			conn.write(
+				`${JSON.stringify({
+					v: 1,
+					type: "settled",
+					requestId: msg.requestId,
+					action: "allow",
+					by: "adapter",
+					answers: [{ id: "q1", value, label: "用 git worktree 隔离" }],
+				})}\n`,
+			);
+		};
+		const hub = await fakeHub("urgent.sock", (msg, conn) => {
+			hello(msg, conn);
+			if (msg.type !== "ask") return;
+			seen.first = msg as AskMsg;
+			answerWith("worktree")(msg, conn);
+		});
+		try {
+			const { ctx } = fakeCtx({ hang: true });
+			await withSocket(hub.sock, () => askQuestion.execute("c1", { ...PARAMS, urgent: true }, undefined, undefined, ctx));
+			assert.equal(seen.first?.payload?.urgent, true);
+			assert.ok(Array.isArray(seen.first?.payload?.questions), "urgent 不能把问题正文替掉");
+
+			const hub2 = await fakeHub("not-urgent.sock", (msg, conn) => {
+				hello(msg, conn);
+				if (msg.type !== "ask") return;
+				seen.second = msg as AskMsg;
+				answerWith("worktree")(msg, conn);
+			});
+			try {
+				await withSocket(hub2.sock, () =>
+					askQuestion.execute("c2", PARAMS, undefined, undefined, fakeCtx({ hang: true }).ctx));
+				assert.equal(seen.second?.payload?.urgent, undefined, "不声明 urgent 就不该多出字段（否则适配器会一律秒推）");
+			} finally {
+				await hub2.close();
+			}
+		} finally {
+			await hub.close();
+		}
+	});
+
 	it("用户自由输入：wasCustom 为真，不带序号", async () => {
 		const hub = await fakeHub("custom.sock", (msg, conn) => {
 			hello(msg, conn);
