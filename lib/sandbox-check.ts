@@ -17,7 +17,7 @@
 // createLocalBashOperations（settings.shellPath → sandbox-shell.mjs → Landlock）。
 // 本库不管执行通道，只管「要不要放行」。两者叠在 bash-guard 的 execute 里。
 
-import { commandBlocked, loadBlacklist } from "../extensions/sandbox-permissions/guard.ts";
+import { loadBlacklist, matchBlacklistHits } from "../extensions/sandbox-permissions/guard.ts";
 import {
   auditCommand,
   extractTmpRedirectTargets,
@@ -39,6 +39,22 @@ export interface SandboxCheckContext {
 	cwd: string;
 	/** allowDirs 缓存；缺省实时读 sandbox-paths.json */
 	allowDirs?: string[];
+	/**
+	 * 命中敏感路径黑名单时的处置：
+	 *   "block"（默认）→ 硬拒，不给人工放行的口子（普通 bash / worker bash 走这条）
+	 *   "ask"        → 不在判定层拒绝，由调用方弹审批问人（sandbox-allow 走这条）
+	 * 升权工具存在的意义就是让用户对「越界但正当」的操作拍板，而 .env 这类项目配置
+	 * 文件正是最常被黑名单误伤的一类；但它仍不能被静默放行，所以降为「要人点头」。
+	 */
+	sensitivePaths?: "block" | "ask";
+}
+
+/** 敏感路径黑名单命中项（供审批窗展示与命令高亮） */
+export interface SensitivePathHit {
+	/** 配置里写的那条模式原文（如 ".env" / "~/.ssh/**"） */
+	pattern: string;
+	/** 命令里实际命中的片段（GUI 高亮用；可能是 /path/.env 这样带路径段的写法） */
+	token: string;
 }
 
 export interface SandboxCheckResult {
@@ -50,6 +66,12 @@ export interface SandboxCheckResult {
 	rules?: TokenRule[];
 	/** audit 明细（供需要细分展示的调用方） */
 	audit?: AuditResult;
+	/**
+	 * 敏感路径黑名单命中（sensitivePaths="ask" 时才填充）。
+	 * 不并进 rules：rules 是「命令写法有风险」的语义，会连带影响目录长期授权（grantSafe）；
+	 * 黑名单命中是「目标路径敏感」，两者不是一回事。
+	 */
+	sensitive?: SensitivePathHit[];
 }
 
 /** 读取当前生效的黑名单规则（含动态 blockDirs），供命令前缀/路径判定 */
@@ -68,10 +90,17 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	}
 
 	// 1. 敏感路径黑名单（guard：防恶意 skill 读浏览器密码/密钥/凭据）
-	const rules = loadBlacklist();
-	const hit = rules.find((r) => commandBlocked(command, [r]));
-	if (hit) {
-		return { allow: false, reason: `[sandbox-guard] bash 命中敏感路径黑名单（${hit.pattern}）：${command.slice(0, 120)}` };
+	const hits = matchBlacklistHits(command, loadBlacklist());
+	if (hits.length > 0) {
+		const patterns = [...new Set(hits.map((hit) => hit.pattern))].join("、");
+		if (ctx.sensitivePaths === "ask") {
+			return {
+				allow: false,
+				reason: `[sandbox-guard] 命令引用了敏感路径黑名单（${patterns}）：默认拒绝，本次需人工确认。`,
+				sensitive: hits,
+			};
+		}
+		return { allow: false, reason: `[sandbox-guard] bash 命中敏感路径黑名单（${hits[0].pattern}）：${command.slice(0, 120)}` };
 	}
 
 	// 2. 内联脚本拦截（inline-script：python/node 裸脚本）

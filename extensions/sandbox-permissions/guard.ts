@@ -158,18 +158,51 @@ export function pathBlocked(path: string, cwd: string, rules: CompiledRule[]): b
   return false;
 }
 
-/** bash 命令中是否引用黑名单路径（保守前缀匹配；含 ~ 形式与展开形式） */
-export function commandBlocked(command: string, rules: CompiledRule[]): boolean {
-  if (!command) return false;
+/** 命令里命中的黑名单条目 */
+export interface BlacklistCommandHit {
+  /** 配置里写的那条模式原文（如 ".env" / "~/.ssh/**"） */
+  pattern: string;
+  /**
+   * 命令里实际命中的片段。
+   *
+   * 返回命中串而不只是 true，是因为审批窗要把命中的那一段高亮给人看：
+   * 光说「命中 .env 黑名单」不告诉人命中在命令的哪个位置。
+   */
+  token: string;
+}
+
+/**
+ * 命令里命中的黑名单条目（保守前缀匹配；含 ~ 形式与展开形式）。
+ *
+ * 一次收全部命中而不是「命中就返回」：同一道命令可能同时踩 .env 与 ~/.ssh，
+ * 审批窗要把几条都列出来（patterns 去重由调用方做）。
+ */
+export function matchBlacklistHits(command: string, rules: CompiledRule[]): BlacklistCommandHit[] {
+  const hits: BlacklistCommandHit[] = [];
+  if (!command) return hits;
   for (const rule of rules) {
+    // 全通配模式（如 "**/.env"）编译后没有静态前缀，拿它做子串匹配会把任何带 / 的命令都算命中：直接跳过
     if (!rule.prefix) continue;
     // ~/.ssh 形式（原样）与 /home/u/.ssh（展开）
-    if (rule.tildePrefix && command.includes(rule.tildePrefix)) return true;
-    if (rule.prefix && command.includes(rule.prefix)) return true;
+    if (rule.tildePrefix && command.includes(rule.tildePrefix)) {
+      hits.push({ pattern: rule.pattern, token: rule.tildePrefix });
+      continue;
+    }
+    if (command.includes(rule.prefix)) {
+      hits.push({ pattern: rule.pattern, token: rule.prefix });
+      continue;
+    }
     // 项目级 .env（无 ~）：匹配路径段
-    if (!rule.prefix.startsWith("/") && command.includes("/" + rule.prefix)) return true;
+    if (!rule.prefix.startsWith("/") && command.includes("/" + rule.prefix)) {
+      hits.push({ pattern: rule.pattern, token: "/" + rule.prefix });
+    }
   }
-  return false;
+  return hits;
+}
+
+/** bash 命令中是否引用黑名单路径（保守前缀匹配；含 ~ 形式与展开形式） */
+export function commandBlocked(command: string, rules: CompiledRule[]): boolean {
+  return matchBlacklistHits(command, rules).length > 0;
 }
 
 function blockedReason(kind: string, target: string, rule: CompiledRule): string {

@@ -8,6 +8,7 @@ import { after, afterEach, describe, it } from "node:test";
 import { Value } from "typebox/value";
 import {
 	applyPathActions,
+	auditForPathGrants,
 	builtinWritableRoots,
 	resolveEditedWritePaths,
 	SANDBOX_ALLOW_PARAMETERS,
@@ -168,7 +169,7 @@ describe("sandbox-allow 一次审批应用多条目录动作", () => {
 			],
 			["/opt/new", "/var/session", "/var/block", "/opt/old"],
 			"/work/project",
-			{ allow: false, rules: [{ name: "rm-recursive" }] },
+			{ allow: false, rules: [{ name: "rm-recursive", tip: "递归删除", matched: [] }] },
 		);
 		assert.deepEqual(loadSandboxPaths(), { allowDirs: [], blockDirs: ["/var/block"] });
 		assert.deepEqual(getSessionAccessSnapshot("session-a"), { writeDirs: [], trustedDirs: [] });
@@ -350,7 +351,29 @@ describe("sandbox-allow 响应里编辑后的执行范围", () => {
 			editedWritePaths: decision.writePaths,
 			homeDir: "/home/tester",
 		});
-		assert.deepEqual(result.writePaths, ["/opt"]);
+			assert.deepEqual(result.writePaths, ["/opt"]);
 		assert.deepEqual(loadSandboxPaths(), { allowDirs: ["/opt"], blockDirs: [] });
+	});
+});
+
+describe("auditForPathGrants（敏感路径不影响目录授权）", () => {
+	it("只命中敏感路径：目录授权照旧可用", () => {
+		const audit = { allow: false, sensitive: [{ pattern: ".env", token: ".env" }] };
+		assert.equal(auditForPathGrants(audit)?.allow, true);
+	});
+
+	it("同时命中规则：原样传下去，信任类动作仍被跳过", () => {
+		const audit = {
+			allow: false,
+			sensitive: [{ pattern: ".env", token: ".env" }],
+			rules: [{ name: "dynamic-construct", tip: "动态构造", matched: [] }],
+		};
+		const handed = auditForPathGrants(audit);
+		assert.equal(handed?.allow, false);
+		assert.equal(handed?.rules?.length, 1);
+	});
+
+	it("无审计（yolo / 未审）时保持 undefined", () => {
+		assert.equal(auditForPathGrants(undefined), undefined);
 	});
 });

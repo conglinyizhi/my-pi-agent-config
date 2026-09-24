@@ -68,6 +68,12 @@ export interface SandboxAllowApprovalRequest extends ApprovalRequestBase {
 	/** GUI 用它挡家目录根；缺省由 toGuiPayload 填本机 homedir()。 */
 	homeDir?: string;
 	rules?: unknown[];
+	/**
+	 * 敏感路径黑名单命中项（.env 之类的“要人点头”而非“直接拒”）。
+	 * 与 rules 分开：rules 是「命令写法有风险」的语义，会连带影响目录长期授权；
+	 * 这里是「目标路径敏感」。（展示上仍合入 GUI 的 rules 列表，不另开一栏。）
+	 */
+	sensitive?: Array<{ pattern: string; token: string }>;
 }
 
 export interface CapabilityApprovalRequest extends ApprovalRequestBase {
@@ -175,7 +181,9 @@ export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> 
 			workspaceRoot: request.workspaceRoot,
 			// 家目录根（GUI 护栅用）：请求没带就填本机值，payload 里始终是 string
 			homeDir: request.homeDir ?? homedir(),
-			rules: request.rules,
+			// 敏感路径合成一条规则条目：审批窗已经有「命中 N 项 + 高亮命中片段」的渲染，
+			// 不为了这件事在前端另开一栏（也省一次 GUI 重编）。
+			rules: [...((request.rules as unknown[]) ?? []), ...sensitiveRules(request.sensitive)],
 		};
 	}
 	return {
@@ -208,6 +216,18 @@ export function parseGuiDecision(data: {
 		...(pathActions && pathActions.length > 0 ? { pathActions } : {}),
 		...(writePaths && writePaths.length > 0 ? { writePaths } : {}),
 	};
+}
+
+/** 敏感路径命中 → 审批窗的规则条目（name/tip/matched 三项是前端已经在读的字段） */
+export function sensitiveRules(
+	sensitive: Array<{ pattern: string; token: string }> | undefined,
+): Array<{ name: string; tip: string; matched: string[]; autoReject: boolean }> {
+	return (sensitive ?? []).map((hit) => ({
+		name: "sensitive-path",
+		tip: `命令引用了敏感路径黑名单（${hit.pattern}）：默认拒绝，升权需要人工确认`,
+		matched: [hit.token],
+		autoReject: false,
+	}));
 }
 
 function tuiFallback(
@@ -262,6 +282,9 @@ function tuiTitle(request: ApprovalRequest, hint = ""): string {
 		return `⚠️ 命令需确认：${under}\n\n  ${request.reason ?? "命中风险规则"}${reviewNote(request.review)}\n\n是否允许执行？`;
 	}
 	if (request.kind === "sandbox-allow") {
+		const sensitiveNote = request.sensitive?.length
+			? `\n\n⚠️ 命令引用了敏感路径：${[...new Set(request.sensitive.map((h) => h.pattern))].join("、")}\n（默认拒绝，本次是人工放行口子）`
+			: "";
 		return `${head}${buildApprovalTitle(
 			request.command,
 			request.permission,
@@ -269,7 +292,7 @@ function tuiTitle(request: ApprovalRequest, hint = ""): string {
 			request.justification,
 			request.timeout,
 			request.memoryMb,
-		)}`;
+		)}${sensitiveNote}`;
 	}
 	return `⚠️ subagent 请求额外能力：${request.capability}${under}\n\n${request.scope ?? ""}\n${request.requestReason}${reviewNote(request.review)}\n\n命令：${request.command}`;
 }

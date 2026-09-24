@@ -209,6 +209,19 @@ export function applyPathActions(
 	return { writePaths: [...new Set([...scope, ...extraRoots])] };
 }
 
+/**
+ * 目录授权护栅看到的审计结果。
+ *
+ * 只命中敏感路径时把 allow 折回 true：`checkCommand` 为把控制权交给审批窗会报 allow=false，
+ * 但风险在「目标路径敏感」而不在命令写法，不该连带否掉用户对某个可写目录的长期/本次授权。
+ * 命令写法真有问题（命中规则）时原样传下去，信任类动作照旧跳过。
+ */
+export function auditForPathGrants(audit: SandboxCheckResult | undefined): SandboxCheckResult | undefined {
+	if (!audit) return undefined;
+	if ((audit.sensitive?.length ?? 0) > 0 && (audit.rules?.length ?? 0) === 0) return { ...audit, allow: true };
+	return audit;
+}
+
 /** 通过审批通道问人（默认 GUI→TUI，kind=sandbox-allow） */
 export interface SandboxAllowDependencies {
 	/** 测试或 IM 注入整条通道；优先于 runGui / selectApproval。 */
@@ -229,6 +242,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			"A full-access request cancels the file-system sandbox for this command; write-paths keeps the sandbox and adds only the listed writable roots.",
 			"Non-trusted requests require approval and apply only to this command. A request skips approval when every requested write path is covered by any trust root (persistent allowDirs, session-trusted roots, or session-write roots); the roots may be mixed.",
 			"Prefer write-paths with the smallest necessary writable roots, declared in paths. The tool does not parse directories from command. Never use full-access merely because a write failed if a directory can be named.",
+			"A command that references a sensitive path (e.g. .env, ~/.ssh) is not auto-rejected: it goes to the user for explicit approval, and the approval window highlights the matched fragment. Still worth asking when the task legitimately needs that file.",
 			"Always supply a non-empty one-sentence justification, shown to the user for consent.",
 			"timeout is the maximum execution time after approval, in seconds; it does not limit the user's approval time."
 		].join(" "),
@@ -239,6 +253,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			"full-access 会完全取消文件系统沙箱，只在无法合理限定写入根时使用；它仍不改变当前用户的操作系统身份",
 			"所有 bash 命令默认有 1GiB 内存上限；若命令可能超过（如重型构建/测试），必须用 memoryMb 给出**具体 MB 数值**，上限 32768 MB，更大会被拒绝",
 			"长期 allowDirs / 本 session 信任根 / 本 session 可写根命中时都可免重复审批；请求的多个路径可分别命中不同档位（混合覆盖即免审）",
+			"命令引用敏感路径（如 .env / ~/.ssh）时不会被硬拒：会转成人工审批并在窗口里标出命中的那一段。正当需要就照常申请，但别用改写变量、拼路径这类手法去躲审批窗",
 			"timeout 是获批后整条 shell 命令链的最长执行时间（秒），不限制用户审批等待时间"
 		],
 		// OpenAI function schema 要求根节点是 object；条件字段由描述与运行时校验约束。
@@ -257,13 +272,23 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			// sandbox-allow 只改变文件系统沙箱范围，不绕过命令安全检查。
 			// yolo：整面墙已降零，跳过审计（不重复拦截）与同意门（直接放行）。
 			const yolo = yoloEnabled();
-			const audit = yolo ? undefined : checkCommand(command as string, { cwd });
+			// sensitivePaths="ask"：命令引用敏感路径（.env 等）时不在判定层硬拒，
+			// 而是走下面的审批门问人。普通 bash 仍硬拒（那边没有同意出口）。
+			const audit = yolo ? undefined : checkCommand(command as string, { cwd, sensitivePaths: "ask" });
+			const sensitive = audit?.sensitive ?? [];
 			if (!yolo && audit && !audit.allow && audit.rules && audit.rules.length > 0 && audit.rules.every((rule) => rule.autoReject)) {
 				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
 			}
-			if (!yolo && audit && !audit.allow && !audit.rules?.length) {
+			// 无规则且无敏感命中：内联脚本这类判定层拦截不归审批管（审了也没法安全执行）
+			if (!yolo && audit && !audit.allow && !audit.rules?.length && sensitive.length === 0) {
 				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };
 			}
+			/**
+			 * 交给目录授权护栅的审计结果。
+			 * 只命中敏感路径时把 allow 折回 true：风险在「目标路径敏感」，不在命令写法，
+			 * 不该连带否掉用户对某个可写目录的长期/本次授权。
+			 */
+			const auditForGrants = auditForPathGrants(audit);
 
 			// 2. write-paths 必须给出至少一个可写根
 			let writePaths: string[] = [];
@@ -319,10 +344,12 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					workspaceRoot: cwd ?? process.cwd(),
 					homeDir: homedir(),
 					rules: audit?.rules ?? [],
+					sensitive,
 					signal,
 				}, ctx);
 				// 目录草稿与「编辑后的执行范围」都在后端重新过一遍护栅：GUI 拦过不算数。
-				writePaths = applyPathActions(asked.pathActions as PathAction[] | undefined, writePaths, cwd, audit, {
+				// 只命中敏感路径时，命令写法本身没风险：允许用户把目录授权给这一段。
+				writePaths = applyPathActions(asked.pathActions as PathAction[] | undefined, writePaths, cwd, auditForGrants, {
 					editedWritePaths: asked.writePaths,
 					homeDir: homedir(),
 				}).writePaths;
@@ -339,6 +366,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					permission,
 					paths: writePaths,
 					justification,
+					...(sensitive.length > 0 ? { sensitivePaths: sensitive.map((hit) => hit.pattern) } : {}),
 					...(memoryMb !== undefined ? { memoryMb: memoryMb as number } : {}),
 					outcome: "denied",
 					...(userComment ? { comment: userComment } : {}),
@@ -356,6 +384,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 				permission,
 				paths: writePaths,
 				justification,
+				...(sensitive.length > 0 ? { sensitivePaths: sensitive.map((hit) => hit.pattern) } : {}),
 				...(memoryMb !== undefined ? { memoryMb: memoryMb as number } : {}),
 				outcome: whitelisted ? "approved-whitelist" : "approved",
 				...(userComment ? { comment: userComment } : {}),

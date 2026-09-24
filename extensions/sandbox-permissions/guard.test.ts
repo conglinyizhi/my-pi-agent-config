@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
-import { loadBlacklist, pathBlocked, commandBlocked, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, targetPathOf } from "./guard.ts";
+import { loadBlacklist, pathBlocked, commandBlocked, matchBlacklistHits, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, targetPathOf } from "./guard.ts";
 import guardExtension from "./guard.ts";
 import { setYolo } from "./yolo.ts";
 import { mkdtempSync, mkdirSync } from "node:fs";
@@ -66,6 +66,26 @@ describe("commandBlocked（bash 命令拦截）", () => {
 
   it(".env 路径段命中", () => {
     assert.equal(commandBlocked("cat /work/project/.env", rules), true);
+  });
+
+  it("matchBlacklistHits 给出命中片段（审批窗要拿它高亮）", () => {
+    // 黑名单里 .env 这条自身就是前缀：命中片段就是它本身
+    assert.deepEqual(matchBlacklistHits("ls -la && cat /work/project/.env", rules), [
+      { pattern: ".env", token: ".env" },
+    ]);
+    // ~ 形式的规则：命中片段取展开后的绝对前缀
+    assert.deepEqual(matchBlacklistHits(`cat ${homedir()}/.ssh/id_rsa`, rules), [
+      { pattern: "~/.ssh/**", token: `${homedir()}/.ssh` },
+    ]);
+    assert.deepEqual(matchBlacklistHits("ls -la", rules), []);
+  });
+
+  // 全通配模式（**/.env）编译后没有静态前缀；若拿它做子串匹配，任何带 / 的命令都会被误判成命中
+  it("无静态前缀的模式不参与命令匹配", () => {
+    const wildcard = loadBlacklist().filter((rule) => rule.prefix.length === 0);
+    assert.ok(wildcard.length > 0, "默认黑名单里应有 **/.env 这类全通配模式");
+    assert.deepEqual(matchBlacklistHits("ls /work/project", wildcard), []);
+    assert.equal(commandBlocked("ls /work/project", rules), false);
   });
 });
 

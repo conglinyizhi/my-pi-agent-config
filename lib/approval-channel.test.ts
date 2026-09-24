@@ -9,6 +9,7 @@ import {
 	normalizeApprovalComment,
 	resolveApprovalChannel,
 	setApprovalChannel,
+	toGuiPayload,
 	type ApprovalRequest,
 } from "./approval-channel.ts";
 import { resetGuiFallbackNotices, type GuiDiagnosis } from "./gui-diagnosis.ts";
@@ -264,5 +265,54 @@ describe("createGuiTuiApprovalChannel", () => {
 		await channel({ ...auditRequest, signal: controller.signal }, ctx({ ui: true, notices }));
 
 		assert.deepEqual(notices, []);
+	});
+});
+
+describe("sandbox-allow 的敏感路径命中", () => {
+	const request: ApprovalRequest = {
+		kind: "sandbox-allow",
+		command: "cat /work/project/.env | wc -l",
+		permission: "write-paths",
+		writePaths: ["/work/project"],
+		justification: "统计配置项条数",
+		candidatePaths: ["/work/project"],
+		persistentRoots: [],
+		sessionWriteRoots: [],
+		sessionTrustedRoots: [],
+		builtinRoots: [],
+		workspaceRoot: "/work/project",
+		sensitive: [{ pattern: ".env", token: ".env" }],
+	};
+
+	it("合成规则条目并入 GUI payload 的 rules（前端不另开一栏）", () => {
+		const payload = toGuiPayload(request);
+		const rules = payload.rules as Array<{ name: string; tip: string; matched: string[]; autoReject: boolean }>;
+		assert.equal(rules.length, 1);
+		assert.equal(rules[0].name, "sensitive-path");
+		assert.deepEqual(rules[0].matched, [".env"]);
+		assert.match(rules[0].tip, /\.env/);
+		assert.equal(rules[0].autoReject, false);
+	});
+
+	it("原有规则不被覆盖（敏感命中是追加而不是替换）", () => {
+		const payload = toGuiPayload({ ...request, rules: [{ name: "dynamic-construct" }] });
+		const names = (payload.rules as Array<{ name: string }>).map((r) => r.name);
+		assert.deepEqual(names, ["dynamic-construct", "sensitive-path"]);
+	});
+
+	it("TUI 回退标题写明命中的敏感路径", async () => {
+		let seenTitle = "";
+		const channel = createGuiTuiApprovalChannel({
+			diagnosis: diag(),
+			runGui: async () => ({ ok: false, reason: "unavailable" }),
+			selectApproval: async (title) => {
+				seenTitle = title;
+				return "❌ 拒绝";
+			},
+		});
+		await channel(request, ctx({ hasUI: true }));
+		assert.match(seenTitle, /敏感路径/);
+		assert.match(seenTitle, /\.env/);
+		assert.match(seenTitle, /仅此一次/);
 	});
 });

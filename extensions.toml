@@ -15,6 +15,11 @@
 # ─────────────────────────────────────────────────────────────
 # sandbox-permissions：敏感路径黑名单（原 sandbox-blacklist.json）
 # 防恶意 skill 诱导模型读取敏感文件（浏览器密码/钱包密钥/API key）并外传
+#
+# 读 / 写 / 普通 bash / worker bash 命中即拒；唯一例外是 sandbox-allow 升权工具：
+# 它会把命中转成人工审批（并在窗口里标出命中的那一段），而不是直接拒。
+# 理由：.env 这类项目配置常被误伤，而升权工具本来就是让人对越界操作拍板的地方；
+# 但它仍不能静默放行。细节见 extensions/sandbox-permissions/README.md
 # ─────────────────────────────────────────────────────────────
 [sandbox-guard]
 blacklist = [
