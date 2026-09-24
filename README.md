@@ -113,6 +113,35 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - 两个数在 `extensions.toml` 的 `[subagent-memory]`：`reserveMb`（留给桌面与主 agent，缺省 2048）与 `planMb`（每个 worker 的典型占用计划值，缺省 512）。**这是计划值，不是命令墙**：墙的语义与 1GiB 默认都不动，把墙调低只会让本来能跑的命令变成 137，而且模型看不到原因
 - 内存紧张到不够一个计划值时仍开 1 个（一个都不开比超订更难用），并在回报里写明「内存紧张，其余排队」
 
+### 命令事实层（preshell）
+
+敏感路径判定不再拿黑名单模式对整条命令做子串匹配，而是先问事实层：
+[preshell](https://github.com/conglinyizhi/preshell) 是独立子进程的静态分析器（MoonBit，GPL-3.0-or-later，
+许可停在进程边界上），命令走 stdin、stdout 出 JSON，报出这条命令碰了哪些路径（读/写/删/网络）、
+跑了什么程序、哪里看不懂。它不做裁决，策略仍在本仓（`lib/sandbox-check.ts`）。
+
+判定分三层，各盖一个洞：
+
+| 层 | 盖的洞 | 例子 |
+|---|---|---|
+| preshell 目标 | 相对路径、带引号的路径、`cd` 后的基准 | `cd ~/.pi/agent && sed -n '610,630p' providers.toml`（旧子串匹配漏掉，实测语料里漏了 21 条） |
+| 未引号路径 token | 存在性探测这类不产生 Read 效果的用法 | `test -f .env`（preshell 对 `test` 只报 Exec） |
+| 解释器/脚本载荷退回旧匹配 | 解释器与本地脚本的命令行字符串/heredoc 里的路径 | `node <<EOF` 里 `readFileSync('凭据文件')` |
+| （事实层不可用）退整条旧匹配 | 缺二进制/超时/坏 JSON/schema 不符 | 宁可多拦，不能因为缺工具而变宽 |
+
+误伤那一侧就是这次接入的目的：引号里的字符串（`grep -rn "process.env"`）、词内片段（`env-prep.sh`）、
+模板文件名（`.env.example`）、提交信息里提到 `.env` 都不再拦。
+
+- 配置在 `extensions.toml` 的 `[preshell]`（`enabled`/`bin`/`timeoutMs`/`schema`）；二进制缺省在
+  `~/.pi/runtime/preshell`（不在 `/tmp`，重启不丢），也可用环境变量 `PRESHELL_BIN` 覆盖
+- 每次调用实测 p50 ~5ms、p95 ~8ms；同一条命令在会话内只问一次（有界缓存）
+- 事实还随命令一起交给 LLM 预审（`lib/preshell.ts` 的 `formatFacts` → `llm-review` 的 prompt）：
+  模型看到的是影响面，不再只是一条命令原文
+- 残余缺口（有意为之）：引号里的**远端**路径不再拦（`ssh host 'ls ~/.ssh'` 里的 `~/.ssh` 是远端），
+  要恢复就把 `ssh` 加进 `lib/sandbox-check.ts` 的解释器名单，代价是正当运维流程被挡
+- 复测：`node --experimental-strip-types scripts/preshell-shadow.ts --mode blacklist --n 0 --dump /tmp/x`
+  （新旧路径判定逐条对比；`--mode transitions` 是策略档位对比，报告开头会打二进制 version/schema/sha）
+
 ### 设备锁（调试设备互斥）
 
 `scripts/with-device-lock.sh` 给同一台物理设备（adb serial、串口、烧录器这类独占目标）上一把跨进程互斥锁。

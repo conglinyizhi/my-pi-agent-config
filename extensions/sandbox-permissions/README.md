@@ -4,7 +4,8 @@
 
 | 子模块 | 职责 | 注册 |
 |--------|------|------|
-| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄；命令命中片段可供审批窗高亮）+ worker 写入边界（写入类工具只能写 `/tmp` 或派工指定的可写根） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
+| `guard.ts` | 敏感路径黑名单拦截（恶意 skill 防护，防凭据外泄；命中片段供审批窗高亮）+ worker 写入边界（写入类工具只能写 `/tmp` 或派工指定的可写根） | `pi.on("tool_call"/"session_start"/"session_shutdown")` |
+| `../../lib/preshell.ts` | 命令事实层：起 preshell 子进程拿影响面（读/写/删/网络/未建模），失败一律降为「不可用」由判定层保守兼底 | 判定层内部调用 |
 | `subagent-bash-guard.ts` | worker 无 UI bash 防线：硬拒绝或生成 capability request | `pi.registerTool("bash")`（仅 PI_SUBAGENT） |
 | `gate.ts` | 启动时依赖检测；交互式 bash 审批已内聚到 `bash-guard.ts` | `pi.on("session_start")` |
 | `llm-review.ts` | gate 的 LLM 预审层（命令质量/安全审核，safe 自动放行） | gate 内部调用 |
@@ -375,8 +376,25 @@ GateView.vue 的「📁 目录授权」区块在点允许/拒绝前可对多个�
 
 理由：升权工具存在的意义就是让用户对「越界但正当」的操作拍板，而 `.env` 这类项目配置文件正是最常被黑名单误伤的一类；但它仍不能静默放行，所以降为「要人点头」。命中项分两条路走：
 
-- **审批展示**：`toGuiPayload` 把它合成一条 `name=sensitive-path` 的规则并进 `rules`（审批窗已有「命中 N 项 + 高亮命中片段」的渲染），TUI 回退标题另行写明命中的模式。命中片段由 `matchBlacklistHits` 从命令里抠出来，GUI 靠它定位高亮
+- **审批展示**：`toGuiPayload` 把它合成一条 `name=sensitive-path` 的规则并进 `rules`（审批窗已有「命中 N 项 + 高亮命中片段」的渲染），TUI 回退标题另行写明命中的模式。命中片段由路径判定层给出（见下），GUI 靠它定位高亮
 - **目录授权**：`auditForPathGrants` 只命中敏感路径时把 `allow` 折回 `true`，用户对某个可写目录的长期/本次授权照旧可用（风险在目标路径，不在命令写法）；命令真命中规则时仍原样传下去，信任类动作照旧跳过
+
+### 路径判定：三层，事实优先（`lib/sandbox-check.ts` 的 `detectSensitivePaths`）
+
+旧实现是拿黑名单模式对整条命令做子串匹配：`grep -rn "process.env"`、`env-prep.sh`、`.env.example`、
+提交信息里提到 `.env` 都会被拦（实测语料里这类误伤 17 条）；而 `cd ~/.pi/agent && sed -n '610,630p' providers.toml`
+这种相对路径却一次都没被拦（21 条）。现在改成：
+
+| 层 | 盖的洞 | via |
+|---|---|---|
+| preshell 解析出的 Read/Write/Delete 目标 | 相对路径、带引号路径、`cd` 后的基准 | `preshell` |
+| 未引号、像路径的 token | 存在性探测（`test -f x` 不产生 Read 效果） | `token` |
+| 解释器/脚本载荷退回旧子串 | `node <<EOF`、`python -c "…凭据路径…"`、`/tmp/x.sh '…'` | `interpreter` |
+| 事实层不可用（缺二进制/超时/坏 JSON/schema 不符） | 整条退回旧匹配，不因缺工具变宽 | `legacy` |
+
+`via` 会写进命中项，审计条目与审批窗能区分「哪一层报的」。解释器名单与退回规则见
+`lib/sandbox-check.ts` 的 `INTERPRETER_PROGRAMS`/`isInterpreterProgram`；事实层适配在 `lib/preshell.ts`，
+配置在 `extensions.toml` 的 `[preshell]`，影子对比用 `scripts/preshell-shadow.ts`。
 
 ## 内存限制（内存墙）
 
