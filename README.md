@@ -106,6 +106,29 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
   - **macOS**：Seatbelt（`sandbox-exec` + SBPL profile，语义对齐 Linux；Apple 已标废弃但仍可用，与 DSH 同路线）
   - **Windows**：受限令牌 + NTFS ACL runner（`CreateRestrictedToken` WRITE_RESTRICTED + workspace 目录 Write ACE，对齐 DSH windows-acl）——**已实现但未经真机验证**，默认透传，设 `PI_SANDBOX_WINDOWS=1` 显式启用（真机验证通过前保持默认安全）
 
+### 调试设备锁与派工内存闸
+
+**内存闸**——worker 的内存墙是「**每条命令**」1GiB（`scripts/sandbox-shell.mjs` 的默认，升到更大要走 `sandbox-allow` 的 `memoryMb`），而并发安全阀只数 worker 个数，两者叠起来能把 15G 的桌面机推进交换。所以派工前会读一次 `MemAvailable`，按「(可用 − 保留) ÷ 每 worker 计划值」算出本次真实并行上限，超出的 worker 照旧排队（面板显示排队），依据写进派工回报。
+
+- 两个数在 `extensions.toml` 的 `[subagent-memory]`：`reserveMb`（留给桌面与主 agent，缺省 2048）与 `planMb`（每个 worker 的典型占用计划值，缺省 512）。**这是计划值，不是命令墙**：墙的语义与 1GiB 默认都不动，把墙调低只会让本来能跑的命令变成 137，而且模型看不到原因
+- 内存紧张到不够一个计划值时仍开 1 个（一个都不开比超订更难用），并在回报里写明「内存紧张，其余排队」
+
+### 设备锁（调试设备互斥）
+
+`scripts/with-device-lock.sh` 给同一台物理设备（adb serial、串口、烧录器这类独占目标）上一把跨进程互斥锁。
+
+为什么需要：多开 pi 的各个主 agent、每批的多个 worker 都是独立进程，而 adb server 全局共享。同一个 serial 上并发 `install` / `push` / `port` / `adb tcpip` 会互相踩，症状是「命令莫名失败」或「设备状态突变」。仓库里原先没有任何跨进程锁。
+
+```bash
+with-device-lock.sh emulator-5554 -- adb -s emulator-5554 install app.apk
+with-device-lock.sh --wait 600 my-phone -- adb -s my-phone shell am force-stop com.x
+with-device-lock.sh --status emulator-5554     # 只看谁占着，不抢锁
+```
+
+- 锁是 `/tmp/pi-device-<标识>.lock` 上的 `flock`：进程被杀也会由内核释放，不会留死锁；`/tmp` 是内存盘，主 agent 与各沙箱档位都放行写
+- 拿不到锁默认等 300s 后以退出码 3 失败，并把当前持锁者（pid / 时间 / `PI_TASK_ID` / cwd / 命令）打出来，不静默降级
+- 约定写在两处：`extensions.toml` 的 tool-checker hint（主 agent 系统提示）与 worker 系统提示里的「设备边界」；人手跑设备命令不受管，所以这条得当真执行
+
 ### Skill
 
 > **手动注入策略（2026-08-16）**：除 `data-name` / `git-commit` / `which-pi-docs`
