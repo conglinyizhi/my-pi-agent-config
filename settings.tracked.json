@@ -16,5 +16,6 @@
   },
   "sandboxExempt": [],
   "shellPath": "~/.pi/agent/scripts/sandbox-shell.mjs",
-  "theme": "dark"
+  "theme": "dark",
+  "tuiMode": "fullscreen"
 }
