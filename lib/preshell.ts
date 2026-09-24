@@ -41,8 +41,12 @@ export interface PreshellReport {
     write_roots?: string[];
     uncertain?: boolean;
     cwd?: string;
+    /** 被 max_effects 截掉的条数；>0 表示这份 effects 不完整 */
+    effects_dropped?: number;
   };
   issues?: unknown[];
+  /** 被 max_issues 截掉的条数 */
+  issues_dropped?: number;
 }
 
 /** 从报告里挑出决策用得上的那几样 */
@@ -50,6 +54,13 @@ export interface PreshellFacts {
   status: string;
   /** true = 这份影响面不是封闭集合。不可读成「没报写就是不写」 */
   uncertain: boolean;
+  /**
+   * 被上限截掉的条数（工具的 max_effects / max_issues）。
+   * 真实命令里几乎撞不到（抽样 3105 条全为 0），一旦 >0 就是「这份影响面不完整」，
+   * 不能拿它当完备集合用。
+   */
+  effectsDropped: number;
+  issuesDropped: number;
   /** 命令内部 cd 过的目录：报告里的相对路径以它为基准 */
   cwd?: string;
   effects: PreshellEffect[];
@@ -161,6 +172,8 @@ export function factsFromReport(report: PreshellReport): PreshellFacts {
   return {
     status: report.status ?? "?",
     uncertain: impact.uncertain === true,
+    effectsDropped: impact.effects_dropped ?? 0,
+    issuesDropped: report.issues_dropped ?? 0,
     ...(impact.cwd ? { cwd: impact.cwd } : {}),
     effects,
     unmodeled: [

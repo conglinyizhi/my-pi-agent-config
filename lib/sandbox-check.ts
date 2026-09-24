@@ -139,6 +139,7 @@ export function isInterpreterProgram(target: string): boolean {
  *   interpreter → 解释器载荷（`node -e …` / `python -c …` / 交给解释器的 heredoc 正文）：
  *                   preshell 不建模这类程序，引号里的路径既没效果也不在未引号 token 里
  *   事实层不可用 → 整条退回旧匹配（宁可多拦，不能因为缺工具而变宽）
+ *   报告被截断 / 语法错 → 同样退回旧匹配（工具说「这份影响面不是完备集合」时就当它没给全）
  * 误伤那一侧靠三条约束压住：只在未引号 token 上匹配、用锚定的路径规则、
  * 不把 heredoc 正文当操作数（它往往是脚本/文本内容，真操作对象是中段里的写目标，preshell 已经报了）。
  */
@@ -179,7 +180,7 @@ export function detectSensitivePaths(
 		if (hit) push(hit.pattern, token, "token");
 	}
 
-	// 退一步的那一层：解释器载荷，以及事实层不可用时的整条退回
+	// 退一步的那一层：解释器载荷，以及事实层不完整时的整条退回
 	if (interpreterPayload) {
 		// 只扫交给解释器的那段载荷：`node -e …` 的参数、会被解释器消费的 heredoc 正文。
 		// 同一条命令里另写的脚本正文（`cat > x.ts <<EOF`，之后再用 node 跑）不是载荷
@@ -187,7 +188,10 @@ export function detectSensitivePaths(
 			push(hit.pattern, hit.token, "interpreter");
 		}
 	}
-	if (!outcome.ok) {
+	// 报告被截断（effects/issues 到上限）或语法错时不拿它当完备集合：整条再退回旧匹配。
+	// uncertain 不在此列：真实命令里它占 65%，拿它降级等于把误报全带回来
+	const incomplete = outcome.ok && (outcome.facts.effectsDropped > 0 || outcome.facts.issuesDropped > 0 || outcome.facts.status === "Invalid");
+	if (!outcome.ok || incomplete) {
 		for (const hit of matchBlacklistHits(command, rules)) push(hit.pattern, hit.token, "legacy");
 	}
 

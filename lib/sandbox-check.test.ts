@@ -10,9 +10,45 @@
 //     现在改成：preshell 解析出的读/写/删目标（事实）∪ 未引号路径 token（兜底）。
 
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { checkCommand, isInterpreterProgram, unquotedPathTokens } from "./sandbox-check.ts";
+import { clearPreshellCache, resetPreshellBreaker, resetPreshellVersionCache } from "./preshell.ts";
+
+/** 起一个假 preshell：回答 --version，正文报告由调用方给 */
+function stubPreshell(report: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "preshell-stub-"));
+  const path = join(dir, "preshell");
+  const body = [
+    "#!/bin/sh",
+    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"9.9.9","schema":1}'; exit 0 ;; esac`,
+    "cat >/dev/null",
+    `printf '%s' '${JSON.stringify(report)}'`,
+  ].join("\n");
+  writeFileSync(path, `${body}\n`, "utf8");
+  chmodSync(path, 0o755);
+  return path;
+}
+
+function withStubPreshell<T>(bin: string, run: () => T): T {
+  const saved = process.env.PRESHELL_BIN;
+  process.env.PRESHELL_BIN = bin;
+  clearPreshellCache();
+  resetPreshellVersionCache();
+  resetPreshellBreaker();
+  try {
+    return run();
+  } finally {
+    if (saved === undefined) delete process.env.PRESHELL_BIN;
+    else process.env.PRESHELL_BIN = saved;
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    resetPreshellBreaker();
+  }
+}
 
 describe("checkCommand：敏感路径黑名单", () => {
   it("默认 block：直接拒，且不带可放行的命中项", () => {
@@ -148,6 +184,55 @@ describe("解释器载荷与事实层不可用", () => {
     const command = `git commit -m "fix(sandbox): 对 .env 的处理改成问人"`;
     const result = checkCommand(command, { cwd: "/work/project" });
     assert.equal(result.allow, true, result.reason ?? "");
+  });
+
+  it("报告被截断时不拿它当完备集合：整条退回旧匹配", () => {
+    // 正文里提到凭据路径，本该被正文遮蔽那条规则放行；
+    // 但工具说「effects 被截掉 7 条」→ 这份影响面不完整，宁可多问一次
+    const command = ["cat > notes.md <<'EOF'", "cp ~/.ssh/id_rsa /tmp/leak", "EOF"].join("\n");
+    const complete = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: { effects: [], write_roots: [], uncertain: true, cwd: "/tmp", effects_dropped: 0 },
+      issues_dropped: 0,
+    });
+    const truncated = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: { effects: [], write_roots: [], uncertain: true, cwd: "/tmp", effects_dropped: 7 },
+      issues_dropped: 0,
+    });
+    const invalid = stubPreshell({
+      version: 1,
+      status: "Invalid",
+      impact: { effects: [], write_roots: [], uncertain: true, cwd: "/tmp", effects_dropped: 0 },
+      issues_dropped: 0,
+    });
+
+    withStubPreshell(complete, () => {
+      assert.equal(checkCommand(command, { cwd: "/tmp" }).allow, true, "完整报告时正文不当路径");
+    });
+    withStubPreshell(truncated, () => {
+      const result = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(result.allow, false, "截断时不能当完备集合");
+      assert.match(result.reason ?? "", /敏感路径黑名单/);
+    });
+    withStubPreshell(invalid, () => {
+      assert.equal(checkCommand(command, { cwd: "/tmp" }).allow, false, "语法错时同理");
+    });
+  });
+
+  it("uncertain 单独不降级：它在真实命令里占 65%", () => {
+    const command = ["cat > notes.md <<'EOF'", "把 ~/.ssh 的配置抄过来", "EOF"].join("\n");
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: { effects: [], write_roots: [], uncertain: true, cwd: "/tmp", effects_dropped: 0 },
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      assert.equal(checkCommand(command, { cwd: "/tmp" }).allow, true);
+    });
   });
 
   it("缺二进制时整条退回旧匹配（不因缺工具而变宽），并带上不可用原因", () => {

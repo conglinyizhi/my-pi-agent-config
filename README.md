@@ -166,6 +166,9 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
   残余：载荷正文里出现敏感字样（哪怕只是个字符串常量）仍会问；这是保守一侧的边界，不改
 - 黑名单的命令匹配加了两侧词边界：`process.env`、`os.environ`、`.envrc` 里的 `.env` 不再算命中
   （实测从 26 条降到 3 条），`cat .env` / `foo/.env` / `../../.env` / `~/.ssh/id_rsa` 照旧命中
+- 报告被截断（`effects_dropped` / `issues_dropped` > 0）或 `status=Invalid` 时不拿它当完备集合：
+  整条退回旧匹配。真实命令里几乎撞不到（抽样 3105 条全为 0），但它标的就是「这份影响面不完整」。
+  `uncertain` 不在此列：它在真实命令里占 65%，拿它降级等于把误报全带回来
 - 复测：`node --experimental-strip-types scripts/preshell-shadow.ts --mode blacklist --n 0 --dump /tmp/x`
   （新旧路径判定逐条对比；`--mode transitions` 是策略档位对比，报告开头会打二进制 version/schema/sha）
 
