@@ -80,6 +80,26 @@ describe("commandBlocked（bash 命令拦截）", () => {
     assert.deepEqual(matchBlacklistHits("ls -la", rules), []);
   });
 
+  it("matchBlacklistHits 只认有边界的路径：子串不算", () => {
+    // 旧实现是 includes，实测语料里 26 条命令只因为这个子串多问一次
+    for (const text of [
+      "node -e 'console.log(process.env.HOME)'",
+      "python3 - <<'PY' import os\nprint(os.environ['HOME'])\nPY",
+      "cat .envrc",
+      `cat ${homedir()}/.sshfoo`,   // 目录名只是前缀相同
+    ]) {
+      assert.deepEqual(matchBlacklistHits(text, rules), [], `不该命中：${text}`);
+    }
+    // 真路径两侧总有分隔符，照旧命中
+    assert.equal(commandBlocked("cat .env", rules), true);
+    assert.equal(commandBlocked("cat /work/project/.env", rules), true);
+    assert.equal(commandBlocked("cat foo/.env", rules), true);
+    assert.equal(commandBlocked("cat ../../.env", rules), true);
+    assert.equal(commandBlocked("FOO=.env npm start", rules), true);
+    assert.equal(commandBlocked(`cat ~/.ssh/id_rsa`, rules), true);
+    assert.equal(commandBlocked(`cat ${homedir()}/.ssh/config`, rules), true);
+  });
+
   // 全通配模式（**/.env）编译后没有静态前缀；若拿它做子串匹配，任何带 / 的命令都会被误判成命中
   it("无静态前缀的模式不参与命令匹配", () => {
     const wildcard = loadBlacklist().filter((rule) => rule.prefix.length === 0);

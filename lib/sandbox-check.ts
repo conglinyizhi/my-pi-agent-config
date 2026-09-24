@@ -18,6 +18,7 @@
 // 本库不管执行通道，只管「要不要放行」。两者叠在 bash-guard 的 execute 里。
 
 import { commandBlocked, loadBlacklist, matchBlacklistHits, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
+import { maskHeredocBodies, maskNonInterpreterHeredocBodies } from "../extensions/sandbox-permissions/scanner.ts";
 import { analyzeCommand, formatFacts, loadPreshellConfig, type PreshellFacts } from "./preshell.ts";
 import {
   auditCommand,
@@ -105,9 +106,10 @@ export function unquotedPathTokens(command: string): string[] {
 /**
  * 会把「代码/数据」当输入的程序：解释器，或脚本文件本身。
  *
- * 这类程序的参数（-c / -e）与 heredoc 正文、命令行字符串里可能藏着路径，而 preshell 不建模
- * 它们的行为（`modeled: false`）：那些路径既不产生 Read 效果，也不在未引号 token 里。
- * 拿它们当信号退回旧的子串匹配：宁可多问一次，也不让事实层的盲区变成放行。
+ * 这类程序的参数（-c / -e）里可能藏着路径，而 preshell 不建模它们的行为（`modeled: false`）：
+ * 那些路径既不产生 Read 效果，也不在未引号 token 里。拿它们当信号退回旧的子串匹配：
+ * 宁可多问一次，也不让事实层的盲区变成放行。但只扫**载荷本身**（见 detectSensitivePaths），
+ * 不扫整条命令，否则命令里嵌的代码/正文文本会把无关的 `.env` 字样也带进来。
  *
  * 刻意不含 git / ssh / docker / make 这类「输入不是代码」的程序：
  *   - git 已被 preshell 建模（报 .git 的写），且提交信息里提到 .env 是常有的事
@@ -134,11 +136,11 @@ export function isInterpreterProgram(target: string): boolean {
  * 三层都跑（而非二选一），是因为它们盖的是不同的洞：
  *   preshell    → 相对路径、带引号的路径、cd 后的基准（旧子串匹配在相对路径上漏了 21 条）
  *   token       → 存在性探测这类不产生 Read 效果的用法（preshell 对 `test -f x` 只报 Exec）
- *   interpreter → 解释器载荷里的路径（`node <<EOF …` / `python -c "open('凭据文件')"`）：
+ *   interpreter → 解释器载荷（`node -e …` / `python -c …` / 交给解释器的 heredoc 正文）：
  *                   preshell 不建模这类程序，引号里的路径既没效果也不在未引号 token 里
  *   事实层不可用 → 整条退回旧匹配（宁可多拦，不能因为缺工具而变宽）
- * 误伤那一侧靠 token 化的三条约束压住：只在未引号 token 上匹配、用锚定的路径规则、
- * 不再对每一条命令都做 includes：解释器载荷（preshell 不建模的那类）与事实层不可用时才退回去。
+ * 误伤那一侧靠三条约束压住：只在未引号 token 上匹配、用锚定的路径规则、
+ * 不把 heredoc 正文当操作数（它往往是脚本/文本内容，真操作对象是中段里的写目标，preshell 已经报了）。
  */
 export function detectSensitivePaths(
 	command: string,
@@ -170,15 +172,23 @@ export function detectSensitivePaths(
 		}
 	}
 
-	for (const token of unquotedPathTokens(command)) {
+	// token 层：heredoc 正文先遮掉。正文是数据（脚本、文档、提交信息），
+	// 把里面的 ".env" / "~/.ssh" 字样当路径 token 是我实测踩到的那类误伤
+	for (const token of unquotedPathTokens(maskHeredocBodies(command))) {
 		const hit = rules.find((rule) => pathBlocked(token, ctx.cwd, [rule]));
 		if (hit) push(hit.pattern, token, "token");
 	}
 
-	// 退一步的那一层：解释器载荷（引号/heredoc 正文里的路径）与事实层不可用
-	if (interpreterPayload || !outcome.ok) {
-		const via: SensitivePathHit["via"] = outcome.ok ? "interpreter" : "legacy";
-		for (const hit of matchBlacklistHits(command, rules)) push(hit.pattern, hit.token, via);
+	// 退一步的那一层：解释器载荷，以及事实层不可用时的整条退回
+	if (interpreterPayload) {
+		// 只扫交给解释器的那段载荷：`node -e …` 的参数、会被解释器消费的 heredoc 正文。
+		// 同一条命令里另写的脚本正文（`cat > x.ts <<EOF`，之后再用 node 跑）不是载荷
+		for (const hit of matchBlacklistHits(maskNonInterpreterHeredocBodies(command, isInterpreterProgram), rules)) {
+			push(hit.pattern, hit.token, "interpreter");
+		}
+	}
+	if (!outcome.ok) {
+		for (const hit of matchBlacklistHits(command, rules)) push(hit.pattern, hit.token, "legacy");
 	}
 
 	return {

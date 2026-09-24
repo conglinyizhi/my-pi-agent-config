@@ -102,10 +102,45 @@ describe("解释器载荷与事实层不可用", () => {
     assert.match(result.reason ?? "", /敏感路径黑名单/);
   });
 
+  it("管道喂给解释器的 heredoc 正文照样拦", () => {
+    const command = ["cat <<'EOF' | bash", "head -3 ~/.pi/agent/auth.json", "EOF"].join("\n");
+    const result = checkCommand(command, { cwd: "/tmp" });
+    assert.equal(result.allow, false, result.reason ?? "");
+  });
+
+  it("包装器不算程序名：sudo / timeout 后面的解释器仍认出来", () => {
+    for (const command of [
+      `sudo node -e "process.stdout.write(require('fs').readFileSync('/home/clyzhi/.pi/agent/auth.json','utf8'))"`,
+      `timeout 30 python3 -c "print(open('/home/clyzhi/.pi/agent/auth.json').read())"`,
+    ]) {
+      const result = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(result.allow, false, `该拦：${command}`);
+    }
+  });
+
   it("python 字符串里的路径同样被拦", () => {
     const command = `python3 -c "import json; print(json.load(open('/home/clyzhi/.pi/agent/auth.json')))"`;
     const result = checkCommand(command, { cwd: "/tmp" });
     assert.equal(result.allow, false);
+  });
+
+  it("自己写的脚本正文不当载荷：之后用 node 跑它也不拦", () => {
+    // 实测踩到的误伤：探针脚本正文里有一行正则提到 .env，整条命令就被拦了
+    const command = [
+      "cd /tmp && cat > probe.ts <<'EOF'",
+      "const hits = /[^\\s;|'\"()]*(?:\\.ssh|\\.env)[^\\s;|'\"()]*/g;",
+      "console.log(hits.source);",
+      "EOF",
+      "timeout 300 node --experimental-strip-types /tmp/probe.ts",
+    ].join("\n");
+    const result = checkCommand(command, { cwd: "/tmp" });
+    assert.equal(result.allow, true, `不该拦：${result.reason ?? ""}`);
+  });
+
+  it("不喂给解释器的 heredoc 正文也不当路径", () => {
+    const command = ["cat > notes.md <<'EOF'", "把 ~/.ssh 的配置抄过来", "EOF"].join("\n");
+    const result = checkCommand(command, { cwd: "/work/project" });
+    assert.equal(result.allow, true, `不该拦：${result.reason ?? ""}`);
   });
 
   // 这一条是误伤那一侧的护栏：git 不是解释器，提交信息里提到 .env 不该被拦

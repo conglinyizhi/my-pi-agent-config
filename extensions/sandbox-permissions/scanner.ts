@@ -254,6 +254,107 @@ function isPythonHeredoc(cmd: string, hd: HeredocInfo): boolean {
   return matchWordAt(cmd, w, ["python3", "python"]) > 0;
 }
 
+// ═══════════════════════════════════════════════════
+// heredoc 正文的归属：它到底是「数据」还是「交给解释器的代码」
+// ═══════════════════════════════════════════════════
+
+/** 包装器：自己不是解释器，但它后面那个词是真正要跑的程序 */
+const WRAPPER_PROGRAMS = [
+  "sudo", "doas", "env", "nohup", "time", "timeout", "xargs",
+  "command", "exec", "nice", "ionice", "setsid", "stdbuf", "watch",
+];
+
+/**
+ * 词法切分（引号感知）：引号内的整段算一个词，并把 quoted 标出来。
+ * 程序名不能从引号里的词判定，否则 `git commit -m "跑 node 看看"` 会被当成解释器调用。
+ */
+function scanTokens(text: string): Array<{ text: string; quoted: boolean }> {
+  const isBreak = (c: string) => c === ";" || c === "&" || c === "|" || c === "(" || c === ")" || c === "<" || c === ">";
+  const out: Array<{ text: string; quoted: boolean }> = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (isWs(ch) || isBreak(ch)) {
+      i++;
+      continue;
+    }
+    let buf = "";
+    let quoted = false;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === "\\") {
+        buf += text[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (c === "'" || c === '"') {
+        quoted = true;
+        const end = text.indexOf(c, i + 1);
+        if (end === -1) {
+          buf += text.slice(i + 1);
+          i = text.length;
+          break;
+        }
+        buf += text.slice(i + 1, end);
+        i = end + 1;
+        continue;
+      }
+      if (isWs(c) || isBreak(c)) break;
+      buf += c;
+      i++;
+    }
+    if (buf.length > 0) out.push({ text: buf, quoted });
+  }
+  return out;
+}
+
+/**
+ * 一个命令段里真正要跑的程序名（跳过 env 赋值、包装器及其参数）。
+ * 拿不到就返回空串（调用方当「不是解释器」处理，保持保守）。
+ */
+export function commandWordOf(seg: string): string {
+  for (const token of scanTokens(seg)) {
+    if (token.quoted) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) continue;
+    const base = token.text.split("/").pop() ?? "";
+    if (WRAPPER_PROGRAMS.includes(base)) continue;
+    if (token.text.startsWith("-") || /^\d/.test(token.text)) continue;
+    return token.text;
+  }
+  return "";
+}
+
+/**
+ * 这个 heredoc 的正文会不会被解释器消费。
+ *
+ * 看定界符所在那一行的每一段的首词：`node <<'EOF'`（前）与 `cat <<'EOF' | bash`（后）都算，
+ * 而 `cat > x.ts <<'EOF'` 之后另一行再 `node x.ts` 不算：那一行的正文是数据，
+ * 交给 node 的是文件名，不是正文。
+ */
+export function heredocFeedsInterpreter(cmd: string, hd: HeredocInfo, isInterpreter: (program: string) => boolean): boolean {
+  const lineStart = cmd.lastIndexOf("\n", hd.delimStart - 1) + 1;
+  const nl = cmd.indexOf("\n", hd.delimStart);
+  const line = cmd.slice(lineStart, nl === -1 ? cmd.length : nl);
+  return splitWithSeparators(line).some((s) => isInterpreter(commandWordOf(s.seg)));
+}
+
+/** 正文换等长空格（长度不变，按原坐标对齐）。正文是数据，不是命令行的操作数 */
+export function maskHeredocBodies(cmd: string, keep: (hd: HeredocInfo) => boolean = () => false): string {
+  const chars = cmd.split("");
+  for (const hd of findHeredocs(cmd)) {
+    if (keep(hd)) continue;
+    let end = hd.contentEnd;
+    if (end > hd.contentStart && cmd[end - 1] === "\n") end--;
+    for (let j = hd.contentStart; j < end; j++) chars[j] = " ";
+  }
+  return chars.join("");
+}
+
+/** 只留「会被解释器消费」的正文，其余正文遮掉（供解释器丰底那一层扫） */
+export function maskNonInterpreterHeredocBodies(cmd: string, isInterpreter: (program: string) => boolean): string {
+  return maskHeredocBodies(cmd, (hd) => heredocFeedsInterpreter(cmd, hd, isInterpreter));
+}
+
 /** 收集 python -c 'code' 的 code 段（单/双引号形态） */
 function collectPyCArgs(cmd: string, pySegments: string[]): void {
   let i = 0;

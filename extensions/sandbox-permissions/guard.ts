@@ -171,6 +171,34 @@ export interface BlacklistCommandHit {
   token: string;
 }
 
+/** 词字符：紧贴着它的模式不算路径起点（`process.env` / `os.environ` 里的 `.env`） */
+function isWordChar(c: string | undefined): boolean {
+  return c !== undefined && /[A-Za-z0-9_]/.test(c);
+}
+
+/**
+ * 找一个「有边界」的模式出现位置。
+ *
+ * 旧实现直接 `includes`，于是 `process.env`、`os.environ`、`.envrc` 都算命中（实测语料里
+ * 26 条命令只因为这个子串而多问一次）。真路径总是被空白/引号/等号/斜杠围着，
+ * 所以要求两侧都不能是词字符。
+ *
+ * checkBefore 只对「模式自己带路径起点」的形算：`/.env` 那一支的前一个字符是路径里的普通字符
+ * （`foo/.env` 的 `o` 就不是边界），拿它判会把真路径一并放走。
+ */
+function findBoundedPattern(text: string, needle: string, checkBefore: boolean): number {
+  let from = 0;
+  while (from <= text.length) {
+    const idx = text.indexOf(needle, from);
+    if (idx === -1) return -1;
+    const beforeOk = !checkBefore || !isWordChar(idx === 0 ? undefined : text[idx - 1]);
+    const afterOk = !isWordChar(text[idx + needle.length]);
+    if (beforeOk && afterOk) return idx;
+    from = idx + 1;
+  }
+  return -1;
+}
+
 /**
  * 命令里命中的黑名单条目（保守前缀匹配；含 ~ 形式与展开形式）。
  *
@@ -184,16 +212,16 @@ export function matchBlacklistHits(command: string, rules: CompiledRule[]): Blac
     // 全通配模式（如 "**/.env"）编译后没有静态前缀，拿它做子串匹配会把任何带 / 的命令都算命中：直接跳过
     if (!rule.prefix) continue;
     // ~/.ssh 形式（原样）与 /home/u/.ssh（展开）
-    if (rule.tildePrefix && command.includes(rule.tildePrefix)) {
+    if (rule.tildePrefix && findBoundedPattern(command, rule.tildePrefix, true) !== -1) {
       hits.push({ pattern: rule.pattern, token: rule.tildePrefix });
       continue;
     }
-    if (command.includes(rule.prefix)) {
+    if (findBoundedPattern(command, rule.prefix, true) !== -1) {
       hits.push({ pattern: rule.pattern, token: rule.prefix });
       continue;
     }
-    // 项目级 .env（无 ~）：匹配路径段
-    if (!rule.prefix.startsWith("/") && command.includes("/" + rule.prefix)) {
+    // 项目级 .env（无 ~）：匹配路径段。只查后边界：`/` 已把 `process.env` 这类排除了
+    if (!rule.prefix.startsWith("/") && findBoundedPattern(command, "/" + rule.prefix, false) !== -1) {
       hits.push({ pattern: rule.pattern, token: "/" + rule.prefix });
     }
   }

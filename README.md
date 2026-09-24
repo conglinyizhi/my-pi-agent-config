@@ -158,7 +158,14 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - 事实还随命令一起交给 LLM 预审（`lib/preshell.ts` 的 `formatFacts` → `llm-review` 的 prompt）：
   模型看到的是影响面，不再只是一条命令原文
 - 残余缺口（有意为之）：引号里的**远端**路径不再拦（`ssh host 'ls ~/.ssh'` 里的 `~/.ssh` 是远端），
-  要恢复就把 `ssh` 加进 `lib/sandbox-check.ts` 的解释器名单，代价是正当运维流程被挡
+  要恢复就把 `ssh` 加进 `lib/sandbox-check.ts` 的解释器名单，代价是正当运维流程被挡。远端的 heredoc 正文同理
+  （`ssh host 'bash -s' <<EOF` 那一段本机不管）
+- 解释器那层兜底只扫**交给解释器的那段载荷**：`-e` / `-c` 的参数、会被解释器消费的 heredoc 正文。
+  自己写的脚本正文（`cat > x.ts <<EOF`，之后再用 node 跑）、`apply_patch` 的补丁、`git commit -F - <<EOF`
+  的提交信息都不再当路径——实测语料里 10 条这类命令不再多问一次，而 136 条真敏感路径照旧拦下。
+  残余：载荷正文里出现敏感字样（哪怕只是个字符串常量）仍会问；这是保守一侧的边界，不改
+- 黑名单的命令匹配加了两侧词边界：`process.env`、`os.environ`、`.envrc` 里的 `.env` 不再算命中
+  （实测从 26 条降到 3 条），`cat .env` / `foo/.env` / `../../.env` / `~/.ssh/id_rsa` 照旧命中
 - 复测：`node --experimental-strip-types scripts/preshell-shadow.ts --mode blacklist --n 0 --dump /tmp/x`
   （新旧路径判定逐条对比；`--mode transitions` 是策略档位对比，报告开头会打二进制 version/schema/sha）
 
