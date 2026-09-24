@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { notify } from "./notify-send.ts";
 
 export interface PreshellEffect {
   kind: string;
@@ -78,6 +79,37 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
 export const DEFAULT_TIMEOUT_MS = 2000;
 /** 我们验证过的 v0.1 契约版本 */
 export const EXPECTED_SCHEMA = 1;
+
+/**
+ * 安装说明：通知、配置注释、文档共用一份，避免三处各写一句、各有出入。
+ * 工具本身不回传安装方式（它只是个静态分析器），所以这段文字只能由调用方给。
+ */
+export const INSTALL_HINT = [
+  "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
+  "装它：gh release download v0.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.1-*.linux ~/.pi/runtime/preshell",
+  "或自己编：moon build --release --target native（再 install 到同一路径）",
+  "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
+].join("\n");
+
+/** 给人和模型看的一句话：为什么不可用、意味着什么 */
+export function describeUnavailable(reason: PreshellUnavailableReason, detail?: string): string {
+  const suffix = detail ? `（${detail}）` : "";
+  switch (reason) {
+    case "disabled":
+      return "事实层已在配置里关闭（extensions.toml 的 [preshell] enabled=false）";
+    case "missing":
+      return `未安装或路径不对${suffix}`;
+    case "timeout":
+      return `调用超时${suffix}`;
+    case "exit":
+      return `工具没跑起来${suffix}`;
+    case "bad-json":
+      return `输出不是合法的报告${suffix}`;
+    case "schema":
+      return `契约版本不符${suffix}`;
+  }
+}
 
 function expandHome(path: string): string {
   if (path === "~") return homedir();
@@ -141,6 +173,25 @@ export function factsFromReport(report: PreshellReport): PreshellFacts {
 const MAX_CACHE = 200;
 const cache = new Map<string, PreshellOutcome>();
 
+/**
+ * 熔断：连续失败到阈值就不再试。
+ *
+ * 卡住或崩掉的二进制不能把每次审计都拖成一个超时：连续失败 3 次就认定它本进程不可用，
+ * 剩下的命令直接走保守兼底（reason 保留首次的原因）。`/reload` 或重启 pi 后重试。
+ */
+export const BREAKER_THRESHOLD = 3;
+let consecutiveFailures = 0;
+let breakerReason: PreshellUnavailableReason | undefined;
+
+export function preshellBreakerState(): { broken: PreshellUnavailableReason | undefined; failures: number } {
+  return { broken: breakerReason, failures: consecutiveFailures };
+}
+
+export function resetPreshellBreaker(): void {
+  consecutiveFailures = 0;
+  breakerReason = undefined;
+}
+
 export function clearPreshellCache(): void {
   cache.clear();
 }
@@ -183,6 +234,7 @@ export function resetPreshellVersionCache(): void {
 export function analyzeCommand(command: string, opts: { config?: PreshellConfig } = {}): PreshellOutcome {
   const config = opts.config ?? loadPreshellConfig();
   if (!config.enabled) return { ok: false, reason: "disabled" };
+  if (breakerReason) return { ok: false, reason: breakerReason, detail: "熔断中：本进程已连续失败，不再尝试（/reload 后重试）" };
   const bin = resolvePreshellBin(config);
   const key = `${bin}\u0000${command}`;
   const cached = cache.get(key);
@@ -219,7 +271,111 @@ export function analyzeCommand(command: string, opts: { config?: PreshellConfig 
     if (!oldest.done) cache.delete(oldest.value);
   }
   cache.set(key, outcome);
+
+  // 熔断计数：成功清零；失败累加，到阈值就停手
+  if (outcome.ok) {
+    consecutiveFailures = 0;
+  } else if (outcome.reason !== "disabled") {
+    consecutiveFailures++;
+    if (consecutiveFailures >= BREAKER_THRESHOLD) breakerReason = outcome.reason;
+  }
   return outcome;
+}
+
+// ── 面向人的提示 ──
+
+/** 只要能 notify / setStatus 就够，避免为了发一条提示去接整个 ExtensionContext */
+export interface FactLayerUi {
+  notify?(message: string, level?: "info" | "warning" | "error"): void;
+  setStatus?(key: string, text?: string): void;
+}
+
+const announced = new Set<PreshellUnavailableReason>();
+const STATUS_KEY = "preshell";
+let statusShown = false;
+
+/**
+ * 会往桌面弹通知的原因：能动手解决的那些。
+ * 瞬时的超时/坏 JSON 不打扰，否则一次网络抖就弹一次。
+ */
+const DESKTOP_REASONS: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "schema", "disabled"]);
+
+export interface FactLayerNotifyDeps {
+  /** 测试注入；缺省走 lib/notify-send（失败静默，不影响判定） */
+  desktopNotify?: (title: string, message: string) => void;
+}
+
+/**
+ * 事实层不可用时提醒用户（每个原因在一个进程里只弹一次；状态栏常驻）。
+ *
+ * 为什么要弹：这是「审核变弱了」这种静默退化。不弹的话，用户只会看到
+ * 「怎么又开始误报」而不知道是缺了个二进制；模型侧另有 factsUnavailable 字段，
+ * 缺件时它也能自己说出来。
+ *
+ * 另发一条桌面通知，是因为经 hub/IM 用 pi 时没有 TUI，ctx.ui.notify 可能落空，
+ * 桌面那条是那时唯一能到人的通道。
+ */
+export function notifyFactLayerUnavailable(
+  ui: FactLayerUi | undefined,
+  reason: PreshellUnavailableReason,
+  detail?: string,
+  deps: FactLayerNotifyDeps = {},
+): string {
+  try {
+    ui?.setStatus?.(STATUS_KEY, `✗ 事实层 ${reason}`);
+    statusShown = true;
+  } catch {
+    // 状态栏不可用不影响判定
+  }
+  if (announced.has(reason)) return "";
+  announced.add(reason);
+
+  const message = `命令审核事实层不可用：${describeUnavailable(reason, detail)}\n${INSTALL_HINT}`;
+  try {
+    ui?.notify?.(message, "warning");
+  } catch {
+    // 通知失败不影响判定
+  }
+  if (DESKTOP_REASONS.has(reason)) {
+    const short = `命令审核事实层不可用：${describeUnavailable(reason, detail)}；审核已退回旧规则，装法见 pi 里的提示`;
+    try {
+      if (deps.desktopNotify) deps.desktopNotify("命令审核事实层不可用", short);
+      else void notify("命令审核事实层不可用", short).catch(() => {});
+    } catch {
+      // 同上
+    }
+  }
+  return message;
+}
+
+/** 事实层恢复可用时把状态栏收掉（只在之前设过时才动） */
+export function clearFactLayerStatus(ui: FactLayerUi | undefined): void {
+  if (!statusShown) return;
+  statusShown = false;
+  try {
+    ui?.setStatus?.(STATUS_KEY, undefined);
+  } catch {
+    // 同上
+  }
+}
+
+/** 检查结果 → 提醒/收状态：调用方（bash-guard、sandbox-allow、bash_background）共用 */
+export function reportFactLayerState(
+  ui: FactLayerUi | undefined,
+  factsUnavailable: string | undefined,
+  deps: FactLayerNotifyDeps = {},
+): void {
+  if (factsUnavailable) {
+    notifyFactLayerUnavailable(ui, factsUnavailable as PreshellUnavailableReason, undefined, deps);
+    return;
+  }
+  clearFactLayerStatus(ui);
+}
+
+/** 测试用：清掉「已弹过」记录 */
+export function resetFactLayerNotices(): void {
+  announced.clear();
+  statusShown = false;
 }
 
 /** 事实 → 给模型/人看的紧凑文本（LLM 预审与审计条目共用，措辞保持同一套） */

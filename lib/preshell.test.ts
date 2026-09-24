@@ -9,21 +9,40 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
 import {
   analyzeCommand,
+  BREAKER_THRESHOLD,
   clearPreshellCache,
+  describeUnavailable,
   formatFacts,
+  INSTALL_HINT,
   loadPreshellConfig,
+  notifyFactLayerUnavailable,
+  preshellBreakerState,
+  reportFactLayerState,
+  resetFactLayerNotices,
+  resetPreshellBreaker,
   resetPreshellVersionCache,
   resolvePreshellBin,
   type PreshellConfig,
 } from "./preshell.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "preshell-stub-"));
+// 模块级状态（缓存/版本探测/熔断/提示去重）在用例之间必须清干净，否则互相带节奏
+beforeEach(() => {
+  clearPreshellCache();
+  resetPreshellVersionCache();
+  resetPreshellBreaker();
+  resetFactLayerNotices();
+  // 测试里不许真往桌面弹：默认路径也可能被走到（比如 checkCommand 的降级分支）
+  process.env.PI_NO_DESKTOP_NOTIFY = "1";
+});
 after(() => {
   clearPreshellCache();
   resetPreshellVersionCache();
+  resetPreshellBreaker();
+  resetFactLayerNotices();
 });
 
 /** 造一个替身脚本；body 里能用 $PRESHELL_STUB_LOG 记调用次数 */
@@ -132,6 +151,111 @@ describe("analyzeCommand", () => {
     clearPreshellCache();
     const outcome = analyzeCommand("ls", { config: configFor("preshell", { enabled: false }) });
     assert.deepEqual(outcome, { ok: false, reason: "disabled" });
+  });
+});
+
+describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超时", () => {
+  it("连续失败到阈值后不再起子进程，原因保留首次的", () => {
+    const log = join(dir, "breaker.log");
+    const bin = stub("breaker.sh", `${VERSION_OK}\necho x >> "${log}"\ncat >/dev/null\nexit 1`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    resetPreshellBreaker();
+    const config = configFor(bin);
+
+    for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+      const outcome = analyzeCommand(`echo cmd-${i}`, { config });
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) assert.equal(outcome.reason, "exit");
+    }
+    const state = preshellBreakerState();
+    assert.equal(state.broken, "exit");
+    const callsAfterThreshold = readFileSync(log, "utf8").trim().split("\n").length;
+
+    // 阈值之后的命令：不再 spawn（）
+    const after = analyzeCommand("echo another", { config });
+    assert.equal(after.ok, false);
+    if (!after.ok) assert.match(after.detail ?? "", /熔断/);
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, callsAfterThreshold);
+
+    // 重置后重试
+    resetPreshellBreaker();
+    analyzeCommand("echo retry", { config });
+    assert.ok(readFileSync(log, "utf8").trim().split("\n").length > callsAfterThreshold);
+    resetPreshellBreaker();
+  });
+
+  it("成功一次就把失败计数清零（偶发超时不该熔断）", () => {
+    const bin = stub("flaky.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    resetPreshellBreaker();
+    const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    assert.deepEqual(preshellBreakerState(), { broken: undefined, failures: 0 });
+  });
+});
+
+describe("缺件提示（人看的）", () => {
+  it("describeUnavailable 说清是什么毛病", () => {
+    assert.match(describeUnavailable("missing"), /未安装或路径不对/);
+    assert.match(describeUnavailable("schema", "工具报 schema=7"), /契约版本不符（工具报 schema=7）/);
+    assert.match(describeUnavailable("disabled"), /enabled=false/);
+  });
+
+  it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
+    assert.match(INSTALL_HINT, /gh release download v0\.1 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755/);
+    assert.match(INSTALL_HINT, /moon build --release --target native/);
+    assert.match(INSTALL_HINT, /退回旧的匹配规则/);
+  });
+
+  it("同一个原因只弹一次，但状态标一直挂着；恢复后收掉", () => {
+    const notified: string[] = [];
+    const statuses: Array<[string, string | undefined]> = [];
+    const desktops: Array<[string, string]> = [];
+    const ui = {
+      notify: (message: string) => void notified.push(message),
+      setStatus: (key: string, text?: string) => void statuses.push([key, text]),
+    };
+    const deps = { desktopNotify: (title: string, message: string) => void desktops.push([title, message]) };
+    resetFactLayerNotices();
+
+    const first = notifyFactLayerUnavailable(ui, "missing", undefined, deps);
+    assert.match(first, /命令审核事实层不可用/);
+    assert.match(first, /未安装或路径不对/);
+    assert.equal(notified.length, 1);
+    assert.deepEqual(statuses.at(-1), ["preshell", "✗ 事实层 missing"]);
+    assert.equal(desktops.length, 1, "可动手解决的原因要弹一条桌面通知");
+    assert.match(desktops[0][1], /退回旧规则/);
+
+    notifyFactLayerUnavailable(ui, "missing", undefined, deps);
+    assert.equal(notified.length, 1, "同一原因不重复弹");
+    assert.equal(desktops.length, 1, "桌面也只要一条");
+
+    notifyFactLayerUnavailable(ui, "timeout", "2s", deps);
+    assert.equal(notified.length, 2, "换了原因应当再说一次");
+    assert.equal(desktops.length, 1, "瞬时超时不打扰桌面");
+
+    reportFactLayerState(ui, undefined);
+    assert.deepEqual(statuses.at(-1), ["preshell", undefined], "恢复后收掉状态");
+    resetFactLayerNotices();
+  });
+
+  it("reportFactLayerState：带原因就提醒，不带就只收状态", () => {
+    const notified: string[] = [];
+    const statuses: Array<string | undefined> = [];
+    const ui = {
+      notify: (message: string) => void notified.push(message),
+      setStatus: (_key: string, text?: string) => void statuses.push(text),
+    };
+    resetFactLayerNotices();
+    reportFactLayerState(ui, "bad-json");
+    assert.equal(notified.length, 1);
+    assert.equal(statuses.at(-1), "✗ 事实层 bad-json");
+    reportFactLayerState(ui, undefined);
+    assert.equal(statuses.at(-1), undefined);
+    resetFactLayerNotices();
   });
 });
 

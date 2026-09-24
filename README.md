@@ -135,6 +135,20 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 - 配置在 `extensions.toml` 的 `[preshell]`（`enabled`/`bin`/`timeoutMs`/`schema`）；二进制缺省在
   `~/.pi/runtime/preshell`（不在 `/tmp`，重启不丢），也可用环境变量 `PRESHELL_BIN` 覆盖
 - 每次调用实测 p50 ~5ms、p95 ~8ms；同一条命令在会话内只问一次（有界缓存）
+- **没装/装坏也能工作**：拿不到报告时判定退回旧匹配（token 层仍然在，所以不会比接入前更松），
+  不抛异常、不静默放行；TUI 会提醒一次并附上安装命令，状态栏常驻 `✗ 事实层 <原因>`，恢复后自动收掉；
+  能动手解决的原因（缺件 / schema 不符 / 关掉）另发一条桌面通知，经 hub/IM 用 pi 没有 TUI 时靠它到人
+  （`PI_NO_DESKTOP_NOTIFY=1` 可关）
+- **熔断**：连续失败 3 次就不在本进程里再试（卡死的二进制最多担误 3 × timeout，之后每条审计回到毫秒级），
+  `/reload` 或重启后重试
+
+  实测（缺件 / 卡死两种）：
+
+  ```
+  缺件：拦下 cat .env（8ms，facts=missing）· 提示「事实层不可用：未安装或路径不对」+ 安装命令
+  卡死：第 1..3 次各 ~2s（timeout）→ 熔断 → 第 4 次 0ms；熔断后审计 1.1ms
+  ```
+
 - 事实还随命令一起交给 LLM 预审（`lib/preshell.ts` 的 `formatFacts` → `llm-review` 的 prompt）：
   模型看到的是影响面，不再只是一条命令原文
 - 残余缺口（有意为之）：引号里的**远端**路径不再拦（`ssh host 'ls ~/.ssh'` 里的 `~/.ssh` 是远端），

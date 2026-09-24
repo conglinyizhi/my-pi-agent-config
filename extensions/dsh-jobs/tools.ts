@@ -11,6 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerSection } from "../../lib/prompt-sections.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
+import { reportFactLayerState } from "../../lib/preshell.ts";
 import { appendApprovalComment, approveBashCommand, isHardRejected, type BashApprovalDependencies } from "../../lib/bash-approval.ts";
 import { JobRegistry, type JobSnapshot } from "./registry.ts";
 import { bashBackground } from "./providers.ts";
@@ -64,6 +65,7 @@ export function registerJobsTools(pi: ExtensionAPI, registry: JobRegistry, optio
 			beginSandboxSession(sessionId);
 			// ── 前置检查（与内建 bash 的自动判定层一致）──
 			const verdict = checkCommand(params.command, { cwd: ctx.cwd });
+			reportFactLayerState(ctx.ui, verdict.factsUnavailable);
 			if (!verdict.allow) {
 				// 黑名单/内联脚本/全 autoReject 仍硬拒；需确认类进入共享审批链。
 				if (isHardRejected(verdict)) {

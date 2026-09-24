@@ -43,6 +43,7 @@ import {
 	type ApprovalSelect,
 } from "../../lib/approval-channel.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
+import { reportFactLayerState } from "../../lib/preshell.ts";
 import { addAllowDir, addBlockDir, isDirInside, loadSandboxPaths, removeAllowDir } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
@@ -310,6 +311,8 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			// sensitivePaths="ask"：命令引用敏感路径（.env 等）时不在判定层硬拒，
 			// 而是走下面的审批门问人。普通 bash 仍硬拒（那边没有同意出口）。
 			const audit = yolo ? undefined : checkCommand(command as string, { cwd, sensitivePaths: "ask" });
+			// 事实层不可用时提醒一次（升权工具会退回旧的子串匹配 → 命中更多、需人拍板更多）
+			reportFactLayerState(ctx.ui, audit?.factsUnavailable);
 			const sensitive = audit?.sensitive ?? [];
 			if (!yolo && audit && !audit.allow && audit.rules && audit.rules.length > 0 && audit.rules.every((rule) => rule.autoReject)) {
 				return { content: [{ type: "text", text: audit.reason ?? "sandbox-allow: 命令被安全策略拒绝。" }], details: undefined };

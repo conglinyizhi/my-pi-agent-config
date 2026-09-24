@@ -20,6 +20,7 @@ import { createBashToolDefinition, getAgentDir, type BashSpawnContext, type Bash
 import { join } from "node:path";
 import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "../lib/bash-timeout.ts";
 import { checkCommand, buildSandboxEnv, type SandboxCheckResult } from "../lib/sandbox-check.ts";
+import { reportFactLayerState } from "../lib/preshell.ts";
 import { appendApprovalComment, approveBashCommand, bashApprovalDeniedText, isHardRejected, rethrowWithApprovalComment } from "../lib/bash-approval.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
 import { yoloEnabled } from "./sandbox-permissions/yolo.ts";
@@ -91,6 +92,8 @@ export default function (pi: ExtensionAPI) {
 
 			// ── 2. 自动判定层（黑名单/内联脚本/危险规则/白名单）──
 			const verdict: SandboxCheckResult = checkCommand(command, { cwd: ctx?.cwd ?? cwd });
+			// 事实层不在时（缺二进制/超时/熔断）提醒一次：这是静默退化，不说用户只会觉得「怎么又误报」
+			reportFactLayerState(ctx?.ui, verdict.factsUnavailable);
 
 			if (!verdict.allow) {
 				// 黑名单/内联脚本/全 autoReject（以及无规则的硬拒）不进入审批器。
