@@ -123,6 +123,8 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 				signal,
 				cache,
 				config,
+				// 事实层随命令一起给审核模型：它看的是影响面，不只是命令原文
+				{ facts: verdict.facts, factsUnavailable: verdict.factsUnavailable },
 			);
 		} catch {
 			review = undefined;

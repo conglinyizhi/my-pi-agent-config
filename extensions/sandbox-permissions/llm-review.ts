@@ -24,6 +24,7 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
 import { callZenChat } from "../opencode-free/zen-client.ts";
+import { formatFacts, type PreshellFacts } from "../../lib/preshell.ts";
 import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
@@ -218,6 +219,8 @@ export function buildReviewPrompt(
 	system: string,
 	command: string,
 	rules: TokenRule[],
+	facts?: PreshellFacts,
+	factsUnavailable?: string,
 ): { system: string; user: string } {
 	const ruleText =
 		rules.length === 0
@@ -226,9 +229,15 @@ export function buildReviewPrompt(
 					.map((r) => `- ${r.name}：${r.tip}${r.matched?.length ? `（命中：${r.matched.join(" ")}）` : ""}`)
 					.join("\n");
 	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（命令过长已截断）" : command;
+	// 事实层：静态分析出的影响面。有就给，没有就明说读不到（别让它被当成「什么都没碰」）
+	const factsText = facts
+		? `\n\n命令影响面（静态分析事实，不是裁决）：\n${formatFacts(facts)}`
+		: factsUnavailable
+			? `\n\n命令影响面：静态分析不可用（${factsUnavailable}），只能按命令原文判断`
+			: "";
 	return {
 		system,
-		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}`,
+		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}${factsText}`,
 	};
 }
 
@@ -400,6 +409,10 @@ function pickModels(
 /**
  * 执行一次 LLM 审核。
  * 失败一律返回 verdict=error（含禁用/无模型/超时/网络/解析失败），调用方必须回退弹窗。
+ *
+ * facts 是命令的事实层（preshell）结果：带上它，审核模型看的是「碰了哪些路径、
+ * 跑了什么程序、哪里看不懂」，而不是一条命令原文；拿不到时把原因一并给它，
+ * 让它知道影响面不完整，而不是被读成「什么都没碰」。
  */
 export async function reviewCommand(
 	_pi: ExtensionAPI,
@@ -409,6 +422,7 @@ export async function reviewCommand(
 	signal: AbortSignal | undefined,
 	cache: ReviewCache,
 	config?: LlmReviewConfig,
+	facts?: { facts?: PreshellFacts; factsUnavailable?: string },
 ): Promise<ReviewResult> {
 	const cfg = config ?? loadLlmReviewConfig();
 	if (!cfg.enabled) return { verdict: "error", reason: "llm review disabled", suggestion: "" };
@@ -430,7 +444,7 @@ export async function reviewCommand(
 	if (systemPrompt === null) {
 		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
 	}
-	const { system, user } = buildReviewPrompt(systemPrompt, command, rules);
+	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, facts?.facts, facts?.factsUnavailable);
 
 	// 本地类型 0.80.10 的 ModelRegistry 尚无 complete（运行时 0.84.2 已提供），
 	// 用窄接口断言绕过类型检查；运行时行为以实际 pi 版本为准。

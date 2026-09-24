@@ -154,8 +154,13 @@ async function approveCapability(
   let rules: TokenRule[] = [];
   let review: CapabilityReview;
   try {
-    rules = checkCommand(validated.command, { cwd: validated.cwd }).rules ?? [];
-    review = await reviewCommand(pi, ctx, validated.command, rules, signal, capabilityReviewCache, reviewConfig);
+    // 一次判定拿全（rules + facts）：facts 随审核请求一并给模型，worker 请求也看影响面
+    const verdict = checkCommand(validated.command, { cwd: validated.cwd });
+    rules = verdict.rules ?? [];
+    review = await reviewCommand(pi, ctx, validated.command, rules, signal, capabilityReviewCache, reviewConfig, {
+      facts: verdict.facts,
+      factsUnavailable: verdict.factsUnavailable,
+    });
   } catch {
     review = { verdict: "error", reason: "审核调用异常，回退人工确认", suggestion: "" };
   }
