@@ -91,6 +91,22 @@ check = "test -x ~/.pi/agent/scripts/with-device-lock.sh && echo ok"
 hint = "碰调试设备（adb、串口、烧录器这类独占目标）时，同一台设备上的操作要走 `~/.pi/agent/scripts/with-device-lock.sh <设备标识> -- <命令>` 上锁再执行：多开 pi 与每批 worker 是独立进程，而 adb server 全局共享，同一 serial 上并发 install/push/port 会互相踩。等不到锁（退出码 3）就等一会儿或加 --wait 再试，不要绕开锁直接敲 adb。`--status` 看当前谁占着。"
 
 # ─────────────────────────────────────────────────────────────
+# preshell：命令事实层（敏感路径判定与 LLM 预审的事实来源）
+# 独立子进程的静态分析器：命令走 stdin，stdout 出 JSON，报出碰了哪些路径、跑了什么程序、
+# 哪里看不懂。它不做裁决，策略仍在本仓（lib/sandbox-check.ts）。
+# 装：gh release download v0.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS
+#     install -Dm755 /tmp/p/preshell-v0.1-*.linux ~/.pi/runtime/preshell
+# 拿不到报告（缺二进制/超时/坏 JSON/schema 不符）时按旧的 token 兜底走，不静默放行。
+# ─────────────────────────────────────────────────────────────
+[preshell]
+enabled = true
+bin = "~/.pi/runtime/preshell"
+# 单次调用上限（毫秒）；实测 p95 约 8ms，超时按不可用处理
+timeoutMs = 2000
+# 契约版本，只认这个值；工具换 schema 就得先在影子模式里复测再改这里
+schema = 1
+
+# ─────────────────────────────────────────────────────────────
 # subagent：派工前的内存闸
 # worker 的内存墙是「每条命令」1GiB（sandbox-shell 的默认），并发安全阀只数 worker 个数，
 # 两者叠起来能把桌面机推进交换。派工前读 MemAvailable，按下面的两个数算实际并行上限，
