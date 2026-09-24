@@ -36,6 +36,8 @@ import {
 import { runStopAllCommand, runStopCommand, type StopCommandDeps } from "./stop-commands.ts";
 import {
   FleetView,
+  formatClock,
+  formatDuration,
   formatWorkerOutput,
   projectFleet,
   workerOutputBudget,
@@ -339,7 +341,8 @@ export default function (pi: ExtensionAPI) {
         content += theme.fg("dim", ` · ${args.sandbox_profile}`);
       }
       if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
-        content += theme.fg("dim", ` · ${Math.floor(args.timeout)}s`);
+        const secs = Math.floor(args.timeout);
+        content += theme.fg("dim", ` · ${secs}s（${formatClock(secs * 1000)}）`);
       }
       if (Array.isArray(args.skills) && args.skills.length > 0) {
         content += theme.fg("dim", ` · skills ${args.skills.length}`);
@@ -559,9 +562,9 @@ export default function (pi: ExtensionAPI) {
         const byId = new Map(snapshot.map((w) => [w.id, w]));
         const heldLines = held.map((d) => {
           const run = byId.get(d.workerId);
-          const elapsed = run ? Math.round((Date.now() - Date.parse(run.startedAt)) / 1000) : 0;
+          const elapsedMs = run ? Math.max(0, Date.now() - Date.parse(run.startedAt)) : 0;
           const why = d.handle.request.reason === "budget" ? "时间预算快用完了" : "worker 主动请求";
-          return `  ${d.workerId} 已跑 ${elapsed}s（${why}）`;
+          return `  ${d.workerId} 已跑 ${formatDuration(elapsedMs)} · ${why}`;
         });
         const finishedCount = snapshot.filter((w) => w.status === "success").length;
         const decisions = held

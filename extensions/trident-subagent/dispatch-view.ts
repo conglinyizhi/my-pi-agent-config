@@ -105,29 +105,30 @@ export interface FleetWorkerView {
 
 // ── 格式化小工具 ──
 
+/**
+ * 耗时展示统一走双格式：`128s（00:02:08）`。
+ *
+ * 秒数直读（对预算/超时/暂存阈值这些以秒记的参数心里有数），
+ * 时分秒便于跟日志时间戳、系统时钟对时；两者缺一个都要心算。
+ * 代价是字段宽度随小时数增长，不再走定宽补零——对齐让位给可读性。
+ */
 export function formatDuration(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
-  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
-  return `${s}s`;
+  return `${formatSeconds(ms)}（${formatClock(ms)}）`;
 }
 
-/**
- * 固定宽度耗时（恒 6 字符：00m08s / 03m58s / 10m03s / 01h05m）。
- *
- * 专用于行内耗时列与表头汇总：分钟补零，避免跑到两位数分钟时整个字段变宽、
- * 把右侧的成本与速率挤动。静默/等审批时长仍在行尾，用紧凑的 formatDuration。
- */
-export function formatDurationPadded(ms: number): string {
+/** 原始秒数：`128s` */
+export function formatSeconds(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${total}s`;
+}
+
+/** 时分秒：`00:02:08`（小时补零；超过 99 小时自然变长） */
+export function formatClock(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  if (h > 0) return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}m`;
-  return `${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 export function formatCount(n: number): string {
@@ -527,7 +528,7 @@ export class FleetView {
     const live = this.liveTokensPerSec();
     let right = "";
     if (this.workers.length > 0) {
-      right = t.fg("muted", formatDurationPadded(maxElapsed));
+      right = t.fg("muted", formatDuration(maxElapsed));
       if (totalCost > 0) right += t.fg("dim", " · ") + t.fg("muted", `¥${totalCost.toFixed(3)}`);
       // 无速度也用占位填满：整段隐掉会让右侧的左边缘跟着跳（与 duration 补零同一用意）
       right +=
@@ -559,7 +560,7 @@ export class FleetView {
     if (w.status === "queued") {
       l1 += t.fg("dim", " · ") + t.fg("muted", `已排队 ${formatDuration(w.elapsedMs)}`);
     } else {
-      l1 += t.fg("dim", " · ") + t.fg("muted", formatDurationPadded(w.elapsedMs));
+      l1 += t.fg("dim", " · ") + t.fg("muted", formatDuration(w.elapsedMs));
     }
     if (w.cost > 0) l1 += t.fg("dim", " · ") + t.fg("muted", `¥${w.cost.toFixed(3)}`);
     if (w.retries > 0) l1 += t.fg("dim", " · ") + t.fg("warning", `第${w.retries}次尝试`);

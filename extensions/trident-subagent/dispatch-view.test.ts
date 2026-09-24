@@ -21,7 +21,8 @@ import {
   createCoalescer,
   formatCount,
   formatDuration,
-  formatDurationPadded,
+  formatClock,
+  formatSeconds,
   formatRate,
   formatRatePadded,
   formatToolArgs,
@@ -218,7 +219,7 @@ describe("projectWorker：当前动向", () => {
       T0 + IDLE_AFTER_MS + 7000,
     );
     assert.strictEqual(v.activity.kind, "idle");
-    assert.match(v.activity.label, /静默 8s/);
+    assert.match(v.activity.label, /静默 8s（00:00:08）/);
   });
 
   it("等审批优先于一切运行态", () => {
@@ -300,21 +301,22 @@ describe("projectWorker：重试与截断元信息", () => {
 });
 
 describe("格式化小工具", () => {
-  it("formatDuration 三段式", () => {
-    assert.strictEqual(formatDuration(0), "0s");
-    assert.strictEqual(formatDuration(59_000), "59s");
-    assert.strictEqual(formatDuration(61_000), "1m01s");
-    assert.strictEqual(formatDuration(3_600_000 + 120_000), "1h02m");
+  it("formatDuration 双格式：秒数 + 时分秒", () => {
+    assert.strictEqual(formatDuration(0), "0s（00:00:00）");
+    assert.strictEqual(formatDuration(59_000), "59s（00:00:59）");
+    assert.strictEqual(formatDuration(61_000), "61s（00:01:01）");
+    assert.strictEqual(formatDuration(238_000), "238s（00:03:58）");
+    assert.strictEqual(formatDuration(3_600_000 + 120_000), "3720s（01:02:00）");
+    // 负数/非法值一律归零，不当成负耗时展示
+    assert.strictEqual(formatDuration(-1), "0s（00:00:00）");
   });
 
-  it("formatDurationPadded 恒 6 字符（分钟补零，防右侧列跳动）", () => {
-    for (const ms of [0, 8_000, 59_000, 61_000, 238_000, 603_000, 3_600_000 + 120_000]) {
-      assert.strictEqual(formatDurationPadded(ms).length, 6, `${ms}ms → ${formatDurationPadded(ms)}`);
-    }
-    assert.strictEqual(formatDurationPadded(8_000), "00m08s");
-    assert.strictEqual(formatDurationPadded(238_000), "03m58s");
-    assert.strictEqual(formatDurationPadded(603_000), "10m03s");
-    assert.strictEqual(formatDurationPadded(3_600_000 + 120_000), "01h02m");
+  it("formatSeconds / formatClock 是双格式的两个分量", () => {
+    assert.strictEqual(formatSeconds(238_000), "238s");
+    assert.strictEqual(formatClock(238_000), "00:03:58");
+    assert.strictEqual(formatClock(8_000), "00:00:08");
+    assert.strictEqual(formatClock(3_600_000 + 120_000), "01:02:00");
+    assert.strictEqual(formatClock(99 * 3600_000 + 59 * 60_000 + 59_000), "99:59:59");
   });
 
   it("formatCount/formatRate 压缩大数", () => {
@@ -460,7 +462,7 @@ describe("FleetView：渲染与采样", () => {
     const view = new FleetView(plainTheme, false, () => T0 + 61_000);
     view.update(projectFleet([run({ status: "queued", startedAt: at(0) })], T0 + 61_000), plainTheme, false);
     const body = view.render(90).join("\n");
-    assert.match(body, /已排队 1m01s/);
+    assert.match(body, /已排队 61s（00:01:01）/);
   });
 
   it("时间推进后重渲染不吃缓存（耗时/静默继续走字）", () => {
@@ -468,13 +470,13 @@ describe("FleetView：渲染与采样", () => {
     const view = new FleetView(plainTheme, false, () => clock, undefined);
     view.update(projectFleet([run({ lastActivityAt: at(5_000) })], clock), plainTheme, false);
     const first = view.render(80).join("\n");
-    assert.match(first, /00m10s/);
+    assert.match(first, /10s（00:00:10）/);
 
     // 无新事件、只有时间流逝：仍然必须重绘（否则面板看起来假死）
     clock = T0 + 40_000;
     view.update(projectFleet([run({ lastActivityAt: at(5_000) })], clock), plainTheme, false);
     const second = view.render(80).join("\n");
-    assert.match(second, /00m40s/);
+    assert.match(second, /40s（00:00:40）/);
     assert.notStrictEqual(first, second);
   });
 
