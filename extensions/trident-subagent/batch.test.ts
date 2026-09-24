@@ -81,6 +81,41 @@ describe("classifyTerminalError / buildTerminalPatch", () => {
     assert.strictEqual(formatCatchOutput(new Error("boom"), "aborted"), "");
     assert.strictEqual(formatCatchOutput(new SubagentError("aborted", "Subagent 已中止"), "aborted"), "");
   });
+
+  it("用户强停：说清是谁停的、现场在哪，并挡一下自动重派", () => {
+    const err = new SubagentError(
+      "aborted",
+      "Subagent 被用户强制停下（/subagent:stop）：方向跑偏了",
+      tl,
+      "/tmp/pi-subagent-inv-x/w1.md",
+      "user",
+    );
+    const out = formatCatchOutput(err, "aborted", { archivePath: "/home/u/.pi/subagent-diagnostics/batch-1.json" });
+    assert.match(out, /用户强制停下/);
+    assert.match(out, /\/subagent:stop/);
+    assert.match(out, /方向跑偏了/);
+    assert.match(out, /\/tmp\/pi-subagent-inv-x\/w1\.md/);
+    assert.match(out, /batch-1\.json/);
+    assert.match(out, /不要自动重试/);
+    assert.match(out, /subagent_resume 续不上/);
+  });
+
+  it("用户强停但没有现场文件时：仍说清是谁停的，不编造现场", () => {
+    const err = new SubagentError("aborted", "Subagent 被用户强制停下（/subagent:stop）：未写理由", undefined, undefined, "user");
+    const out = formatCatchOutput(err, "aborted", {});
+    assert.match(out, /\/subagent:stop/);
+    assert.doesNotMatch(out, /investigation/);
+    assert.doesNotMatch(out, /subagent-diagnostics/);
+    assert.match(out, /subagent_resume 续不上/);
+  });
+
+  it("普通超时/中止不套用户强停的话术", () => {
+    const err = new SubagentError("timeout", "Subagent 超时（600s）", tl, "/tmp/inv.md");
+    const out = formatCatchOutput(err, "timeout");
+    assert.match(out, /FAILED final=timeout/);
+    assert.doesNotMatch(out, /用户强制停下/);
+    assert.doesNotMatch(out, /不要自动重试/);
+  });
 });
 
 describe("runWithConcurrency（并发节流）", () => {

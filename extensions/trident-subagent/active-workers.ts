@@ -8,6 +8,8 @@
  * batchId/workerId 与状态快照同源，展示信息从快照拼，这里只管「怎么停」。
  */
 
+import { makeUserStopReason } from "../../lib/subagent-run.ts";
+
 export interface WorkerKey {
   batchId: string;
   workerId: string;
@@ -67,7 +69,9 @@ export function listActiveWorkers(): WorkerKey[] {
 export function stopWorker(key: WorkerKey, reason: string): boolean {
   const controller = controllers.get(formatWorkerKey(key));
   if (!controller) return false;
-  if (!controller.signal.aborted) controller.abort(new Error(reason));
+  // 用带标记的 reason：命令层允许「不写理由直接确认」，那时 reason 是空串，
+  // 光看文本分不出这是一次人为叫停；worker 侧据此把「用户叫停」和超时/失联分开措辞
+  if (!controller.signal.aborted) controller.abort(makeUserStopReason(reason));
   return true;
 }
 
@@ -75,7 +79,7 @@ export function stopAllWorkers(reason: string): number {
   let stopped = 0;
   for (const controller of controllers.values()) {
     if (controller.signal.aborted) continue;
-    controller.abort(new Error(reason));
+    controller.abort(makeUserStopReason(reason));
     stopped++;
   }
   return stopped;

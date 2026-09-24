@@ -134,14 +134,55 @@ export class SubagentError extends Error {
   readonly timeline?: TimelineEvent[];
   /** 重试彻底失败后写出的调查文件绝对路径（可选） */
   readonly investigationPath?: string;
+  /**
+   * 中止是谁下的令。"user" = 人在会话里用 /subagent:stop 强制停下。
+   * 调用方据此把「用户叫停」和「超时/失联/内部报错」分开措辞——
+   * 前者不是故障，不该自动重试，也不该原样重派。
+   */
+  readonly stopKind?: "user";
 
-  constructor(status: "timeout" | "aborted", message: string, timeline?: TimelineEvent[], investigationPath?: string) {
+  constructor(
+    status: "timeout" | "aborted",
+    message: string,
+    timeline?: TimelineEvent[],
+    investigationPath?: string,
+    stopKind?: "user",
+  ) {
     super(message);
     this.name = "SubagentError";
     this.status = status;
     this.timeline = timeline;
     this.investigationPath = investigationPath;
+    this.stopKind = stopKind;
   }
+}
+
+/** 用户强停标记：挂在 /subagent:stop 传给 AbortController.abort 的 reason 上 */
+export const USER_STOP_MARK = "piUserStop";
+
+/**
+ * 构造「用户强停」的中止理由。
+ *
+ * 必须带标记而不是只靠 message：命令层允许「不写理由直接确认」，
+ * 那时 reason 是空串，光看文本分不出这是一次人为叫停。
+ */
+export function makeUserStopReason(reason: string): Error {
+  const err = new Error(reason.trim() || "未写理由");
+  err.name = "UserStopError";
+  Object.defineProperty(err, USER_STOP_MARK, { value: true, enumerable: false });
+  return err;
+}
+
+/** 这次中止是不是用户强停（AbortSignal.any 会原样转发 reason，标记跟着走） */
+export function isUserStop(signal: AbortSignal | undefined): boolean {
+  const reason: unknown = signal?.reason;
+  if (!reason || typeof reason !== "object") return false;
+  return (reason as Record<string, unknown>)[USER_STOP_MARK] === true;
+}
+
+/** 用户强停时的终态文案（给模型看的；写明是谁停的，别让它当故障重试） */
+export function userStopMessage(reason: string | undefined): string {
+  return `Subagent 被用户强制停下（/subagent:stop）：${reason ?? "未写理由"}`;
 }
 
 export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent。你在隔离的上下文窗口中处理委派任务，避免污染主对话。
@@ -902,20 +943,26 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
         // 外部中止可以带理由（/subagent:stop 就是这条路）。不记下来的话，
         // 命令层让你填的那句话就白填了，事后没人知道为什么停。
         const stopReason = status === "aborted" ? externalStopReason(opts.signal) : undefined;
-        if (stopReason) {
+        const userStop = status === "aborted" && isUserStop(opts.signal);
+        if (stopReason || userStop) {
           // 用 stopped 而不是 aborted：worker 自己报的那条 aborted 已经在轨迹上（它确实被中止了），
           // 这条是父侧补的原因（谁停的、为什么）。同名两条摆在一起会被当成重复记录。
-          timeline.addLifecycle("stopped", `外部停止：${stopReason}`);
-          archiveTimeline.addLifecycle("stopped", `外部停止：${stopReason}`);
+          const note = userStop ? `用户强停（/subagent:stop）：${stopReason ?? "未写理由"}` : `外部停止：${stopReason}`;
+          timeline.addLifecycle("stopped", note);
+          archiveTimeline.addLifecycle("stopped", note);
         }
         throw new SubagentError(
           status,
           status === "timeout"
             ? `Subagent 超时（${opts.timeout ?? 600}s）`
-            : stopReason
-              ? `Subagent 已中止：${stopReason}`
-              : "Subagent 已中止",
+            : userStop
+              ? userStopMessage(stopReason)
+              : stopReason
+                ? `Subagent 已中止：${stopReason}`
+                : "Subagent 已中止",
           result.timeline,
+          undefined,
+          userStop ? "user" : undefined,
         );
       }
 
@@ -943,14 +990,22 @@ export function externalStopReason(signal: AbortSignal | undefined): string | un
   return message ? message : undefined;
 }
 
+/** 中止错误：用户强停与普通中止分开措辞（退避期间被停也要说清是谁停的） */
+function abortError(signal?: AbortSignal): SubagentError {
+  if (isUserStop(signal)) {
+    return new SubagentError("aborted", userStopMessage(externalStopReason(signal)), undefined, undefined, "user");
+  }
+  return new SubagentError("aborted", "Subagent 已中止");
+}
+
 /** 可中止退避等待：signal 中止时以 SubagentError("aborted") 拒绝（默认 sleep 实现） */
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (!ms) return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(new SubagentError("aborted", "Subagent 已中止"));
+  if (signal?.aborted) return Promise.reject(abortError(signal));
   return new Promise((resolve, reject) => {
     const onAbort = () => {
       clearTimeout(t);
-      reject(new SubagentError("aborted", "Subagent 已中止"));
+      reject(abortError(signal));
     };
     const t = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
@@ -1073,7 +1128,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
 
   while (true) {
     if (opts.signal?.aborted) {
-      lastError = new SubagentError("aborted", "Subagent 已中止");
+      lastError = abortError(opts.signal);
       break;
     }
     round++;
@@ -1186,7 +1241,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   const inlineSummary = buildInlineSummary(invInput, investigationPath);
 
   if (lastError instanceof SubagentError) {
-    throw new SubagentError(lastError.status, lastError.message, lastError.timeline, investigationPath);
+    throw new SubagentError(lastError.status, lastError.message, lastError.timeline, investigationPath, lastError.stopKind);
   }
   if (lastError) {
     throw new SubagentError("aborted", String(lastError), undefined, investigationPath);

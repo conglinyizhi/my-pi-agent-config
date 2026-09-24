@@ -4,8 +4,10 @@
 // （success/failed/aborted/timeout）。单个 worker 失败或超时不终止兄弟 worker，
 // 也不提前返回。结果按输入顺序逐项列出。
 
+import { join } from "node:path";
 import {
   runSubagent,
+  externalStopReason,
   getResultOutput,
   isFailedResult,
   SubagentError,
@@ -16,6 +18,7 @@ import {
 import type { CapabilityApproval, CapabilityRequest, CapabilityReview } from "../../lib/subagent-capability.ts";
 import { buildHoldDecision, type HoldDecision, type HoldDeferHandle, type HoldRequest } from "../../lib/subagent-hold.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
+import { diagnosticsRoot } from "./diagnostics.ts";
 import { updateWorker } from "./status.ts";
 import { registerWorkerAbort, unregisterWorkerAbort, type WorkerKey } from "./active-workers.ts";
 
@@ -70,9 +73,32 @@ export function buildTerminalPatch(err: unknown, finishedAt: string): TerminalPa
  * catch 路径的失败输出：SubagentError 携带 investigationPath 时，输出中附调查文件
  * 路径与读档指引（供主 agent 直接 read 调查文件恢复现场）；否则返回空字符串，
  * 由调用方回退为 String(err)。
+ *
+ * 用户强停（/subagent:stop）另有措辞：这不是 worker 的故障，是人在会话里叫停的，
+ * 而且现场还在，不该当超时/失败那样自动重试或原样重派。
  */
-export function formatCatchOutput(err: unknown, status: BatchItemStatus): string {
+export function formatCatchOutput(
+  err: unknown,
+  status: BatchItemStatus,
+  opts: { archivePath?: string } = {},
+): string {
   const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+  const userStop = err instanceof SubagentError && err.stopKind === "user";
+  if (userStop) {
+    const lines = [
+      `${String(err)}`,
+      "  这是用户在会话里下的令（/subagent:stop），不是 worker 失败、也不是超时：不要自动重试，也不要原样重派同一个任务，先看用户的理由。",
+    ];
+    if (investigationPath) {
+      lines.push(`  现场摘要（最后步骤 + 路径线索）：${investigationPath}`);
+      lines.push("  读档：先看该文件「读档指引」与「最终结论」；要复用已做的侦察，按「线索」里的路径去 read/diff 磁盘现状");
+    }
+    if (opts.archivePath) {
+      lines.push(`  完整可见轨迹（任务输入 / timeline / worker 可见输出）：${opts.archivePath}`);
+    }
+    lines.push("  接着干：worker 进程已退出，subagent_resume 续不上（那只对停在检查点上的 worker 有效）；要接着做就把上面的文件当背景重新派一个 worker，或先跟用户对齐还做不做。");
+    return lines.join("\n");
+  }
   if (!investigationPath) return "";
   return `FAILED final=${status}\n  investigation: ${investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」\n  ${String(err)}`;
 }
@@ -362,8 +388,11 @@ async function runWorker(
   // 面板上它一直是 queued，提督以为停干净了
   if (controller.signal.aborted) {
     const finishedAt = new Date().toISOString();
-    updateWorker(id, { status: "aborted", finishedAt, output: "启动前已被停止" });
-    return { index, status: "aborted", output: "启动前已被停止", stderr: "" };
+    // 同样是用户下的令：说清「一步都没跑」，别让主 agent 去猜有没有留下现场
+    const reason = externalStopReason(controller.signal);
+    const note = `用户强停（/subagent:stop）于启动前：${reason ?? "未写理由"}。这个 worker 一步都没跑，没有现场可回溯，也不用重派。`;
+    updateWorker(id, { status: "aborted", finishedAt, output: note });
+    return { index, status: "aborted", output: note, stderr: note };
   }
 
   // 真启动才计耗时：创建批次时写入的 startedAt 是批次起点，排队中的 worker 一直沿用它，
@@ -488,10 +517,12 @@ async function runWorker(
     const patch = buildTerminalPatch(err, new Date().toISOString());
     updateWorker(id, patch);
     const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+    // 诊断档案按批次落盘（batchId）：worker 被强停时这是唯一留下完整可见轨迹的地方
+    const archivePath = opts.taskId ? join(diagnosticsRoot(), `${opts.taskId}.json`) : undefined;
     return {
       index,
       status: patch.status,
-      output: formatCatchOutput(err, patch.status) || String(err),
+      output: formatCatchOutput(err, patch.status, { archivePath }) || String(err),
       stderr: String(err),
       investigationPath,
     };

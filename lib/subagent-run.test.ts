@@ -20,6 +20,9 @@ import {
   resolveTerminalState,
   SubagentError,
   externalStopReason,
+  makeUserStopReason,
+  isUserStop,
+  userStopMessage,
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
@@ -979,5 +982,70 @@ describe("externalStopReason：外部停止的理由", () => {
     const c = new AbortController();
     c.abort("字符串理由");
     assert.strictEqual(externalStopReason(c.signal), undefined);
+  });
+});
+
+describe("用户强停（/subagent:stop）的标记与措辞", () => {
+  it("makeUserStopReason 可被识别：理由照旧取出", () => {
+    const c = new AbortController();
+    c.abort(makeUserStopReason("方向跑偏了"));
+    assert.strictEqual(isUserStop(c.signal), true);
+    assert.strictEqual(externalStopReason(c.signal), "方向跑偏了");
+  });
+
+  // 命令层允许「不写理由直接确认」：那时 reason 是空串，只看文本分不出这是人为叫停
+  it("理由空白时标记仍不丢，文本落到「未写理由」", () => {
+    const c = new AbortController();
+    c.abort(makeUserStopReason("   "));
+    assert.strictEqual(isUserStop(c.signal), true);
+    assert.strictEqual(externalStopReason(c.signal), "未写理由");
+  });
+
+  it("普通中止（超时/机制默认/无信号）不算用户强停", () => {
+    const c = new AbortController();
+    c.abort(new Error("Subagent 超时（600s）"));
+    assert.strictEqual(isUserStop(c.signal), false);
+    assert.strictEqual(isUserStop(new AbortController().signal), false);
+    assert.strictEqual(isUserStop(undefined), false);
+  });
+
+  // batch 给 worker 的是 AbortSignal.any([batchSignal, workerSignal])：reason 必须原样转发
+  it("组合信号（AbortSignal.any）转发 reason 时标记跟着走", () => {
+    const outer = new AbortController();
+    const inner = new AbortController();
+    const combined = AbortSignal.any([outer.signal, inner.signal]);
+    inner.abort(makeUserStopReason("停"));
+    assert.strictEqual(isUserStop(combined), true);
+    assert.strictEqual(externalStopReason(combined), "停");
+  });
+
+  it("终态文案写明「谁停的」（/subagent:stop），不给模型留猜测空间", () => {
+    assert.match(userStopMessage("方向跑偏了"), /用户强制停下/);
+    assert.match(userStopMessage("方向跑偏了"), /\/subagent:stop/);
+    assert.match(userStopMessage("方向跑偏了"), /方向跑偏了/);
+    assert.match(userStopMessage(undefined), /未写理由/);
+  });
+
+  it("runSubagent：起跑前就被叫停时，终态错误带 stopKind=user", async () => {
+    const c = new AbortController();
+    c.abort(makeUserStopReason("先别跑"));
+    await assert.rejects(
+      () => runSubagent({
+        task: "t",
+        cwd: os.tmpdir(),
+        model: "test/model",
+        signal: c.signal,
+        runOnce: async () => {
+          throw new Error("不该跑到 worker 启动");
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SubagentError);
+        assert.strictEqual(err.status, "aborted");
+        assert.strictEqual(err.stopKind, "user");
+        assert.match(err.message, /\/subagent:stop/);
+        return true;
+      },
+    );
   });
 });

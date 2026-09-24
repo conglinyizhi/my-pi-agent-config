@@ -592,7 +592,11 @@ export default function (pi: ExtensionAPI) {
         const capability = r.capabilityRequest
           ? `\n  needs_approval: ${r.capabilityRequest.capability} — ${r.capabilityRequest.scope}\n  command: ${r.capabilityRequest.command.slice(0, 500)}${reviewBrief}`
           : "";
-        const stderr = r.stderr.trim() ? `\n  stderr: ${r.stderr.trim().slice(0, 500)}` : "";
+        // 输出里已经带过的错误不再当 stderr 重打一遍（catch 路径的 output 就是以 String(err) 开头的）
+        const stderrText = r.stderr.trim();
+        const stderr = stderrText && !r.output.includes(stderrText.slice(0, 120))
+          ? `\n  stderr: ${stderrText.slice(0, 500)}`
+          : "";
         // inlineSummary 通常已含 investigation 路径；未含才补，避免重复
         const inv = r.investigationPath && !r.output.includes(r.investigationPath)
           ? `\n  investigation: ${r.investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」`

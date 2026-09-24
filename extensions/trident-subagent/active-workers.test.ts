@@ -10,6 +10,7 @@ import {
   stopWorker,
   unregisterWorkerAbort,
 } from "./active-workers.ts";
+import { externalStopReason, isUserStop } from "../../lib/subagent-run.ts";
 
 function key(batchId: string, workerId: string) {
   return { batchId, workerId };
@@ -42,6 +43,28 @@ test("停一个 worker 会把理由挂到 abort reason 上", () => {
   assert.equal(stopWorker(key("batch-a", "w2"), "方向跑偏了"), true);
   assert.equal(c.signal.aborted, true);
   assert.equal((c.signal.reason as Error).message, "方向跑偏了");
+});
+
+// worker 侧靠这个标记分辨「用户叫停」与「超时/失联」：理由可以空，标记必须在
+test("命令层停下的 reason 带用户强停标记（不写理由也不丢）", () => {
+  resetActiveWorkers();
+  const withReason = new AbortController();
+  const blank = new AbortController();
+  registerWorkerAbort(key("batch-a", "w1"), withReason);
+  registerWorkerAbort(key("batch-a", "w2"), blank);
+  stopWorker(key("batch-a", "w1"), "方向跑偏了");
+  stopWorker(key("batch-a", "w2"), "");
+  assert.equal(isUserStop(withReason.signal), true);
+  assert.equal(isUserStop(blank.signal), true);
+  assert.equal(externalStopReason(blank.signal), "未写理由");
+});
+
+test("停全部同样带标记", () => {
+  resetActiveWorkers();
+  const c = new AbortController();
+  registerWorkerAbort(key("batch-a", "w1"), c);
+  stopAllWorkers("清场");
+  assert.equal(isUserStop(c.signal), true);
 });
 
 test("停不存在的 worker 返回 false，不抛错", () => {
