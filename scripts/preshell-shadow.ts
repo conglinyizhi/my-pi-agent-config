@@ -6,16 +6,20 @@
 //   node --experimental-strip-types scripts/preshell-shadow.ts --n 1500
 //
 //   --bin PATH   缺省依次取：--bin > $PRESHELL_BIN > ~/.pi/runtime/preshell > PATH 上的 preshell
-//   --n 0        跑全部（去重后的全量；4 万条量级大约 5 分钟）
+//   --n 0        跑全部（去重后的全量；4 万条量级：流式约 1 分钟，单条约 5 分钟）
 //   --dump DIR   把每类转移的样例写成 jsonl（默认不写盘）
 //   --seed N     抽样种子（默认 7，可复现）
 //   --policy P   报告里逐条样例用哪一档（strict | moderate | hybrid，缺省 hybrid）
+//   --no-stream  不走 --stream，回到「每条起一次进程」（对照用；默认流式，v0.1 那种
+//                不认识 --stream 的二进制会自动退回去）
 //
 // 报告开头会打出现用二进制的 version / schema / sha256，跟 PINNED_SHA256 对比——
 // 结论必须能归到哪个具体产物上，不然下次改版就说不清是它变了还是我们的策略变了。
 //
 // v0.1 实测（2026-09-24）：version 0.1.0 · schema 1 ·
 //   sha256 e569f0c76c0c9e4b762225b35fadb4c1ed91011e44e05c55ba8bce24579af102
+// v0.2 实测（2026-09-24）：version 0.2.0 · schema 1 · 带 --stream ·
+//   sha256 83ad75050da405e314f2a956746a296244f52781e3d4094a791ec00a2c42407a
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -25,6 +29,7 @@ import { basename, join } from "node:path";
 import { checkCommand, detectSensitivePaths } from "../lib/sandbox-check.ts";
 import { commandBlocked, loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
 import { isDirInside, loadSandboxPaths } from "../extensions/sandbox-permissions/paths.ts";
+import { openPreshellStream, streamSupported, type PreshellStream } from "../lib/preshell-stream.ts";
 
 type Kind = "bash" | "allow";
 type Verdict = "allow" | "ask" | "deny" | "unavailable";
@@ -65,8 +70,8 @@ function arg(name: string, fallback = ""): string {
 }
 
 const BIN = arg("bin", process.env.PRESHELL_BIN ?? (fs.existsSync(join(homedir(), ".pi", "runtime", "preshell")) ? join(homedir(), ".pi", "runtime", "preshell") : "preshell"));
-/** v0.1 发布物的 sha256（发布方带 SHA256SUMS；不一致时报告要说得出来） */
-const PINNED_SHA256 = "e569f0c76c0c9e4b762225b35fadb4c1ed91011e44e05c55ba8bce24579af102";
+/** 当前 pin 的发布物 sha256（v0.2；发布方带 SHA256SUMS，不一致时报告要说得出来） */
+const PINNED_SHA256 = "83ad75050da405e314f2a956746a296244f52781e3d4094a791ec00a2c42407a";
 /** transitions = 三档策略对比；blacklist = 只看敏感路径这一维（旧子串匹配 vs 新事实层+token 兼底） */
 const MODE = arg("mode", "transitions");
 const N = Number(arg("n", "1500"));
@@ -170,8 +175,27 @@ function currentVerdict(cmd: string, cwd: string): { verdict: Verdict; detail: s
 }
 
 // ── preshell 侧：一次调用 + 一份「还没定稿」的草拟策略 ──
+//
+// 默认走 --stream：一个子进程跑完整轮（4 万条量级的语料里，单条模式那 5 分钟几乎全是在起进程）。
+// --no-stream 或二进制不认 --stream（v0.1）时退回单条模式，两者读到的报告是同一份。
 
-function runPreshell(cmd: string): { report?: PreshellReport; error?: string; ms: number } {
+const USE_STREAM = !process.argv.includes("--no-stream") && streamSupported(BIN);
+let streamClient: PreshellStream | undefined;
+let streamFailed = false;
+
+/** 流式一旦出问题就整轮退回单条：宁可慢，不要拿「一半走流式一半走单条」的数字当结论 */
+async function runPreshell(cmd: string): Promise<{ report?: PreshellReport; error?: string; ms: number }> {
+  if (USE_STREAM && !streamFailed) {
+    streamClient ??= openPreshellStream({ bin: BIN, timeoutMs: 2000, idleMs: 0 });
+    const started = process.hrtime.bigint();
+    const result = await streamClient.analyze(cmd);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    if (result.ok) return { report: result.report as PreshellReport, ms };
+    streamFailed = true;
+    console.log(`⚠ 流式失败（${result.reason}${result.detail ? `：${result.detail}` : ""}），本轮退回单条模式`);
+    // 掉下来的这一条改走单条模式补上，免得语料里凭空少一条
+  }
+
   const started = process.hrtime.bigint();
   const proc = spawnSync(BIN, ["--shell=probe"], { input: cmd, encoding: "utf8", timeout: 2000, maxBuffer: 8 * 1024 * 1024 });
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
@@ -282,6 +306,8 @@ const rand = makeRandom(SEED);
 // ── blacklist 模式：只看敏感路径这一维，旧子串匹配 vs 新判定 ──
 
 if (MODE === "blacklist") {
+  // 这一维走的是生产路径（detectSensitivePaths → 单条模式），刻意不开流式：
+  // 它要回答的是「现行代码读到的事实是什么」，换成流式就不是同一个问题了
   const { files, commands } = collect();
   const all = [...commands.entries()].map(([cmd, meta]) => ({
     kind: meta.kinds.has("bash") ? ("bash" as Kind) : ("allow" as Kind),
@@ -413,7 +439,7 @@ const dumpFile = DUMP ? (fs.mkdirSync(DUMP, { recursive: true }), fs.createWrite
 
 for (const item of sample) {
   const current = currentVerdict(item.cmd, item.cwd);
-  const { report, error, ms } = runPreshell(item.cmd);
+  const { report, error, ms } = await runPreshell(item.cmd);
   parseMs.push(ms);
   if (error || !report) {
     unavailable++;
@@ -469,6 +495,10 @@ for (const item of sample) {
 
 dumpFile?.end();
 
+// 收工：把流式子进程送走（重活已经干完，不能留一个没人喂 stdin 的残余）
+const streamStats = streamClient?.stats();
+await streamClient?.close();
+
 // ── 报告：先按「转移对」聚合，再把详细原因作为子项 ──
 
 const pairs = new Map<string, number>();
@@ -488,6 +518,12 @@ const pct = (p: number) => (sorted.length === 0 ? 0 : sorted[Math.min(sorted.len
 console.log(`策略档位：${POLICY}`);
 console.log("preshell 解析状态：", [...statusCount.entries()].map(([k, v]) => `${k}=${v}`).join(" · "));
 console.log(`uncertain 占比：${((uncertain / Math.max(1, sample.length)) * 100).toFixed(1)}%`);
+console.log(`preshell 调用方式：${USE_STREAM && !streamFailed ? "流式（一个子进程跑全轮）" : "单条（每条起一次进程）"}${streamFailed ? "（流式中途失败，已退回）" : ""}`);
+if (USE_STREAM && !streamFailed && streamStats) {
+  console.log(
+    `流式进程：起 ${streamStats.spawns} 次 · 请求 ${streamStats.requests} 条 · 超时 ${streamStats.timeouts} · 崩溃 ${streamStats.crashes} · 无主应答 ${streamStats.orphanAnswers}`,
+  );
+}
 console.log(`单次调用耗时：p50 ${pct(0.5).toFixed(1)}ms · p95 ${pct(0.95).toFixed(1)}ms · max ${(sorted[sorted.length - 1] ?? 0).toFixed(1)}ms`);
 if (unavailable > 0) console.log(`不可用：${unavailable} 条`);
 

@@ -10,8 +10,11 @@
 //
 // 契约（preshell 仓库 docs/integration.md）：
 //   命令走 stdin，stdout 恰好一个 JSON；退出码 0 = 有报告，2 = 用法错误，其它 = 工具没跑起来
-//   --version → {"tool":"preshell","version":"0.1.0","schema":1}：解析形状锁 schema
+//   --version → {"tool":"preshell","version":"0.2.0","schema":1}：解析形状锁 schema
 //   拿不到报告（缺二进制/超时/坏 JSON）时默认动作是保守兜底，绝不因此放行
+//
+// 本文件走的是「一条命令一个子进程」的单条模式：实时路径一次只问一条，起进程那 2ms 无所谓。
+// 批量场景用 lib/preshell-stream.ts 的长驻子进程（--stream），那边省下的才是真开销。
 //
 // 缺省二进制：~/.pi/runtime/preshell，可用 extensions.toml 的 [preshell] 覆盖。
 
@@ -96,7 +99,7 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  * 真正的收益在坏情况：二进制卡住时，每条命令的阻塞从 2s 降到 100ms。
  */
 export const DEFAULT_TIMEOUT_MS = 100;
-/** 我们验证过的 v0.1 契约版本 */
+/** 我们验证过的契约版本（v0.1 与 v0.2 都是 schema=1；版号本身不参与判定） */
 export const EXPECTED_SCHEMA = 1;
 
 /**
@@ -105,8 +108,9 @@ export const EXPECTED_SCHEMA = 1;
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.1-*.linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.2 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.2-*.linux ~/.pi/runtime/preshell",
+  "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
 ].join("\n");
@@ -222,10 +226,13 @@ export function clearPreshellCache(): void {
   cache.clear();
 }
 
-/** 每次进程只问一次 --version（版本/schema 是产物属性，不随命令变） */
+/** 每次进程只问一次 --version（版本/schema 是产物属性，不随命令变）；流式客户端也用这份缓存 */
 const versionCache = new Map<string, { version: string; schema: number } | { error: PreshellUnavailableReason }>();
 
-function queryVersion(bin: string, timeoutMs: number): { version: string; schema: number } | { error: PreshellUnavailableReason } {
+export function queryPreshellVersion(
+  bin: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): { version: string; schema: number } | { error: PreshellUnavailableReason } {
   const hit = versionCache.get(bin);
   if (hit) return hit;
   let result: { version: string; schema: number } | { error: PreshellUnavailableReason };
@@ -267,7 +274,7 @@ export function analyzeCommand(command: string, opts: { config?: PreshellConfig 
   if (cached) return cached;
 
   const outcome = ((): PreshellOutcome => {
-    const version = queryVersion(bin, config.timeoutMs);
+    const version = queryPreshellVersion(bin, config.timeoutMs);
     if ("error" in version) return { ok: false, reason: version.error };
     if (version.schema !== config.schema) {
       return { ok: false, reason: "schema", detail: `工具报 schema=${version.schema}，期望 ${config.schema}` };
