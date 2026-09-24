@@ -16,8 +16,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
-import { homedir } from "node:os";
+import { Text } from "@earendil-works/pi-tui";
+import * as fs from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
+import {
+	formatCallText,
+	formatResultFooter,
+	formatResultText,
+	type SandboxAllowResultInput,
+	type RenderTheme,
+} from "./render.ts";
 import {
 	buildEscalationEnv,
 	MAX_MEMORY_MB,
@@ -49,6 +59,14 @@ import { yoloEnabled } from "./yolo.ts";
 
 const MAX_OUTPUT_BYTES = 1_000_000;
 const MAX_COMMAND_TIMEOUT_SECONDS = 2_147_483.647; // 与 pi 内建 bash 的 setTimeout 上限一致
+
+/**
+ * 全量输出落盘：结果文本只留前 MAX_OUTPUT_BYTES，被截时给一个可回看的文件。
+ * 落在 os.tmpdir()（本机是 tmpfs），不裁的话长输出就只能靠肉眼截断后的那截。
+ */
+function fullOutputPathFor(): string {
+	return join(tmpdir(), `pi-sandbox-allow-${Date.now()}-${process.pid}.log`);
+}
 
 export const SANDBOX_ALLOW_PARAMETERS = Type.Object({
 	command: Type.String({ minLength: 1, description: "The complete shell command string to run once approved." }),
@@ -258,6 +276,23 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 		],
 		// OpenAI function schema 要求根节点是 object；条件字段由描述与运行时校验约束。
 		parameters: SANDBOX_ALLOW_PARAMETERS,
+		// 调用行与结果区自己写：默认渲染只给工具名 + 10 行预览，「跑什么、申请了什么权限」都看不见
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(formatCallText(args, theme as unknown as RenderTheme));
+			return text;
+		},
+		renderResult(result, { expanded }, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const details = (result.details ?? {}) as SandboxAllowResultInput;
+			const body = result.content
+				.filter((part) => part.type === "text")
+				.map((part) => (part as { text: string }).text)
+				.join("\n");
+			const renderTheme = theme as unknown as RenderTheme;
+			text.setText(formatResultText(body, { expanded, footer: formatResultFooter(details, renderTheme) }, renderTheme));
+			return text;
+		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const { command, permission, justification, timeout, memoryMb } = params;
 			const cwd = ctx.cwd;
@@ -406,6 +441,16 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			let truncated = false;
 			let lastEmit = 0;
 			let emitTimer: ReturnType<typeof setTimeout> | undefined;
+			// 边跑边把完整输出写到内存盘：结果文本只留前 1MB，被截时才把这个文件告诉人
+			const fullOutputPath = fullOutputPathFor();
+			let fullStream: fs.WriteStream | undefined;
+			try {
+				fullStream = fs.createWriteStream(fullOutputPath, { mode: 0o600 });
+				// 写盘失败不能影响命令本身：直接放弃全量档
+				fullStream.on("error", () => { fullStream = undefined; });
+			} catch {
+				fullStream = undefined;
+			}
 
 			const emitPartial = () => {
 				if (!onUpdate) return;
@@ -414,6 +459,7 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 			};
 
 			const onData = (data: Buffer) => {
+				fullStream?.write(data);
 				if (total >= MAX_OUTPUT_BYTES) {
 					truncated = true;
 					return;
@@ -449,15 +495,37 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 				if (emitTimer) clearTimeout(emitTimer);
 			}
 
+			// 收尾：没被截就删掉全量档（结果文本里已有全文，不必留盘）
+			let keptFullOutput: string | undefined;
+			if (fullStream) {
+				const stream = fullStream;
+				await new Promise<void>((resolve) => stream.end(() => resolve()));
+				if (truncated) {
+					keptFullOutput = fullOutputPath;
+				} else {
+					try { fs.unlinkSync(fullOutputPath); } catch { /* ignore */ }
+				}
+			} else {
+				try { fs.unlinkSync(fullOutputPath); } catch { /* ignore */ }
+			}
+
 			let output = Buffer.concat(chunks).toString("utf8");
 			if (userComment) output += `\n[审批附言：${userComment}]`;
 			if (truncated) output += `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
+			if (keptFullOutput) output += `\n[full output: ${keptFullOutput}]`;
 			if (exitCode !== null && exitCode !== 0) output += `\n[exit code: ${exitCode}]`;
 			if (statusLine) output += statusLine;
 
 			return {
 				content: [{ type: "text", text: output || "(no output)" }],
-				details: { exitCode, permission, writePaths, memoryMb: memoryMb as number | undefined },
+				details: {
+					exitCode,
+					permission,
+					writePaths,
+					memoryMb: memoryMb as number | undefined,
+					timeout: timeout as number | undefined,
+					...(keptFullOutput ? { fullOutputPath: keptFullOutput } : {}),
+				},
 			};
 		},
 	});
