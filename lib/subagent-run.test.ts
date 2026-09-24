@@ -23,6 +23,7 @@ import {
   makeUserStopReason,
   isUserStop,
   userStopMessage,
+  SUBAGENT_PROMPT,
   TIMELINE_MAX_ENTRIES,
   TIMELINE_MAX_TEXT,
   TIMELINE_MAX_FIELD,
@@ -1047,5 +1048,16 @@ describe("用户强停（/subagent:stop）的标记与措辞", () => {
         return true;
       },
     );
+  });
+});
+
+describe("worker 系统提示的工具链约定", () => {
+  // 子进程 --no-extensions，拿不到主 agent 的 tool-checker 提示，只能写在 worker 系统提示里
+  it("要求 pnpm（含 pnpm dlx 替 npx），禁止 npm / yarn", () => {
+    assert.match(SUBAGENT_PROMPT, /pnpm dlx/);
+    assert.match(SUBAGENT_PROMPT, /pnpm install/);
+    const npxLine = SUBAGENT_PROMPT.split("\n").find((line) => line.includes("npx"));
+    assert.ok(npxLine, "系统提示里应有一条讲 npx 的句子");
+    assert.match(npxLine as string, /不要用|禁止/);
   });
 });
