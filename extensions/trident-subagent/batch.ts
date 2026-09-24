@@ -83,24 +83,32 @@ export function formatCatchOutput(
   opts: { archivePath?: string } = {},
 ): string {
   const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
+  const transcriptPath = err instanceof SubagentError ? err.transcriptPath : undefined;
   const userStop = err instanceof SubagentError && err.stopKind === "user";
   if (userStop) {
     const lines = [
       `${String(err)}`,
       "  这是用户在会话里下的令（/subagent:stop），不是 worker 失败、也不是超时：不要自动重试，也不要原样重派同一个任务，先看用户的理由。",
     ];
-    if (investigationPath) {
-      lines.push(`  现场摘要（最后步骤 + 路径线索）：${investigationPath}`);
-      lines.push("  读档：先看该文件「读档指引」与「最终结论」；要复用已做的侦察，按「线索」里的路径去 read/diff 磁盘现状");
+    if (investigationPath || transcriptPath) {
+      if (investigationPath) lines.push(`  现场摘要（最后步骤 + 路径线索）：${investigationPath}`);
+      if (transcriptPath) lines.push(`  全量档（任务原文 + 可见往返 + 每一步工具输出，内存盘）：${transcriptPath}`);
+      lines.push("  读档：先看摘要的「读档指引」与「最终结论」；要复用已做的侦察，按「线索」里的路径去 read/diff 磁盘现状，需要全量细节再分段读全量档");
     }
     if (opts.archivePath) {
-      lines.push(`  完整可见轨迹（任务输入 / timeline / worker 可见输出）：${opts.archivePath}`);
+      lines.push(`  本批可见轨迹（任务输入 / timeline / worker 可见输出）：${opts.archivePath}`);
     }
     lines.push("  接着干：worker 进程已退出，subagent_resume 续不上（那只对停在检查点上的 worker 有效）；要接着做就把上面的文件当背景重新派一个 worker，或先跟用户对齐还做不做。");
     return lines.join("\n");
   }
-  if (!investigationPath) return "";
-  return `FAILED final=${status}\n  investigation: ${investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」\n  ${String(err)}`;
+  if (!investigationPath && !transcriptPath) return "";
+  return [
+    `FAILED final=${status}`,
+    investigationPath ? `  investigation: ${investigationPath}` : "",
+    transcriptPath ? `  transcript: ${transcriptPath}` : "",
+    "  读档：摘要看 investigation（读档指引 + 最终结论），要复用已做侦察就分段读 transcript",
+    `  ${String(err)}`,
+  ].filter(Boolean).join("\n");
 }
 
 export interface BatchItemResult {
@@ -113,6 +121,11 @@ export interface BatchItemResult {
   usage?: SubagentUsage;
   /** 重试彻底失败后写出的调查文件绝对路径（timeout/aborted/failed 时可能携带） */
   investigationPath?: string;
+  /**
+   * 全量档路径（内存盘）：任务原文 + 可见往返 + 每一步工具输出。
+   * 与 investigationPath 同目录，只作路径引用，内容不进上下文。
+   */
+  transcriptPath?: string;
   /** 实际尝试次数（含首次；仅成功/失败结果携带，超时/中止时调查文件内有计数） */
   attempts?: number;
   /** worker 请求的额外能力；拒绝或 GUI 不可用时作为终态返回 */
@@ -508,6 +521,7 @@ async function runWorker(
       errorMessage: result.errorMessage,
       usage: result.usage,
       investigationPath: result.investigationPath,
+      transcriptPath: result.transcriptPath,
       attempts: result.attempts,
       capabilityRequest: result.capabilityRequest,
       capabilityReview: result.capabilityReview,
@@ -517,7 +531,8 @@ async function runWorker(
     const patch = buildTerminalPatch(err, new Date().toISOString());
     updateWorker(id, patch);
     const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
-    // 诊断档案按批次落盘（batchId）：worker 被强停时这是唯一留下完整可见轨迹的地方
+    const transcriptPath = err instanceof SubagentError ? err.transcriptPath : undefined;
+    // 批次诊断档案（磁盘，按 batchId）：与内存盘全量档互补，带上任务输入与全 worker 轨迹
     const archivePath = opts.taskId ? join(diagnosticsRoot(), `${opts.taskId}.json`) : undefined;
     return {
       index,
@@ -525,6 +540,7 @@ async function runWorker(
       output: formatCatchOutput(err, patch.status, { archivePath }) || String(err),
       stderr: String(err),
       investigationPath,
+      transcriptPath,
     };
   }
 }

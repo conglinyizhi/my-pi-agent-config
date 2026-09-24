@@ -14,7 +14,7 @@ import { formatTokens } from "./format-utils.ts";
 import { TimelineBuilder, resolveTerminalState, emptyStreamStats, type StreamStats } from "./timeline.ts";
 import type { TimelineEvent } from "./timeline.ts";
 import { SUBAGENT_MAX_ATTEMPTS, planRetry, type RetryVerdict } from "./subagent-retry.ts";
-import { buildInlineSummary, writeInvestigationFile, type AttemptSnapshot } from "./subagent-investigation.ts";
+import { buildInlineSummary, writeIncidentFiles, type AttemptSnapshot } from "./subagent-investigation.ts";
 import { isValidInboxId } from "./subagent-supplement.ts";
 import { commandDigest, buildCapabilityDecision, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "./subagent-capability.ts";
 import {
@@ -104,6 +104,11 @@ export interface SubagentResult {
   liveOutputTokens?: number;
   /** 重试彻底失败后写出的调查文件绝对路径（成功/未重试时为 undefined） */
   investigationPath?: string;
+  /**
+   * 全量档路径（内存盘）：任务原文 + 可见往返 + 每一步工具输出 + stderr。
+   * 只给路径，不把内容塞回上下文；模型需要时自己分段 read。
+   */
+  transcriptPath?: string;
   /** 实际尝试次数（含首次） */
   attempts?: number;
   /** 最终失败的内联摘要（成功时为 undefined） */
@@ -135,11 +140,18 @@ export class SubagentError extends Error {
   /** 重试彻底失败后写出的调查文件绝对路径（可选） */
   readonly investigationPath?: string;
   /**
+   * 全量档路径（内存盘）：任务原文 + 可见往返 + 每一步工具输出。
+   * 中止/超时也要带着它，否则「上下文完整保留」只剩一句口号。
+   */
+  readonly transcriptPath?: string;
+  /**
    * 中止是谁下的令。"user" = 人在会话里用 /subagent:stop 强制停下。
    * 调用方据此把「用户叫停」和「超时/失联/内部报错」分开措辞——
    * 前者不是故障，不该自动重试，也不该原样重派。
    */
   readonly stopKind?: "user";
+  /** 本轮已产生的可见往返（中止/超时也带）；供全量档落盘 */
+  readonly visibleConversation?: VisibleWorkerMessage[];
 
   constructor(
     status: "timeout" | "aborted",
@@ -147,6 +159,8 @@ export class SubagentError extends Error {
     timeline?: TimelineEvent[],
     investigationPath?: string,
     stopKind?: "user",
+    transcriptPath?: string,
+    visibleConversation?: VisibleWorkerMessage[],
   ) {
     super(message);
     this.name = "SubagentError";
@@ -154,6 +168,8 @@ export class SubagentError extends Error {
     this.timeline = timeline;
     this.investigationPath = investigationPath;
     this.stopKind = stopKind;
+    this.transcriptPath = transcriptPath;
+    this.visibleConversation = visibleConversation;
   }
 }
 
@@ -965,6 +981,8 @@ export function defaultRunOnce(opts: RunSubagentOptions): Promise<SubagentResult
           result.timeline,
           undefined,
           userStop ? "user" : undefined,
+          undefined,
+          result.visibleConversation,
         );
       }
 
@@ -1032,6 +1050,8 @@ function snapshotFromResult(
     errorMessage: result.errorMessage,
     stderr: result.stderr,
     timeline: [...result.timeline],
+    // 注入式调用方（单测的 runOnce 替身）可能不带可见往返：不给就能把整条失败路径拖崩，不值当
+    visibleConversation: [...(result.visibleConversation ?? [])],
     usage: result.usage,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -1053,6 +1073,10 @@ function snapshotFromError(
     errorMessage: msg,
     stderr: "",
     timeline: timeline ? [...timeline] : [],
+    // 中止/超时路径唯一能带的可见往返：错过后全量档就只剩 timeline
+    visibleConversation: err instanceof SubagentError && err.visibleConversation
+      ? [...err.visibleConversation]
+      : undefined,
     startedAt,
     finishedAt: new Date().toISOString(),
   };
@@ -1235,18 +1259,31 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   };
 
   let investigationPath: string | undefined;
+  let transcriptPath: string | undefined;
   try {
-    investigationPath = writeInvestigationFile(invInput);
+    // 两份一起写（同一个内存盘目录）：摘要在 investigationPath，全量档在 transcriptPath
+    const files = writeIncidentFiles(invInput);
+    investigationPath = files.investigationPath;
+    transcriptPath = files.transcriptPath;
   } catch {
     investigationPath = undefined; // 写文件失败不掩盖原始失败
+    transcriptPath = undefined;
   }
-  const inlineSummary = buildInlineSummary(invInput, investigationPath);
+  const inlineSummary = buildInlineSummary(invInput, investigationPath, transcriptPath);
 
   if (lastError instanceof SubagentError) {
-    throw new SubagentError(lastError.status, lastError.message, lastError.timeline, investigationPath, lastError.stopKind);
+    throw new SubagentError(
+      lastError.status,
+      lastError.message,
+      lastError.timeline,
+      investigationPath,
+      lastError.stopKind,
+      transcriptPath,
+      lastError.visibleConversation,
+    );
   }
   if (lastError) {
-    throw new SubagentError("aborted", String(lastError), undefined, investigationPath);
+    throw new SubagentError("aborted", String(lastError), undefined, investigationPath, undefined, transcriptPath);
   }
   // 最终失败（exit/error）路径：返回 failed 结果并附调查信息
   const failed: SubagentResult = lastResult ?? {
@@ -1261,6 +1298,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     stream: emptyStreamStats(),
   };
   failed.investigationPath = investigationPath;
+  failed.transcriptPath = transcriptPath;
   failed.attempts = attempts.length || 1;
   failed.inlineSummary = inlineSummary;
   // 重试耗尽（每轮都获批并重启）时，把最后一次审核意见带回终态结果

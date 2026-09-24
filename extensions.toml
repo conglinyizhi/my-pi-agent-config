@@ -83,6 +83,18 @@ version = '(\S+)'
 hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（pnpm install / pnpm add / pnpm remove 等），禁止使用 npm 或 yarn。如果项目已有 pnpm-lock.yaml，必须用 pnpm install 而非 npm install。"
 
 # ─────────────────────────────────────────────────────────────
+# subagent：派工前的内存闸
+# worker 的内存墙是「每条命令」1GiB（sandbox-shell 的默认），并发安全阀只数 worker 个数，
+# 两者叠起来能把桌面机推进交换。派工前读 MemAvailable，按下面的两个数算实际并行上限，
+# 超出的 worker 留在排队并在回报里写明依据。缺省值偏保守；缺失/写坏按缺省走。
+# ─────────────────────────────────────────────────────────────
+[subagent-memory]
+# 留给桌面与主 agent 的保留量（MB）：可用内存扣掉它之后才拿来开 worker
+reserveMb = 2048
+# 每个 worker 的典型占用计划值（MB）。这是典型值，不是命令墙（墙上限仍是 1GiB）
+planMb = 512
+
+# ─────────────────────────────────────────────────────────────
 # sandbox-permissions：gate 危险命令的 LLM 预审
 # ─────────────────────────────────────────────────────────────
 [sandbox-llm-review]

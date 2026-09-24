@@ -21,19 +21,21 @@ import { planSubagentSandbox } from "./sandbox-params.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
 import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
 import { formatUnclaimedReturn } from "./return-notice.ts";
-import { startBatch, type BatchItemResult, type BatchRuntime } from "./batch.ts";
+import { startBatch, MAX_PARALLEL_WORKERS_SAFETY_CAP, type BatchItemResult, type BatchRuntime } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
 import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
 import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
+import { planMemoryGate, readAvailableMb, readMemoryGateConfig } from "./memory-gate.ts";
 import {
   listActiveWorkers,
   stopAllWorkers,
   stopWorker,
 } from "./active-workers.ts";
 import { runStopAllCommand, runStopCommand, type StopCommandDeps } from "./stop-commands.ts";
+import { formatHeldReport, RESUME_MAX_SECONDS, RESUME_MIN_SECONDS, validateResumeDecisions } from "./held-report.ts";
 import {
   FleetView,
   formatClock,
@@ -264,9 +266,12 @@ export default function (pi: ExtensionAPI) {
     name: "subagent",
     label: "Dispatch Subagent",
     description:
-      "将完整任务简报派给一个或多个隔离 worker。复杂任务请显式传 objective、context、constraints、required_files、skills、acceptance、output_format；同步等待所有 worker 进入终态后返回。task 传数组时每个元素都必须是结构化简报对象。",
+      "将完整任务简报派给一个或多个隔离 worker：这次调用本身就会立刻启动它们，没有预演、没有待确认队列。同一批里的 worker 并行跑（超过并行上限的排队），每个 worker 拿到自己的上下文窗口与工具集。这是一次同步阻塞调用：发起后本次对话会被占住，不能插话、不能中途改方向，只有用户侧的 /subagent:stop 能强停。它只在两种情况下返回：整批 worker 全部进入终态（成功/失败/中止/超时/等待权限），或者有 worker 在检查点上请求暂存（此时返回 batch_id，等你用 subagent_resume 决定续跑或收工）。调用开始前先确认简报完整：worker 第一次读它就得能开工。复杂任务请显式传 objective、context、constraints、required_files、skills、acceptance、output_format；task 传数组时每个元素都必须是结构化简报对象。",
     promptSnippet: "Dispatch side-quests with complete context, required files, skills, acceptance criteria, and wait for all results",
     promptGuidelines: [
+      "调用即派工且同步阻塞：这次工具调用会立刻 spawn worker 并占住主对话直到收尾；开工前先把简报写完整，别指望中途补背景或纠方向（只有用户侧 /subagent:stop 能停）。",
+      "返回值只有两种形态：整批收尾（逐项看每个 worker 的状态与产出，返回不代表全成功），或部分 worker 停在检查点上（带 batch_id，等 subagent_resume 决定）。看到 batch_id 就说明还有活没干完。",
+      "timeout 是单个 worker 的单次预算，不是这次调用的等待上限：多个 worker 排队、自动重试、等权限审批、等暂存决定都会把实际耗时拉长。一次派多个大活，就要预期这次调用会占用很久。",
       "沙箱档位：要让 worker 写文件就传 sandbox_dir（目录必须已存在，且不能与 readonly 同传）；不传就是只读，worker 只能写 /tmp。",
       "不要把用户原话原封不动转发；先整理成 worker 可直接执行的完整简报。",
       "复杂任务优先传结构化 task：objective 必填；context 写已知现状；constraints 写边界；required_files 写必看文件；skills 只填确实需要的 skill；acceptance 写可验证标准；output_format 写回报格式。",
@@ -277,7 +282,8 @@ export default function (pi: ExtensionAPI) {
       "skills 会按 worker 简报分别加载；不要为了保险把所有 skill 都传进去。",
       "判断标准：多步操作、涉及多个文件、需要独立上下文 → subagent；否则自己动手。",
       "不要派会挂很久的活：工具是同步阻塞的，一个卡住的 worker 会把主对话钉住。典型禁派：无超时的网络请求（curl/下载/接口探测）、靠脚本自己扩大范围的调查（递归扫描、批量爬取、循环里 spawn 子进程、反复重试的探查）、全量构建/完整测试套件、常驻或交互式命令（dev server、watch、tail -f）。要派就先拆小，并在简报里要求命令带显式超时。",
-      "工具同步阻塞直到所有 worker 结束；一个失败不终止其他 worker，逐项汇报。",
+      "一个 worker 失败或超时不终止同批其他 worker，也不会提前返回：整批各自跑到终态后才逐项汇报。这份等待是设计的一部分，不要因为等得久就重发一次（那会把同一份活派两遍，白烧预算）。",
+      "worker 请求额外能力（网络/越权命令）时，这次调用会在内部把它转成一次审核 + 人工审批，不需要另调工具；审批等待不计入 worker 的执行预算。",
       "运行期间可用 /subagent:gui 查看实时详情；失败 investigation 路径先读「读档指引」与「最终结论」。",
     ],
     parameters: Type.Object({
@@ -477,6 +483,14 @@ export default function (pi: ExtensionAPI) {
       const workerTimeout = typeof params.timeout === "number" && Number.isFinite(params.timeout)
         ? Math.max(5, Math.floor(params.timeout))
         : undefined;
+      // 内存闸：worker 的内存墙是「每命令」1GiB，而安全阀只数个数，两者叠起来能把 15G 的桌面机推进交换。
+      // 这里在 spawn 之前按可用内存算并发上限，超出的照旧排队（queued），依据一并写进回报。
+      const memoryGate = planMemoryGate({
+        ...readMemoryGateConfig(),
+        safetyCap: MAX_PARALLEL_WORKERS_SAFETY_CAP,
+        availableMb: readAvailableMb(),
+        taskCount: tasks.length,
+      });
       const batchRuntime = startBatch(tasks, {
         cwd: ctx.cwd,
         sandboxDir,
@@ -488,6 +502,7 @@ export default function (pi: ExtensionAPI) {
         workerSkills,
         tools: safeTools,
         taskId: batchTaskId,
+        maxParallel: memoryGate.limit,
         onCapabilityRequest: (request, workerId) => enqueueCapabilityApproval(() => approveCapability(
           pi,
           request,
@@ -560,28 +575,28 @@ export default function (pi: ExtensionAPI) {
         flushStatusFile();
         const snapshot = getSnapshot();
         const byId = new Map(snapshot.map((w) => [w.id, w]));
-        const heldLines = held.map((d) => {
-          const run = byId.get(d.workerId);
-          const elapsedMs = run ? Math.max(0, Date.now() - Date.parse(run.startedAt)) : 0;
-          const why = d.handle.request.reason === "budget" ? "时间预算快用完了" : "worker 主动请求";
-          return `  ${d.workerId} 已跑 ${formatDuration(elapsedMs)} · ${why}`;
-        });
         const finishedCount = snapshot.filter((w) => w.status === "success").length;
-        const decisions = held
-          .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
-          .join(", ");
+        const now = Date.now();
+        // 报暂存时把「暂停瞬间的可见产物」一起给模型：没有产物，续/停就是瞎猜
+        const heldReport = formatHeldReport({
+          batchId: batchTaskId,
+          finishedCount,
+          held: held.map((d) => {
+            const run = byId.get(d.workerId);
+            return {
+              workerId: d.workerId,
+              reason: d.handle.request.reason,
+              elapsedMs: run ? Math.max(0, now - Date.parse(run.startedAt)) : 0,
+              conversation: run?.visibleConversation,
+              timeline: run?.timeline,
+              stderr: run?.stderr,
+              output: run?.output,
+            };
+          }),
+        });
         return {
-          content: [{
-            type: "text",
-            text: [
-              `subagent 暂存：${held.length} 个 worker 停在检查点上等你决定（本批已完成 ${finishedCount} 个）`,
-              ...heldLines,
-              "",
-              `续跑：subagent_resume({ batch_id: "${batchTaskId}", decisions: [${decisions}] })`,
-              "不想接着跑就 action: \"stop\"；放着不管也行，worker 等到自己的上限会按收工收尾",
-            ].join("\n"),
-          }],
-          details: { phase: "held", batchId: batchTaskId, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+          content: [{ type: "text", text: heldReport }],
+          details: { phase: "held", batchId: batchTaskId, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, now) },
         };
       }
       results = await batchRuntime.done;
@@ -604,7 +619,11 @@ export default function (pi: ExtensionAPI) {
         const inv = r.investigationPath && !r.output.includes(r.investigationPath)
           ? `\n  investigation: ${r.investigationPath}\n  读档：先看该文件「读档指引」与「最终结论」`
           : "";
-        return `${head}${meta}${err}${capability}${stderr}${inv}\n  ${formatWorkerOutput(r.output, budget)}`;
+        // 全量档（内存盘）同理：只给路径，内容留给需要时自己分段 read
+        const tr = r.transcriptPath && !r.output.includes(r.transcriptPath)
+          ? `\n  transcript: ${r.transcriptPath}（任务原文 + 可见往返 + 每一步工具输出）`
+          : "";
+        return `${head}${meta}${err}${capability}${stderr}${inv}${tr}\n  ${formatWorkerOutput(r.output, budget)}`;
       });
 
       const failedCount = results.filter((r) => r.status === "failed" || r.status === "aborted" || r.status === "timeout").length;
@@ -614,15 +633,15 @@ export default function (pi: ExtensionAPI) {
           type: "text",
           text: `${tasks.length} 个 subagent 已全部返航（成功 ${tasks.length - failedCount - approvalCount} / 失败 ${failedCount} / 等待权限 ${approvalCount}）`,
         }],
-        details: { phase: "done", results, fleet: projectFleet(getSnapshot(), Date.now()) },
+        details: { phase: "done", results, memoryGate: memoryGate.reason, fleet: projectFleet(getSnapshot(), Date.now()) },
       });
 
       return {
         content: [{
           type: "text",
-          text: `subagent 全部返航（${tasks.length - failedCount - approvalCount}/${tasks.length} 成功，失败 ${failedCount}，等待权限 ${approvalCount}）：\n\n${lines.join("\n\n")}`,
+          text: `subagent 全部返航（${tasks.length - failedCount - approvalCount}/${tasks.length} 成功，失败 ${failedCount}，等待权限 ${approvalCount}）\n${memoryGate.reason}\n\n${lines.join("\n\n")}`,
         }],
-        details: { results, fleet: projectFleet(getSnapshot(), Date.now()) },
+        details: { results, memoryGate: memoryGate.reason, fleet: projectFleet(getSnapshot(), Date.now()) },
       };
     },
   });
@@ -690,7 +709,15 @@ export default function (pi: ExtensionAPI) {
     name: "subagent_resume",
     label: "Resume Subagent",
     description:
-      "把暂存在检查点上的 worker 续上：给它新预算继续跑，或让它带着现有产出收工。batch_id 来自 subagent 返回的暂存报告，worker 在续上之前一直守着检查点。",
+      "把暂存在检查点上的 worker 续上：给它新预算继续跑，或让它带着现有产出收工。batch_id 来自 subagent 返回的暂存报告，worker 在续上之前一直守着检查点（进程还活着，上下文没丢）。这次调用同样是同步阻塞：决定写回后 worker 立刻继续跑，本次调用要等到整批再次收尾或再次暂存才返回，期间主对话同样被占住。续跑期间的等待（等审批、等下次暂存）与 worker 的执行预算是分开算的。",
+    promptSnippet: "Resume workers held at a checkpoint with a new budget or a stop decision, then wait for the batch to settle again",
+    promptGuidelines: [
+      "subagent_resume 也是同步阻塞调用：写回决定即续跑，调用会一直等到整批再次收尾或再次暂存才返回，别把它当成发个通知就走。",
+      "只有停在检查点上的 worker 能被续上：已收尾的（包括被 /subagent:stop 强停的）不在名单里，给它们发决定只会回一句「没接上」，那种情况得重新派一个 worker。",
+      `extra_seconds 是这次续跑的新预算，continue 时必填（${RESUME_MIN_SECONDS} 到 ${RESUME_MAX_SECONDS} 秒）：上一轮预算见底才停的，续的时间要够跑到下一个交付点，否则跑几步又停在同一个位置。`,
+      "续跑前先看暂存回报里的产物（最新一段、最后几步、stderr 尾）：手里没有产物就不该决定续还是停。",
+      "supplement 是顺带给它的一句话（进补充队列，它在下一个检查点领走），不是用来重写整份简报的。",
+    ],
     parameters: Type.Object({
       batch_id: Type.String({ description: "subagent 暂存报告里的 batch_id" }),
       decisions: Type.Array(
@@ -700,7 +727,9 @@ export default function (pi: ExtensionAPI) {
             description: "continue=给新预算接着跑；stop=收工，交出当前产出",
           }),
           extra_seconds: Type.Optional(
-            Type.Number({ description: "continue 时的新预算秒数，缺省 300；低于 5 按 5 算" }),
+            Type.Number({
+              description: `action=continue 时必填：这次续跑的预算秒数，${RESUME_MIN_SECONDS} 到 ${RESUME_MAX_SECONDS}；按「这步活能跑到哪个交付点」给，缺了这个参数整个调用会被拒`,
+            }),
           ),
           supplement: Type.Optional(
             Type.String({ description: "顺带给它的一句话（进 inbox，它在下一个检查点领走）" }),
@@ -738,6 +767,16 @@ export default function (pi: ExtensionAPI) {
       }
       // 从这一刻起这批有人接管：兵底回调不再插手，结果由本次调用自己报
       entry.awaiting = true;
+      // 续跑必须带明确的限时（见 RESUME_MIN_SECONDS / RESUME_MAX_SECONDS）：
+      // 给个隐式默认值，模型很容易随手续很大一截，钱和时间都不是风刮来的。参数不对时先拒，不动这批。
+      const invalid = validateResumeDecisions(params.decisions);
+      if (invalid) {
+        entry.awaiting = false;
+        return {
+          content: [{ type: "text", text: invalid }],
+          details: { phase: "none", batchId: params.batch_id, held: [] as string[], fleet: projectFleet(getSnapshot(), Date.now()) },
+        };
+      }
       // 续跑期间订回同一份快照。不要 beginBatch：那会把 GUI/TUI 正在看的表清掉。
       const fleetWatch = watchFleet(onUpdate);
       try {
@@ -759,7 +798,7 @@ export default function (pi: ExtensionAPI) {
           }
           const ok = entry.runtime.resume(d.worker_id, {
             action: d.action,
-            extraMs: d.extra_seconds === undefined ? undefined : Math.max(5, Math.floor(d.extra_seconds)) * 1000,
+            extraMs: d.extra_seconds === undefined ? undefined : Math.floor(d.extra_seconds) * 1000,
           });
           (ok ? applied : missed).push(d.worker_id);
         }
@@ -785,23 +824,33 @@ export default function (pi: ExtensionAPI) {
 
         const snapshot = getSnapshot();
         if (outcome === "held") {
-          // 又停下来了：控制权再次交回，兵底重新待命
+          // 又停下来了：控制权再次交回，兵底重新待命。同样是产物跟报告一起走。
           entry.awaiting = false;
           const held = entry.runtime.takePendingDefers();
-          const heldList = held.map((d) => d.workerId).join("、");
-          const decisions = held
-            .map((d) => `{ worker_id: "${d.workerId}", action: "continue", extra_seconds: 300 }`)
-            .join(", ");
+          const now = Date.now();
+          const byId = new Map(snapshot.map((w) => [w.id, w]));
+          const report = formatHeldReport({
+            batchId: params.batch_id,
+            finishedCount: snapshot.filter((w) => w.status === "success").length,
+            held: held.map((d) => {
+              const run = byId.get(d.workerId);
+              return {
+                workerId: d.workerId,
+                reason: d.handle.request.reason,
+                elapsedMs: run ? Math.max(0, now - Date.parse(run.startedAt)) : 0,
+                conversation: run?.visibleConversation,
+                timeline: run?.timeline,
+                stderr: run?.stderr,
+                output: run?.output,
+              };
+            }),
+          });
           return {
             content: [{
               type: "text",
-              text: [
-                `续上后又有 worker 暂存：${heldList}`,
-                ...notes,
-                `继续推进：subagent_resume({ batch_id: "${params.batch_id}", decisions: [${decisions}] })`,
-              ].filter(Boolean).join("\n"),
+              text: [`续上后又有 worker 暂存：`, report, ...notes].filter(Boolean).join("\n"),
             }],
-            details: { phase: "held", batchId: params.batch_id, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, Date.now()) },
+            details: { phase: "held", batchId: params.batch_id, held: held.map((d) => d.workerId), fleet: projectFleet(snapshot, now) },
           };
         }
 
