@@ -82,6 +82,14 @@ check = "pnpm --version"
 version = '(\S+)'
 hint = "系统已安装 pnpm。在需要安装 npm 包时，优先使用 pnpm（pnpm install / pnpm add / pnpm remove 等），禁止使用 npm 或 yarn。如果项目已有 pnpm-lock.yaml，必须用 pnpm install 而非 npm install。"
 
+# 调试设备互斥：多开 pi 与 subagent 都是独立进程，adb server 全局共享，
+# 同一 serial 上并发 install/push/port 会互相踩。设备操作一律过这把 flock。
+[[tool-checker.tools]]
+name = "device-lock"
+display = "lock"
+check = "test -x ~/.pi/agent/scripts/with-device-lock.sh && echo ok"
+hint = "碰调试设备（adb、串口、烧录器这类独占目标）时，同一台设备上的操作要走 `~/.pi/agent/scripts/with-device-lock.sh <设备标识> -- <命令>` 上锁再执行：多开 pi 与每批 worker 是独立进程，而 adb server 全局共享，同一 serial 上并发 install/push/port 会互相踩。等不到锁（退出码 3）就等一会儿或加 --wait 再试，不要绕开锁直接敲 adb。`--status` 看当前谁占着。"
+
 # ─────────────────────────────────────────────────────────────
 # subagent：派工前的内存闸
 # worker 的内存墙是「每条命令」1GiB（sandbox-shell 的默认），并发安全阀只数 worker 个数，
