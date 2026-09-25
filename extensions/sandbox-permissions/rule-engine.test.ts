@@ -616,5 +616,60 @@ check("H10-3 真实 shell 函数定义仍拦截", () => {
 });
 
 // ═══════════════════════════════════════════════════
+// H11. heredoc 正文：是数据还是命令
+//
+// 起因：`cat > /tmp/ls-rm.js <<EOF` 这种写文件的命令，正文里出现 `rm -rf` 就被当成
+// 要执行 rm（splitCommands 按 \n 切段，正文每一行都成了一“段”）。
+// 定下的尺子：正文默认是数据，除非这段正文会被 shell 当命令跑
+// ═══════════════════════════════════════════════════
+check("H11-1 无引号正文写文件：里面的 rm 不算执行", () => {
+  const cmd = "cat > /tmp/x.sh <<EOF\nset -e\nrm -rf /tmp/build\nEOF";
+  assert.deepStrictEqual(matchDangerous(cmd), []);
+  assert.strictEqual(auditCommand(cmd).allow, true, JSON.stringify(auditCommand(cmd)));
+  assert.strictEqual(isCommandSafe(cmd), true);
+});
+check("H11-2 引号正文写文件：同样不算", () => {
+  const cmd = "cat > /tmp/ls-rm.js <<'EOF'\nconst x = 1;\nrm -rf /tmp/build\nEOF";
+  assert.deepStrictEqual(matchDangerous(cmd), []);
+  assert.strictEqual(auditCommand(cmd).allow, true);
+});
+check("H11-3 正文里其它规则命令也不算（sudo / find -delete / dd）", () => {
+  for (const body of ["sudo systemctl restart x", "find /tmp -delete", "dd if=/dev/sda of=/tmp/x"]) {
+    const cmd = `cat > /tmp/x.sh <<EOF\n${body}\nEOF`;
+    assert.deepStrictEqual(matchDangerous(cmd), [], `不该命中：${body}`);
+  }
+});
+check("H11-4 正文里的重定向不冒出 /tmp 逃逸", () => {
+  const cmd = "cat > /tmp/x.sh <<EOF\necho hi > /home/someone/file\nEOF";
+  // 自己那个重定向（/tmp/x.sh）照旧在；正文里的那个不算
+  assert.deepStrictEqual(extractTmpRedirectTargets(cmd), ["/tmp/x.sh"]);
+  assert.strictEqual(extractTmpRedirectTargets(cmd).includes("/home/someone/file"), false);
+  assert.strictEqual(auditCommand(cmd).allow, true);
+});
+check("H11-5 但正文真会被 shell 跑时照旧拦：bash <<'EOF'", () => {
+  const cmd = "bash <<'EOF'\nrm -rf /tmp/build\nEOF";
+  assert.deepStrictEqual(matchDangerous(cmd).map((r) => r.name), ["rm-recursive"]);
+  assert.strictEqual(auditCommand(cmd).allow, false);
+});
+check("H11-6 同上：bash -s 与 cat <<EOF | bash", () => {
+  for (const cmd of ["bash -s <<'EOF'\nrm -rf /tmp/build\nEOF", "cat <<'EOF' | bash\nrm -rf /tmp/build\nEOF"]) {
+    assert.ok(matchDangerous(cmd).some((r) => r.name === "rm-recursive"), `该拦：${cmd.slice(0, 24)}`);
+  }
+});
+check("H11-7 shell 吃的正文里，其它规则也一样拦", () => {
+  assert.ok(matchDangerous("bash <<'EOF'\nfind /tmp -delete\nEOF").some((r) => r.name === "find-delete"));
+  assert.ok(matchDangerous("bash <<'EOF'\nsudo rm -rf /tmp/x\nEOF").some((r) => r.name === "sudo"));
+});
+check("H11-8 正文里的命令替换仍然算（写入时就会展开执行）", () => {
+  const r = auditCommand("cat > /tmp/x.sh <<EOF\n$(rm -rf /tmp/build)\nEOF");
+  assert.strictEqual(r.allow, false);
+  assert.strictEqual(r.dangerous.length, 1);
+});
+check("H11-9 回归：直接执行 rm -rf 照旧命中", () => {
+  assert.deepStrictEqual(matchDangerous("rm -rf /tmp/build").map((r) => r.name), ["rm-recursive"]);
+  assert.deepStrictEqual(matchDangerous("cd /tmp && rm -rf build").map((r) => r.name), ["rm-recursive"]);
+});
+
+// ═══════════════════════════════════════════════════
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

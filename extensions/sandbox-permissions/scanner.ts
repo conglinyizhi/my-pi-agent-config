@@ -338,6 +338,25 @@ export function heredocFeedsInterpreter(cmd: string, hd: HeredocInfo, isInterpre
   return splitWithSeparators(line).some((s) => isInterpreter(commandWordOf(s.seg)));
 }
 
+/**
+ * 会把 heredoc 正文当命令跑的程序：只有 shell。
+ *
+ * 与 lib/sandbox-check.ts 的 INTERPRETER_PROGRAMS 是两个用处：那边问「谁会解释这段载荷」
+ * （node / python 也算），这里问「正文里的行会不会被当命令执行」——node 吃进去的是它自己的
+ * 语法，正文里的 `rm -rf x` 是字符串而不是命令，所以不算。
+ */
+const SHELL_PROGRAMS = ["bash", "sh", "zsh", "dash", "ksh", "ash"];
+
+export function isShellProgram(program: string): boolean {
+  const base = program.split("/").pop()?.toLowerCase() ?? "";
+  return SHELL_PROGRAMS.includes(base);
+}
+
+/** 正文不会被 shell 执行的那些 heredoc 正文：遮成空格，正是「正文是数据」这句话的落地 */
+export function maskNonShellHeredocBodies(cmd: string): string {
+  return maskHeredocBodies(cmd, (hd) => heredocFeedsInterpreter(cmd, hd, isShellProgram));
+}
+
 /** 正文换等长空格（长度不变，按原坐标对齐）。正文是数据，不是命令行的操作数 */
 export function maskHeredocBodies(cmd: string, keep: (hd: HeredocInfo) => boolean = () => false): string {
   const chars = cmd.split("");
@@ -396,13 +415,15 @@ export function maskShellBlindZones(cmd: string): MaskedCommand {
   const chars = cmd.split("");
   const pySegments: string[] = [];
 
-  // 1. heredoc：引号定界的内容遮为空格；python heredoc 内容收集
+  // 1. heredoc：默认把正文遮为空格（正文是数据），python heredoc 内容收集
   const heredocs = findHeredocs(cmd);
   for (const hd of heredocs) {
     // 内容区不含定界符行首的换行（\n 保留，只遮内容行）
     let maskEnd = hd.contentEnd;
     if (maskEnd > hd.contentStart && cmd[maskEnd - 1] === "\n") maskEnd--;
-    if (hd.isQuoted) {
+    // 引号定界也不等于安全：`bash <<'EOF'` 的正文会被 shell 当命令跑（rm -rf 那类规则
+    // 遮掉就等于漏拦），所以先问一句「谁会吃这段正文」，只有数据才遮
+    if (hd.isQuoted && !heredocFeedsInterpreter(cmd, hd, isShellProgram)) {
       for (let j = hd.contentStart; j < maskEnd; j++) chars[j] = " ";
     }
     if (isPythonHeredoc(cmd, hd)) {

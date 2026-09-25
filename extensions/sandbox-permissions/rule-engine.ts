@@ -16,6 +16,7 @@ import {
   splitWithSeparators,
   findInnerSubst,
   maskShellBlindZones,
+  maskNonShellHeredocBodies,
   pythonDangerous,
 } from "./scanner.ts";
 import type { SegWithSep, MaskedCommand } from "./scanner.ts";
@@ -170,8 +171,20 @@ function matchRule(tokens: string[], rule: RuleDef): string[] | null {
   return matched;
 }
 
-/** 命中所有危险规则（跨段聚合、去重） */
+/**
+ * 命中所有危险规则（跨段聚合、去重）。
+ *
+ * 先遮掉「不会被 shell 执行」的 heredoc 正文：`splitCommands` 按 `\n` 切段，正文里的每一行
+ * 都会被当成一条命令，于是 `cat > x.sh <<EOF` 里写的 `rm -rf` 也被当成要执行 rm。
+ * 而 `bash <<EOF` / `cat <<EOF | bash` 那种正文确实会被当命令跑，要照旧扫。
+ * 命令替换不归这里管：`$(...)` 写入时就会展开执行，那条路径由 auditSubstitutions 负责，
+ * 它在遮罩之前就把内容摘出来了
+ */
 export function matchDangerous(cmd: string): TokenRule[] {
+  return matchDangerousSegments(maskNonShellHeredocBodies(cmd));
+}
+
+function matchDangerousSegments(cmd: string): TokenRule[] {
   const seen = new Set<string>();
   const result: TokenRule[] = [];
   for (const seg of splitCommands(cmd)) {
@@ -194,7 +207,8 @@ export function isAutoReject(cmd: string): boolean {
 /** 提取被 /tmp/ 前缀豁免的重定向目标（纯 token 分析，不碰文件系统） */
 export function extractTmpRedirectTargets(cmd: string): string[] {
   const targets: string[] = [];
-  for (const seg of splitCommands(cmd)) {
+  // 同一件事：正文里的 `> /path` 是写给文件的内容，不是这条命令的重定向
+  for (const seg of splitCommands(maskNonShellHeredocBodies(cmd))) {
     for (let i = 0; i < seg.length; i++) {
       const t = seg[i];
       if (t !== ">" && t !== ">>" && t !== "&>" && t !== "&>>") continue;
@@ -260,9 +274,11 @@ function isPipInstall(tokens: string[]): boolean {
   return false;
 }
 
-/** 命令是否安全：危险段均被 venv 白名单覆盖则放行 */
+/** 命令是否安全：危险段均被 venv 白名单覆盖则放行。
+ *
+ * 同样先遮掉不会被 shell 执行的 heredoc 正文：写文件时正文里那些 `rm -rf` 不算执行 */
 export function isCommandSafe(cmd: string): boolean {
-  const segments = splitCommands(cmd);
+  const segments = splitCommands(maskNonShellHeredocBodies(cmd));
   let venvActive = false;
   for (const seg of segments) {
     if (isVenvActivation(seg)) {
@@ -398,9 +414,13 @@ export function auditCommand(cmd: string): AuditResult {
   const { masked, pySegments } = maskShellBlindZones(cmd);
   const pyDanger = pythonDangerous(pySegments);
   const { peeled, dangerous } = auditSubstitutions(masked);
-  const pipeExec = findPipeExec(peeled);
-  const rules = matchDangerous(peeled);
-  const safe = isCommandSafe(peeled);
+  // 规则 / 白名单 / 管道这三件事问的都是「这条命令会执行什么」：
+  // 先遮掉不会被 shell 执行的 heredoc 正文。动态构造仍看 peeled——
+  // 未引号正文里的 $VAR 与 $(...) 写入时就会展开，那是真的会发生的事
+  const executable = maskNonShellHeredocBodies(peeled);
+  const pipeExec = findPipeExec(executable);
+  const rules = matchDangerous(executable);
+  const safe = isCommandSafe(executable);
   const dynamic = hasDynamicConstructs(peeled);
   const dynamicTokens = dynamicConstructTokens(peeled);
   const allow =
