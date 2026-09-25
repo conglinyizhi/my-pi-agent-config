@@ -71,3 +71,66 @@ func TestGetInitDataGateWithoutEnvNotes(t *testing.T) {
 		t.Fatalf("不带时不该有值：%#v", notes)
 	}
 }
+
+// 同一个白名单里新加的 varRenders 也要放行（前端拿它标蓝并渲染变量表）
+func TestGetInitDataGateCarriesVarRenders(t *testing.T) {
+	dir := t.TempDir()
+	reqFile := filepath.Join(dir, "request.json")
+	request := map[string]any{
+		"kind":    "audit",
+		"command": "P=/usr/bin/jq && $P -n 1",
+		"rules":   []any{},
+		"varRenders": []any{
+			map[string]any{"name": "P", "value": "/usr/bin/jq", "source": "assignment", "target": "$P", "kind": "Exec", "known": true},
+			map[string]any{"name": "SRC", "source": "assignment", "target": "$(pwd)", "kind": "Exec", "known": false, "reason": "值里含命令替换 $(...)，无法静态解析"},
+		},
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reqFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp("gate", reqFile, filepath.Join(dir, "response.json"))
+	init, err := app.GetInitData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	renders, ok := init["varRenders"].([]any)
+	if !ok {
+		t.Fatalf("varRenders 没有被放行：%#v", init["varRenders"])
+	}
+	if len(renders) != 2 {
+		t.Fatalf("expected 2 renders, got %d", len(renders))
+	}
+	first, ok := renders[0].(map[string]any)
+	if !ok || first["value"] != "/usr/bin/jq" || first["target"] != "$P" || first["known"] != true {
+		t.Fatalf("第一条渲染结果不对：%#v", renders[0])
+	}
+	second, ok := renders[1].(map[string]any)
+	if !ok || second["reason"] == nil || second["value"] != nil {
+		t.Fatalf("第二条应当只带 reason：%#v", renders[1])
+	}
+	if init["command"] != request["command"] || init["kind"] != "audit" {
+		t.Fatalf("其它字段被影响：%#v", init)
+	}
+}
+
+// 没带就不该凭空多出这个键（旧 payload / 非 Linux 平台，前端按 undefined 容错）
+func TestGetInitDataGateWithoutVarRenders(t *testing.T) {
+	dir := t.TempDir()
+	reqFile := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(reqFile, []byte(`{"kind":"audit","command":"ls -la","envNotes":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp("gate", reqFile, filepath.Join(dir, "response.json"))
+	init, err := app.GetInitData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renders, ok := init["varRenders"]; ok && renders != nil {
+		t.Fatalf("不带时不该有值：%#v", renders)
+	}
+}

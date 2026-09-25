@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { checkCommand, isInterpreterProgram, unquotedPathTokens } from "./sandbox-check.ts";
+import { loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
 import { clearPreshellCache, resetPreshellBreaker, resetPreshellVersionCache } from "./preshell.ts";
 
 /** 起一个假 preshell：回答 --version，正文报告由调用方给 */
@@ -122,6 +123,183 @@ describe("路径判定：漏报那一侧（相对路径）", () => {
     const result = checkCommand("sed -n '610,630p' providers.toml", { cwd: `${homedir()}/.pi/agent` });
     assert.equal(result.allow, false);
     assert.match(result.reason ?? "", /敏感路径黑名单/);
+  });
+});
+
+describe("动态构造收窄：变量渲染参与判定", () => {
+  /** 一份把命令名报成 `$P`（带 vars）的报告：preshell 对变量作命令名就是这么报的 */
+  const varProgramReport = (target: string) => ({
+    version: 1,
+    status: "Complete",
+    impact: {
+      effects: [{ kind: "Exec", target, vars: ["P"], dynamic: true, modeled: true, line: 1 }],
+      write_roots: [],
+      uncertain: true,
+      effects_dropped: 0,
+      vars: ["P"],
+      cwd: "/tmp",
+    },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("命令名变量的值能静态确定时→改命中 dynamic-construct-narrowed（仍走 LLM 预审）", () => {
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      const result = checkCommand("cd /tmp && P=/usr/bin/jq && $P --version", { cwd: "/tmp" });
+      // 收窄不再等于放行：allow=true 会让 bash-guard 直接走官方 execute，LLM 那一道就没了
+      assert.equal(result.allow, false, `收窄后仍要交预审，实际 reason=${result.reason}`);
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      // autoReject:false 是硬要求：它只把命令送进预审，不能让 LLM 判 safe 后还多要一次人工
+      assert.equal(rules[0].autoReject, false);
+      // tip 里要能看到渲染结果，审核模型/人才知道到底要跑什么
+      assert.match(rules[0].tip, /\$P = \/usr\/bin\/jq/);
+      assert.deepEqual(rules[0].matched, ["$P"]);
+      // 不再是残余动态构造（那条规则的口子留给渲不出来的）
+      assert.equal(result.audit?.dynamic, false);
+      assert.deepEqual(result.audit?.narrowed, [{ token: "$P", program: "/usr/bin/jq" }]);
+    });
+  });
+
+  it("裸命令名同样收窄，同样要预审", () => {
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      const result = checkCommand("cd /tmp && P=jq && $P --version", { cwd: "/tmp" });
+      assert.equal(result.allow, false);
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"]);
+      assert.match(rules[0].tip, /\$P = jq/);
+    });
+  });
+
+  it("命令替换里的收窄不会随剥洋葱消失（外层仍要过预审）", () => {
+    // 修复前：内层当安全层被 __pi_subst__ 替掉，外层看着干净 → allow=true 直接执行
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      const result = checkCommand("echo $(P=/usr/bin/jq && $P -n 1)", { cwd: "/tmp" });
+      assert.equal(result.allow, false);
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.match(rules[0].tip, /\$P = \/usr\/bin\/jq/);
+    });
+  });
+
+  it("非系统路径不收窄：/tmp、相对路径、~/、/opt 仍命中 dynamic-construct", () => {
+    for (const [cmd, target] of [
+      ["cd /tmp && T=/tmp/mytool && $T --help", "$T"],
+      ["cd /tmp && T=./tool && $T", "$T"],
+      ["cd ~ && T=~/bin/tool && $T", "$T"],
+      ["cd /tmp && T=/opt/x/tool && $T", "$T"],
+    ] as const) {
+      withStubPreshell(stubPreshell(varProgramReport(target)), () => {
+        const result = checkCommand(cmd, { cwd: "/tmp" });
+        assert.equal(result.allow, false, cmd);
+        const names = (result.rules ?? []).map((r) => r.name);
+        assert.ok(names.includes("dynamic-construct"), `${cmd} 应仍命中 dynamic-construct，实际 ${names}`);
+        assert.ok(!names.includes("dynamic-construct-narrowed"), `${cmd} 不该收窄，实际 ${names}`);
+      });
+    }
+  });
+
+  it("渲染不出来时照旧命中（仍走 LLM 预审 → 人工确认）", () => {
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      // 前置赋值、环境里也没有 P：拿不到程序名，这一条不能收窄
+      const result = checkCommand("P=/usr/bin/jq $P --version", { cwd: "/tmp" });
+      assert.equal(result.allow, false);
+      assert.ok((result.rules ?? []).some((r) => r.name === "dynamic-construct"), JSON.stringify(result.rules));
+      assert.ok(!(result.rules ?? []).some((r) => r.name === "dynamic-construct-narrowed"));
+      assert.equal(result.audit?.dynamicTokens.includes("$P"), true);
+    });
+  });
+
+  it("渲染成 rm/sudo 这类程序时不收窄（否则能绕开规则层）", () => {
+    withStubPreshell(stubPreshell(varProgramReport("$A")), () => {
+      const result = checkCommand("A=rm && $A -rf /tmp/build", { cwd: "/tmp" });
+      assert.equal(result.allow, false);
+      const names = (result.rules ?? []).map((r) => r.name);
+      assert.ok(names.includes("dynamic-construct"), JSON.stringify(names));
+      assert.ok(!names.includes("dynamic-construct-narrowed"), JSON.stringify(names));
+    });
+  });
+
+  it("收窄规则与硬拒判定不重叠：带 narrowed 的结果不是「全 autoReject」", () => {
+    // isHardRejected 的定义是「allow=false 且无规则或全 autoReject」：
+    // narrowed 是 autoReject:false，这里只需保证它不把规则集变成全 autoReject
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      const result = checkCommand("cd /tmp && P=/usr/bin/jq && $P --version", { cwd: "/tmp" });
+      const rules = result.rules ?? [];
+      assert.ok(rules.length > 0, "收窄必须留下规则，否则就是无规则硬拒");
+      assert.equal(rules.every((r) => r.autoReject), false, "全部 autoReject 会被硬拒，narrowed 不能被当成硬拒");
+      // 对照组：真硬拒走的是「没有规则」那条路（黑名单/内联脚本），与本改动无关
+      const blocked = checkCommand("cat /work/project/.env", { cwd: "/work/project" });
+      assert.equal(blocked.allow, false);
+      assert.equal(blocked.rules, undefined, "黑名单命中不给可审批的规则");
+    });
+  });
+});
+
+// v0.3.0：工具对 `$HOME/x` / `~/x` 这类目标只交出名字（target 按原值保留、dynamic: true），
+// 替换是调用方的事（integration.md「谁来替换那些变量」）。收尾之后，这类目标才进得了黑名单判定。
+describe("路径判定：变量目标（v0.3.0 的收尾）", () => {
+  it("$HOME 开头的敏感路径：收尾后能拦到（改动前拿原值去匹配，拦不到）", () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = homedir();
+    // 旧路径的行为先摆出来：过滤后的事实层只拿到了 `$HOME/.ssh/id_rsa` 这个原值，
+    // 它既不是绝对路径，~ 展开也碰不到，规则一条都命不中
+    assert.equal(pathBlocked("$HOME/.ssh/id_rsa", "/tmp", loadBlacklist()), false, "原值本来就匹配不上（不是回归）");
+    // 而这条命令里没有未引号 token（整个路径在引号里），token 层也不盖它：
+    // 改动前唯一可能拦下它的就是收尾后的绝对路径
+    assert.deepEqual(unquotedPathTokens('cat "$HOME/.ssh/id_rsa"'), []);
+
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "cat", vars: [], dynamic: false, modeled: true, line: 1 },
+          { kind: "Read", target: "$HOME/.ssh/id_rsa", vars: ["HOME"], dynamic: true, modeled: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["HOME"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    try {
+      withStubPreshell(bin, () => {
+        const result = checkCommand('cat "$HOME/.ssh/id_rsa"', { cwd: "/tmp" });
+        assert.equal(result.allow, false, "收尾成 /home/u/.ssh/id_rsa 之后就该命中");
+        assert.match(result.reason ?? "", /敏感路径黑名单/);
+      });
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
+
+  it("变量没设：保留原值、不猜（判定与接入前一致，不是放松）", () => {
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [{ kind: "Read", target: "$NOT_SET_ANYWHERE/.ssh/id_rsa", vars: ["NOT_SET_ANYWHERE"], dynamic: true, modeled: true, line: 1 }],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["NOT_SET_ANYWHERE"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const result = checkCommand("cat $NOT_SET_ANYWHERE/.ssh/id_rsa", { cwd: "/tmp" });
+      assert.equal(result.facts?.settledPaths[0]?.known, false, "补不上就得说补不上");
+      assert.equal(result.facts?.settledPaths[0]?.path, "$NOT_SET_ANYWHERE/.ssh/id_rsa", "保留原值");
+      // 不变宽也不会变严：这条在接入前也是没拦住（token 层拿带 $ 的原值同样匹配不上）
+      assert.equal(result.allow, true);
+    });
   });
 });
 

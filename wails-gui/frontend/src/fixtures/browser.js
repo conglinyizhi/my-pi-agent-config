@@ -25,6 +25,12 @@ export const browserFixtures = {
         note("SRC=$(pwd)", { name: "SRC", reason: "值里含命令替换 $(...)，无法静态解析" }),
       ],
       review: { verdict: "risky", reason: "递归删除构建缓存需要确认范围", suggestion: "确认目标目录是否可安全重建" },
+      // 变量渲染值：target 是命令里的文本片段（无偏移，前端自己定位）
+      varRenders: [
+        { name: "SRC", target: "$(pwd)", source: "assignment", kind: "Exec", known: false, reason: "值里含命令替换 $(...)，无法静态解析" },
+        { name: "HOME", value: "/home/tester", source: "env", target: "$HOME", kind: "Exec", known: true },
+        { name: "OUT", value: "/home/tester/build", source: "assignment", target: "$OUT", kind: "Exec", known: true },
+      ],
       kind: "audit",
     };
   })(),

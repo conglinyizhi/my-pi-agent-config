@@ -20,6 +20,7 @@ import {
 	type GuiFallbackReason,
 } from "./gui-diagnosis.ts";
 import { collectEnvAssignments, type EnvNote } from "./env-notes.ts";
+import { varRendersForApproval, type VarRender } from "./var-render.ts";
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
@@ -168,6 +169,10 @@ export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> 
 	// 只在 Linux 给（这条功能是 Linux 闸门窗的）；拿不到环境变量的场合也不给，宁可没有
 	const envNotes = envNotesFor(request.command);
 	if (envNotes) payload.envNotes = envNotes;
+	// 命令里变量**使用处**的渲染值：审批窗标蓝（悬停看值）/标灰（悬停看原因）并列出变量表。
+	// 与 envNotes 分工：那边是「这条命令自己声明的赋值解析成什么」，这边是「用到的地方渲成什么」
+	const varRenders = varRendersFor(request.command);
+	if (varRenders) payload.varRenders = varRenders;
 	// urgent 随 payload 下发：适配器据此跳过度延迟（见 hub/adapters/feishu/main.go 的 onAskEvent）
 	return request.urgent ? { ...payload, urgent: true } : payload;
 }
@@ -177,6 +182,14 @@ function envNotesFor(command: unknown): EnvNote[] | undefined {
 	if (typeof command !== "string" || command === "") return undefined;
 	const notes = collectEnvAssignments(command);
 	return notes.length > 0 ? notes : undefined;
+}
+
+/** 变量渲染值（与 envNotes 同平台条件：这条展示能力属于 Linux 闸门窗） */
+function varRendersFor(command: unknown): VarRender[] | undefined {
+	if (process.platform !== "linux") return undefined;
+	if (typeof command !== "string" || command === "") return undefined;
+	const renders = varRendersForApproval(command);
+	return renders.length > 0 ? renders : undefined;
 }
 
 function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {

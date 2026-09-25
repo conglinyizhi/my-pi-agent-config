@@ -134,7 +134,8 @@ export function isInterpreterProgram(target: string): boolean {
  * 敏感路径黑名单：解析出来的目标优先，未引号 token 兜底。
  *
  * 三层都跑（而非二选一），是因为它们盖的是不同的洞：
- *   preshell    → 相对路径、带引号的路径、cd 后的基准（旧子串匹配在相对路径上漏了 21 条）
+ *   preshell    → 相对路径、带引号的路径、cd 后的基准（旧子串匹配在相对路径上漏了 21 条）；
+ *                  v0.3.0 起还包括它交出的变量与 `~` 目标，由我们用环境变量收尾成绝对路径
  *   token       → 存在性探测这类不产生 Read 效果的用法（preshell 对 `test -f x` 只报 Exec）
  *   interpreter → 解释器载荷（`node -e …` / `python -c …` / 交给解释器的 heredoc 正文）：
  *                   preshell 不建模这类程序，引号里的路径既没效果也不在未引号 token 里
@@ -157,19 +158,21 @@ export function detectSensitivePaths(
 		hits.push({ pattern, token, via });
 	};
 
-	const outcome = analyzeCommand(command, { config: loadPreshellConfig() });
+	const outcome = analyzeCommand(command, { config: loadPreshellConfig(), cwd: ctx.cwd });
 	let interpreterPayload = false;
 	if (outcome.ok) {
 		const base = outcome.facts.cwd ?? ctx.cwd;
 		for (const effect of outcome.facts.effects) {
-			if (effect.kind === "Exec" || effect.kind === "Spawn") {
-				if (isInterpreterProgram(effect.target)) interpreterPayload = true;
-				continue;
-			}
-			if (!["Read", "Write", "Delete"].includes(effect.kind)) continue;
-			if (typeof effect.target !== "string" || effect.target.length === 0) continue;
-			const hit = rules.find((rule) => pathBlocked(effect.target, base, [rule]));
-			if (hit) push(hit.pattern, effect.target, "preshell");
+			if ((effect.kind === "Exec" || effect.kind === "Spawn") && isInterpreterProgram(effect.target)) interpreterPayload = true;
+		}
+		// 路径判定用收尾后的目标（v0.3.0 起工具交出 `$HOME/x` / `~/x` 这类原值与 vars，
+		// 由 facts.settledPaths 用环境变量替换成绝对路径）。收尾失败的条目 path 仍是工具给的
+		// 原值，跟以前一样拿它去匹配：不会比接入前更松
+		for (const item of outcome.facts.settledPaths) {
+			if (!["Read", "Write", "Delete"].includes(item.effect.kind)) continue;
+			if (item.path.length === 0) continue;
+			const hit = rules.find((rule) => pathBlocked(item.path, base, [rule]));
+			if (hit) push(hit.pattern, item.path, "preshell");
 		}
 	}
 
@@ -285,8 +288,12 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	// /tmp 重定向逃逸（符号链接指向 /tmp 之外视为危险）
 	const tmpEscape = extractTmpRedirectTargets(command).filter((t) => !isTmpRedirectTargetSafe(t));
 
-	// 完全安全 → 放行
-	if (audit.allow && tmpEscape.length === 0) {
+	// 完全安全 → 放行。
+	// 收窄过的命令名变量（`P=/usr/bin/jq && $P -n 1`）不走这条：程序名虽然能静态确定，
+	// 但规则层看不到 `$P` 背后是什么，要留出一条 dynamic-construct-narrowed 规则送去 LLM 预审。
+	// 同一条件再写一遍是故意的：这是当初把收窄误成「直接放行」的那个口子（audit.allow 已会
+	// 因 narrowed 变 false，但直接从这条分支走的人不会知道）。
+	if (audit.allow && audit.narrowed.length === 0 && tmpEscape.length === 0) {
 		return withFacts({ allow: true, audit });
 	}
 
@@ -298,6 +305,18 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 
 	// 组合危险信号（与 gate 一致：不合并成一条，逐条可高亮）
 	if (audit.dynamic) rulesOut.push({ name: "dynamic-construct", tip: "命令含动态构造，请人工确认", autoReject: false, matched: [...audit.dynamicTokens] });
+	// 收窄过的命令名变量：程序名静态确定了，但规则层拿着 token 原文判不了它是什么程序。
+	// 第一条规则把这层信息交给审核模型（tip 里带上 `$P = /usr/bin/jq`），仍要预审，不直接放行。
+	// autoReject:false 是硬要求：它只把命令送进 LLM 预审，不能让 LLM 判 safe 之后还要人工
+	// （那是真·危险信号才该给的待遇）。
+	if (audit.narrowed.length > 0) {
+		rulesOut.push({
+			name: "dynamic-construct-narrowed",
+			tip: `命令名是变量，已静态确定为 ${audit.narrowed.map((n) => `${n.token} = ${n.program}`).join("、")}，交预审确认`,
+			autoReject: false,
+			matched: audit.narrowed.map((n) => n.token),
+		});
+	}
 	if (audit.dangerous.length > 0) rulesOut.push({ name: "subst-danger", tip: "命令替换内部含危险指令", autoReject: false, matched: [...audit.dangerous] });
 	if (audit.pyDanger.length > 0) rulesOut.push({ name: "python-danger", tip: "Python 段含危险调用", autoReject: false, matched: [...audit.pyDanger] });
 	if (audit.pipeExec.length > 0) rulesOut.push({ name: "pipe-exec", tip: "管道右侧为执行器命令", autoReject: false, matched: [...audit.pipeExec] });
@@ -317,8 +336,10 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 		return withFacts({ allow: true, audit, rules: rulesOut });
 	}
 
-	// 6. 有规则但非全 autoReject（动态构造/需人工确认）→ 交由上层（bash-guard）走 LLM/弹窗审批
+	// 6. 有规则但非全 autoReject（动态构造/收窄待预审/需人工确认）→ 交由上层（bash-guard）走 LLM/弹窗审批
 	// 这里只做「判定」，不弹窗。调用方拿到 rules 后自行决定审批方式。
+	// 收窄过的命令也落在这条（rules 里只有 dynamic-construct-narrowed 这一条 autoReject:false 时）：
+	// 白名单豁免走不到它——isWhitelisted 见命令含 `$` 就返 false——所以它一定会到审批器。
 	return withFacts({ allow: false, reason: "命令需人工确认（命中危险/动态规则）", rules: rulesOut, audit });
 }
 

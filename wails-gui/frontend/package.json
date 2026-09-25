@@ -9,7 +9,8 @@
     "build:browser": "vite build --config vite.browser.config.js",
     "preview": "vite preview",
     "test:subagent-reader": "node --test src/subagent-reader.test.js",
-    "test:subagent-navigation": "node --test src/subagent-navigation.test.js"
+    "test:subagent-navigation": "node --test src/subagent-navigation.test.js",
+    "test:var-renders": "node --test src/domain/gate/var-renders.test.js"
   },
   "dependencies": {
     "vue": "^3.5.0"

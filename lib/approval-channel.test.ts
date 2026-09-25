@@ -313,13 +313,57 @@ describe("sandbox-allow 的敏感路径命中", () => {
 	it("没有赋值就不凭空多出 envNotes", () => {
 		assert.equal(toGuiPayload({ ...request, command: "ls -la" }).envNotes, undefined);
 	});
-
 	it("解析不了的赋值也下发，带原因", () => {
 		const payload = toGuiPayload({ ...request, command: "export OUT=$(pwd)" });
 		const notes = payload.envNotes as Array<{ value?: string; reason?: string }>;
 		assert.equal(notes.length, 1);
 		assert.equal(notes[0].value, undefined);
 		assert.match(notes[0].reason ?? "", /命令替换/);
+	});
+
+	// varRenders：命令里变量**使用处**的渲染值（与 envNotes 分工不同：那边是赋值解析成什么）。
+	// 字段形状是前端（wails-gui/frontend/src/domain/gate/var-renders.js）已实现的集成契约
+	it("变量使用处的渲染值随 payload 下发（命令名变量 → 值 + 来源）", () => {
+		const payload = toGuiPayload({ ...request, command: "cd /tmp && P=/usr/bin/jq && $P --version" });
+		assert.deepEqual(payload.varRenders, [
+			{ name: "P", target: "$P", kind: "Exec", known: true, value: "/usr/bin/jq", source: "assignment" },
+		]);
+	});
+
+	it("渲染不出来的也下发：known:false + reason，且不带 value/source", () => {
+		const payload = toGuiPayload({ ...request, command: "P=/usr/bin/jq $P --version" });
+		const renders = payload.varRenders as Array<Record<string, unknown>>;
+		assert.equal(renders.length, 1);
+		assert.equal(renders[0].known, false);
+		assert.equal(renders[0].target, "$P");
+		assert.match(String(renders[0].reason), /前置赋值/);
+		assert.equal("value" in renders[0], false);
+		assert.equal("source" in renders[0], false);
+	});
+
+	it("环境变量来源标成 env；两边都没有时给原因", () => {
+		const payload = toGuiPayload({ ...request, command: 'echo "$HOME"' });
+		const renders = payload.varRenders as Array<Record<string, unknown>>;
+		assert.equal(renders[0].source, "env");
+		assert.equal(renders[0].value, process.env.HOME);
+		const missing = toGuiPayload({ ...request, command: "echo $PI_NO_SUCH_VAR_ANYWHERE" });
+		const entry = (missing.varRenders as Array<Record<string, unknown>>)[0];
+		assert.equal(entry.known, false);
+		assert.match(String(entry.reason), /环境里没有变量 PI_NO_SUCH_VAR_ANYWHERE/);
+	});
+
+	it("命令里没有变量引用就不凭空多出 varRenders", () => {
+		assert.equal(toGuiPayload({ ...request, command: "ls -la /work/project" }).varRenders, undefined);
+		assert.equal(toGuiPayload({ ...request, command: "cat .env" }).varRenders, undefined);
+	});
+
+	it("varRenders 与 envNotes 同时下发（同一段命令，各管一层）", () => {
+		const payload = toGuiPayload({ ...request, command: 'OUT="$HOME/out" && echo "$OUT"' });
+		assert.equal((payload.envNotes as unknown[]).length, 1);
+		assert.deepEqual(
+			(payload.varRenders as Array<{ name: string }>).map((r) => r.name).sort(),
+			["HOME", "OUT"],
+		);
 	});
 
 	// 适配器靠 payload.urgent 跳过 card-delay；不带就不能凭空多出这个字段

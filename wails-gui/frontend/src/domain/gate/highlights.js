@@ -44,9 +44,14 @@ export function renderHighlightedCommand(command, highlights) {
   let position = 0;
   for (let index = 0; index < list.length; index++) {
     const highlight = list[index];
-    // 规则命中用 mark.h（导航与红色高亮都挂它）；赋值解析用 mark.e（绿=已解析 / 灰=解析不了）。
-    // 两者不能混用同一个类：导航按 mark.h 数序号，混起来就会指错。
-    const cls = highlight.tone === "env" ? "e" : highlight.tone === "env-unknown" ? "e e-u" : "h";
+    // 规则命中用 mark.h（导航与红色高亮都挂它）；赋值解析用 mark.e（绿=已解析 / 灰=解析不了）；
+    // 变量渲染值用 mark.v（蓝=已解析 / 灰=解析不了）。三者不能混用同一个类：
+    // 导航按 mark.h 数序号，混起来就会指错。
+    const cls = highlight.tone === "env" ? "e"
+      : highlight.tone === "env-unknown" ? "e e-u"
+        : highlight.tone === "var" ? "v"
+          : highlight.tone === "var-unknown" ? "v v-u"
+            : "h";
     html += escapeText(text.slice(position, highlight.s));
     html += `<mark class="${cls}" data-i="${index}" data-tip="${escapeAttribute(highlight.t)}">${escapeText(text.slice(highlight.s, highlight.e))}</mark>`;
     position = highlight.e;

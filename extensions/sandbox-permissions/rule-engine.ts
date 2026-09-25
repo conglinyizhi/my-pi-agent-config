@@ -20,6 +20,7 @@ import {
   pythonDangerous,
 } from "./scanner.ts";
 import type { SegWithSep, MaskedCommand } from "./scanner.ts";
+import { staticProgramValues, type StaticValue } from "../../lib/var-render.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 // re-export：测试与外部调用从 rule-engine 导入的路径保持不变
@@ -295,18 +296,161 @@ export function isCommandSafe(cmd: string): boolean {
   return true;
 }
 
-/** 检测 bash 动态构造，返回命中的特性 token（空数组 = 无动态构造） */
-export function dynamicConstructTokens(cmd: string): string[] {
+/**
+ * 「渲染得出来也不收窄」的护栏：渲染值落在这些程序上时照旧算动态构造。
+ *
+ * 收窄之后仍要过 LLM 预审（见 narrowedProgramTokens），但命中的规则名/tip 会从
+ * dynamic-construct 换成 dynamic-construct-narrowed，提示文字也不同——而规则匹配看的是
+ * token 原文，看不到 `$A` 背后的值：`A=rm && $A -rf ~/x` 这种命令名被渲染成危险程序时，
+ * 收窄会让审核模型与人都只看到「已静态确定为 rm」这条提示，绕过 rm-recursive 那条明确规则。
+ * 渲染成解释器/脚本时同理：lib/sandbox-check.ts 的「解释器载荷」那一层也是拿
+ * effect.target（还是 `$A`）判的。所以这几类一律保动态构造，连带明确的规则一起报。
+ */
+const NON_NARROWABLE_PROGRAMS = new Set<string>([
+  // 规则会拦的命令名（RULES 里 cmd 精确匹配的那些）
+  ...RULES.flatMap((r) => (typeof r.cmd === "string" ? [r.cmd] : (r.cmd ?? []))),
+  // 包装器：后面的程序名才是真正要跑的
+  "eval",
+  "exec",
+  "command",
+  "builtin",
+  "source",
+  ".",
+  "xargs",
+  "env",
+  "timeout",
+  "nohup",
+  "setsid",
+  "nice",
+  "su",
+  "doas",
+  "pkexec",
+  "busybox",
+  "strace",
+  // 解释器：与 lib/sandbox-check.ts 的 INTERPRETER_PROGRAMS 同源
+  // （那个文件 import 本文件，不能反向依赖；两边改动要一起看）
+  "python",
+  "python2",
+  "python3",
+  "node",
+  "nodejs",
+  "deno",
+  "bun",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+  "bash",
+  "sh",
+  "zsh",
+  "dash",
+  "ksh",
+  "ash",
+  "base64",
+  "xxd",
+  "openssl",
+]);
+
+/** 脚本类后缀：与 lib/sandbox-check.ts 的 SCRIPT_SUFFIX 同源 */
+const SCRIPT_SUFFIX = /\.(?:sh|bash|zsh|ksh|dash|py|py3|rb|pl|php|lua|js|mjs|cjs|ts)$/i;
+
+/**
+ * 收窄门槛：只有「已知程序」才收窄。
+ *
+ * 允许的两种写法：
+ *   - 裸命令名（值里不含 `/`，由 PATH 解析）：`jq`
+ *   - 系统 bin 目录下的直接子项：`/bin/jq` `/usr/bin/jq` `/usr/local/bin/jq` `/sbin/x` `/usr/sbin/x`
+ * 其余一律不收窄——`/tmp/mytool`、`./tool`、`~/bin/tool`、`/opt/x/tool`、`bin/jq`、
+ * 以及带 `/../` 的绕行写法：那些位置的程序是谁写的、会不会被换掉，规则层看不见；
+ * 多收窄一步就少一层提示，收益抵不上。
+ */
+const NARROWABLE_BIN_DIRS = ["/bin/", "/usr/bin/", "/usr/local/bin/", "/sbin/", "/usr/sbin/"];
+
+/**
+ * 渲染出来的命令名能不能当「普通程序名」用。
+ * 带空白/展开字符的值不能：命令行会按词拆开、还会走通配（`A='rm -rf' && $A /`），
+ * 那种情形不叫「知道跑的是什么程序」，再往下算就容易把判定放过去。
+ */
+function isPlainProgramName(value: string): boolean {
+  if (value === "" || !/^[A-Za-z0-9_./+:@%^,=-]+$/.test(value)) return false;
+  const base = value.slice(value.lastIndexOf("/") + 1).toLowerCase();
+  if (base === "") return false;
+  return !NON_NARROWABLE_PROGRAMS.has(base) && !SCRIPT_SUFFIX.test(base);
+}
+
+/** 值的目录部分是不是系统 bin 目录（裸命令名单独放宽，见 NARROWABLE_BIN_DIRS） */
+function isKnownProgramPath(value: string): boolean {
+  const slash = value.lastIndexOf("/");
+  // 裸命令名，交给 PATH —— 那也是「已知程序」。`.` / `..` 不是程序（`.` 本来就在
+  // NON_NARROWABLE_PROGRAMS 里，这里再兜一道，免得 `A=.. && $A` 被当成已知程序）
+  if (slash === -1) return value !== "." && value !== "..";
+  const base = value.slice(slash + 1);
+  if (base === "" || base === "." || base === "..") return false;
+  // 目录带结尾 `/`，与 NARROWABLE_BIN_DIRS 的写法同形：`/usr/bin/../tmp/x` 的目录是
+  // `/usr/bin/../tmp/`，列表里没有，自然不收窄（要的是「这一层」。子目录也不收）
+  return NARROWABLE_BIN_DIRS.includes(value.slice(0, slash + 1));
+}
+
+/**
+ * 渲染值 → 能不能收窄成「已知程序」。
+ * 收窄不等于放行：调用方拿到 narrowed 之后仍要出一条 autoReject:false 的规则，
+ * 把命令送去 LLM 预审。收窄只决定「这条命令按已知程序报，而不是按未知动态构造报」。
+ */
+function narrowableProgramName(value: string): boolean {
+  return isPlainProgramName(value) && isKnownProgramPath(value);
+}
+
+/** 命令名位置上的静态渲染值是否收窄；收窄时给出渲染出来的程序（引不出来 / 不收窄 = undefined） */
+function narrowedProgramValue(cmdToken: string, values: Map<string, StaticValue>): string | undefined {
+  const value = values.get(cmdToken);
+  if (value?.known !== true) return undefined;
+  return narrowableProgramName(value.value) ? value.value : undefined;
+}
+
+/** 一条被收窄的命令名变量：token 是引用原文，program 是静态确定的程序 */
+export interface NarrowedProgram {
+  token: string;
+  program: string;
+}
+
+/** dynamicConstructTokens 与 narrowedProgramTokens 共用的一次扫描结果 */
+export interface DynamicAnalysis {
+  /** 残余动态构造的 token（与改动前同义：渲染不出来或该保动态构造的那些） */
+  dynamic: string[];
+  /** 命令名变量静态确定成已知程序、已收窄的那些（仍要过 LLM 预审，见调用方） */
+  narrowed: NarrowedProgram[];
+}
+
+/**
+ * 动态构造分析：一次扫描同时给出「残余动态构造」与「已收窄的命令名变量」。
+ *
+ * 命令名位置的变量渲染（`P=/usr/bin/jq && $P -n 1` 里的 $P）：静态知道跑什么程序时，
+ * 它不再算动态构造（dynamic 里没有它），但归入 narrowed——规则层看不到 `$P` 背后是 jq，
+ * 由 lib/sandbox-check.ts 转成 dynamic-construct-narrowed 规则送 LLM 预审。
+ * 渲染不出来、或渲染成 NON_NARROWABLE_PROGRAMS 里那几类时，照旧算动态构造。
+ */
+export function analyzeDynamicConstructs(cmd: string): DynamicAnalysis {
   const hits: string[] = [];
+  const narrowed: NarrowedProgram[] = [];
   const pushHit = (t: string) => {
     if (!hits.includes(t)) hits.push(t);
   };
+  const pushNarrowed = (token: string, program: string) => {
+    if (!narrowed.some((n) => n.token === token)) narrowed.push({ token, program });
+  };
+  const programValues = staticProgramValues(cmd);
   for (const tokens of splitCommands(cmd)) {
     const i = findCommandIndex(tokens);
     const cmdToken = tokens[i];
     if (!cmdToken) continue;
     // 1. 命令名是变量/替换/ANSI-C 引号/含转义（r\m、$VAR、$'...'）
-    if (cmdToken.startsWith("$") || /\\[A-Za-z0-9_]/.test(cmdToken)) pushHit(cmdToken);
+    if (cmdToken.startsWith("$")) {
+      const program = narrowedProgramValue(cmdToken, programValues);
+      if (program === undefined) pushHit(cmdToken);
+      else pushNarrowed(cmdToken, program);
+    } else if (/\\[A-Za-z0-9_]/.test(cmdToken)) {
+      pushHit(cmdToken);
+    }
     // 2. 显式执行字符串：eval xxx、bash/sh -c 'xxx'
     if (cmdToken === "eval") pushHit("eval");
     if (
@@ -326,10 +470,22 @@ export function dynamicConstructTokens(cmd: string): string[] {
     const subst = tokens.find((t) => t.includes("$(") || t.includes("`") || t.includes("<(") || t.includes(">("));
     if (subst) pushHit(subst);
   }
-  return hits;
+  // 同一处引用不可能既命中又收窄（查表按 token 一次定值），这里只做防御：
+  // 真出现同名 token 落在两边时，按「残余动态构造」报，别让窄的盖住宽的
+  return { dynamic: hits, narrowed: narrowed.filter((n) => !hits.includes(n.token)) };
 }
 
-/** 是否存在动态构造（dynamicConstructTokens 的便捷布尔形式） */
+/** 检测 bash 动态构造，返回命中的特性 token（空数组 = 无残余动态构造） */
+export function dynamicConstructTokens(cmd: string): string[] {
+  return analyzeDynamicConstructs(cmd).dynamic;
+}
+
+/** 已收窄的命令名变量（供 lib/sandbox-check.ts 出 dynamic-construct-narrowed 规则） */
+export function narrowedProgramTokens(cmd: string): NarrowedProgram[] {
+  return analyzeDynamicConstructs(cmd).narrowed;
+}
+
+/** 是否存在残余动态构造（dynamicConstructTokens 的便捷布尔形式） */
 export function hasDynamicConstructs(cmd: string): boolean {
   return dynamicConstructTokens(cmd).length > 0;
 }
@@ -362,27 +518,40 @@ export interface SubstitutionAudit {
   peeled: string;
   /** 危险替换的原文列表（首个危险层停止） */
   dangerous: string[];
+  /**
+   * 剥洋葱时各层里被收窄过的命令名变量（`$(P=/usr/bin/jq && $P -n 1)` 里的 $P）。
+   * 那一层算「安全」，会被占位符替掉；但收窄说的是「程序名静态确定了、规则层看不到」，
+   * 替掉之后外层看着干净，这条命令就再没人提这件事了。所以把它单独交出去，
+   * 由 auditCommand 并进 narrowed，让整条命令过 LLM 预审。
+   */
+  narrowed: NarrowedProgram[];
 }
 
 /** 迭代剥洋葱：最内层替换内容跑与顶层相同的判定，安全则占位继续，危险则记录原文 */
 export function auditSubstitutions(cmd: string): SubstitutionAudit {
   let peeled = cmd;
   const dangerous: string[] = [];
+  const narrowed: NarrowedProgram[] = [];
   let guard = 0;
   while (guard++ < 100) {
     const sub = findInnerSubst(peeled);
     if (!sub) break;
+    const inner = analyzeDynamicConstructs(sub.inner);
     const isSafeInner =
       isCommandSafe(sub.inner) &&
-      !hasDynamicConstructs(sub.inner) &&
+      inner.dynamic.length === 0 &&
       findPipeExec(sub.inner).length === 0;
     if (!isSafeInner) {
       dangerous.push(sub.inner);
       break;
     }
+    // 安全层：占位继续剥，但把它里面的收窄记下来（替掉之后就看不到了）
+    for (const item of inner.narrowed) {
+      if (!narrowed.some((n) => n.token === item.token && n.program === item.program)) narrowed.push(item);
+    }
     peeled = peeled.slice(0, sub.start) + SUBST_PLACEHOLDER + peeled.slice(sub.end + 1);
   }
-  return { peeled, dangerous };
+  return { peeled, dangerous, narrowed };
 }
 
 // ═══════════════════════════════════════════════════
@@ -390,7 +559,15 @@ export function auditSubstitutions(cmd: string): SubstitutionAudit {
 // ═══════════════════════════════════════════════════
 
 export interface AuditResult {
-  /** 是否放行（无危险规则、无残余动态、无危险替换/Python/管道信号） */
+  /**
+   * 是否放行（无危险规则、无残余动态、无危险替换/Python/管道信号，
+   * 且没有被收窄的命令名变量）。
+   *
+   * 被收窄的命令名变量（narrowed 非空）也算在这里：它是「程序名静态确定了、但规则层
+   * 看不到那一步」的信号，调用方要把它转成 dynamic-construct-narrowed 规则送 LLM 预审。
+   * 若 allow 在这里仍为 true，任何一个拿 allow 当最终结果的调用方（包括
+   * lib/sandbox-check.ts 的提前放行分支）都会跳过预审——那是本字段要堵的洞。
+   */
   allow: boolean;
   /** 危险规则是否命中（含 venv 白名单覆盖前的原始判定） */
   safe: boolean;
@@ -399,6 +576,12 @@ export interface AuditResult {
   /** 剥完后仍有动态构造（eval/bash -c/变量命令等） */
   dynamic: boolean;
   dynamicTokens: string[];
+  /**
+   * 命令名变量已静态确定成已知程序、因此从动态构造里收窄出来的那些。
+   * 不计入 dynamic（它们不再是残余动态），但仍需 LLM 预审：
+   * 由 lib/sandbox-check.ts 转成一条 autoReject:false 的 dynamic-construct-narrowed 规则。
+   */
+  narrowed: NarrowedProgram[];
   /** 剥洋葱命中的危险替换原文 */
   dangerous: string[];
   /** Python 段命中的危险调用子串 */
@@ -413,7 +596,7 @@ export interface AuditResult {
 export function auditCommand(cmd: string): AuditResult {
   const { masked, pySegments } = maskShellBlindZones(cmd);
   const pyDanger = pythonDangerous(pySegments);
-  const { peeled, dangerous } = auditSubstitutions(masked);
+  const { peeled, dangerous, narrowed: substNarrowed } = auditSubstitutions(masked);
   // 规则 / 白名单 / 管道这三件事问的都是「这条命令会执行什么」：
   // 先遮掉不会被 shell 执行的 heredoc 正文。动态构造仍看 peeled——
   // 未引号正文里的 $VAR 与 $(...) 写入时就会展开，那是真的会发生的事
@@ -421,9 +604,15 @@ export function auditCommand(cmd: string): AuditResult {
   const pipeExec = findPipeExec(executable);
   const rules = matchDangerous(executable);
   const safe = isCommandSafe(executable);
-  const dynamic = hasDynamicConstructs(peeled);
-  const dynamicTokens = dynamicConstructTokens(peeled);
+  // 一次扫描出「残余动态」与「已收窄的命令名变量」：后者也让 allow 变 false（要过 LLM 预审）。
+  // 剥洋葱里各层收窄过的也要并进来：那几层已被换成占位符，peeled 上已经看不到它们了
+  const { dynamic: dynamicTokens, narrowed: topNarrowed } = analyzeDynamicConstructs(peeled);
+  const narrowed = [...topNarrowed];
+  for (const item of substNarrowed) {
+    if (!narrowed.some((n) => n.token === item.token && n.program === item.program)) narrowed.push(item);
+  }
+  const dynamic = dynamicTokens.length > 0;
   const allow =
-    safe && !dynamic && dangerous.length === 0 && pyDanger.length === 0 && pipeExec.length === 0;
-  return { allow, safe, rules, dynamic, dynamicTokens, dangerous, pyDanger, pipeExec, masked };
+    safe && !dynamic && narrowed.length === 0 && dangerous.length === 0 && pyDanger.length === 0 && pipeExec.length === 0;
+  return { allow, safe, rules, dynamic, dynamicTokens, narrowed, dangerous, pyDanger, pipeExec, masked };
 }

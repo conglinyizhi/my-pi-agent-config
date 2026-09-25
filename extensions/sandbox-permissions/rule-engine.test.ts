@@ -6,7 +6,7 @@
  * 规则用「命令名 + 子命令 + flag/参数精确匹配」结构化判断。
  */
 import assert from "node:assert";
-import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens, extractTmpRedirectTargets, isTmpRedirectTargetSafe } from "./rule-engine.ts";
+import { splitCommands, matchDangerous, isAutoReject, isCommandSafe, hasDynamicConstructs, dynamicConstructTokens, analyzeDynamicConstructs, narrowedProgramTokens, extractTmpRedirectTargets, isTmpRedirectTargetSafe } from "./rule-engine.ts";
 import { mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -343,7 +343,13 @@ check("H2-8 无害代码", () => {
 import { auditSubstitutions } from "./rule-engine.ts";
 check("H3-1 安全替换占位", () => {
   const r = auditSubstitutions("echo $(date)");
-  assert.deepStrictEqual(r, { peeled: "echo __pi_subst__", dangerous: [] });
+  assert.deepStrictEqual(r, { peeled: "echo __pi_subst__", dangerous: [], narrowed: [] });
+});
+check("H3-1b 安全层里收窄过的变量交出来（否则替掉之后就没人提了）", () => {
+  const r = auditSubstitutions("echo $(P=/usr/bin/jq && $P -n 1)");
+  assert.strictEqual(r.peeled, "echo __pi_subst__");
+  assert.deepStrictEqual(r.dangerous, []);
+  assert.deepStrictEqual(r.narrowed, [{ token: "$P", program: "/usr/bin/jq" }]);
 });
 check("H3-2 危险替换原文", () => {
   const r = auditSubstitutions("$(rm -rf /)");
@@ -668,6 +674,143 @@ check("H11-8 正文里的命令替换仍然算（写入时就会展开执行）"
 check("H11-9 回归：直接执行 rm -rf 照旧命中", () => {
   assert.deepStrictEqual(matchDangerous("rm -rf /tmp/build").map((r) => r.name), ["rm-recursive"]);
   assert.deepStrictEqual(matchDangerous("cd /tmp && rm -rf build").map((r) => r.name), ["rm-recursive"]);
+});
+
+// ═══════════════════════════════════════════════════
+// I. 变量渲染参与动态构造收窄（lib/var-render.ts）
+//
+// 命令名位置的变量能静态渲染出确定的程序名时，它不再算「未知的动态构造」，改报
+// dynamic-construct-narrowed（由 lib/sandbox-check.ts 组装），**仍然要过 LLM 预审**。
+// 收窄门槛卡在「已知程序」：裸命令名，或系统 bin 目录下的直接子项。
+// 渲染不出来、渲染成需要按规则拦的程序（rm/sudo/解释器/脚本）、或落在别的路径下时
+// 照旧算动态构造：这一组的每一条都是护栏。
+// ═══════════════════════════════════════════════════
+check("I1 命令名变量的值能静态确定 → 不算动态构造，但归入 narrowed（要过预审）", () => {
+  const cmd = "cd /tmp && P=/usr/bin/jq && $P --version";
+  assert.deepStrictEqual(dynamicConstructTokens(cmd), []);
+  assert.strictEqual(hasDynamicConstructs(cmd), false);
+  assert.deepStrictEqual(narrowedProgramTokens(cmd), [{ token: "$P", program: "/usr/bin/jq" }]);
+  // 收窄的完整后果：不再算残余动态，但 audit.allow 仍为 false——上层据此送 LLM 预审，
+  // 不能让它直接走官方 execute
+  const audit = auditCommand(cmd);
+  assert.strictEqual(audit.dynamic, false);
+  assert.deepStrictEqual(audit.narrowed, [{ token: "$P", program: "/usr/bin/jq" }]);
+  assert.strictEqual(audit.allow, false, "收窄 ≠ 放行：仍要过 LLM 预审");
+});
+check("I1b 收窄门槛：裸命令名与系统 bin 目录下的直接子项收窄", () => {
+  for (const [cmd, program] of [
+    ["cd /tmp && P=jq && $P --version", "jq"],
+    ["cd /tmp && P=/bin/jq && $P --version", "/bin/jq"],
+    ["cd /tmp && P=/usr/bin/jq && $P --version", "/usr/bin/jq"],
+    ["cd /tmp && P=/usr/local/bin/jq && $P --version", "/usr/local/bin/jq"],
+    ["cd /tmp && P=/sbin/ip && $P -br addr", "/sbin/ip"],
+    ["cd /tmp && P=/usr/sbin/ip && $P -br addr", "/usr/sbin/ip"],
+  ] as const) {
+    assert.strictEqual(hasDynamicConstructs(cmd), false, `该收窄：${cmd}`);
+    assert.deepStrictEqual(narrowedProgramTokens(cmd), [{ token: "$P", program }], cmd);
+  }
+});
+check("I1c 收窄门槛：非系统路径一律不收窄（仍命中 dynamic-construct）", () => {
+  for (const cmd of [
+    "cd /tmp && T=/tmp/mytool && $T --help",
+    "cd /tmp && T=./tool && $T",
+    "cd ~ && T=~/bin/tool && $T",
+    "cd /tmp && T=/opt/x/tool && $T",
+    "cd /tmp && T=bin/tool && $T",
+    "cd /tmp && T=/usr/bin/../tmp/tool && $T",
+    "cd /tmp && T=/usr/bin/sub/tool && $T",
+    "cd /tmp && T=/usr/local/bin/../tmp/tool && $T",
+    "cd /tmp && T=.. && $T",
+  ] as const) {
+    assert.strictEqual(hasDynamicConstructs(cmd), true, `不该收窄：${cmd}`);
+    assert.deepStrictEqual(narrowedProgramTokens(cmd), [], cmd);
+    assert.strictEqual(auditCommand(cmd).allow, false, cmd);
+  }
+});
+check("I2 前置赋值渲不出来 → 仍然算动态构造", () => {
+  assert.deepStrictEqual(dynamicConstructTokens("P=/usr/bin/jq $P --version"), ["$P"]);
+  assert.strictEqual(auditCommand("P=/usr/bin/jq $P --version").allow, false);
+});
+check("I3 环境里没有、命令里也没赋值的变量 → 仍然算动态构造", () => {
+  assert.deepStrictEqual(dynamicConstructTokens("$C -rf /tmp"), ["$C"]);
+  assert.deepStrictEqual(dynamicConstructTokens("A=1 && $A && A=2"), ["$A"], "同名多次赋值不算确定");
+});
+check("I4 渲染成规则要拦的程序时照样算动态构造（否则能绕过 rm/sudo）", () => {
+  for (const cmd of [
+    "A=rm && $A -rf /tmp/build",
+    "A=/bin/rm && $A -rf /tmp/build",
+    "A=sudo && $A rm -rf /tmp/build",
+    "A=find && $A /tmp -delete",
+    "A=dd && $A if=/dev/sda of=/tmp/x",
+  ]) {
+    assert.strictEqual(hasDynamicConstructs(cmd), true, `该保留动态构造：${cmd}`);
+    assert.deepStrictEqual(narrowedProgramTokens(cmd), [], `不该收窄：${cmd}`);
+    assert.strictEqual(auditCommand(cmd).allow, false, `不能放行：${cmd}`);
+  }
+});
+check("I5 渲染成解释器/脚本时照样算动态构造（解释器载荷那一层判不到）", () => {
+  for (const cmd of [
+    "A=node && $A -e 'x'",
+    "A=python3 && $A -c 'print(1)'",
+    "A=bash && $A -c 'echo x'",
+    "A=openssl && $A enc -d -a",
+  ]) {
+    assert.strictEqual(hasDynamicConstructs(cmd), true, `该保留动态构造：${cmd}`);
+  }
+  assert.strictEqual(hasDynamicConstructs("A=/tmp/probe.sh && $A --check"), true, "脚本文件同样不收窄");
+});
+check("I6 渲染值里有空白/通配时不收窄（那已经不是「一个程序名」）", () => {
+  for (const cmd of ["A='rm -rf' && $A /tmp/build", "A='jq .a' && $A", "A='*' && $A"]) {
+    assert.strictEqual(hasDynamicConstructs(cmd), true, `该保留动态构造：${cmd}`);
+    assert.deepStrictEqual(narrowedProgramTokens(cmd), [], cmd);
+  }
+});
+check("I7 环境变量来源的值同样参与渲染（与行内赋值同一套语义）", () => {
+  const saved = process.env.PI_TEST_RENDER_PROG;
+  process.env.PI_TEST_RENDER_PROG = "/usr/bin/jq";
+  try {
+    assert.strictEqual(hasDynamicConstructs("$PI_TEST_RENDER_PROG -n 1"), false);
+    assert.deepStrictEqual(narrowedProgramTokens("$PI_TEST_RENDER_PROG -n 1"), [
+      { token: "$PI_TEST_RENDER_PROG", program: "/usr/bin/jq" },
+    ]);
+    // 同一个变量在环境里指向非系统路径（如用户自建 bin）时不收窄
+    process.env.PI_TEST_RENDER_PROG = "~/bin/jq";
+    assert.strictEqual(hasDynamicConstructs("$PI_TEST_RENDER_PROG -n 1"), true);
+  } finally {
+    if (saved === undefined) delete process.env.PI_TEST_RENDER_PROG;
+    else process.env.PI_TEST_RENDER_PROG = saved;
+  }
+});
+check("I8 收窄只管第一类：别的动态特性照旧命中（eval/bash -c/命令替换/反斜杠）", () => {
+  assert.deepStrictEqual(dynamicConstructTokens("P=/usr/bin/jq && eval $P"), ["eval"]);
+  assert.deepStrictEqual(dynamicConstructTokens("P=/usr/bin/jq && bash -c 'echo x'"), ["bash", "-c"]);
+  assert.deepStrictEqual(dynamicConstructTokens("P=/usr/bin/jq && echo $(date)"), ["$(date)"]);
+  assert.deepStrictEqual(dynamicConstructTokens("P=/usr/bin/jq && r\\m -rf /tmp"), ["r\\m"]);
+});
+check("I9 analyzeDynamicConstructs：两个出口同源，且不与残余动态重叠", () => {
+  // `$P` 收窄、`$(date)` 仍是残余动态：两边各出各的，token 不重叠
+  const cmd = "cd /tmp && P=/usr/bin/jq && $P -n $(date)";
+  const a = analyzeDynamicConstructs(cmd);
+  assert.deepStrictEqual(a.dynamic, ["$(date)"]);
+  assert.deepStrictEqual(a.narrowed, [{ token: "$P", program: "/usr/bin/jq" }]);
+  assert.deepStrictEqual(dynamicConstructTokens(cmd), a.dynamic);
+  assert.deepStrictEqual(narrowedProgramTokens(cmd), a.narrowed);
+  // 两边都有内容时 audit.allow 必为 false（预审与人工都跑）
+  assert.strictEqual(auditCommand(cmd).allow, false);
+});
+check("I10 命令替换里收窄过的层不会随剥洋葱消失", () => {
+  // 这几条的内层是「安全层」，会被 __pi_subst__ 替掉；不让 narrowed 跟出来，
+  // 剥完之后外层看着干净，audit.allow 就是 true —— 直接执行，LLM 预审那道没了
+  for (const cmd of ["echo $(P=/usr/bin/jq && $P -n 1)", "cat <(P=/usr/bin/jq && $P -n 1)"]) {
+    const a = auditCommand(cmd);
+    assert.deepStrictEqual(a.narrowed, [{ token: "$P", program: "/usr/bin/jq" }], cmd);
+    assert.strictEqual(a.dynamic, false, cmd);
+    assert.strictEqual(a.allow, false, `不该直接放行：${cmd}`);
+  }
+  // 对照：内层只是普通安全命令（没有收窄）时，照旧剥掉后放行
+  assert.strictEqual(auditCommand("echo $(date +%s)").allow, true);
+  // 对照：内层是残余动态/危险命令时走 subst-danger，与这条无关
+  assert.deepStrictEqual(auditCommand("echo $(eval 'rm -rf /tmp/x')").narrowed, []);
 });
 
 // ═══════════════════════════════════════════════════

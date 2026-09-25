@@ -11,9 +11,26 @@
       :command="cmd"
       :highlights="highlights"
       :env-notes="envNotes"
+      :var-renders="varRenders"
       :current="cur"
       @update:current="cur = $event"
     />
+
+    <div v-if="varRows.length" data-name="var-table" class="var-table">
+      <div class="var-head">🔎 命令里的变量（{{ varRows.length }}）</div>
+      <div
+        v-for="row in varRows"
+        :key="row.key"
+        class="var-row"
+        :class="{ 'var-row-unknown': !row.known }"
+      >
+        <code class="var-name">{{ row.name }}</code>
+        <span class="var-source">{{ row.sourceLabel }}</span>
+        <code v-if="row.known" class="var-value">{{ row.value }}</code>
+        <span v-else class="var-reason" :title="row.reason">解析不了：{{ row.reason || "原因不明" }}</span>
+        <span v-if="row.kind" class="var-kind">{{ row.kind }}</span>
+      </div>
+    </div>
 
     <GateApprovalInfo
       :is-sandbox-allow="isSandboxAllow"
@@ -69,6 +86,7 @@ import "../gui-theme.css";
 import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import { findHighlights } from "../domain/gate/highlights.js";
+import { varRenderRows } from "../domain/gate/var-renders.js";
 import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow, appendScopeRow, pathDraftsToActions, pathDraftSummary, removeScopeRow, scopeChanged, scopeIssues, scopeWritePaths, workspaceActions } from "../domain/gate/path-actions.js";
 import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
@@ -105,6 +123,8 @@ const workspaceDirs = ref([]);
 const cur = ref(0);
 /** 命令里写死的赋值解析（pi 侧算好：{name, raw, start, end, value?|reason?}） */
 const envNotes = ref([]);
+/** 命令里用到的变量渲染值（pi 侧算好：{name, value?, source, target, kind, known, reason?}） */
+const varRenders = ref([]);
 const reasons = ref([]);
 const comment = ref("");
 
@@ -124,6 +144,8 @@ const verdictMeta = computed(() => {
   return { label: "❌ 审核失败", cls: "v-error" };
 });
 const highlights = computed(() => findHighlights(cmd.value, rules.value));
+// 变量表：known:false 的行显示原因而不是值
+const varRows = computed(() => varRenderRows(varRenders.value));
 const pathRoots = computed(() => ({
   persistentRoots: persistentRoots.value,
   sessionTrustedRoots: sessionTrustedRoots.value,
@@ -198,6 +220,8 @@ onMounted(async () => {
   taskId.value = data.taskId || null;
   rules.value = data.rules || [];
   envNotes.value = data.envNotes || [];
+  // 旧 payload / 非 Linux 平台没有这个字段：缺就空数组，整块不渲染
+  varRenders.value = data.varRenders || [];
   review.value = data.review || null;
   kind.value = data.kind || "audit";
   permission.value = data.permission || "";
@@ -224,4 +248,13 @@ onMounted(async () => {
 
 <style scoped>
 .app { display: flex; flex-direction: column; height: 100vh; background: #1a1a2e; color: #e0e0e0; }
+.var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
+.var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
+.var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
+.var-name { color: #7aa2f7; font-family: monospace; }
+.var-source { font-size: 10px; color: #888; border: 1px solid #3a3a5a; border-radius: 3px; padding: 0 4px; }
+.var-value { color: #4ec9b0; font-family: monospace; word-break: break-all; }
+.var-reason { color: #b0b0b0; font-size: 11px; }
+.var-kind { font-size: 10px; color: #666; }
+.var-row-unknown .var-name { color: #9a9ab0; }
 </style>

@@ -23,6 +23,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { mergeEnvHighlights, renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { envNoteHighlights } from "../../domain/gate/env-notes.js";
+import { mergeVarHighlights, varRenderHighlights } from "../../domain/gate/var-renders.js";
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -36,18 +37,22 @@ const props = defineProps({
   highlights: { type: Array, default: () => [] },
   /** pi 侧算好的赋值解析结果：{name, raw, start, end, value?|reason?} */
   envNotes: { type: Array, default: () => [] },
+  /** pi 侧算好的变量渲染值：{name, value?, source, target, kind, known, reason?} */
+  varRenders: { type: Array, default: () => [] },
   current: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(["update:current"]);
 const cmdBox = ref(null);
 const tip = ref("");
-/** tip 的底色：rule=黄（旧行为），env=绿（解析出来的值），env-unknown=灰（没解析出来） */
+/** tip 的底色：rule=黄（旧行为），env=绿（赋值解析出来了），env-unknown=灰（赋值没解析出来），var/var-unknown=蓝/灰（变量渲染值） */
 const tipTone = ref("rule");
 const tipPos = ref({});
-const commandHtml = computed(() =>
-  renderHighlightedCommand(props.command, mergeEnvHighlights(envNoteHighlights(props.command, props.envNotes), props.highlights)),
-);
+const commandHtml = computed(() => {
+  // 先按老路径合并规则与赋值高亮，再叠变量渲染值（重叠时后者让位，绿框不被蓝框盖）
+  const ruleAndEnv = mergeEnvHighlights(envNoteHighlights(props.command, props.envNotes), props.highlights);
+  return renderHighlightedCommand(props.command, mergeVarHighlights(varRenderHighlights(props.command, props.varRenders), ruleAndEnv));
+});
 
 function scroll() {
   nextTick(() => {
@@ -68,9 +73,15 @@ function onHover(event) {
   // 赋值解析的标记用 mark.e（绿）/ mark.e-u（灰，解析不了），与规则标记分开：
   // 导航按 mark.h 数序号，混用会指错
   const isEnv = target.tagName === "MARK" && target.classList.contains("e");
-  if (!isRule && !isEnv) return;
+  // 变量渲染值用 mark.v（蓝=已知 / 灰=解析不了），与规则、赋值两种标记分开
+  const isVar = target.tagName === "MARK" && target.classList.contains("v");
+  if (!isRule && !isEnv && !isVar) return;
   tip.value = target.dataset.tip || "";
-  tipTone.value = isRule ? "rule" : target.classList.contains("e-u") ? "env-unknown" : "env";
+  tipTone.value = isRule
+    ? "rule"
+    : target.classList.contains("e-u") ? "env-unknown"
+      : target.classList.contains("v-u") ? "var-unknown"
+        : isVar ? "var" : "env";
   const rect = target.getBoundingClientRect();
   tipPos.value = { left: `${rect.left}px`, top: `${rect.bottom + 4}px` };
 }
@@ -103,6 +114,10 @@ watch(() => [props.command, props.highlights], scroll, { deep: true });
 .tooltip.env::before { content: "✓ "; }
 .tooltip.env-unknown { border-color: #888; color: #b0b0b0; }
 .tooltip.env-unknown::before { content: "? "; }
+.tooltip.var { border-color: #7aa2f7; color: #7aa2f7; }
+.tooltip.var::before { content: "⇢ "; }
+.tooltip.var-unknown { border-color: #888; color: #b0b0b0; }
+.tooltip.var-unknown::before { content: "? "; }
 </style>
 
 <style>
@@ -115,6 +130,11 @@ mark.e { background:#4ec9b022; color:#e0e0e0; padding:1px 2px; border-radius:2px
 mark.e:hover { background:#4ec9b044; }
 mark.e-u { background:#88888822; cursor:help; box-shadow: inset 0 0 0 1px #88888855; }
 mark.e-u:hover { background:#88888844; }
+/* 变量渲染值：蓝=已知（悬停看渲染值），灰=解析不了（悬停看原因）。与 envNotes 的绿框分开，互不遮盖 */
+mark.v { background:#7aa2f722; color:#e0e0e0; padding:1px 2px; border-radius:2px; cursor:help; box-shadow: inset 0 0 0 1px #7aa2f755; transition:all 0.12s; }
+mark.v:hover { background:#7aa2f744; }
+mark.v-u { background:#88888822; box-shadow: inset 0 0 0 1px #88888855; }
+mark.v-u:hover { background:#88888844; }
 </style>
 
 <style scoped>

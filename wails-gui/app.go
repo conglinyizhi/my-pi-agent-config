@@ -75,6 +75,8 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["rules"] = req["rules"]
 		// 命令里写死的赋值解析（pi 侧算好，仅 Linux）：前端标绿/标灰并悬停显示值
 		base["envNotes"] = req["envNotes"]
+		// 命令里变量使用处的渲染值（pi 侧算好，仅 Linux）：前端高亮使用处并列出变量表
+		base["varRenders"] = req["varRenders"]
 		// 云端模型审核意见（verdict/reason/suggestion/opinion；nil 时前端容错为不展示）
 		base["review"] = req["review"]
 		// sandbox-allow 升权审批合并进 gate 窗口：kind 判别 audit（默认）/ sandbox-allow
