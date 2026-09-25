@@ -1,9 +1,12 @@
-// extensions/fragments/core.ts — 输入框 `&碎片` 的纯逻辑：读配置、找触发、展开
+// extensions/fragments/core.ts — 输入框 `&碎片` 的纯逻辑：读配置、找触发、展开、写回
 //
-// 这里不碰 pi API：解析、触发扫描、展开都是纯函数，好测。
-// 喂给模型之前把 `&名字` 换成片段正文的事在 index.ts 里接 input 事件做。
+// 这里不碰 pi API：解析、触发扫描、展开、序列化都是纯函数，好测。
+// 喂给模型之前把 `&名字` 换成片段正文的事在 index.ts 里接 input 事件做；
+// /frag:add 的两个 TUI 也在 index.ts，落盘这一段（落成什么字面量、怎么原子替换）在这里。
 
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 export interface Fragment {
@@ -237,4 +240,152 @@ function collectNames(text: string): string[] {
 		}
 	}
 	return names;
+}
+
+// ── 写配置：/frag:add 的落盘那一段 ──
+
+/**
+ * 名字允许的字符，跟展开时的触发扫描同一套（见上面的 NAME_CHAR）。
+ * 不在这套字符里的名字 `&` 后面根本打不出来，写进去也是死条目，所以这里直接拦下。
+ */
+const NAME_ALLOWED = /^[\p{L}\p{N}_-]+$/u;
+
+/** 不能直接落进 TOML 字符串的控制字符（换行与制表符另算，它们有合法的写法） */
+const CTRL_CHAR = /[\u0000-\u0008\u000b-\u001f\u007f]/;
+
+/** 转义 TOML 基本字符串里的字符；keepNewline 为真时换行/制表符原样留在多行字符串里 */
+function escapeBasic(value: string, keepNewline: boolean): string {
+	let out = "";
+	for (const ch of value) {
+		if (ch === "\\") out += "\\\\";
+		else if (ch === '"') out += '\\"';
+		else if (ch === "\n") out += keepNewline ? "\n" : "\\n";
+		else if (ch === "\t") out += keepNewline ? "\t" : "\\t";
+		else if (ch === "\r") out += "\\r";
+		else if (CTRL_CHAR.test(ch)) out += `\\u${(ch.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`;
+		else out += ch;
+	}
+	return out;
+}
+
+/**
+ * 把一个值编码成 TOML 字符串字面量（含引号）。挑形状只看一件事：读回来必须一模一样。
+ *
+ * - 单行、无控制字符：普通字符串 `"..."`，该转的都转掉
+ * - 多行、正文里没连写三个单引号、也没控制字符：多行字面量 `'''...'''`，正文原样躺在文件里最好读。
+ *   按 TOML 规则开引号后紧跟着的那个换行会被吃掉，所以正文哪怕以换行开头也不会丢字符
+ * - 其余（含 `'''`、或含制表符以外的控制字符）：多行基本字符串 `"""..."""`，
+ *   正文里的 `"` 与 `\` 全部转义。正文里连写多少个引号都顶不掉收尾的分隔符
+ */
+export function encodeTomlString(value: string): string {
+	if (!value.includes("\n") && !CTRL_CHAR.test(value)) return `"${escapeBasic(value, false)}"`;
+	if (!value.includes("'''") && !CTRL_CHAR.test(value)) return `'''\n${value}'''`;
+	return `"""\n${escapeBasic(value, true)}"""`;
+}
+
+/** 一条碎片拼成一个 TOML 块（含结尾换行），字段顺序照 README 里的例子 */
+export function formatFragmentBlock(fragment: Fragment): string {
+	const lines = ["[[fragment]]", `name = ${encodeTomlString(fragment.name)}`];
+	if (fragment.aliases && fragment.aliases.length > 0) {
+		lines.push(`aliases = [${fragment.aliases.map((alias) => encodeTomlString(alias)).join(", ")}]`);
+	}
+	if (fragment.desc !== undefined && fragment.desc !== "") lines.push(`desc = ${encodeTomlString(fragment.desc)}`);
+	lines.push(`text = ${encodeTomlString(fragment.text)}`);
+	return `${lines.join("\n")}\n`;
+}
+
+/** 追加到原文末尾：原文尾部的空白先去掉，块与块之间空一行 */
+export function appendFragmentText(tomlText: string, fragment: Fragment): string {
+	const head = tomlText.replace(/\s+$/, "");
+	const block = formatFragmentBlock(fragment);
+	return head === "" ? block : `${head}\n\n${block}`;
+}
+
+export type FragmentWriteResult = { ok: true; fragment: Fragment } | { ok: false; reason: string };
+
+/** 名字这一项的问题；没问题返回 undefined。重名与撞别名都算（撞了的话 & 名字 会先命中别人） */
+export function checkFragmentName(name: string, existing: Fragment[]): string | undefined {
+	const trimmed = name.trim();
+	if (trimmed === "") return "名字不能为空";
+	if (/\s/.test(trimmed)) return `名字里不能有空白（${trimmed}）`;
+	if (!NAME_ALLOWED.test(trimmed)) return `名字只能用字母、数字、下划线、连字符，${trimmed} 打不出 & 触发`;
+	const clash = existing.find((fragment) => triggerNames(fragment).includes(trimmed));
+	if (!clash) return undefined;
+	return clash.name === trimmed ? `已经有 &${trimmed} 了` : `&${trimmed} 已经是 ${clash.name} 的别名了`;
+}
+
+/** 校验一条待写入的碎片：名字、正文都在这里过一遍；名字与描述两端空白去掉 */
+export function validateNewFragment(
+	name: string,
+	desc: string,
+	text: string,
+	existing: Fragment[],
+): FragmentWriteResult {
+	const problem = checkFragmentName(name, existing);
+	if (problem !== undefined) return { ok: false, reason: problem };
+	if (text.trim() === "") return { ok: false, reason: "正文不能为空" };
+	const trimmedName = name.trim();
+	const trimmedDesc = desc.trim();
+	return {
+		ok: true,
+		fragment: { name: trimmedName, ...(trimmedDesc === "" ? {} : { desc: trimmedDesc }), text },
+	};
+}
+
+/** 读配置原文；文件不在就当空的（还没建过），别的读不动原因要上报，不能当空覆盖 */
+function readConfigText(path: string): { ok: true; text: string } | { ok: false; reason: string } {
+	try {
+		return { ok: true, text: readFileSync(path, "utf8") };
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return { ok: true, text: "" };
+		return { ok: false, reason: `读不了 ${path}：${err instanceof Error ? err.message : String(err)}` };
+	}
+}
+
+/** 原文件的权限位；文件不在就按默认的 0644 */
+function fileMode(path: string): number {
+	try {
+		return statSync(path).mode & 0o777;
+	} catch {
+		return 0o644;
+	}
+}
+
+/**
+ * 往配置里加一条：读原文 → 校验 → 追加块 → 写临时文件再 rename。
+ *
+ * 失败只说原因，一个字节都不落盘：写得中途炸了也只炸临时文件，配置要么是旧的要么是新的，
+ * 不会留下半个块。校验用的 existing 就是原文解析出来的，重名在这里再拦一道。
+ */
+export function addFragmentToFile(
+	path: string,
+	input: { name: string; desc?: string; text: string },
+): FragmentWriteResult {
+	const read = readConfigText(path);
+	if (!read.ok) return read;
+	const parsed = parseFragments(read.text);
+	// 原文解析不了时追加会把坏内容一起带下去，先让用户去修
+	const broken = parsed.problems.find((problem) => problem.startsWith("TOML 解析失败"));
+	if (broken !== undefined) return { ok: false, reason: `${basename(path)} 现在解析不了（${broken}），先修好再写` };
+
+	const checked = validateNewFragment(input.name, input.desc ?? "", input.text, parsed.fragments);
+	if (!checked.ok) return checked;
+
+	const next = appendFragmentText(read.text, checked.fragment);
+	const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+	const mode = fileMode(path);
+	try {
+		writeFileSync(tmp, next, { encoding: "utf8", mode });
+		chmodSync(tmp, mode); // umask 可能削掉权限位，按原文件的来
+		renameSync(tmp, path);
+	} catch (err) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// 临时文件没建起来（比如目录就不可写），没东西可清
+		}
+		return { ok: false, reason: `写不进去：${err instanceof Error ? err.message : String(err)}` };
+	}
+	return checked;
 }

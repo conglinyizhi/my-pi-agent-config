@@ -3,11 +3,22 @@
 // 跑法：node --experimental-strip-types extensions/fragments/core.test.ts
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { expandFragments, findFragment, loadFragments, parseFragments, triggerNames, type Fragment } from "./core.ts";
+import {
+	addFragmentToFile,
+	appendFragmentText,
+	encodeTomlString,
+	expandFragments,
+	findFragment,
+	loadFragments,
+	parseFragments,
+	triggerNames,
+	validateNewFragment,
+	type Fragment,
+} from "./core.ts";
 
 const 单步: Fragment = { name: "单步计划", desc: "仅调查不行动", text: "对于这一步，只做调查、不要动手" };
 const core: Fragment = { name: "core-prompt", text: "读 ~/disk/core-prompt/\n然后继续" };
@@ -193,5 +204,153 @@ describe("expandFragments", () => {
 		const 关于我: Fragment = { name: "关于我", aliases: ["我"], text: "x" };
 		assert.equal(findFragment([关于我], "关于我")?.text, "x");
 		assert.equal(findFragment([关于我], "我")?.text, "x");
+	});
+});
+
+describe("写配置（/frag:add 的落盘那一段）", () => {
+	/** 走一遍序列化的边角料：多行、三连引号、反斜杠、控制字符 */
+	const 难缠: Fragment[] = [
+		{ name: "关于我", desc: "背景资料入口", text: "读 ~/disk/core-prompt/" },
+		{ name: "多行", text: "第一行\n第二行\n" },
+		{ name: "三连引号", text: '正文里连写三个引号 """ 也不能坏' },
+		{ name: '名字带\\反斜杠"和引号', desc: '描述里也有 \\ 与 "', text: '正文末尾是反斜杠 \\\n还有 "引号"' },
+		{ name: "带三连单引号", text: "第一行\n'''\n第二行" },
+		{ name: "结尾单引号", text: "正文结尾是单引号 '" },
+		{ name: "留白", text: "  前后留白  \n\n" },
+		{ name: "控制字符", text: "制表\t符\n还有 \u0001 一个" },
+		{ name: "转义路径收尾引号", text: '第一行\n\u0007 结尾是引号"' },
+		{ name: "转义路径收尾三引号", text: '带控制\u0007 和结尾 """' },
+		{ name: "换行开头单引号收尾", text: "\n开头换行，结尾是单引号'" },
+		{ name: "换行开头两单引号收尾", text: "\n开头换行，结尾是两个单引号''" },
+	];
+
+	it("往返：一条一条写进去，parseFragments 都能原样读回", () => {
+		for (const fragment of 难缠) {
+			const text = appendFragmentText("", fragment);
+			const { fragments, problems } = parseFragments(text);
+			assert.deepEqual(problems, [], `写 ${fragment.name} 时解析出了问题`);
+			assert.deepEqual(fragments, [fragment], `写 ${fragment.name} 时往返不一致`);
+		}
+	});
+
+	it("往返：全部写进同一个文件，顺序与内容都不变", () => {
+		let text = "";
+		for (const fragment of 难缠) text = appendFragmentText(text, fragment);
+		const { fragments, problems } = parseFragments(text);
+		assert.deepEqual(problems, []);
+		assert.deepEqual(fragments, 难缠);
+	});
+
+	it("挑形状：单行用普通字符串，多行用 '''，带 ''' 走转义的多行基本字符串", () => {
+		const single = encodeTomlString("单行");
+		assert.equal(single[0], '"');
+		assert.ok(!single.includes("\n"), "单行不该多出换行");
+		assert.ok(encodeTomlString("第一行\n第二行").startsWith("'''\n"));
+		assert.ok(encodeTomlString("第一行\n'''\n第二行").startsWith('"""\n'));
+	});
+
+	it("追加到已有配置：旧条目一条不少，新的挂在最后", () => {
+		const old = '[[fragment]]\nname = "旧的"\ntext = "老正文"\n';
+		const next = appendFragmentText(old, { name: "新的", text: "新正文" });
+		const { fragments, problems } = parseFragments(next);
+		assert.deepEqual(problems, []);
+		assert.deepEqual(fragments.map((fragment) => fragment.name), ["旧的", "新的"]);
+		assert.equal(fragments[0]?.text, "老正文");
+	});
+
+	it("空文件 / 只有注释 / 末尾没换行：都能接上", () => {
+		const seeds = ["", "# 只有注释\n", "[[fragment]]\nname = \"x\"\ntext = \"y\""];
+		for (const seed of seeds) {
+			const { fragments, problems } = parseFragments(appendFragmentText(seed, { name: "新的", text: "新正文" }));
+			assert.deepEqual(problems, [], `种子 ${JSON.stringify(seed)} 接不上`);
+			assert.equal(fragments.at(-1)?.name, "新的");
+		}
+		assert.equal(parseFragments(appendFragmentText("# 只有注释\n", { name: "新的", text: "x" })).fragments.length, 1);
+	});
+
+	it("校验：名字重复、撞别名、带空白、& 打不出来、正文为空都要拒绝", () => {
+		const existing: Fragment[] = [{ name: "关于我", aliases: ["我"], text: "x" }];
+		const cases: Array<[string, string, string, RegExp]> = [
+			["关于我", "描述", "正文", /已经有 &关于我/],
+			["我", "描述", "正文", /已经是 关于我 的别名/],
+			["带 空白", "描述", "正文", /名字里不能有空白/],
+			["点.名字", "描述", "正文", /打不出 & 触发/],
+			["", "描述", "正文", /名字不能为空/],
+			["   ", "描述", "正文", /名字不能为空/],
+			["新名字", "描述", "", /正文不能为空/],
+			["新名字", "描述", "  \n ", /正文不能为空/],
+		];
+		for (const [name, desc, text, pattern] of cases) {
+			const result = validateNewFragment(name, desc, text, existing);
+			assert.equal(result.ok, false, `${JSON.stringify(name)} 应该被拒绝`);
+			assert.match(result.ok ? "" : result.reason, pattern);
+		}
+		const good = validateNewFragment(" 新名字 ", " 两段 描述 ", "正文", existing);
+		assert.deepEqual(good, { ok: true, fragment: { name: "新名字", desc: "两段 描述", text: "正文" } });
+		assert.deepEqual(validateNewFragment("只有名字", "", "正文", existing), {
+			ok: true,
+			fragment: { name: "只有名字", text: "正文" },
+		});
+	});
+
+	it("addFragmentToFile：写进临时目录，读回来就是新的，不留临时文件", () => {
+		const dir = mkdtempSync(join(tmpdir(), "frag-write-"));
+		try {
+			const path = join(dir, "fragments.toml");
+			const first = addFragmentToFile(path, { name: "新的", desc: "描述", text: "第一行\n第二行" });
+			assert.equal(first.ok, true);
+			assert.deepEqual(loadFragments(path).fragments, [{ name: "新的", desc: "描述", text: "第一行\n第二行" }]);
+			assert.deepEqual(readdirSync(dir), ["fragments.toml"], "不该留下 .tmp 文件");
+
+			const second = addFragmentToFile(path, { name: "第二条", text: '带 """ 与 \\ 的正文' });
+			assert.equal(second.ok, true);
+			const file = loadFragments(path);
+			assert.deepEqual(file.problems, []);
+			assert.deepEqual(file.fragments.map((fragment) => fragment.name), ["新的", "第二条"]);
+			assert.equal(file.fragments[1]?.text, '带 """ 与 \\ 的正文');
+			assert.deepEqual(readdirSync(dir), ["fragments.toml"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("addFragmentToFile：拒绝时一个字节都不写（文件不在就不建，在就原样）", () => {
+		const dir = mkdtempSync(join(tmpdir(), "frag-refuse-"));
+		try {
+			const path = join(dir, "fragments.toml");
+			const rejected = addFragmentToFile(path, { name: "坏 名字", text: "正文" });
+			assert.equal(rejected.ok, false);
+			assert.deepEqual(readdirSync(dir), [], "拒绝时不该建文件");
+
+			writeFileSync(path, '[[fragment]]\nname = "旧的"\ntext = "老正文"\n', "utf8");
+			const before = readFileSync(path, "utf8");
+			for (const input of [
+				{ name: "旧的", text: "重名" },
+				{ name: "新的", text: "" },
+				{ name: "新的", text: "   " },
+				{ name: "点.名字", text: "正文" },
+			]) {
+				assert.equal(addFragmentToFile(path, input).ok, false, `${input.name} 应该被拒绝`);
+			}
+			assert.equal(readFileSync(path, "utf8"), before, "拒绝时原文不能动");
+			assert.deepEqual(readdirSync(dir), ["fragments.toml"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("addFragmentToFile：现有文件解析不了就拒绝，不覆盖", () => {
+		const dir = mkdtempSync(join(tmpdir(), "frag-broken-"));
+		try {
+			const path = join(dir, "fragments.toml");
+			const broken = '[[fragment]\nname = "x"\n';
+			writeFileSync(path, broken, "utf8");
+			const result = addFragmentToFile(path, { name: "新的", text: "正文" });
+			assert.equal(result.ok, false);
+			assert.match(result.ok ? "" : result.reason, /解析不了/);
+			assert.equal(readFileSync(path, "utf8"), broken);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

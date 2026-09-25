@@ -6,10 +6,11 @@
 // 纯逻辑本身由 core.test.ts 覆盖。
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { loadFragments } from "./core.ts";
 import fragmentsExtension, { resetFragmentCache, resetFragmentNotices } from "./index.ts";
 
 const CONFIG = `
@@ -50,12 +51,14 @@ function fakePi() {
 	};
 }
 
-/** 假的 UI ctx：把 notify / select / 输入框内容记下来 */
-function fakeCtx(options: { editor?: string; pick?: string } = {}) {
+/** 假的 UI ctx：把 notify / select / 两个 TUI 的输入 / 输入框内容记下来 */
+function fakeCtx(options: { editor?: string; pick?: string; input?: string; body?: string } = {}) {
 	const notices: Array<{ message: string; level: string }> = [];
+	const calls = { input: 0, editor: 0 };
 	let editor = options.editor ?? "";
 	return {
 		notices,
+		calls,
 		get editor() {
 			return editor;
 		},
@@ -67,6 +70,14 @@ function fakeCtx(options: { editor?: string; pick?: string } = {}) {
 				},
 				async select() {
 					return options.pick;
+				},
+				async input() {
+					calls.input++;
+					return options.input; // undefined = 取消
+				},
+				async editor() {
+					calls.editor++;
+					return options.body; // undefined = 取消
 				},
 				getEditorText() {
 					return editor;
@@ -107,6 +118,7 @@ function load() {
 		sessionStart: pi.handlers.get("session_start")?.[0] as (event: unknown, ctx: unknown) => void,
 		build: pi.commands.get("frag:build") as Command,
 		list: pi.commands.get("frag:list") as Command,
+		add: pi.commands.get("frag:add") as Command,
 	};
 }
 
@@ -219,20 +231,133 @@ describe("/frag:build 与 /frag:list", () => {
 	});
 });
 
+describe("/frag:add", () => {
+	const path = () => join(agentDir, "fragments.toml");
+
+	it("两个 TUI 都填完：追加进配置，写完立刻能用（不用 reload）", async () => {
+		const { add, input } = load();
+		const env = fakeCtx({ input: "新碎片 这是个描述", body: "第一行\n第二行" });
+		await add.handler("", env.ctx);
+
+		assert.equal(env.calls.input, 1);
+		assert.equal(env.calls.editor, 1);
+		const file = loadFragments(path());
+		assert.deepEqual(file.problems, []);
+		assert.deepEqual(file.fragments.at(-1), { name: "新碎片", desc: "这是个描述", text: "第一行\n第二行" });
+		assert.match(env.notices.at(-1)?.message ?? "", /已写入 &新碎片/);
+		assert.deepEqual(readdirSync(agentDir), ["fragments.toml"], "不该留下 .tmp 文件");
+
+		// 立即生效：接着打 &新碎片 就该展开
+		const out = await input({ type: "input", text: "&新碎片 帮我看下", source: "interactive" }, env.ctx);
+		assert.equal(out.action, "transform");
+		assert.equal(out.text, "第一行\n第二行 帮我看下");
+	});
+
+	it("第一段是名字，剩下的都算描述；描述可省", async () => {
+		const { add } = load();
+		await add.handler("", fakeCtx({ input: "  名字   描述 里 还有 空格  ", body: "正文" }).ctx);
+		await add.handler("", fakeCtx({ input: "光名字", body: "正文" }).ctx);
+
+		const names = loadFragments(path()).fragments;
+		assert.deepEqual(names.at(-2), { name: "名字", desc: "描述 里 还有 空格", text: "正文" });
+		assert.deepEqual(names.at(-1), { name: "光名字", text: "正文" });
+	});
+
+	it("第一个 TUI 取消：不写文件，也不再问正文", async () => {
+		const { add } = load();
+		const before = readFileSync(path(), "utf8");
+		const env = fakeCtx({ body: "正文" }); // input 返回 undefined
+		await add.handler("", env.ctx);
+		assert.equal(env.calls.editor, 0);
+		assert.equal(readFileSync(path(), "utf8"), before);
+		assert.deepEqual(readdirSync(agentDir), ["fragments.toml"]);
+	});
+
+	it("第二个 TUI 取消：不写文件", async () => {
+		const { add } = load();
+		const before = readFileSync(path(), "utf8");
+		const env = fakeCtx({ input: "新碎片" }); // editor 返回 undefined
+		await add.handler("", env.ctx);
+		assert.equal(env.calls.editor, 1);
+		assert.equal(readFileSync(path(), "utf8"), before);
+		assert.deepEqual(readdirSync(agentDir), ["fragments.toml"]);
+	});
+
+	it("重名 / 名字为空 / 正文为空：给提示，一个字节不写", async () => {
+		const { add } = load();
+		const before = readFileSync(path(), "utf8");
+
+		const dup = fakeCtx({ input: "关于我 想覆盖", body: "新正文" });
+		await add.handler("", dup.ctx);
+		assert.match(dup.notices.at(-1)?.message ?? "", /没写入：已经有 &关于我/);
+		assert.equal(dup.calls.editor, 0, "名字就不行，别让人再写一通正文");
+
+		const blank = fakeCtx({ input: "   ", body: "正文" });
+		await add.handler("", blank.ctx);
+		assert.match(blank.notices.at(-1)?.message ?? "", /名字不能为空/);
+		assert.equal(blank.calls.editor, 0);
+
+		const emptyBody = fakeCtx({ input: "新碎片", body: "  \n " });
+		await add.handler("", emptyBody.ctx);
+		assert.match(emptyBody.notices.at(-1)?.message ?? "", /正文不能为空/);
+
+		assert.equal(readFileSync(path(), "utf8"), before, "拒绝时原文不能动");
+		assert.deepEqual(readdirSync(agentDir), ["fragments.toml"]);
+	});
+
+	it("没有 UI（rpc / print）：给一句降级提示，不写文件", async () => {
+		const { add } = load();
+		assert.ok(add, "frag:add 得注册上");
+		const notices: Array<{ message: string; level: string }> = [];
+		const before = readFileSync(path(), "utf8");
+		await add.handler("", {
+			hasUI: false,
+			ui: {
+				notify(message: string, level = "info") {
+					notices.push({ message, level });
+				},
+				select: async () => undefined,
+				getEditorText: () => "",
+				setEditorText: () => {},
+				addAutocompleteProvider: () => {},
+			},
+		});
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0]?.level, "warning");
+		assert.match(notices[0]?.message ?? "", /没有可用的交互界面/);
+		assert.equal(readFileSync(path(), "utf8"), before);
+	});
+});
+
 describe("autocomplete", () => {
+	/** 假的旧补全器：记下调了几次，返回一条占位候选 */
+	function fakeCurrent() {
+		const calls: string[] = [];
+		return {
+			calls,
+			current: {
+				async getSuggestions(_lines: string[], _cl: number, _cc: number) {
+					calls.push("delegate");
+					return { items: [{ value: "占位", label: "占位" }], prefix: "占位" };
+				},
+				applyCompletion: (lines: string[]) => ({ lines, cursorLine: 0, cursorCol: 0 }),
+			},
+		};
+	}
+
+	it("wrapper 把 & 声明成补全触发字符（pi 靠它自动弹候选）", () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		assert.equal(providers.length, 1);
+		assert.deepEqual(providers[0](fakeCurrent().current).triggerCharacters, ["&"]);
+	});
+
 	it("输入 & 时给候选，并沿用原来的补全器", async () => {
 		const { sessionStart } = load();
 		sessionStart({ type: "session_start" }, fakeCtx().ctx);
 		assert.equal(providers.length, 1);
 
-		const currentCalls: string[] = [];
-		const current = {
-			async getSuggestions(_lines: string[], _cl: number, _cc: number) {
-				currentCalls.push("delegate");
-				return { items: [{ value: "占位", label: "占位" }], prefix: "占位" };
-			},
-			applyCompletion: (lines: string[]) => ({ lines, cursorLine: 0, cursorCol: 0 }),
-		};
+		const { calls: currentCalls, current } = fakeCurrent();
 		const provider = providers[0](current);
 
 		const hit = await provider.getSuggestions(["先 &单"], 0, 5, { signal: new AbortController().signal });
@@ -244,9 +369,49 @@ describe("autocomplete", () => {
 		assert.deepEqual(aliasHit.items.map((item: { value: string }) => item.value), ["&core-prompt"]);
 		assert.match(aliasHit.items[0].description, /关于我 的别名/);
 
+		// 删光了名字只剩 &：候选全弹出来（这就是自动触发的场景）
+		const bare = await provider.getSuggestions(["先看看 &"], 0, 5, { signal: new AbortController().signal });
+		assert.deepEqual(bare.items.map((item: { value: string }) => item.value), [
+			"&单步计划",
+			"&关于我",
+			"&core-prompt",
+			"&基础了解层",
+			"&我",
+		]);
+		assert.equal(bare.prefix, "&");
+
 		// 没有 & token：交给原来的补全器
 		const miss = await provider.getSuggestions(["先看报错"], 0, 4, { signal: new AbortController().signal });
 		assert.deepEqual(miss.items.map((item: { value: string }) => item.value), ["占位"]);
 		assert.deepEqual(currentCalls, ["delegate"]);
+	});
+
+	it("非 & 上下文一律回退：shell 的 &&、单独的 &、URL 里的 &", async () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { calls: currentCalls, current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		const lines = ["make && ls -la", "a & b", "curl 'http://x/?a=1&b=2'", "a&&b", "&x=1"];
+		for (const line of lines) {
+			const out = await provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
+			assert.deepEqual(out.items.map((item: { value: string }) => item.value), ["占位"], `${line} 不该弹碎片候选`);
+		}
+		assert.equal(currentCalls.length, lines.length, "每个非 & 上下文都要回退到原补全器");
+	});
+
+	it("刚打下一个 & 就弹；接着打第二个 & 或空格就退回去", async () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		// 触发字符决定的：& 一落地就弹（想打 && 或 a & b 时会闪一下，接着打就没了）
+		const transient = await provider.getSuggestions(["a &"], 0, 3, { signal: new AbortController().signal });
+		assert.equal(transient.items.length, 5);
+		const second = await provider.getSuggestions(["a &&"], 0, 4, { signal: new AbortController().signal });
+		assert.deepEqual(second.items.map((item: { value: string }) => item.value), ["占位"]);
+		const spaced = await provider.getSuggestions(["a & "], 0, 4, { signal: new AbortController().signal });
+		assert.deepEqual(spaced.items.map((item: { value: string }) => item.value), ["占位"]);
 	});
 });

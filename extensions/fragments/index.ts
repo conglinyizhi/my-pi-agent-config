@@ -1,10 +1,11 @@
 // extensions/fragments/index.ts — 输入框里的 &碎片
 //
-// 三件事：
+// 四件事：
 //   1 提交前展开：`&单步计划` 在你按回车后换成 fragments.toml 里那段正文（input 事件，只动你自己的输入）
 //   2 /frag:build <名字>：把正文插进输入框，改完再发
 //   3 /frag:list：列出全部碎片，选中即插入
-// 另外输入 `&` 时弹候选（autocomplete）。
+//   4 /frag:add：两个 TUI（先「名字 描述」再正文）加一条，追加进配置
+// 另外输入 `&` 时自动弹候选（autocomplete）。
 //
 // 配置在 ~/.pi/agent/fragments.toml（独立文件，不跟 extensions.toml 挤）：
 //   [[fragment]]
@@ -19,7 +20,16 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { expandFragments, findFragment, loadFragments, triggerNames, type Fragment, type FragmentFile } from "./core.ts";
+import {
+	addFragmentToFile,
+	checkFragmentName,
+	expandFragments,
+	findFragment,
+	loadFragments,
+	triggerNames,
+	type Fragment,
+	type FragmentFile,
+} from "./core.ts";
 
 const CONFIG_NAME = "fragments.toml";
 
@@ -100,6 +110,14 @@ function insertIntoEditor(ctx: ExtensionContext, fragment: Fragment): void {
 	ctx.ui.notify(`已插入 &${fragment.name}，改完再发`, "info");
 }
 
+/** 「名字 描述」按第一个空白分开：名字不含空白，描述可省、可带空格 */
+function splitFragmentSpec(raw: string): { name: string; desc: string } {
+	const trimmed = raw.trim();
+	const gap = trimmed.search(/\s/);
+	if (gap === -1) return { name: trimmed, desc: "" };
+	return { name: trimmed.slice(0, gap), desc: trimmed.slice(gap).trim() };
+}
+
 export default function (pi: ExtensionAPI): void {
 	// 1 提交前展开。只认 interactive 来源：别人（rpc/扩展）发进来的文本不该被我们改写。
 	pi.on("input", (event, ctx) => {
@@ -166,10 +184,43 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	// 4 输入 `&` 时的候选
+	// 4 /frag:add —— 两个 TUI 加一条：先「名字 描述」，再正文，写完直接落进配置
+	pi.registerCommand("frag:add", {
+		description: "加一条碎片：先填「名字 描述」（描述可省），再写正文，追加进 fragments.toml",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify(`没有可用的交互界面（rpc / print），/frag:add 用不了；直接编辑 ${configPath()} 加一段 [[fragment]] 也一样`, "warning");
+				return;
+			}
+			const file = currentFile();
+			reportProblems(ctx, file);
+			const head = await ctx.ui.input("新碎片：名字 描述（描述可省；第一个空白分开）", "例如：关于我 背景资料入口");
+			if (head === undefined) return; // 第一个 TUI 取消了
+			const { name, desc } = splitFragmentSpec(head);
+			// 名字先在本地过一遍：不合适就别让人白写一通正文
+			const nameProblem = checkFragmentName(name, file.fragments);
+			if (nameProblem !== undefined) {
+				ctx.ui.notify(`没写入：${nameProblem}`, "warning");
+				return;
+			}
+			const text = await ctx.ui.editor(`&${name.trim()} 的正文（多行随意；空的不收）`, "");
+			if (text === undefined) return; // 第二个 TUI 取消了
+			const result = addFragmentToFile(configPath(), { name, desc, text });
+			if (!result.ok) {
+				ctx.ui.notify(`${CONFIG_NAME} 没动：${result.reason}`, "warning");
+				return;
+			}
+			resetFragmentCache(); // 配置按 mtime 缓存，刚写完直接失效，免得同一毫秒里还读到旧的
+			ctx.ui.notify(`已写入 &${result.fragment.name}（${configPath()}），打 &${result.fragment.name} 就能用`, "info");
+		},
+	});
+
+	// 5 输入 `&` 时的候选
 	pi.on("session_start", (_event, ctx) => {
 		try {
 			ctx.ui.addAutocompleteProvider((current) => ({
+				// 开头的 `&` 就是补全的触发字符：pi 会把它合并进触发集，打了就自动弹（不必手动按 Tab）
+				triggerCharacters: ["&"],
 				async getSuggestions(lines, cursorLine, cursorCol, options) {
 					const line = lines[cursorLine] ?? "";
 					const before = line.slice(0, cursorCol);
