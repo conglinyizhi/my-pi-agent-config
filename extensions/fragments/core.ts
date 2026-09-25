@@ -8,6 +8,8 @@ import { parse as parseToml } from "smol-toml";
 
 export interface Fragment {
 	name: string;
+	/** 别的触发词，都能展开到同一条正文（改内容只改一处） */
+	aliases?: string[];
 	/** 可选描述，用来给 autocomplete 与 /frag:list 看 */
 	desc?: string;
 	/** 正文，随便多少行 */
@@ -30,7 +32,12 @@ export interface FragmentFile {
  */
 const NAME_CHAR = /[\p{L}\p{N}_-]/u;
 
-/** 解析配置文本。`[[fragment]]` 数组表，每项 name / desc? / text */
+/** 一条碎片能响应的全部触发词：主名 + 别名 */
+export function triggerNames(fragment: Fragment): string[] {
+	return [fragment.name, ...(fragment.aliases ?? [])];
+}
+
+/** 解析配置文本。`[[fragment]]` 数组表，每项 name / aliases? / desc? / text */
 export function parseFragments(tomlText: string): { fragments: Fragment[]; problems: string[] } {
 	let parsed: unknown;
 	try {
@@ -73,7 +80,37 @@ export function parseFragments(tomlText: string): { fragments: Fragment[]; probl
 			return;
 		}
 		seen.add(name);
-		fragments.push({ name, ...(typeof desc === "string" && desc !== "" ? { desc } : {}), text });
+
+		const aliases: string[] = [];
+		if (record.aliases !== undefined) {
+			if (!Array.isArray(record.aliases)) {
+				problems.push(`${where}（${name}）的 aliases 要写成字符串数组`);
+				return;
+			}
+			for (const raw of record.aliases) {
+				if (typeof raw !== "string" || raw.trim() === "") {
+					problems.push(`${where}（${name}）的别名里有空值，已跳过`);
+					continue;
+				}
+				if (/\s/.test(raw)) {
+					problems.push(`${where}（${name}）的别名「${raw}」里有空白，& 后面打不出来，已跳过`);
+					continue;
+				}
+				if (raw === name) continue; // 与主名一样，不必重复
+				if (seen.has(raw)) {
+					problems.push(`${where}（${name}）的别名「${raw}」和已有的名字或别名重复，已跳过`);
+					continue;
+				}
+				seen.add(raw);
+				aliases.push(raw);
+			}
+		}
+		fragments.push({
+			name,
+			...(aliases.length > 0 ? { aliases } : {}),
+			...(typeof desc === "string" && desc !== "" ? { desc } : {}),
+			text,
+		});
 	});
 	return { fragments, problems };
 }
@@ -93,7 +130,7 @@ export function loadFragments(path: string): FragmentFile {
 }
 
 export function findFragment(fragments: Fragment[], name: string): Fragment | undefined {
-	return fragments.find((fragment) => fragment.name === name);
+	return fragments.find((fragment) => triggerNames(fragment).includes(name));
 }
 
 /** 触发只认「行首或空白后的 &名字」；`&&`、`a & b`、URL 里的 `&` 都不算 */
@@ -152,7 +189,10 @@ export function expandFragments(
 		if (fragments.length === 0) for (const name of collectNames(text)) unknown.push(name);
 		return { text, expanded: [], unknown: [...new Set(unknown)] };
 	}
-	const byName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
+	const byName = new Map<string, Fragment>();
+	for (const fragment of fragments) {
+		for (const key of triggerNames(fragment)) if (!byName.has(key)) byName.set(key, fragment);
+	}
 	const expanded: string[] = [];
 	const unknown: string[] = [];
 	let inFence = false;

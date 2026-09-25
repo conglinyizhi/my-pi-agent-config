@@ -53,7 +53,7 @@ pi
 
 **sysinfo** — `/sysinfo` 一键收集系统信息发给 LLM。
 
-**fragments** — 输入框里打 `&名字`，按回车换成 `~/.pi/agent/fragments.toml` 里那段正文（随便多少行，比 prompt 模板更适合一句话级别的插入件）。只认行首或空白后的 `&名字`：`&&`、URL 里的 `&`、代码块与反引号里的内容都不碰。另有 `/frag:build <名字>`（把正文插进输入框改完再发）、`/frag:list`（列表选中即插入）与输入 `&` 时的候选补全。配置改完不用 `/reload`（按 mtime 重读）。详见 `extensions/fragments/README.md`。
+**fragments** — 输入框里打 `&名字`，按回车换成 `~/.pi/agent/fragments.toml` 里那段正文（随便多少行，比 prompt 模板更适合一句话级别的插入件）。只认行首或空白后的 `&名字`：`&&`、URL 里的 `&`、代码块与反引号里的内容都不碰。一条正文可以挂多个触发词（`aliases`，改内容只改一处）。另有 `/frag:build <名字>`（把正文插进输入框改完再发）、`/frag:list`（列表选中即插入）与输入 `&` 时的候选补全。配置改完不用 `/reload`（按 mtime 重读）。详见 `extensions/fragments/README.md`。
 
 **sandbox-permissions** — 沙箱权限三合一扩展（`guard` 防读 + `gate` 审批 + `allow` 升权，一个目录三个子模块）：
 - `guard`：敏感路径黑名单防护（恶意 skill 防护），初始化/reload 时读取 `extensions.toml` 的 `[sandbox-guard]`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截读写触碰黑名单路径——覆盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 `be-read`/`be-write`/`be-replace`/`be-insert`/`be-delete` 等直挂通道；同时把 subagent 的 `readonly` / `sandbox_dir` 边界补到写入类工具上（worker 只能写 `/tmp` 或派工指定的可写根，越界直接拒绝）

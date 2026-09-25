@@ -19,7 +19,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { expandFragments, findFragment, loadFragments, type Fragment, type FragmentFile } from "./core.ts";
+import { expandFragments, findFragment, loadFragments, triggerNames, type Fragment, type FragmentFile } from "./core.ts";
 
 const CONFIG_NAME = "fragments.toml";
 
@@ -77,7 +77,20 @@ function reportProblems(ctx: ExtensionContext, file: FragmentFile): void {
 // ── 插进输入框（/frag:build 与 /frag:list 共用） ──
 
 function labelOf(fragment: Fragment): string {
-	return fragment.desc ? `${fragment.name} — ${fragment.desc}` : fragment.name;
+	const aliases = fragment.aliases ?? [];
+	const aliasPart = aliases.length > 0 ? `（别名：${aliases.join("、")}）` : "";
+	const descPart = fragment.desc ? ` — ${fragment.desc}` : "";
+	return `${fragment.name}${aliasPart}${descPart}`;
+}
+
+/** 候选条目：主名与每个别名各一条，别名那条注明它属于谁 */
+function autocompleteItemsFor(fragment: Fragment): Array<{ value: string; label: string; description: string }> {
+	const fallback = fragment.desc ?? fragment.text.split("\n")[0].slice(0, 60);
+	return triggerNames(fragment).map((key) => ({
+		value: `&${key}`,
+		label: `&${key}`,
+		description: key === fragment.name ? fallback : `${fragment.name} 的别名`,
+	}));
 }
 
 function insertIntoEditor(ctx: ExtensionContext, fragment: Fragment): void {
@@ -165,13 +178,9 @@ export default function (pi: ExtensionAPI): void {
 					const query = match[1] ?? "";
 					const needle = query.toLowerCase();
 					const items = currentFile()
-						.fragments.filter((fragment) => fragment.name.toLowerCase().includes(needle))
-						.slice(0, 20)
-						.map((fragment) => ({
-							value: `&${fragment.name}`,
-							label: `&${fragment.name}`,
-							description: fragment.desc ?? fragment.text.split("\n")[0].slice(0, 60),
-						}));
+						.fragments.flatMap(autocompleteItemsFor)
+						.filter((item) => item.label.slice(1).toLowerCase().includes(needle))
+						.slice(0, 20);
 					if (items.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 					return { items, prefix: `&${query}` };
 				},

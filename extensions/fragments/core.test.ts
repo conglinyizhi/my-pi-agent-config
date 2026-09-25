@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { expandFragments, findFragment, loadFragments, parseFragments, type Fragment } from "./core.ts";
+import { expandFragments, findFragment, loadFragments, parseFragments, triggerNames, type Fragment } from "./core.ts";
 
 const 单步: Fragment = { name: "单步计划", desc: "仅调查不行动", text: "对于这一步，只做调查、不要动手" };
 const core: Fragment = { name: "core-prompt", text: "读 ~/disk/core-prompt/\n然后继续" };
@@ -68,6 +68,41 @@ text = "重复的"
 		assert.match(problems[3] ?? "", /重复/);
 	});
 
+	it("别名：一条正文挂多个触发词", () => {
+		const { fragments, problems } = parseFragments(`
+[[fragment]]
+name = "关于我"
+aliases = ["core-prompt", "基础了解层", "我"]
+desc = "背景资料入口"
+text = "读 ~/disk/core-prompt/"
+`);
+		assert.deepEqual(problems, []);
+		assert.deepEqual(fragments, [
+			{ name: "关于我", aliases: ["core-prompt", "基础了解层", "我"], desc: "背景资料入口", text: "读 ~/disk/core-prompt/" },
+		]);
+		assert.deepEqual(triggerNames(fragments[0]), ["关于我", "core-prompt", "基础了解层", "我"]);
+	});
+
+	it("别名的毛病：不数组 / 带空白 / 与已有名字或别名撞车 / 与主名重复", () => {
+		const { fragments, problems } = parseFragments(`
+[[fragment]]
+name = "a"
+aliases = "core-prompt"
+text = "x"
+
+[[fragment]]
+name = "b"
+aliases = ["带 空白", "", "a", "b", "好的"]
+text = "y"
+`);
+		assert.deepEqual(fragments, [{ name: "b", aliases: ["好的"], text: "y" }]);
+		assert.equal(problems.length, 4);
+		assert.match(problems[0] ?? "", /要写成字符串数组/);
+		assert.match(problems[1] ?? "", /别名「带 空白」里有空白/);
+		assert.match(problems[2] ?? "", /别名里有空值/);
+		assert.match(problems[3] ?? "", /别名「a」和已有的名字或别名重复/);
+	});
+
 	it("形状不对：不是数组表 / TOML 坏了", () => {
 		assert.match(parseFragments('fragment = "x"').problems[0] ?? "", /数组表/);
 		assert.match(parseFragments("[[fragment]\nname=").problems[0] ?? "", /TOML 解析失败/);
@@ -112,6 +147,22 @@ describe("expandFragments", () => {
 		assert.deepEqual(result.expanded, ["单步计划"]);
 	});
 
+	it("用别名触发也展开到同一条正文", () => {
+		const 关于我: Fragment = { name: "关于我", aliases: ["core-prompt", "我"], text: "读 ~/disk/core-prompt/" };
+		const byAlias = expandFragments("&core-prompt 继续", [关于我]);
+		assert.equal(byAlias.text, "读 ~/disk/core-prompt/ 继续");
+		assert.deepEqual(byAlias.expanded, ["core-prompt"]);
+		const byShort = expandFragments("&我 看看", [关于我]);
+		assert.equal(byShort.text, "读 ~/disk/core-prompt/ 看看");
+	});
+
+	it("别名都指向同一条：改内容只改一处（展开结果一样）", () => {
+		const 关于我: Fragment = { name: "关于我", aliases: ["core-prompt", "基础了解层"], text: "同一段正文" };
+		for (const key of triggerNames(关于我)) {
+			assert.equal(expandFragments(`&${key}`, [关于我]).text, "同一段正文");
+		}
+	});
+
 	it("没定义的名字原样留着，只记进 unknown", () => {
 		const result = expandFragments("&没这个 和 &单步计划", [单步]);
 		assert.equal(result.text, "&没这个 和 对于这一步，只做调查、不要动手");
@@ -136,8 +187,11 @@ describe("expandFragments", () => {
 		assert.deepEqual(result.unknown.sort(), ["core-prompt", "单步计划"]);
 	});
 
-	it("findFragment 按名字找", () => {
+	it("findFragment 主名与别名都找得到", () => {
 		assert.equal(findFragment([单步, core], "core-prompt")?.text, core.text);
 		assert.equal(findFragment([单步, core], "没有"), undefined);
+		const 关于我: Fragment = { name: "关于我", aliases: ["我"], text: "x" };
+		assert.equal(findFragment([关于我], "关于我")?.text, "x");
+		assert.equal(findFragment([关于我], "我")?.text, "x");
 	});
 });

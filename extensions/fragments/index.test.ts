@@ -21,7 +21,8 @@ text = """
 """
 
 [[fragment]]
-name = "core-prompt"
+name = "关于我"
+aliases = ["core-prompt", "基础了解层", "我"]
 desc = "背景资料"
 text = "读 ~/disk/core-prompt/"
 `;
@@ -174,8 +175,18 @@ describe("/frag:build 与 /frag:list", () => {
 	it("输入框里已有内容时追加在后面，不覆盖", async () => {
 		const { build } = load();
 		const env = fakeCtx({ editor: "先看这个报错：" });
-		await build.handler("core-prompt", env.ctx);
+		await build.handler("关于我", env.ctx);
 		assert.equal(env.editor, "先看这个报错：\n读 ~/disk/core-prompt/");
+	});
+
+	it("用别名调 build 也插同一条正文", async () => {
+		const { build } = load();
+		for (const alias of ["core-prompt", "基础了解层", "我"]) {
+			const env = fakeCtx();
+			await build.handler(alias, env.ctx);
+			assert.equal(env.editor, "读 ~/disk/core-prompt/", `别名 ${alias} 应当插出同一条正文`);
+			assert.match(env.notices.at(-1)?.message ?? "", /已插入 &关于我/);
+		}
 	});
 
 	it("名字不对 / 没给名字：只提示，不动输入框", async () => {
@@ -188,11 +199,16 @@ describe("/frag:build 与 /frag:list", () => {
 		assert.match(env.notices[1].message, /用法：\/frag:build/);
 	});
 
-	it("list 选中一条就插进输入框", async () => {
+	it("list 选中一条就插进输入框，别名一起列出来", async () => {
 		const { list } = load();
-		const env = fakeCtx({ pick: "单步计划 — 仅调查不行动" });
+		const env = fakeCtx({ pick: "关于我（别名：core-prompt、基础了解层、我） — 背景资料" });
 		await list.handler("", env.ctx);
-		assert.equal(env.editor, "对于这一步，只做调查、不要动手\n");
+		assert.equal(env.editor, "读 ~/disk/core-prompt/");
+
+		// 没选中那条也别插错：标签对不上就不动输入框
+		const odd = fakeCtx({ pick: "关于我 — 背景资料" });
+		await list.handler("", odd.ctx);
+		assert.equal(odd.editor, "");
 	});
 
 	it("list 取消选择时什么都不做", async () => {
@@ -222,6 +238,11 @@ describe("autocomplete", () => {
 		const hit = await provider.getSuggestions(["先 &单"], 0, 5, { signal: new AbortController().signal });
 		assert.deepEqual(hit.items.map((item: { value: string }) => item.value), ["&单步计划"]);
 		assert.equal(hit.prefix, "&单");
+
+		// 别名也进候选，并注明它属于谁
+		const aliasHit = await provider.getSuggestions(["看看 &core"], 0, 8, { signal: new AbortController().signal });
+		assert.deepEqual(aliasHit.items.map((item: { value: string }) => item.value), ["&core-prompt"]);
+		assert.match(aliasHit.items[0].description, /关于我 的别名/);
 
 		// 没有 & token：交给原来的补全器
 		const miss = await provider.getSuggestions(["先看报错"], 0, 4, { signal: new AbortController().signal });
