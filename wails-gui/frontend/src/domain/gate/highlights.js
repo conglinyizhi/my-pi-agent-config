@@ -44,11 +44,28 @@ export function renderHighlightedCommand(command, highlights) {
   let position = 0;
   for (let index = 0; index < list.length; index++) {
     const highlight = list[index];
+    // 规则命中用 mark.h（导航与红色高亮都挂它）；赋值解析用 mark.e（绿=已解析 / 灰=解析不了）。
+    // 两者不能混用同一个类：导航按 mark.h 数序号，混起来就会指错。
+    const cls = highlight.tone === "env" ? "e" : highlight.tone === "env-unknown" ? "e e-u" : "h";
     html += escapeText(text.slice(position, highlight.s));
-    html += `<mark class="h" data-i="${index}" data-tip="${escapeAttribute(highlight.t)}">${escapeText(text.slice(highlight.s, highlight.e))}</mark>`;
+    html += `<mark class="${cls}" data-i="${index}" data-tip="${escapeAttribute(highlight.t)}">${escapeText(text.slice(highlight.s, highlight.e))}</mark>`;
     position = highlight.e;
   }
   return html + escapeText(text.slice(position));
+}
+
+/**
+ * 合并两类高亮：规则命中优先，与它重叠的赋值高亮丢掉。
+ *
+ * 重叠时保规则那一侧是故意的：规则是安全信号（rm-recursive 那种），
+ * 赋值解析只是参考；两者叠在一段文本上会把语义搞溦。
+ */
+export function mergeEnvHighlights(envHighlights, ruleHighlights) {
+  const rules = Array.isArray(ruleHighlights) ? ruleHighlights : [];
+  const kept = (Array.isArray(envHighlights) ? envHighlights : []).filter(
+    (env) => !rules.some((rule) => env.s < rule.e && rule.s < env.e),
+  );
+  return [...kept, ...rules].sort((a, b) => a.s - b.s || a.e - b.e);
 }
 
 export function isPathCovered(path, roots) {

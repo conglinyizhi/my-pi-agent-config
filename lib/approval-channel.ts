@@ -19,6 +19,7 @@ import {
 	type GuiDiagnosis,
 	type GuiFallbackReason,
 } from "./gui-diagnosis.ts";
+import { collectEnvAssignments, type EnvNote } from "./env-notes.ts";
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
@@ -163,8 +164,19 @@ export function normalizeApprovalComment(comment: unknown): string | undefined {
 
 export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> {
 	const payload = buildKindPayload(request);
+	// 命令里写死的赋值（export / 前置赋值）解析结果：审批窗标绿、悬停看值。
+	// 只在 Linux 给（这条功能是 Linux 闸门窗的）；拿不到环境变量的场合也不给，宁可没有
+	const envNotes = envNotesFor(request.command);
+	if (envNotes) payload.envNotes = envNotes;
 	// urgent 随 payload 下发：适配器据此跳过度延迟（见 hub/adapters/feishu/main.go 的 onAskEvent）
 	return request.urgent ? { ...payload, urgent: true } : payload;
+}
+
+function envNotesFor(command: unknown): EnvNote[] | undefined {
+	if (process.platform !== "linux") return undefined;
+	if (typeof command !== "string" || command === "") return undefined;
+	const notes = collectEnvAssignments(command);
+	return notes.length > 0 ? notes : undefined;
 }
 
 function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {

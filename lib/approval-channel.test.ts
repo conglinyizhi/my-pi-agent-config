@@ -300,6 +300,28 @@ describe("sandbox-allow 的敏感路径命中", () => {
 		assert.deepEqual(names, ["dynamic-construct", "sensitive-path"]);
 	});
 
+	it("命令里的赋值随 payload 下发（GUI 标绿与悬停用）", () => {
+		const payload = toGuiPayload({ ...request, command: 'export OUT="$HOME/out" && FOO=1 run.sh' });
+		const notes = payload.envNotes as Array<{ name: string; value?: string; raw: string }>;
+		assert.equal(notes.length, 2);
+		assert.deepEqual(notes.map((n) => n.name), ["OUT", "FOO"]);
+		assert.equal(notes[0].value, `${process.env.HOME}/out`);
+		assert.equal(notes[0].raw, 'OUT="$HOME/out"');
+		assert.equal(notes[1].value, "1");
+	});
+
+	it("没有赋值就不凭空多出 envNotes", () => {
+		assert.equal(toGuiPayload({ ...request, command: "ls -la" }).envNotes, undefined);
+	});
+
+	it("解析不了的赋值也下发，带原因", () => {
+		const payload = toGuiPayload({ ...request, command: "export OUT=$(pwd)" });
+		const notes = payload.envNotes as Array<{ value?: string; reason?: string }>;
+		assert.equal(notes.length, 1);
+		assert.equal(notes[0].value, undefined);
+		assert.match(notes[0].reason ?? "", /命令替换/);
+	});
+
 	// 适配器靠 payload.urgent 跳过 card-delay；不带就不能凭空多出这个字段
 	it("urgent 随 payload 下发，不设时不下发", () => {
 		assert.equal(toGuiPayload(request).urgent, undefined);

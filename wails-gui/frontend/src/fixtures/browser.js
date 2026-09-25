@@ -6,13 +6,28 @@ const auditRules = [
 ];
 
 export const browserFixtures = {
-  gate: {
-    command: "sudo rm -rf ./build-cache",
-    taskId: "browser-preview",
-    rules: auditRules,
-    review: { verdict: "risky", reason: "递归删除构建缓存需要确认范围", suggestion: "确认目标目录是否可安全重建" },
-    kind: "audit",
-  },
+  gate: (() => {
+    const command = 'OUT="$HOME/build" && KEEP=1 SRC=$(pwd) sudo rm -rf "$OUT"';
+    const note = (raw, extra) => ({
+      ...extra,
+      raw,
+      start: command.indexOf(raw),
+      end: command.indexOf(raw) + raw.length,
+    });
+    return {
+      command,
+      taskId: "browser-preview",
+      rules: auditRules,
+      // 赋值解析：前两条能解析（绿框，悬停看值），带命令替换的解析不了（灰框，悬停看原因）
+      envNotes: [
+        note('OUT="$HOME/build"', { name: "OUT", value: "/home/tester/build" }),
+        note("KEEP=1", { name: "KEEP", value: "1" }),
+        note("SRC=$(pwd)", { name: "SRC", reason: "值里含命令替换 $(...)，无法静态解析" }),
+      ],
+      review: { verdict: "risky", reason: "递归删除构建缓存需要确认范围", suggestion: "确认目标目录是否可安全重建" },
+      kind: "audit",
+    };
+  })(),
   "gate-sandbox-allow": {
     command: "install -m 755 /tmp/build/bin/tool /usr/local/bin/tool",
     kind: "sandbox-allow",

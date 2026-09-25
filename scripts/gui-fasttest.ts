@@ -226,11 +226,26 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
   {
     name: "gate",
     windowName: "gate",
-    request: {
-      command: "rm -rf /tmp/test",
-      taskId: "test-task-001",
-      rules: [{ name: "rm-recursive", tip: "危险删除操作", autoReject: false, matched: ["rm", "-rf"] }],
-    },
+    request: (() => {
+      const command = 'export OUT="$HOME/build" && rm -rf "$OUT" && KEEP=1 SRC=$(pwd) run.sh';
+      // 坐标由命令算出来，不手写；前两条能解析（绿），后面带命令替换的解析不了（灰）
+      const note = (raw: string, extra: Record<string, unknown>) => ({
+        ...extra,
+        raw,
+        start: command.indexOf(raw),
+        end: command.indexOf(raw) + raw.length,
+      });
+      return {
+        command,
+        taskId: "test-task-001",
+        rules: [{ name: "rm-recursive", tip: "危险删除操作", autoReject: false, matched: ["rm", "-rf"] }],
+        envNotes: [
+          note('OUT="$HOME/build"', { name: "OUT", value: "/home/tester/build" }),
+          note("KEEP=1", { name: "KEEP", value: "1" }),
+          note("SRC=$(pwd)", { name: "SRC", reason: "值里含命令替换 $(...)，无法静态解析" }),
+        ],
+      };
+    })(),
   },
   {
     name: "gate-capability",

@@ -10,6 +10,7 @@
       :capability="capability"
       :command="cmd"
       :highlights="highlights"
+      :env-notes="envNotes"
       :current="cur"
       @update:current="cur = $event"
     />
@@ -102,6 +103,8 @@ const scopeRows = ref([]);
 const workspaceDirs = ref([]);
 
 const cur = ref(0);
+/** 命令里写死的赋值解析（pi 侧算好：{name, raw, start, end, value?|reason?}） */
+const envNotes = ref([]);
 const reasons = ref([]);
 const comment = ref("");
 
@@ -194,6 +197,7 @@ onMounted(async () => {
   cmd.value = data.command || "";
   taskId.value = data.taskId || null;
   rules.value = data.rules || [];
+  envNotes.value = data.envNotes || [];
   review.value = data.review || null;
   kind.value = data.kind || "audit";
   permission.value = data.permission || "";
