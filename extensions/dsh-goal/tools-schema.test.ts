@@ -43,10 +43,12 @@ describe("update_goal 参数 schema", () => {
 			action: "blocked",
 			blocked_reason: "持续阻塞",
 		}), true);
+		// 缺 blocked_reason 也过 schema（形状拍平了），由 execute 运行时拒：
+		// 见 tools-execute.test.ts
 		assert.equal(Value.Check(UPDATE_PARAMETERS, {
 			goal_id: "goal",
 			revision: 1,
 			action: "blocked",
-		}), false);
+		}), true);
 	});
 });
