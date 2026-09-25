@@ -22,16 +22,25 @@
 //   sha256 83ad75050da405e314f2a956746a296244f52781e3d4094a791ec00a2c42407a
 // v0.2.1 实测（2026-09-25）：version 0.2.1 · schema 1 · 新增 --spec/--man/--man-markdown ·
 //   sha256 731dd1ba2e392a27e7b12efbf67653907fd923f7cc1891c3550d774d0d4b7c66
+// v0.3.0 实测（2026-09-25）：version 0.3.0 · schema 1 · 路径一律绝对路径、--cwd 事实上必填、
+//   每条 effect 带 vars（影响面里要替换的变量名）·
+//   sha256 28a481c9a5258119d003b28125e216a92dfbe500da6b1d9c344fb86a9e1b191f
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { checkCommand, detectSensitivePaths } from "../lib/sandbox-check.ts";
 import { commandBlocked, loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
 import { isDirInside, loadSandboxPaths } from "../extensions/sandbox-permissions/paths.ts";
-import { openPreshellStream, streamSupported, type PreshellStream } from "../lib/preshell-stream.ts";
+import { resolvePath, resolutionEnv } from "../lib/preshell.ts";
+import {
+  openPreshellStream,
+  streamSupported,
+  type PreshellStream,
+  type PreshellStreamStats,
+} from "../lib/preshell-stream.ts";
 
 type Kind = "bash" | "allow";
 type Verdict = "allow" | "ask" | "deny" | "unavailable";
@@ -47,6 +56,7 @@ interface Sample {
 interface PreshellEffect {
   kind: string;
   target: string;
+  vars?: string[];
   dynamic?: boolean;
   modeled?: boolean;
   line?: number;
@@ -60,6 +70,7 @@ interface PreshellReport {
     write_roots?: string[];
     uncertain?: boolean;
     cwd?: string;
+    vars?: string[];
   };
   issues?: unknown[];
 }
@@ -72,8 +83,8 @@ function arg(name: string, fallback = ""): string {
 }
 
 const BIN = arg("bin", process.env.PRESHELL_BIN ?? (fs.existsSync(join(homedir(), ".pi", "runtime", "preshell")) ? join(homedir(), ".pi", "runtime", "preshell") : "preshell"));
-/** 当前 pin 的发布物 sha256（v0.2.1；发布方带 SHA256SUMS，不一致时报告要说得出来） */
-const PINNED_SHA256 = "731dd1ba2e392a27e7b12efbf67653907fd923f7cc1891c3550d774d0d4b7c66";
+/** 当前 pin 的发布物 sha256（v0.3.0；发布方带 SHA256SUMS，不一致时报告要说得出来） */
+const PINNED_SHA256 = "28a481c9a5258119d003b28125e216a92dfbe500da6b1d9c344fb86a9e1b191f";
 /** transitions = 三档策略对比；blacklist = 只看敏感路径这一维（旧子串匹配 vs 新事实层+token 兼底） */
 const MODE = arg("mode", "transitions");
 const N = Number(arg("n", "1500"));
@@ -180,17 +191,52 @@ function currentVerdict(cmd: string, cwd: string): { verdict: Verdict; detail: s
 //
 // 默认走 --stream：一个子进程跑完整轮（4 万条量级的语料里，单条模式那 5 分钟几乎全是在起进程）。
 // --no-stream 或二进制不认 --stream（v0.1）时退回单条模式，两者读到的报告是同一份。
+//
+// v0.3.0 起 --cwd 事实上必填，而它是**进程级**参数（批量模式不认逐条 cwd，实测会被整行拒掉）：
+// 语料里的命令来自不同会话，cwd 各不相同，所以按 cwd 分组跑——样本先按 cwd 排一遍（只改顺序，
+// 抽样结果不变），同一时刻只留一个流式子进程；单条模式则每条自己带上 --cwd。
+// 不给 --cwd 的话，工具拿自己进程的当前目录当基准（那是本 harness 的目录，
+// 不是那条命令的），报告里的路径与 uncertain 就都是假的。
 
 const USE_STREAM = !process.argv.includes("--no-stream") && streamSupported(BIN);
 let streamClient: PreshellStream | undefined;
+let streamCwd: string | undefined;
+/** 收工过的流式子进程的统计（换 cwd 时要收一个，累计起来最后一起报） */
+const closedStreamStats: PreshellStreamStats[] = [];
 let streamFailed = false;
 
+/**
+ * v0.3.0 的 --cwd 只能是绝对路径（相对值是用法错误、退出码 2）：会话头里的 cwd 万一不是，
+ * 就不传——退回「工具自己推演基准并标 uncertain」，跟生产的取舍一致。
+ */
+function cwdArgs(cwd: string): string[] {
+  return isAbsolute(cwd) ? [`--cwd=${cwd}`] : [];
+}
+
+/** 取这个 cwd 的流式客户端：换 cwd 就先把上一个收了，不留一排没人喂 stdin 的子进程 */
+async function streamFor(cwd: string): Promise<PreshellStream> {
+  if (streamClient && streamCwd === cwd) return streamClient;
+  if (streamClient) {
+    closedStreamStats.push(streamClient.stats());
+    await streamClient.close();
+    streamClient = undefined;
+  }
+  streamClient = openPreshellStream({
+    bin: BIN,
+    timeoutMs: 2000,
+    idleMs: 0,
+    args: ["--shell=probe", ...cwdArgs(cwd)],
+  });
+  streamCwd = cwd;
+  return streamClient;
+}
+
 /** 流式一旦出问题就整轮退回单条：宁可慢，不要拿「一半走流式一半走单条」的数字当结论 */
-async function runPreshell(cmd: string): Promise<{ report?: PreshellReport; error?: string; ms: number }> {
+async function runPreshell(cmd: string, cwd: string): Promise<{ report?: PreshellReport; error?: string; ms: number }> {
   if (USE_STREAM && !streamFailed) {
-    streamClient ??= openPreshellStream({ bin: BIN, timeoutMs: 2000, idleMs: 0 });
+    const client = await streamFor(cwd);
     const started = process.hrtime.bigint();
-    const result = await streamClient.analyze(cmd);
+    const result = await client.analyze(cmd);
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
     if (result.ok) return { report: result.report as PreshellReport, ms };
     streamFailed = true;
@@ -199,7 +245,7 @@ async function runPreshell(cmd: string): Promise<{ report?: PreshellReport; erro
   }
 
   const started = process.hrtime.bigint();
-  const proc = spawnSync(BIN, ["--shell=probe"], { input: cmd, encoding: "utf8", timeout: 2000, maxBuffer: 8 * 1024 * 1024 });
+  const proc = spawnSync(BIN, ["--shell=probe", ...cwdArgs(cwd)], { input: cmd, encoding: "utf8", timeout: 2000, maxBuffer: 8 * 1024 * 1024 });
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   if (proc.error) return { error: `spawn:${(proc.error as NodeJS.ErrnoException).code ?? proc.error.message}`, ms };
   if (proc.status !== 0) return { error: `exit:${proc.status}`, ms };
@@ -235,9 +281,9 @@ function draftVerdict(
   const rules = loadBlacklist();
 
   const blacklisted = effects.find(
-    (e) => ["Read", "Write", "Delete"].includes(e.kind) && typeof e.target === "string" && pathBlocked(e.target, base, rules),
+    (e) => ["Read", "Write", "Delete"].includes(e.kind) && pathBlocked(settledPath(e, base), base, rules),
   );
-  if (blacklisted) return { verdict: "deny", detail: `blacklist:${blacklisted.target}` };
+  if (blacklisted) return { verdict: "deny", detail: `blacklist:${settledPath(blacklisted, base)}` };
 
   const dynamicMutation = effects.find((e) => (e.kind === "Write" || e.kind === "Delete") && e.dynamic === true);
   const net = effects.find((e) => e.kind === "Net");
@@ -266,14 +312,12 @@ function draftVerdict(
     return { verdict: "ask", detail: `dynamic-root-${dynMutation.kind}:${String(dynMutation.target).slice(0, 40)}` };
   }
   if (net) return { verdict: "ask", detail: `net:${net.target}` };
-  const outOfRoot = effects.find(
-    (e) =>
-      (e.kind === "Write" || e.kind === "Delete") &&
-      typeof e.target === "string" &&
-      !isUnboundTarget(e.target) &&
-      isOutsideRoots(e.target, base, cwd),
-  );
-  if (outOfRoot) return { verdict: "ask", detail: `write-outside-roots:${outOfRoot.target}` };
+  const outOfRoot = effects.find((e) => {
+    if (e.kind !== "Write" && e.kind !== "Delete") return false;
+    const target = settledPath(e, base);
+    return !isUnboundTarget(target) && isOutsideRoots(target, base, cwd);
+  });
+  if (outOfRoot) return { verdict: "ask", detail: `write-outside-roots:${settledPath(outOfRoot, base)}` };
   if (unmodeled || unknown || status !== "Complete") return fallback();
   return { verdict: "allow", detail: "allow" };
 }
@@ -281,6 +325,18 @@ function draftVerdict(
 /** 目标里含变量/反引号/通配：根定不下来，静态判断到此为止 */
 function isUnboundTarget(target: unknown): boolean {
   return typeof target === "string" && /[$`*?]/.test(target);
+}
+
+/**
+ * 与生产同款：把报告里的 target 收尾成绝对路径。
+ * v0.3.0 起 `$HOME/x` / `~/x` / `~+/x` 这类目标原值保留、要替换的名字在 vars 里，
+ * 替换是调用方的事（见 lib/preshell.ts 的 resolvePath 与 docs/integration.md）。
+ * `$PWD` / `~+` 用报告给的基准（`base`，与生产里的 impact.cwd 一致）。
+ * 拿不到确定值就返回原值——跟判定层拿到的一样（保留原样、不确定）。
+ */
+function settledPath(effect: PreshellEffect, base: string): string {
+  const resolved = resolvePath(effect, resolutionEnv(base, process.env), base);
+  return resolved.known ? resolved.path : effect.target;
 }
 
 // ── 出根写入：写/删目标落到 cwd / /tmp / allowDirs 之外 ──
@@ -400,8 +456,10 @@ const all: Sample[] = [...commands.entries()].map(([cmd, meta]) => ({
 const bash = shuffle(all.filter((s) => s.kind === "bash"), rand);
 const allow = shuffle(all.filter((s) => s.kind === "allow"), rand);
 const take = (items: Sample[]) => (N > 0 ? items.slice(0, N) : items);
-const sample = [...take(bash), ...take(allow)];
-console.log(`本次对比 ${sample.length} 条（bash ${take(bash).length} / allow ${take(allow).length}）\n`);
+// 抽样之后再按 cwd 排一遍：--cwd 是进程级参数（批量模式不认逐条 cwd），
+// 同一时刻只留一个流式子进程就得让同 cwd 的样本挨在一起。只改顺序，抽样结果不变
+const sample = [...take(bash), ...take(allow)].sort((a, b) => a.cwd.localeCompare(b.cwd));
+console.log(`本次对比 ${sample.length} 条（bash ${take(bash).length} / allow ${take(allow).length}，按 cwd 分组跑）\n`);
 
 const transitions = new Map<string, { count: number; examples: string[] }>();
 const bump = (key: string, cmd: string) => {
@@ -441,7 +499,7 @@ const dumpFile = DUMP ? (fs.mkdirSync(DUMP, { recursive: true }), fs.createWrite
 
 for (const item of sample) {
   const current = currentVerdict(item.cmd, item.cwd);
-  const { report, error, ms } = await runPreshell(item.cmd);
+  const { report, error, ms } = await runPreshell(item.cmd, item.cwd);
   parseMs.push(ms);
   if (error || !report) {
     unavailable++;
@@ -466,7 +524,7 @@ for (const item of sample) {
   const rules = loadBlacklist();
   const base = report.impact?.cwd ?? item.cwd;
   const preshellBlacklisted = effects.some(
-    (e) => ["Read", "Write", "Delete"].includes(e.kind) && typeof e.target === "string" && pathBlocked(e.target, base, rules),
+    (e) => ["Read", "Write", "Delete"].includes(e.kind) && pathBlocked(settledPath(e, base), base, rules),
   );
   const oursBlacklisted = (current.detail ?? "").startsWith("blacklist:");
   if (preshellBlacklisted && current.verdict === "allow") {
@@ -478,7 +536,7 @@ for (const item of sample) {
     if (falsePositiveExamples.length < 5) falsePositiveExamples.push(item.cmd.replace(/\s+/g, " ").slice(0, 110));
   }
   const outOfRoot = effects.some(
-    (e) => (e.kind === "Write" || e.kind === "Delete") && typeof e.target === "string" && isOutsideRoots(e.target, base, item.cwd),
+    (e) => (e.kind === "Write" || e.kind === "Delete") && isOutsideRoots(settledPath(e, base), base, item.cwd),
   );
   if (outOfRoot) {
     outsideWrite++;
@@ -497,9 +555,26 @@ for (const item of sample) {
 
 dumpFile?.end();
 
-// 收工：把流式子进程送走（重活已经干完，不能留一个没人喂 stdin 的残余）
-const streamStats = streamClient?.stats();
-await streamClient?.close();
+// 收工：把流式子进程送走（重活已经干完，不能留一个没人喂 stdin 的残余）。
+// 换 cwd 时已经收掉的那些累计在 closedStreamStats 里，一并报出来
+if (streamClient) {
+  closedStreamStats.push(streamClient.stats());
+  await streamClient.close();
+}
+const streamStats = closedStreamStats.reduce<PreshellStreamStats | undefined>(
+  (acc, stats) =>
+    acc
+      ? {
+          spawns: acc.spawns + stats.spawns,
+          requests: acc.requests + stats.requests,
+          timeouts: acc.timeouts + stats.timeouts,
+          crashes: acc.crashes + stats.crashes,
+          orphanAnswers: acc.orphanAnswers + stats.orphanAnswers,
+          badLines: acc.badLines + stats.badLines,
+        }
+      : { ...stats },
+  undefined,
+);
 
 // ── 报告：先按「转移对」聚合，再把详细原因作为子项 ──
 
@@ -520,7 +595,7 @@ const pct = (p: number) => (sorted.length === 0 ? 0 : sorted[Math.min(sorted.len
 console.log(`策略档位：${POLICY}`);
 console.log("preshell 解析状态：", [...statusCount.entries()].map(([k, v]) => `${k}=${v}`).join(" · "));
 console.log(`uncertain 占比：${((uncertain / Math.max(1, sample.length)) * 100).toFixed(1)}%`);
-console.log(`preshell 调用方式：${USE_STREAM && !streamFailed ? "流式（一个子进程跑全轮）" : "单条（每条起一次进程）"}${streamFailed ? "（流式中途失败，已退回）" : ""}`);
+console.log(`preshell 调用方式：${USE_STREAM && !streamFailed ? "流式（按 cwd 分组，一个基准一个子进程）" : "单条（每条起一次进程）"}${streamFailed ? "（流式中途失败，已退回）" : ""}`);
 if (USE_STREAM && !streamFailed && streamStats) {
   console.log(
     `流式进程：起 ${streamStats.spawns} 次 · 请求 ${streamStats.requests} 条 · 超时 ${streamStats.timeouts} · 崩溃 ${streamStats.crashes} · 无主应答 ${streamStats.orphanAnswers}`,

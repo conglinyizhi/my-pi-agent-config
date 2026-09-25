@@ -24,7 +24,9 @@ import {
   resetFactLayerNotices,
   resetPreshellBreaker,
   resetPreshellVersionCache,
+  resolvePath,
   resolvePreshellBin,
+  substituteVariables,
   type PreshellConfig,
 } from "./preshell.ts";
 
@@ -90,6 +92,152 @@ describe("analyzeCommand", () => {
     assert.deepEqual(outcome.facts.unmodeled, ["node"]);
     assert.deepEqual(outcome.facts.net, ["https://example.com"]);
     assert.equal(outcome.facts.effects.length, 4);
+  });
+
+  it("把调用方给的 cwd 传成 --cwd=<绝对路径>", () => {
+    const log = join(dir, "args.log");
+    const bin = stub("args.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    analyzeCommand("cat providers.toml", { config: configFor(bin), cwd: "/work" });
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1, "只应起一次子进程（--version 那次不走这条分支）");
+    assert.match(lines[0], /--shell=probe/);
+    assert.match(lines[0], /--cwd=\/work/);
+  });
+
+  it("没给 cwd 就不传 --cwd：工具会自己推演基准并置 uncertain（我们不替它编一个）", () => {
+    const log = join(dir, "nocwd.log");
+    const bin = stub("nocwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    analyzeCommand("ls", { config: configFor(bin) });
+    assert.ok(!/--cwd/.test(readFileSync(log, "utf8")), "没给基准就不能替调用方编一个");
+  });
+
+  it("cwd 不是绝对路径：不塞给工具（那会直接是用法错误、退出码 2），原值记进 cwdRejected", () => {
+    const log = join(dir, "relcwd.log");
+    const bin = stub("relcwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("ls", { config: configFor(bin), cwd: "lib/sub" });
+    assert.ok(!/--cwd/.test(readFileSync(log, "utf8")), "相对值不能塞给工具");
+    assert.equal(outcome.ok, true);
+    if (outcome.ok) assert.equal(outcome.facts.cwdRejected, "lib/sub");
+  });
+
+  it("缓存按 cwd 分辨：同一条命令在不同目录里跑要各问一次", () => {
+    const log = join(dir, "bothcwd.log");
+    const bin = stub("bothcwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const config = configFor(bin);
+    analyzeCommand("ls", { config, cwd: "/a" });
+    analyzeCommand("ls", { config, cwd: "/b" });
+    analyzeCommand("ls", { config, cwd: "/a" });
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 2);
+  });
+
+  it("facts 里能拿到 vars 并集与每条路径的收尾结果", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "cat", vars: [], dynamic: false, modeled: true, line: 1 },
+          { kind: "Read", target: "$HOME/.ssh/id_rsa", vars: ["HOME"], dynamic: true, modeled: true, line: 1 },
+          { kind: "Read", target: "providers.toml", vars: [], dynamic: false, modeled: true, line: 1 },
+          { kind: "Read", target: "$1/x", vars: [], dynamic: true, modeled: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: ["HOME"],
+        cwd: "/work",
+      },
+    });
+    const bin = stub("settle.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("cat $HOME/.ssh/id_rsa providers.toml $1/x", {
+      config: configFor(bin),
+      cwd: "/work",
+      env: { HOME: "/home/u" },
+    });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.deepEqual(outcome.facts.vars, ["HOME"]);
+    assert.deepEqual(
+      outcome.facts.settledPaths.map((item) => [item.path, item.known]),
+      [
+        ["/home/u/.ssh/id_rsa", true],
+        ["/work/providers.toml", true],
+        ["$1/x", false],
+      ],
+    );
+    assert.match(outcome.facts.settledPaths[2].reason ?? "", /补不上/);
+  });
+
+  it("$PWD / ~+ 用报告回的基准（命令内部 cd 过就是 cd 之后那个），不用 pi 进程的 PWD", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "cat", vars: [], dynamic: false, modeled: true, line: 1 },
+          { kind: "Read", target: "~+/x", vars: ["PWD"], dynamic: true, modeled: true, line: 1 },
+          { kind: "Read", target: "$PWD/y", vars: ["PWD"], dynamic: true, modeled: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: ["PWD"],
+        cwd: "/cd-base",
+        effects_dropped: 0,
+      },
+    });
+    const bin = stub("pwd.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("cd /cd-base && cat ~+/x $PWD/y", {
+      config: configFor(bin),
+      cwd: "/start",
+      env: { PWD: "/pi-process" },
+    });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.deepEqual(
+      outcome.facts.settledPaths.map((item) => item.path),
+      ["/cd-base/x", "/cd-base/y"],
+    );
+  });
+
+  it("工具没给出基准时 $PWD 当未设：保留原值，不拿 pi 进程的 PWD 冒名", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [{ kind: "Read", target: "$PWD/x", vars: ["PWD"], dynamic: true, modeled: true, line: 1 }],
+        write_roots: [],
+        uncertain: true,
+        vars: ["PWD"],
+        effects_dropped: 0,
+      },
+    });
+    const bin = stub("nopwd.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("cd $DIR && cat $PWD/x", {
+      config: configFor(bin),
+      cwd: "/start",
+      env: { PWD: "/pi-process" },
+    });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.deepEqual(outcome.facts.settledPaths[0], {
+      effect: outcome.facts.settledPaths[0].effect,
+      path: "$PWD/x",
+      known: false,
+      reason: "PWD 未设",
+    });
   });
 
   it("同一条命令只起一次子进程（缓存）", () => {
@@ -225,8 +373,8 @@ describe("缺件提示（人看的）", () => {
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.2\.1 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755/);
+    assert.match(INSTALL_HINT, /gh release download v0\.3\.0 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.3\.0-x86_64-linux/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
   });
@@ -325,5 +473,175 @@ describe("formatFacts", () => {
     assert.match(text, /- 网络：https:\/\/example\.com/);
     assert.match(text, /未建模程序/);
     assert.match(text, /uncertain/);
+  });
+
+  // 变量渲染：命令名位置上的 `$P` 单看判不出跑的是什么，模型看不到展开那一步
+  it("程序行就地标注渲染值，并附一张变量表", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "$P", vars: ["P"], dynamic: true, modeled: true, line: 1 },
+          { kind: "Read", target: "/tmp/f.json", vars: [], dynamic: false, modeled: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["P"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    const bin = stub("facts-var.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const command = "cd /tmp && P=/usr/bin/jq && $P --version";
+    const outcome = analyzeCommand(command, { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    // 命令原文随事实一起带出：变量渲染要它（调用方不必再传一遍）
+    assert.equal(outcome.facts.command, command);
+    const text = formatFacts(outcome.facts);
+    assert.match(text, /- 程序：\$P（\/usr\/bin\/jq）/);
+    assert.match(text, /- 变量：P=\/usr\/bin\/jq（本命令内赋值）/);
+  });
+
+  it("渲不出来时在程序行里给出原因，变量表同样带原因", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [{ kind: "Exec", target: "$P", vars: ["P"], dynamic: true, modeled: true, line: 1 }],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["P"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    const bin = stub("facts-var-unknown.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("P=$(which jq) && $P --version", { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    const text = formatFacts(outcome.facts);
+    assert.match(text, /- 程序：\$P（渲不出：值里含命令替换/);
+    assert.match(text, /- 变量：P（渲不出：值里含命令替换/);
+  });
+
+  it("命令里没有变量引用时不出变量表（旧输出的其余部分不变）", () => {
+    const bin = stub("facts-novar.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.doesNotMatch(formatFacts(outcome.facts), /- 变量：/);
+  });
+});
+
+// v0.3.0：工具把「要替换哪些名字」交出来，替换由我们做（环境在我们手上）。
+// 这一组是纯函数，不碰子进程：边界都在这儿定，调用侧只管把 vars 报出来的名字查一遍。
+describe("变量收尾（substituteVariables / resolvePath）", () => {
+  const env = { HOME: "/home/u", PWD: "/work/a", OLDPWD: "/old" };
+
+  it("$HOME/x、${HOME}y、~/x、单独的 ~ 都补成绝对路径", () => {
+    assert.deepEqual(resolvePath({ target: "$HOME/x", vars: ["HOME"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/home/u/x",
+    });
+    assert.deepEqual(resolvePath({ target: "${HOME}y", vars: ["HOME"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/home/uy",
+    });
+    assert.deepEqual(resolvePath({ target: "~/x", vars: ["HOME"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/home/u/x",
+    });
+    assert.deepEqual(resolvePath({ target: "~", vars: ["HOME"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/home/u",
+    });
+  });
+
+  it("~+/x 用 PWD、~-/x 用 OLDPWD（名字由报告给）", () => {
+    assert.deepEqual(resolvePath({ target: "~+/x", vars: ["PWD"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/work/a/x",
+    });
+    assert.deepEqual(resolvePath({ target: "~-/x", vars: ["OLDPWD"], dynamic: true }, env, "/work"), {
+      known: true,
+      path: "/old/x",
+    });
+  });
+
+  it("~someone/x、~3、~+3：走口令库与目录栈，环境里没有，保持原样", () => {
+    for (const target of ["~someone/x", "~3", "~+3"]) {
+      const resolved = resolvePath({ target, vars: [], dynamic: true }, env, "/work");
+      assert.equal(resolved.known, false, `${target} 不该被补成路径`);
+      if (!resolved.known) assert.match(resolved.reason, /补不上/);
+    }
+    // 即便环境里恰好有同名变量也不动它：替换只认 vars 报出来的名字
+    const sneaky = resolvePath({ target: "~someone/x", vars: [], dynamic: true }, { ...env, someone: "/s" }, "/work");
+    assert.equal(sneaky.known, false);
+  });
+
+  it("$1 / $@：位置参数不在环境里", () => {
+    for (const target of ["$1/x", "$@"]) {
+      const resolved = resolvePath({ target, vars: [], dynamic: true }, env, "/work");
+      assert.equal(resolved.known, false, `${target} 补不上就是补不上`);
+    }
+  });
+
+  it("dynamic: false（带引号的 '$HOME/x' 这种字面量）不做替换", () => {
+    assert.deepEqual(resolvePath({ target: "/work/$HOME/x", vars: [], dynamic: false }, env, "/work"), {
+      known: true,
+      path: "/work/$HOME/x",
+    });
+  });
+
+  it("变量没设 → 保留原样并说清原因（不拿空串拼一个出来）", () => {
+    assert.deepEqual(resolvePath({ target: "$FOO/x", vars: ["FOO"], dynamic: true }, env, "/work"), {
+      known: false,
+      reason: "FOO 未设",
+    });
+    assert.deepEqual(resolvePath({ target: "~/x", vars: ["HOME"], dynamic: true }, {}, "/work"), {
+      known: false,
+      reason: "HOME 未设",
+    });
+  });
+
+  it("值本身是相对路径：先替换、再拿基准收一下（顺序不能反）", () => {
+    assert.deepEqual(resolvePath({ target: "$HOME/x", vars: ["HOME"], dynamic: true }, { HOME: "rel" }, "/work"), {
+      known: true,
+      path: "/work/rel/x",
+    });
+  });
+
+  it("替换是字面的：值里的 $ 与反斜杠原样落地，不当替换模板", () => {
+    // 字符串形式的替换值会把 $& / $` 展开成「匹配到的那段」与「匹配之后的那段」：
+    // 那等于把环境变量的内容当模板跑，所以实现里一律传函数
+    assert.deepEqual(substituteVariables("$HOME/x", ["HOME"], { HOME: "/a/$&/b" }), { ok: true, text: "/a/$&/b/x" });
+    assert.deepEqual(substituteVariables("${HOME}/x", ["HOME"], { HOME: "/a/$`/b" }), { ok: true, text: "/a/$`/b/x" });
+    assert.deepEqual(substituteVariables("$HOME/x", ["HOME"], { HOME: "/a/$1/b" }), { ok: true, text: "/a/$1/b/x" });
+    assert.deepEqual(substituteVariables("$HOME/x", ["HOME"], { HOME: "/a\\b" }), { ok: true, text: "/a\\b/x" });
+    // 值里带 $ 的收尾结果是不确定（那是个补不上的洞），不是我们编出来的路径
+    const resolved = resolvePath({ target: "$HOME/x", vars: ["HOME"], dynamic: true }, { HOME: "/a/$&/b" }, "/work");
+    assert.equal(resolved.known, false);
+  });
+
+  it("只认 vars 里的名字：$HOMEfoo 不会被当成 $HOME 加个 foo", () => {
+    assert.deepEqual(substituteVariables("$HOMEfoo/x", ["HOMEfoo"], { HOMEfoo: "/h" }), { ok: true, text: "/h/x" });
+    const resolved = resolvePath(
+      { target: "$HOMEfoo/x", vars: ["HOMEfoo"], dynamic: true },
+      { HOME: "/home/u", HOMEfoo: "/h" },
+      "/work",
+    );
+    assert.deepEqual(resolved, { known: true, path: "/h/x" });
   });
 });

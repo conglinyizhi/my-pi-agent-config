@@ -126,7 +126,7 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 
 | 层 | 盖的洞 | 例子 |
 |---|---|---|
-| preshell 目标 | 相对路径、带引号的路径、`cd` 后的基准 | `cd ~/.pi/agent && sed -n '610,630p' providers.toml`（旧子串匹配漏掉，实测语料里漏了 21 条） |
+| preshell 目标 | 相对路径、带引号的路径、`cd` 后的基准、`$HOME/x` 这类变量目标（v0.3.0 起由我们收尾成绝对路径） | `cd ~/.pi/agent && sed -n '610,630p' providers.toml`（旧子串匹配漏掉，实测语料里漏了 21 条）、`cat "$HOME/.ssh/id_rsa"`（引号里，token 层盖不到） |
 | 未引号路径 token | 存在性探测这类不产生 Read 效果的用法 | `test -f .env`（preshell 对 `test` 只报 Exec） |
 | 解释器/脚本载荷退回旧匹配 | 解释器与本地脚本的命令行字符串/heredoc 里的路径 | `node <<EOF` 里 `readFileSync('凭据文件')` |
 | （事实层不可用）退整条旧匹配 | 缺二进制/超时/坏 JSON/schema 不符 | 宁可多拦，不能因为缺工具而变宽 |
@@ -136,6 +136,17 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 
 - 配置在 `extensions.toml` 的 `[preshell]`（`enabled`/`bin`/`timeoutMs`/`schema`）；二进制缺省在
   `~/.pi/runtime/preshell`（不在 `/tmp`，重启不丢），也可用环境变量 `PRESHELL_BIN` 覆盖
+- **v0.3.0 起路径一律输出绝对路径**，`--cwd=<绝对路径>` 事实上必填（它是「这条命令会在哪个目录里跑」
+  的断言，不是 `cd`，命令内部的 `cd` 优先）。我们传的就是 `checkCommand` 拿到的 `ctx.cwd`；
+  传进来的不是绝对路径时不猜，退回「不给 `--cwd`」（报告会自己标 `uncertain` 并附一条 Note），
+  原值记在 `facts.cwdRejected`
+- **变量的收尾是调用方的事**（integration.md 的「谁来替换那些变量」）：工具不读环境，对 `$HOME/x`、`~/x`、`~+/x`
+  这类词首运行时展开的目标只交出原值与要替换的名字（每条 effect 的 `vars`，并集在 `impact.vars`），
+  由 `lib/preshell.ts` 的 `resolvePath` 用本机环境变量做**字面**替换，再拿 `impact.cwd` 收成绝对路径。
+  只替换 `vars` 报出来的名字（`dynamic: false` 的 `'$X/y'`、`~user`、`~N`、`$1`/`$@` 都不动），
+  替换值一律用函数形式给 `replaceAll`（字符串形式会把值里的 `$&`/`$1` 当模板展开）；值没设、
+  或替换完仍带 `$`/词首 `~` 就保留原值并标不确定（`$PWD` 用我们断言的 cwd，`$OLDPWD` 不用
+  pi 进程那个值）。收尾失败时原值照旧参与判定，不会比接入前更松
 - 每次调用：裸起进程 ~2ms（与 `/bin/true` 同量级），走我们这层（Node spawn + JSON）实测 p50 ~5ms、p95 ~8ms；
   分析本身只有 5µs/命令（它自己的 `--bench`：20000 条 112ms），所以成本全在进程环节；
   同一条命令在会话内只问一次（有界缓存）
@@ -148,7 +159,8 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
   省下的是进程而不是分析（分析本身 5µs/条）。实时路径仍旧一条命令起一次进程：那边一次只问一句，
   2ms 无所谓，而改成异步要动整条同步判定链，不值当
   （客户端在 `lib/preshell-stream.ts`，harness 加 `--no-stream` 可回到单条对照；
-  v0.1 那种不认 `--stream` 的二进制会自动退回单条）
+  v0.1 那种不认 `--stream` 的二进制会自动退回单条。v0.3.0 的 `--cwd` 同样是**进程级**参数
+  （批量模式不认逐条 cwd）：`scripts/preshell-shadow.ts` 按 cwd 分组跑，同一时刻只留一个子进程）
 - 流式客户端父进程这一侧兜三件事：每条请求有自己的超时；子进程一退出，发给它的未决请求全判失败
   （事件可能迟到，所以按子进程记账，不牵连新起的那一个）；id 对不上的应答只记数、绝不当成功。
   闲下来（默认 60s）收工，宿主退出时把子进程带走（`unref` + exit 钩子，不拖住宿主退出）

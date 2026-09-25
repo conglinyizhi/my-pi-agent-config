@@ -6,11 +6,16 @@
 // 实时路径（命令审核）一次只问一条，起进程那 2ms 无所谓，所以它仍走 lib/preshell.ts 的
 // 单条模式；批量路径（影子对比、语料回放）才是这 10 倍差距的受益者。
 //
-// 契约（preshell v0.2 的 docs/integration.md，v0.2.1 未变；另新增 --spec 给机读形式）：
+// 契约（preshell v0.3.0 的 docs/integration.md；v0.2.1 起另新增 --spec/--man 给机读形式）：
 //   stdin  每行一个 JSON 字符串，或 {"id":…,"command":"…"}
 //   stdout 每行一份报告；带 id 的请求拿信封 {"id":…,"report":{…}}，坏行拿 {"error":…,"line":N}
 //   一行进一行出，严格对应；报告随算随出，不等 EOF；另有退出码 0 与 stderr 汇总
 //   只认 id 与 command 两个键，多写一个键会被整行拒掉
+//
+// v0.3.0 的 --cwd 也是**进程级**参数，而且事实上必填（必须绝对路径，给相对值算用法错误）：
+// 批量模式不认逐条 cwd（实测 `{"command":…,"cwd":…}` 会被整行拒掉，退出码仍是 0，
+// 那一行拿 {"error":…}），所以一批命令的基准只能有一个。同一个进程里要跑不同 cwd 的命令，
+// 得按 cwd 分开起进程（基准不对，报告里的相对路径与 `uncertain` 就都是假的）。
 //
 // 上游文档（v0.2.1 「客户端这边要守住四条」）点了调用方要兜的四件事，逐条对应：
 //   1 对 stdin 的写要串行：我们用 child.stdin（单一 stream、内部排队），天然安全
@@ -40,7 +45,7 @@ export interface PreshellStreamOptions {
 	idleMs?: number;
 	/** 期望的契约版本；不符按「事实层不可用」处理 */
 	schema?: number;
-	/** 交给子进程的参数（默认 --shell=probe；方言是进程级设置，切换要重开） */
+	/** 交给子进程的参数（默认 --shell=probe；方言与 --cwd 都是进程级设置，切换要重开） */
 	args?: string[];
 	/** stderr 逐行回调：工具自己的诊断汇总走这里，不混进报告 */
 	onDiagnostic?: (line: string) => void;
