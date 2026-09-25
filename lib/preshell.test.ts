@@ -225,7 +225,7 @@ describe("缺件提示（人看的）", () => {
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.2 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /gh release download v0\.2\.1 -R conglinyizhi\/preshell/);
     assert.match(INSTALL_HINT, /install -Dm755/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);

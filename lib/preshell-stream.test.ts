@@ -26,7 +26,7 @@ function echoOf(report: PreshellReport): string | undefined {
 }
 
 /**
- * 替身：说 preshell v0.2 的流式协议。
+ * 替身：说 preshell v0.2 的流式协议（v0.2.1 未改）。
  *
  * 模式写在同目录的 mode 文件里（而不是环境变量）：能力探测那条路径是
  * `spawnSync(bin, ["--help"])`，带不上调用方的 env，模式落在文件里两条路径都能读。
@@ -72,9 +72,10 @@ function handle(line) {
   if (line.trim() === "") return;
   let req;
   try { req = JSON.parse(line); } catch { out({ error: "not valid JSON", line: 1 }); return; }
+  if (mode === "echo-id") process.stderr.write(String(req.id) + "\\n");
   if (mode === "silent") return;
   if (mode === "reject") { out({ id: req.id, error: "unknown key: timeout", line: 1 }); return; }
-  if (mode === "orphan") { out({ id: req.id + 1000, report: report(req.command) }); return; }
+  if (mode === "orphan") { out({ id: "伪造-" + req.id, report: report(req.command) }); return; }
   if (mode === "crash-after-first" && answered >= 1) process.exit(7);
   out({ id: req.id, report: report(req.command) });
   answered++;
@@ -157,6 +158,26 @@ describe("preshell-stream：正常路径", () => {
 });
 
 describe("preshell-stream：拿不到应答", () => {
+	it("请求 id 是随机串而不是自增整数", async () => {
+		const ids: string[] = [];
+		const client = openPreshellStream({
+			bin: stub("echo-id"),
+			timeoutMs: 500,
+			idleMs: 0,
+			// 替身把收到的 id 写到 stderr 送回来：这条只关心 id 的形状
+			onDiagnostic: (line) => ids.push(line.trim()),
+		});
+		const [a, b] = await Promise.all([client.analyze("ls"), client.analyze("ls -la")]);
+		assert.equal(a.ok && b.ok, true);
+		await waitFor(() => ids.length >= 2);
+		await client.close();
+		assert.equal(ids.length, 2);
+		for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		assert.notEqual(ids[0], ids[1]);
+		assert.equal(client.stats().orphanAnswers, 0);
+	});
+
+
 	it("子进程不答就走超时，且不挂着等", async () => {
 		const client = open(stub("silent"), { timeoutMs: 80 });
 		const result = await client.analyze("ls");

@@ -6,18 +6,25 @@
 // 实时路径（命令审核）一次只问一条，起进程那 2ms 无所谓，所以它仍走 lib/preshell.ts 的
 // 单条模式；批量路径（影子对比、语料回放）才是这 10 倍差距的受益者。
 //
-// 契约（preshell v0.2 的 docs/integration.md）：
+// 契约（preshell v0.2 的 docs/integration.md，v0.2.1 未变；另新增 --spec 给机读形式）：
 //   stdin  每行一个 JSON 字符串，或 {"id":…,"command":"…"}
 //   stdout 每行一份报告；带 id 的请求拿信封 {"id":…,"report":{…}}，坏行拿 {"error":…,"line":N}
 //   一行进一行出，严格对应；报告随算随出，不等 EOF；另有退出码 0 与 stderr 汇总
 //   只认 id 与 command 两个键，多写一个键会被整行拒掉
 //
-// 上游点名要父进程兜住的三件事，这里都兜了：
+// 上游文档（v0.2.1 「客户端这边要守住四条」）点了调用方要兜的四件事，逐条对应：
+//   1 对 stdin 的写要串行：我们用 child.stdin（单一 stream、内部排队），天然安全
+//   2 读要按 \n 缓冲：下面 handleLine 那段 buf 累积就是干这个的（一次 read 未必一行）
+//   3 id 要不可猜（随机，不能自增）：见下面 nextId 那行注释
+//   4 别让旁系子进程继承这根 fd：Node/libuv 默认 CLOEXEC，不需要我们做什么
+//
+// 上游点名要父进程兜住的三件事，这里也都兜了：
 //   1 应答不来不许挂着等：每条请求有自己的超时；子进程一退出，未决请求全部判失败
 //   2 无主应答（id 对不上）绝不当成功：只记数，丢掉
 //   3 拿不到应答不等于什么都没碰：失败一律翻成 ok:false，由调用方走保守兜底
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { EXPECTED_SCHEMA, DEFAULT_TIMEOUT_MS, queryPreshellVersion, type PreshellReport, type PreshellUnavailableReason } from "./preshell.ts";
 
@@ -142,11 +149,10 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 	/** 确定性失败或意外退出之后就认死：不再起进程，让调用方改走单条模式 */
 	let dead: { ok: false; reason: PreshellUnavailableReason; detail?: string } | undefined;
 	let buf = "";
-	let nextId = 1;
 	let idleTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 请求按「发给哪个子进程」记账：收工时只收自己那一摊，不牵连新起的子进程 */
-	const pending = new Map<number, { child: ChildProcess; resolve: (outcome: StreamOutcome) => void }>();
-	const timers = new Map<number, ReturnType<typeof setTimeout>>();
+	const pending = new Map<string, { child: ChildProcess; resolve: (outcome: StreamOutcome) => void }>();
+	const timers = new Map<string, ReturnType<typeof setTimeout>>();
 	const stats: PreshellStreamStats = { spawns: 0, requests: 0, timeouts: 0, crashes: 0, orphanAnswers: 0, badLines: 0 };
 
 	function clearIdle(): void {
@@ -167,7 +173,7 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 		unref(idleTimer);
 	}
 
-	function settle(id: number, outcome: StreamOutcome): void {
+	function settle(id: string, outcome: StreamOutcome): void {
 		const timer = timers.get(id);
 		if (timer) {
 			clearTimeout(timer);
@@ -231,7 +237,8 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 		}
 		const id = msg.id;
 		// 无主应答：可能是上一轮超时后迟到的，也可能是客户端没发过的 id。记数，绝不当成功
-		if (typeof id !== "number" || !pending.has(id)) {
+		// （我们只发随机字符串 id，所以数字 id 的应答一律算无主）
+		if (typeof id !== "string" || !pending.has(id)) {
 			stats.orphanAnswers++;
 			return;
 		}
@@ -388,7 +395,9 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 		stats.requests++;
 		setRef(true);
 		return new Promise<StreamOutcome>((resolve) => {
-			const id = nextId++;
+			// 随机而不是自增：管道若被旁系进程拿到，猜得到的 id 意味着伪造的应答能顶掉真应答。
+			// 随机 id 让这种情况只能表现为「无主的应答」（上游 v0.2.1 那条义务）
+			const id = randomUUID();
 			const timer = setTimeout(() => {
 				stats.timeouts++;
 				settle(id, { ok: false, reason: "timeout", detail: `${timeoutMs}ms 内没有应答` });

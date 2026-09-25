@@ -99,7 +99,7 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  * 真正的收益在坏情况：二进制卡住时，每条命令的阻塞从 2s 降到 100ms。
  */
 export const DEFAULT_TIMEOUT_MS = 100;
-/** 我们验证过的契约版本（v0.1 与 v0.2 都是 schema=1；版号本身不参与判定） */
+/** 我们验证过的契约版本（v0.1 / v0.2 / v0.2.1 都是 schema=1；版号本身不参与判定） */
 export const EXPECTED_SCHEMA = 1;
 
 /**
@@ -108,8 +108,8 @@ export const EXPECTED_SCHEMA = 1;
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.2 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.2-*.linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.2.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.2.1-*.linux ~/.pi/runtime/preshell",
   "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",

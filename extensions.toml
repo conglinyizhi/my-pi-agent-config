@@ -94,8 +94,8 @@ hint = "碰调试设备（adb、串口、烧录器这类独占目标）时，同
 # preshell：命令事实层（敏感路径判定与 LLM 预审的事实来源）
 # 独立子进程的静态分析器：命令走 stdin，stdout 出 JSON，报出碰了哪些路径、跑了什么程序、
 # 哪里看不懂。它不做裁决，策略仍在本仓（lib/sandbox-check.ts）。
-# 装：gh release download v0.2 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS
-#     install -Dm755 /tmp/p/preshell-v0.2-*.linux ~/.pi/runtime/preshell
+# 装：gh release download v0.2.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS
+#     install -Dm755 /tmp/p/preshell-v0.2.1-*.linux ~/.pi/runtime/preshell
 # 拿不到报告（缺二进制/超时/坏 JSON/schema 不符）时按旧的 token 兜底走，不静默放行：
 # TUI 提醒一次（附上面的安装命令），状态栏常驻 ✗。熔断分两档：缺件/schema 不符一次就断，
 # 瞬时失败（超时/坏 JSON/非零退出）连续 5 次才断。
@@ -106,7 +106,7 @@ bin = "~/.pi/runtime/preshell"
 # 实测分析 5µs/命令、起进程约 2ms、本机最大命令 22KB 对应几毫秒，所以 100ms 是十几倍余量
 # 定这么小的真正收益在坏情况：二进制卡住时每条命令的阻塞从 2s 降到 100ms
 timeoutMs = 100
-# 契约版本，只认这个值；工具换 schema 就得先在影子模式里复测再改这里（v0.1 / v0.2 都是 1）
+# 契约版本，只认这个值；工具换 schema 就得先在影子模式里复测再改这里（v0.1/v0.2/v0.2.1 都是 1）
 schema = 1
 
 # ─────────────────────────────────────────────────────────────

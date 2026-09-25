@@ -20,6 +20,8 @@
 //   sha256 e569f0c76c0c9e4b762225b35fadb4c1ed91011e44e05c55ba8bce24579af102
 // v0.2 实测（2026-09-24）：version 0.2.0 · schema 1 · 带 --stream ·
 //   sha256 83ad75050da405e314f2a956746a296244f52781e3d4094a791ec00a2c42407a
+// v0.2.1 实测（2026-09-25）：version 0.2.1 · schema 1 · 新增 --spec/--man/--man-markdown ·
+//   sha256 731dd1ba2e392a27e7b12efbf67653907fd923f7cc1891c3550d774d0d4b7c66
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -70,8 +72,8 @@ function arg(name: string, fallback = ""): string {
 }
 
 const BIN = arg("bin", process.env.PRESHELL_BIN ?? (fs.existsSync(join(homedir(), ".pi", "runtime", "preshell")) ? join(homedir(), ".pi", "runtime", "preshell") : "preshell"));
-/** 当前 pin 的发布物 sha256（v0.2；发布方带 SHA256SUMS，不一致时报告要说得出来） */
-const PINNED_SHA256 = "83ad75050da405e314f2a956746a296244f52781e3d4094a791ec00a2c42407a";
+/** 当前 pin 的发布物 sha256（v0.2.1；发布方带 SHA256SUMS，不一致时报告要说得出来） */
+const PINNED_SHA256 = "731dd1ba2e392a27e7b12efbf67653907fd923f7cc1891c3550d774d0d4b7c66";
 /** transitions = 三档策略对比；blacklist = 只看敏感路径这一维（旧子串匹配 vs 新事实层+token 兼底） */
 const MODE = arg("mode", "transitions");
 const N = Number(arg("n", "1500"));
