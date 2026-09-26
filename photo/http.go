@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -58,11 +63,16 @@ func newAPI(st *Store) *API { return &API{st: st} }
 func (a *API) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.handleIndex)
+	mux.HandleFunc("GET /manage", a.handleManage)
 	mux.HandleFunc("GET /status", a.handleStatus)
 	mux.HandleFunc("POST /upload", a.handleUpload)
 	mux.HandleFunc("GET /refs", a.handleRefs)
 	mux.HandleFunc("GET /refs/{n}", a.handleRefGet)
 	mux.HandleFunc("POST /refs/{n}/use", a.handleRefUse)
+	// raw 不限来源：上传页的缩略图列表和大图都走它，限回环会让管理页一离开本机就瞎掉；
+	// 它只读、只看编号表里有登记的图，比 delete 那一路温和得多。
+	mux.HandleFunc("GET /refs/{n}/raw", a.handleRefRaw)
+	mux.HandleFunc("POST /refs/{n}/delete", a.handleRefDelete)
 	return mux
 }
 
@@ -185,6 +195,118 @@ func (a *API) handleRefUse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// isLoopback 判断请求是不是从主机本机发来的。只看 TCP 连接的对端地址，
+// 不看 X-Forwarded-For 之类的头：那些头谁都能填，拿它分流等于把管理页的门
+// 交给请求方自己决定。net.IP.IsLoopback 覆盖 127.0.0.0/8 与 ::1。
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr // 没有端口时就直接当裸地址解析
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// managePage 把归档目录路径填进页面。看图的页面得让人一眼能对上传到磁盘的哪个目录，
+// 路径可能带引号之类的字符，替换前先做 HTML 转义。
+func managePage(archive string) []byte {
+	return bytes.Replace(manageHTML, manageArchiveSlot, []byte(html.EscapeString(archive)), 1)
+}
+
+// handleManage 是管理页：缩略图网格 + 大图 + 删除，只给主机本机开。
+// 手机走局域网 IP，来源不是回环，这里只回一句话，页面内容一个字节都不给。
+// 口令先判：口令不对时不区分来源，一律 401，和别的接口一个口径。
+func (a *API) handleManage(w http.ResponseWriter, r *http.Request) {
+	if !a.authorized(r) {
+		unauthorized(w)
+		return
+	}
+	if !isLoopback(r) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("管理页只能在主机本机打开（请求来源不是回环地址）。手机请用上传页。\n"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(managePage(filepath.Join(a.st.Root(), "archive")))
+}
+
+// rawContentType 按扩展名给 Content-Type。表外的类型回 application/octet-stream：
+// 猜错类型会让浏览器把图当文本渲染、或者把别的东西当图，宁可让它下载。
+func rawContentType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	}
+	return "application/octet-stream"
+}
+
+// handleRefRaw 回某编号对应文件的字节，给管理页的缩略图与大图用。
+// 「表里没这个号」和「表里有但文件不在」都回 404：对取图的一方都是找不到。
+func (a *API) handleRefRaw(w http.ResponseWriter, r *http.Request) {
+	if !a.authorized(r) {
+		unauthorized(w)
+		return
+	}
+	ref, ok := refOf(r)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": errNoRef.Error()})
+		return
+	}
+	it, err := a.st.Get(ref)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": errNoRef.Error()})
+		return
+	}
+	f, err := os.Open(it.Path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": errNoRef.Error()})
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": errNoRef.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", rawContentType(it.Path))
+	w.Header().Set("Cache-Control", "no-store")
+	// ServeContent 按文件实际大小补 Content-Length，并顺手支持 Range：
+	// 一张 1600 长边的图不算大，但手机流量下能续传总比整张重来强。
+	http.ServeContent(w, r, filepath.Base(it.Path), info.ModTime(), f)
+}
+
+// handleRefDelete 删文件并释放编号。404 的两种情况都「不报错」：编号没登记、
+// 或登记了但文件已经不在——后者照样把号还回池子。真失败（权限等）才 500。
+func (a *API) handleRefDelete(w http.ResponseWriter, r *http.Request) {
+	if !a.authorized(r) {
+		unauthorized(w)
+		return
+	}
+	ref, ok := refOf(r)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": errNoRef.Error()})
+		return
+	}
+	it, err := a.st.Delete(ref)
+	switch {
+	case err == nil:
+		// 删除会改 archive，留一行 journal 便于事后对「谁把图删了」
+		log.Printf("删除 %d 号：%s", ref, it.Path)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ref": ref})
+	case errors.Is(err, errNoRef), errors.Is(err, errNoFile):
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
 }
 
 // refOf 从路径里取编号。取不到（包括不是数字）一律当「不存在」：
