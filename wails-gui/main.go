@@ -17,13 +17,17 @@ type windowConfig struct {
 	title  string
 	width  int
 	height int
+	// 最小尺寸交给窗口管理器兜：面板多的窗口（审批窗的执行范围、规则列表）
+	// 被拖得太小会挤成一团，前端自己算最小宽高既难准也晚一步
+	minWidth  int
+	minHeight int
 }
 
 var windowConfigs = map[string]windowConfig{
-	"editor":    {"提示词输入 · pi", 800, 450},
-	"gate":      {"权限闸门 · 命令审批", 800, 520},
-	"subagents": {"Subagent 详情 · 三叉戟", 1160, 780},
-	"routing":   {"TODO 调度 · 三叉戟", 900, 640},
+	"editor":    {"提示词输入 · pi", 900, 620, 720, 480},
+	"gate":      {"权限闸门 · 命令审批", 1280, 900, 960, 640},
+	"subagents": {"Subagent 详情 · 三叉戟", 1280, 860, 900, 600},
+	"routing":   {"TODO 调度 · 三叉戟", 1000, 720, 800, 540},
 }
 
 func main() {
@@ -47,9 +51,11 @@ func main() {
 	app := NewApp(windowName, requestFile, responseFile)
 
 	err := wails.Run(&options.App{
-		Title:  cfg.title,
-		Width:  cfg.width,
-		Height: cfg.height,
+		Title:     cfg.title,
+		Width:     cfg.width,
+		Height:    cfg.height,
+		MinWidth:  cfg.minWidth,
+		MinHeight: cfg.minHeight,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
