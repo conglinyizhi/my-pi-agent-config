@@ -53,7 +53,7 @@ pi
 
 **sysinfo** — `/sysinfo` 一键收集系统信息发给 LLM。
 
-**fragments** — 输入框里打 `&名字`，按回车换成 `~/.pi/agent/fragments.toml` 里那段正文（随便多少行，比 prompt 模板更适合一句话级别的插入件）。只认行首或空白后的 `&名字`：`&&`、URL 里的 `&`、代码块与反引号里的内容都不碰。一条正文可以挂多个触发词（`aliases`，改内容只改一处）。另有 `/frag:build <名字>`（把正文插进输入框改完再发）、`/frag:list`（列表选中即插入）与输入 `&` 时的候选补全。配置改完不用 `/reload`（按 mtime 重读）。详见 `extensions/fragments/README.md`。
+**fragments** — 输入框里打 `&名字`，按回车换成 `~/.pi/agent/fragments.toml` 里那段正文（随便多少行，比 prompt 模板更适合一句话级别的插入件）。只认行首或空白后的 `&名字`：`&&`、URL 里的 `&`、代码块与反引号里的内容都不碰。一条正文可以挂多个触发词（`aliases`，改内容只改一处）。名字允许字母、数字、下划线、连字符与冒号。另有 `&名字(参数)` 形式的动态调用：带括号时交给注册的 provider 展开（可返回文本 + 图片，如 `&img(3)` 把第 3 张照片附到这条消息上）。还有 `/frag:build <名字>`（把正文插进输入框改完再发）、`/frag:list`（列表选中即插入）与输入 `&` 时的候选补全。配置改完不用 `/reload`（按 mtime 重读）。详见 `extensions/fragments/README.md`。
 
 **sandbox-permissions** — 沙箱权限三合一扩展（`guard` 防读 + `gate` 审批 + `allow` 升权，一个目录三个子模块）：
 - `guard`：敏感路径黑名单防护（恶意 skill 防护），初始化/reload 时读取 `extensions.toml` 的 `[sandbox-guard]`（`~/.ssh`、浏览器密码、钱包、auth.json、`.env` 等 glob 模式），拦截读写触碰黑名单路径——覆盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 `be-read`/`be-write`/`be-replace`/`be-insert`/`be-delete` 等直挂通道；同时把 subagent 的 `readonly` / `sandbox_dir` 边界补到写入类工具上（worker 只能写 `/tmp` 或派工指定的可写根，越界直接拒绝）
@@ -93,11 +93,11 @@ pi
 
 ### 手机照片网关（pi-photo）
 
-手机拍照直接发给 pi：局域网 HTTP 收图（唤起系统相机，前端压到长边 1600 再传），Unix socket 给 pi 侧提供独占监听锁，图片到达即注入当前会话。守护 `pi-photo`（systemd --user，与 hub 并列），上传地址由 `/photo:url` 给出（带口令，附终端二维码）。
+手机拍照传到主机，编成短号（1..99）；要用哪张就在输入框里写 `&img(3)`，展开时那张图直接附到这条消息上。照片不自动进会话，什么时候用哪张由你定。守护 `pi-photo`（systemd --user，与 hub 并列），上传地址由 `/photo:url` 给出（带口令，附终端二维码）。
 
-- 装 / 热更：`photo/install.sh`（`--reload` 热更、`--status` 看状态）。非公开地址，口令在 `~/.pi/agent/photo-state/token`
-- pi 侧：`/photo:wait` 抢锁进后台监听（状态栏显示已收张数）、`/photo:stop` 释放、`/photo:wait --force` 抢占用中的锁；心跳超 30 秒的假死占用会自动让位
-- 没人监听时上传的图落盘排队，等下一次 `/photo:wait` 一起投递；投递并确认后才从 `queue/` 移到 `archive/日期/`
+- 装 / 热更：`photo/install.sh`（`--reload` 热更、`--status` 看状态）。口令在 `~/.pi/agent/photo-state/token`
+- pi 侧：`/photo:url` 拿上传地址，`/photo:list` 看池子里有哪些；引用用 `&img(3)`，旧图直接写绝对路径 `&img(/abs/path.jpg)`
+- 编号池默认 99（`-pool` 可改）：取最小空号，池满了回收最久没被引用过的那张；被回收的图文件仍在 `archive/日期/` 下，所以旧路径永远能用
 - 默认监听 `0.0.0.0:8787`（`-addr` 可改）。口令只挡同一 wifi 里的随手访问，不是鉴权边界，别往公网放
 
 ### 沙箱（bash 内核隔离）
