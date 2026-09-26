@@ -6,12 +6,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { clearFragmentProviders, registerFragmentProvider } from "../../lib/fragment-providers.ts";
 import {
 	addFragmentToFile,
 	appendFragmentText,
+	checkFragmentName,
 	encodeTomlString,
 	expandFragments,
+	expandFragmentsAsync,
 	findFragment,
 	loadFragments,
 	parseFragments,
@@ -204,6 +208,174 @@ describe("expandFragments", () => {
 		const 关于我: Fragment = { name: "关于我", aliases: ["我"], text: "x" };
 		assert.equal(findFragment([关于我], "关于我")?.text, "x");
 		assert.equal(findFragment([关于我], "我")?.text, "x");
+	});
+});
+
+
+describe("动态调用 &名字(参数) 与 provider", () => {
+	/** 造一张假图：类型与真货一致，内容只用来比对顺序 */
+	const png = (tag: string): ImageContent => ({ type: "image", data: `data-${tag}`, mimeType: "image/png" });
+
+	beforeEach(() => clearFragmentProviders());
+	afterEach(() => clearFragmentProviders());
+
+	it("命中 provider：文本换成它给的正文，图按出现顺序拼起来", async () => {
+		registerFragmentProvider({
+			name: "img",
+			expand: (args) => (args === "3" ? { text: "（第 3 张照片）", images: [png("3")] } : undefined),
+		});
+		const result = await expandFragmentsAsync("看这 &img(3) 和 &img(1)", []);
+		assert.equal(result.text, "看这 （第 3 张照片） 和 &img(1)");
+		assert.deepEqual(result.expanded, ["img"]);
+		assert.deepEqual(result.unknown, ["img"]);
+		assert.deepEqual(result.images, [png("3")]);
+		assert.deepEqual(result.errors, []);
+	});
+
+	it("同一个名字多次出现：图按出现顺序拼，不同参数各展开一次", async () => {
+		const calls: string[] = [];
+		registerFragmentProvider({
+			name: "img",
+			expand: (args) => {
+				calls.push(args);
+				return { text: `[${args}]`, images: [png(args)] };
+			},
+		});
+		const result = await expandFragmentsAsync("&img(2) 然后 &img(1) 再 &img(2)", []);
+		assert.equal(result.text, "[2] 然后 [1] 再 [2]");
+		assert.deepEqual(
+			result.images.map((image) => image.data),
+			["data-2", "data-1", "data-2"],
+		);
+		assert.deepEqual(calls, ["2", "1"], "同一名字+同一参数只该问一次");
+	});
+
+	it("参数原样交给 provider：空格、冒号、中文都不动，只读到第一个 )", async () => {
+		const seen: string[] = [];
+		registerFragmentProvider({
+			name: "echo",
+			expand: (args) => {
+				seen.push(args);
+				return { text: `《${args}》` };
+			},
+		});
+		const result = await expandFragmentsAsync("&echo(hello world) &echo(a:b 中文)", []);
+		assert.equal(result.text, "《hello world》 《a:b 中文》");
+		assert.deepEqual(seen, ["hello world", "a:b 中文"]);
+	});
+
+	it("provider 返回 undefined：当未知名字处理，原文保留", async () => {
+		registerFragmentProvider({ name: "img", expand: () => undefined });
+		const result = await expandFragmentsAsync("&img(9)", []);
+		assert.equal(result.text, "&img(9)");
+		assert.deepEqual(result.unknown, ["img"]);
+		assert.deepEqual(result.expanded, []);
+		assert.deepEqual(result.images, []);
+	});
+
+	it("没注册同名 provider：带括号的调用也不会去查静态表，按未知处理", async () => {
+		const result = await expandFragmentsAsync("&单步计划(随便)", [单步]);
+		assert.equal(result.text, "&单步计划(随便)");
+		assert.deepEqual(result.unknown, ["单步计划"]);
+	});
+
+	it("不带括号的名字：静态表优先，静态没有才问 provider（参数给空串）", async () => {
+		const calls: string[] = [];
+		registerFragmentProvider({
+			name: "now",
+			expand: (args) => {
+				calls.push(args);
+				return { text: "现在" };
+			},
+		});
+		// 同名静态碎片在：provider 不该被叫起来
+		const both = await expandFragmentsAsync("&now &单步计划", [{ name: "now", text: "静态的" }, 单步]);
+		assert.equal(both.text, "静态的 对于这一步，只做调查、不要动手");
+		assert.deepEqual(calls, [], "静态表命中就不该打扰 provider");
+
+		const only = await expandFragmentsAsync("看看 &now", [单步]);
+		assert.equal(only.text, "看看 现在");
+		assert.deepEqual(calls, [""]);
+	});
+
+	it("括号没闭合：退回普通名字，绝不吞掉后面的内容", async () => {
+		registerFragmentProvider({ name: "img", expand: (args) => (args === "3" ? { text: "图三" } : undefined) });
+		const text = "先看 &img(3 还有后面的话";
+		const result = await expandFragmentsAsync(text, []);
+		assert.equal(result.text, text);
+		assert.deepEqual(result.unknown, ["img"]);
+
+		// 静态碎片那边同理：名字照样展开，括号与后面的内容原样留着
+		const staticCase = await expandFragmentsAsync("&单步计划(继续", [单步]);
+		assert.equal(staticCase.text, "对于这一步，只做调查、不要动手(继续");
+	});
+
+	it("provider 抛错：报一行错，那一个调用保留原文，别的照常展开", async () => {
+		registerFragmentProvider({
+			name: "boom",
+			expand: (args) => {
+				if (args === "bad") throw new Error("读不到那张图");
+				return { text: "好的" };
+			},
+		});
+		const result = await expandFragmentsAsync("&boom(bad) 和 &boom(ok)", []);
+		assert.equal(result.text, "&boom(bad) 和 好的");
+		assert.equal(result.errors.length, 1);
+		assert.match(result.errors[0] ?? "", /&boom\(bad\) 展开失败：读不到那张图/);
+		assert.deepEqual(result.expanded, ["boom"]);
+	});
+
+	it("异步 provider 也能等：await 之后才算完成", async () => {
+		registerFragmentProvider({
+			name: "slow",
+			async expand(args) {
+				await Promise.resolve();
+				return { text: `等到了 ${args}` };
+			},
+		});
+		const result = await expandFragmentsAsync("&slow(x)", []);
+		assert.equal(result.text, "等到了 x");
+	});
+
+	it("同步版不碰 provider：带括号的调用它一律不认识", async () => {
+		registerFragmentProvider({ name: "img", expand: () => ({ text: "图", images: [png("3")] }) });
+		const result = expandFragments("&img(3)", []);
+		assert.equal(result.text, "&img(3)");
+		assert.deepEqual(result.unknown, ["img"]);
+	});
+
+	it("静态展开逐字不变：没 provider 时异步版与同步版一字不差", async () => {
+		const 关于我: Fragment = { name: "关于我", aliases: ["core-prompt", "我"], text: "读 ~/disk/core-prompt/" };
+		const corpus = [
+			"",
+			"&单步计划\n先看看 &core-prompt",
+			"make && ls -la\na & b\ncurl 'http://x/?a=1&b=2'",
+			"```bash\n&单步计划\n```\n行内 `&单步计划` 也保留\n&单步计划 这里要展开",
+			"&没这个 和 &单步计划",
+			"&单步计划，然后再说",
+			"&关于我 &我 &core-prompt",
+			"&外层",
+		];
+		for (const text of corpus) {
+			const sync = expandFragments(text, [单步, core, 关于我]);
+			const async = await expandFragmentsAsync(text, [单步, core, 关于我]);
+			assert.equal(async.text, sync.text, `异步版改了 ${JSON.stringify(text)} 的文本`);
+			assert.deepEqual(async.expanded, sync.expanded);
+			assert.deepEqual(async.unknown, sync.unknown);
+			assert.deepEqual(async.images, []);
+			assert.deepEqual(async.errors, []);
+		}
+	});
+
+	it("名字带冒号：静态碎片照旧展开，也是 provider 能用的名字", async () => {
+		const 带冒号: Fragment = { name: "photo:2", text: "第二张照片" };
+		assert.equal(expandFragments("&photo:2 看看", [带冒号]).text, "第二张照片 看看");
+		assert.equal((await expandFragmentsAsync("&photo:2 看看", [带冒号])).text, "第二张照片 看看");
+		assert.equal(checkFragmentName("photo:2", []), undefined, "冒号名字应该能写进配置");
+
+		registerFragmentProvider({ name: "git:branch", expand: () => ({ text: "main" }) });
+		const dynamic = await expandFragmentsAsync("当前分支 &git:branch", [带冒号]);
+		assert.equal(dynamic.text, "当前分支 main");
 	});
 });
 
