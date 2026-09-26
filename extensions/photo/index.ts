@@ -1,4 +1,4 @@
-// extensions/photo/index.ts — 照片池：`&img(3)` 引用，/photo:list 看池子，/photo:url 拿上传地址
+// extensions/photo/index.ts — 照片池：`&img(3)` 引用，/photo:list 看池子，/photo:url 拿上传地址，/photo:open 用系统查看器看
 //
 // 照片不再推给会话。守护把落盘的图编成短号（1..99），要用哪张就在输入框里写哪张：
 //
@@ -15,9 +15,10 @@
 //   2. provider 里没有 ctx（展开发生在 input 事件里，手上只有参数），所以失败原因先攒在
 //      lastError 里，由 /photo:list 带出来。
 
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, extname, join } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -25,7 +26,7 @@ import {
 	type FragmentCallResult,
 	type FragmentProvider,
 } from "../../lib/fragment-providers.ts";
-import { getRef, listRefs, uploadUrl, useRef, type RefItem, type RefPool } from "../../lib/photo-refs.ts";
+import { getRef, listRefs, manageUrl, uploadUrl, useRef, type RefItem, type RefPool } from "../../lib/photo-refs.ts";
 
 export const IMG_PROVIDER_NAME = "img";
 
@@ -178,6 +179,163 @@ export function poolText(pool: RefPool): string {
 	return lines.join("\n");
 }
 
+// ── /photo:open：交给系统默认查看器 ──
+
+/**
+ * openWithSystemViewer 用到的子进程最小面（结构上 node:child_process 的 spawn 满足它）。
+ * 留这个缝只为测试：单测要验证「xdg-open 不在 PATH」这类分支，又不能真弹一个窗口。
+ */
+export interface ViewerProcess {
+	once(event: "spawn" | "error", listener: (...args: unknown[]) => void): unknown;
+	unref(): unknown;
+}
+
+export type ViewerSpawn = (bin: string, args: string[], options: { detached: true; stdio: "ignore" }) => ViewerProcess;
+
+/**
+ * 用系统默认程序打开一个路径：照片交给默认图片查看器，目录交给文件管理器
+ * （具体落到哪个程序由 xdg-open 按文件关联决定，本机装了 Gwenview）。
+ *
+ * 三条要点：
+ *   1. detached + unref：查看器是用户的窗口，不该跟着 pi 的生命周期走。pi 退出或扩展 reload
+ *      都不该把它带走，也不该让 pi 挂在那儿等它。
+ *   2. 只等 spawn 成功就返回。查看器要用户关窗才会退，退出码还可能非 0（拿它当成败，
+ *      就会把「看完关窗」误报成错误）；所以不听 exit / close，只认「进程起没起来」。
+ *   3. ENOENT 单独说。没装 xdg-utils 时不能静默失败，得给一句能照做的提示。
+ */
+export function openWithSystemViewer(path: string, spawnFn: ViewerSpawn = spawn as unknown as ViewerSpawn): Promise<void> {
+	return new Promise((resolve, reject) => {
+		let child: ViewerProcess;
+		try {
+			child = spawnFn("xdg-open", [path], { detached: true, stdio: "ignore" });
+		} catch (err) {
+			// spawn 自己同步抛错（参数非法之类）：按「没起来」算
+			reject(new Error(`起不了 xdg-open：${errorText(err)}`));
+			return;
+		}
+		// 监听紧跟着 spawn 挂上：ChildProcess 的 'error' 没有监听时是会直接抛穿进程的
+		child.once("error", (raw) => {
+			const err = raw as NodeJS.ErrnoException;
+			reject(
+				err.code === "ENOENT"
+					? new Error(`PATH 里没有 xdg-open：装一个 xdg-utils（KDE 桌面一般自带），或用文件管理器手动打开 ${path}`)
+					: new Error(`xdg-open 起不来（${path}）：${errorText(err)}`),
+			);
+		});
+		child.once("spawn", () => {
+			child.unref();
+			resolve();
+		});
+	});
+}
+
+/** 无参 /photo:open 打开的归档目录：守护按 YYYYMMDD 分子目录往这里放照片 */
+export function photoArchiveDir(): string {
+	return join(homedir(), ".pi", "agent", "photo-state", "archive");
+}
+
+/**
+ * 打开照片后带的一句。方向键能翻同目录这件事不是所有人都知道，而它决定了
+ * 「看照片」到底是一次只盯一张，还是能把同一批顺完，所以每次都提一句。
+ */
+const ARROW_KEY_HINT = "打开后可以用方向键翻同目录的其他照片";
+
+/** 参数被识别成哪种目标。失败提示要按种类给：编号指向的路径和用户手打的路由不是一回事 */
+type OpenKind = "ref" | "path" | "archive";
+
+export interface PhotoOpenDeps {
+	/** 测试注入：默认 openWithSystemViewer（真起 xdg-open） */
+	opener?: ((path: string) => Promise<void>) | undefined;
+	/** 测试注入：默认 photoArchiveDir() */
+	archiveDir?: string | undefined;
+}
+
+export interface PhotoOpenOutcome {
+	level: "info" | "error";
+	message: string;
+}
+
+/**
+ * `/photo:open` 的主体：认参数 → 确认目标在不在 → 交给注入的 opener。
+ *
+ * 不抛错、只回一句话：命令处理里能做的就一个 notify，抛出只会让 pi 弹一个更难看的栈。
+ * 所以「编号不存在」「文件不在」「xdg-open 不在」都是 error 级的正常结局。
+ */
+export async function openPhoto(args: string, deps: PhotoOpenDeps = {}): Promise<PhotoOpenOutcome> {
+	const opener = deps.opener ?? openWithSystemViewer;
+	// 前后可能带空格、也可能被人顺手加了引号（跟 &img 的解析对齐）
+	const raw = args.trim().replace(/^["']+/, "").replace(/["']+$/, "").trim();
+
+	let target: string;
+	let kind: OpenKind;
+	let subject: string;
+	if (raw === "") {
+		// 无参看整个归档：交给文件管理器开（不想用 pi 时也能直接翻磁盘上那堆目录）
+		target = deps.archiveDir ?? photoArchiveDir();
+		kind = "archive";
+		subject = "归档目录";
+	} else if (/^\d+$/.test(raw)) {
+		const n = Number(raw);
+		let item: RefItem | undefined;
+		try {
+			item = await getRef(n);
+		} catch (err) {
+			return { level: "error", message: `查照片编号 #${n} 失败：${errorText(err)}` };
+		}
+		if (!item) return { level: "error", message: `编号池里没有 #${n}（/photo:list 看现在有哪些）` };
+		target = item.path;
+		kind = "ref";
+		subject = `照片 #${n}`;
+	} else if (raw.startsWith("/")) {
+		target = raw;
+		kind = "path";
+		subject = basename(raw);
+	} else {
+		return { level: "error", message: `/photo:open 只认编号或绝对路径，不认「${raw}」` };
+	}
+
+	const missing = await missingText(target, kind);
+	if (missing !== undefined) return { level: "error", message: missing };
+
+	try {
+		await opener(target);
+	} catch (err) {
+		return { level: "error", message: `没能打开 ${target}：${errorText(err)}` };
+	}
+	const tail = kind === "archive" ? `目录里按日期分文件夹，点进任意一天打开一张，${ARROW_KEY_HINT}` : ARROW_KEY_HINT;
+	return { level: "info", message: `已交给系统默认查看器打开 ${subject}：${target}\n${tail}` };
+}
+
+/** 目标不在时报哪句话；在就返回 undefined */
+async function missingText(path: string, kind: OpenKind): Promise<string | undefined> {
+	try {
+		await stat(path);
+		return undefined;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") return `看不了 ${path}：${errorText(err)}`;
+		if (kind === "archive") return `归档目录还不存在（${path}）：/photo:url 拿上传地址，先传一张照片上来，守护会建目录`;
+		if (kind === "ref") return `这个编号指的文件不在了（${path}）：池子里还记着它，磁盘上已经没有`;
+		return `文件不在（${path}）`;
+	}
+}
+
+/**
+ * /photo:list 末尾的管理页入口。拿不到口令就返回 undefined：管理页只是列表的附加入口，
+ * 缺了它不该把「池子里有什么」这件正事一起带崩。
+ */
+export async function manageHintText(): Promise<string | undefined> {
+	let url: string;
+	try {
+		url = await manageUrl();
+	} catch {
+		return undefined;
+	}
+	// 口令就在地址里，而这里的目的就是把它交给用户去浏览器里打开：它该出现在命令输出里，
+	// 但不该被写进日志（调用方只管 notify，不过手打印）
+	return `管理页：${url}\n本机浏览器打开可以看缩略图与管理`;
+}
+
 // ── 终端二维码 ──
 
 /**
@@ -206,16 +364,21 @@ export function qrCodeText(text: string, timeoutMs = 2000): Promise<string | und
 export interface PhotoExtensionDeps {
 	/** 测试注入：默认 qrCodeText（会起 qrencode 子进程） */
 	qrCode?: (text: string) => Promise<string | undefined>;
+	/** 测试注入：默认 openWithSystemViewer（会起 xdg-open，弹一个真窗口） */
+	opener?: ((path: string) => Promise<void>) | undefined;
+	/** 测试注入：默认 photoArchiveDir() */
+	archiveDir?: string | undefined;
 }
 
 export default function photoExtension(pi: ExtensionAPI, deps: PhotoExtensionDeps = {}): void {
 	const qrCode = deps.qrCode ?? qrCodeText;
+	const openDeps: PhotoOpenDeps = { opener: deps.opener, archiveDir: deps.archiveDir };
 
 	// 注册（同名覆盖，reload 是正常路径）。纯内存动作，没有 I/O、没有定时器。
 	registerFragmentProvider(imgProvider);
 
 	pi.registerCommand("photo:list", {
-		description: "列出照片编号池（输入框里 &img(编号) 引用）",
+		description: "列出照片编号池（输入框里 &img(编号) 引用）；末尾附本机管理页地址",
 		handler: async (_args, ctx) => {
 			let pool: RefPool;
 			try {
@@ -224,7 +387,18 @@ export default function photoExtension(pi: ExtensionAPI, deps: PhotoExtensionDep
 				ctx.ui.notify(`拿不到照片池：${errorText(err)}`, "error");
 				return;
 			}
-			ctx.ui.notify(poolText(pool), "info");
+			const blocks = [poolText(pool)];
+			const manage = await manageHintText();
+			if (manage !== undefined) blocks.push(manage);
+			ctx.ui.notify(blocks.join("\n\n"), "info");
+		},
+	});
+
+	pi.registerCommand("photo:open", {
+		description: "用系统默认查看器打开照片：/photo:open 3、/photo:open /绝对/路径.jpg；无参开归档目录",
+		handler: async (args, ctx) => {
+			const outcome = await openPhoto(args, openDeps);
+			ctx.ui.notify(outcome.message, outcome.level);
 		},
 	});
 
