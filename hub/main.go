@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
@@ -39,6 +40,9 @@ func main() {
 
 	h := newHub(*statePath, *askTTL, *pairTTL, nil)
 	s := newServer(h, *socketPath)
+	// 存在性信号从进程起来就开始盘：适配器可能刚连上就问 idle，
+	// 等到第一条审批来了才开始读设备的话，第一轮压不压卡就只能猜。
+	go s.input.Run(context.Background(), inputDevicesPath, inputRescanEvery)
 	if bin := findGUIBinary(); bin != "" {
 		s.launchGateGUI(bin)
 		log.Printf("gate gui: %s", bin)

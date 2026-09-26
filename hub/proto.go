@@ -31,6 +31,8 @@ const (
 	typePairsOK      = "pairs-ok"
 	typeOpenAllow    = "open-allow"
 	typeOpenAllowOK  = "open-allow-ok"
+	typePresence     = "presence"
+	typePresenceOK   = "presence-ok"
 	typeAbort        = "abort"
 	typeError        = "error"
 )
@@ -82,7 +84,12 @@ type Envelope struct {
 	Message     string     `json:"message,omitempty"`
 	// Adapters 只在 ask-ok 里回填，让 pi 知道此刻有几个适配器接单：
 	// 一个都没有就得立刻回退本地 TUI，等适配器稍后自己连上就晚了。
-	Adapters int        `json:"adapters,omitempty"`
+	Adapters int `json:"adapters,omitempty"`
+	// IdleMs / HasInput 只在 presence-ok 里回填。两个都用指针：适配器要的是
+	// 「字段明确存在」，idleMs=0 或 hasInput=false 都是有效取值，
+	// 用 omitempty 的值类型会让它们从线上消失，对端只能拿到 undefined。
+	IdleMs   *int64     `json:"idleMs,omitempty"`
+	HasInput *bool      `json:"hasInput,omitempty"`
 	Items    []ListItem `json:"items,omitempty"`
 	Pairs    []PairItem `json:"pairs,omitempty"`
 	// NoLocalGUI 由发起方声明：这条 ask 不上本机闸门窗。

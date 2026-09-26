@@ -30,6 +30,9 @@ pi 的 `ask_question` 也扇出到飞书：一题一张卡，答完一题算一�
 
 - 压着的卡收到 hub 的 `settled` 广播（有人答了 / 超时 / abort）就撤单，卡干脆不发
 - 撤不到就是已经发出去了，照常走改卡那条路（`im messages patch`）
+- 到点后再问 hub 一次「用户还在不在电脑前」（`presence`）：最近 `-presence-window`（默认 `5m`）内有键鼠按键就先不推，按 `-presence-retry`（默认 `1m`）再看一次，直到人离开、或这条 ask 过期。用户一直坐在机器前的话，这类卡可能一张都不发，这是要的行为；`-presence-window 0` 关掉这道闸门
+- 查询失败、或 hub 读不到输入设备（`hasInput=false`）时一律照常推：查不到不能变成把卡压死
+- `urgent` 的 ask 走 `pushNow`，不过这道闸门
 - 到点时已经过期的直接跳过：hub 的 expired 结算 5 秒一跳，推出去只是张按不动的死卡
 - `/list` 是用户主动拉，不延迟
 - 延迟期间适配器重启会丢掉未到点的卡，那条 ask 就不会再推了（重启后 hub 不会重发 ask 事件）

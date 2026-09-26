@@ -42,6 +42,9 @@ type Server struct {
 	launchGUI      func(ask *Ask)
 	killGUI        func(requestID string)
 	launchAllowGUI func(pairs []PairItem, asks []ListItem)
+	// input 是存在性信号的状态。newServer 先给一个空实例，让没有输入设备的环境
+	// （测试、非 Linux）照样能应答 presence；真读设备的循环由 main 起。
+	input *inputTracker
 
 	mu      sync.Mutex
 	clients map[*client]struct{}
@@ -54,6 +57,7 @@ func newServer(hub *Hub, socketPath string, opts ...func(*Server)) *Server {
 		socketPath: socketPath,
 		ourUID:     uint32(os.Getuid()),
 		clients:    map[*client]struct{}{},
+		input:      newInputTracker(nil),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -306,6 +310,20 @@ func (s *Server) dispatch(c *client, env Envelope) error {
 		}
 		go s.launchAllowGUI(s.hub.ListPairs(), s.hub.List())
 		return c.send(Envelope{Type: typeOpenAllowOK, ID: env.ID})
+	case typePresence:
+		// 只有适配器问这个：它决定审批卡是立刻推还是先攒着。
+		// 本机闸门窗不需要，它已经在用户眼前了。
+		if c.role != roleAdapter {
+			return errUnknownType
+		}
+		idle, hasInput := s.input.Idle()
+		idleMs := idle.Milliseconds()
+		return c.send(Envelope{
+			Type:     typePresenceOK,
+			ID:       env.ID,
+			IdleMs:   &idleMs,
+			HasInput: &hasInput,
+		})
 	default:
 		return errUnknownType
 	}

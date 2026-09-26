@@ -27,6 +27,10 @@ type adapter struct {
 	mu    sync.Mutex
 	chats map[string]string // userID -> chatID
 	cards map[string]askTarget
+	// socketPath 只给 presence 查询用：那条路要自己另开短连接（见 presence.go）
+	socketPath     string
+	presenceWindow time.Duration
+	presenceRetry  time.Duration
 	// questions 是一次提问的现场（一题一张卡，集齐答案才提交）。
 	// 与 cards 分开存：两者的生命周期不同，混在一起会让结算路径互相牵连
 	questions map[string]*questionState
@@ -42,6 +46,12 @@ func main() {
 	// 决策卡（审批 / 提问）延迟多久再推。用户常就在屏幕前，本机闸门窗或本地 TUI
 	// 已经把决策拿走了；压这两分钟能省掉一次打扰和一次飞书 API 调用。0 = 立刻推
 	cardDelay := flag.Duration("card-delay", 2*time.Minute, "决策卡延迟多久再推给 IM；0 = 立刻")
+	// 到点后还要问一句「用户还在电脑前吗」：在就先不推，等 presence-retry 再问。
+	// 这一步只省打扰，不省事——查不到照样推。0 = 关掉这次询问
+	presenceWindow := flag.Duration("presence-window", 5*time.Minute, "本机最近这么久内有键鼠活动就不推卡；0 = 不查在场状态")
+	// 人在电脑前时的重试间隔。注意：用户一直坐着的话，这条 ask 会一直被延到
+	// 过期（pushCards 会跳过过期卡），这是要的行为，不是漏推
+	presenceRetry := flag.Duration("presence-retry", time.Minute, "因本机有人而延后时的重试间隔")
 	flag.Parse()
 
 	bin, err := exec.LookPath(*larkBin)
@@ -62,12 +72,15 @@ func main() {
 	defer hub.close()
 
 	a := &adapter{
-		hub:       hub,
-		lark:      cli,
-		chats:     map[string]string{},
-		cards:     map[string]askTarget{},
-		questions: map[string]*questionState{},
-		delay:     newCardQueue(*cardDelay),
+		hub:            hub,
+		lark:           cli,
+		chats:          map[string]string{},
+		cards:          map[string]askTarget{},
+		questions:      map[string]*questionState{},
+		delay:          newCardQueue(*cardDelay),
+		socketPath:     *socketPath,
+		presenceWindow: *presenceWindow,
+		presenceRetry:  *presenceRetry,
 	}
 	hub.onEvent = a.onAskEvent
 	hub.onSettle = a.onSettled
@@ -75,7 +88,8 @@ func main() {
 	go a.consume("im.message.receive_v1", a.onMessage)
 	go a.consume("card.action.trigger", a.onCard)
 
-	log.Printf("feishu adapter ready cli=%s hub=%s card-delay=%s", bin, *socketPath, *cardDelay)
+	log.Printf("feishu adapter ready cli=%s hub=%s card-delay=%s presence-window=%s presence-retry=%s",
+		bin, *socketPath, *cardDelay, *presenceWindow, *presenceRetry)
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -119,8 +133,11 @@ func (a *adapter) consume(key string, handle func(map[string]any)) {
 // 拿走了，这张卡既多余又费一次飞书 API。到点前结算的话，settled 广播会来撤单；
 // 撤不到（卡已经发了）也没关系，照常走改卡那条路。
 //
+// 到点时再加一道在场闸门（holdWhilePresent）：人还在机器前就再压一轮，问到他
+// 起身或这条 ask 过期为止。
+//
 // 例外：发起方在 payload 里标了 urgent（本地没人能答，或这件事要人马上到场），
-// 就不压这一段，直接推。
+// 就不压这一段，直接推——那条路上没有「人在就先不推」的余地。
 func (a *adapter) onAskEvent(env envelope) {
 	if env.Event != "ask" || env.RequestID == "" {
 		return
@@ -129,7 +146,9 @@ func (a *adapter) onAskEvent(env envelope) {
 		a.delay.pushNow(env.RequestID, func() { a.pushCards(env) })
 		return
 	}
-	a.delay.push(env.RequestID, func() { a.pushCards(env) })
+	// -card-delay 0 是用户明说要「立刻推」，那条路上不再拿在场状态反过来压：
+	// schedule 看到 delay <= 0 就直接 send，hold 不生效
+	a.delay.pushGated(env.RequestID, a.holdWhilePresent(env.RequestID), a.presenceRetry, func() { a.pushCards(env) })
 }
 
 // pushCards 到点后真正推卡。目标名单以 hub 下发的授权名单为准，
