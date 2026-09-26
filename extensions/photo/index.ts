@@ -1,330 +1,253 @@
-// extensions/photo/index.ts — 手机拍照，直接发进当前 pi 会话
+// extensions/photo/index.ts — 照片池：`&img(3)` 引用，/photo:list 看池子，/photo:url 拿上传地址
 //
-//   /photo:wait [--force]  向本机 photo 守护抢独占锁，进入后台监听态（命令立刻返回）
-//   /photo:stop            释放锁、退出监听
-//   /photo:url             拿手机上传地址（顺带画一个终端二维码）
+// 照片不再推给会话。守护把落盘的图编成短号（1..99），要用哪张就在输入框里写哪张：
 //
-// 分工：HTTP（手机上传）与落盘在 photo 守护那边；pi 这边只做三件事——
-// 抢锁、把 arrived 的图作为用户消息注入当前会话、注入成功再 ack。
+//   &img(3)              引用编号池里的 3 号
+//   &img(/abs/path.jpg)  直接引用一个绝对路径（不走池子，临时图/别处的图都能用）
+//
+// 展开时把图读成 base64 附到这条消息上，正文里只留一个 `[照片 #3]` 当锚点。
+// 跟 `&` 体系的接线在 lib/fragment-providers.ts：这里只注册一个 name="img" 的 provider，
+// fragments 扫到 `&img(…)` 就把括号里的原文交给它。
 //
 // 两条硬约束：
-//   1. 长连接与心跳定时器只在命令执行时开。扩展 factory 里不建 socket、不起定时器
-//      （reload / 启动阶段不该有网络副作用）。
-//   2. 图片走 pi.sendUserMessage([...], { deliverAs: "followUp" }) 注入，不写进系统提示词
-//      或工具描述——那些位置一动，prompt 缓存全废。
-//
-// 没 ack 的图守护会留着，下一轮监听还能收到；所以「读文件失败 / 注入失败」的那张
-// 绝不 ack，只报一行错，不影响同一批里的其它张。
+//   1. factory 里不碰网络、不起定时器——注册 provider 是纯内存操作，reload 不该有副作用。
+//      真正的 I/O 只发生在 expand 那一刻。
+//   2. provider 里没有 ctx（展开发生在 input 事件里，手上只有参数），所以失败原因先攒在
+//      lastError 里，由 /photo:list 带出来。
 
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { basename, extname } from "node:path";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	connectPhoto,
-	photoSocketPath,
-	qrCodeText,
-	type PhotoConnectOptions,
-	type PhotoConnection,
-	type PhotoItem,
-	type PhotoPreemptReason,
-} from "../../lib/photo-channel.ts";
+	registerFragmentProvider,
+	type FragmentCallResult,
+	type FragmentProvider,
+} from "../../lib/fragment-providers.ts";
+import { getRef, listRefs, uploadUrl, useRef, type RefItem, type RefPool } from "../../lib/photo-refs.ts";
 
-/** 状态栏用的 key。stop / 掉线 / preempted 都要清掉它 */
-const STATUS_KEY = "photo";
-/** 心跳间隔。守护超过 30 秒没收到 ping 就判这个监听者假死，10 秒给三次余量 */
-const PING_MS = 10_000;
+export const IMG_PROVIDER_NAME = "img";
 
-interface Listener {
-	conn: PhotoConnection;
-	sessionId: string;
-	/** 会话名，给守护记 holder 用（抢锁失败时对方能看出是谁占着） */
-	name: string;
-	/** 已注入当前会话的张数（失败的不算，状态栏显示的就是这个） */
-	received: number;
-	/** 心跳定时器。抢到锁（attach-ok）之后才起：没拿到锁的连接不该替别人续命 */
-	timer?: NodeJS.Timeout;
+/** /photo:list 一次最多列这么多行：池子满了（99 张）时通知框装不下 */
+const MAX_LIST_ROWS = 20;
+
+/**
+ * 最近一次 &img 展开没成的原因。
+ * provider 手上没有 UI 句柄，提示只能先存这儿；用户看不出「为什么 &img(3) 没展开」时，
+ * /photo:list 会把这一行带出来。成功一次就清掉。
+ */
+let lastError: string | undefined;
+
+/** 测试与命令用：读最近一次展开失败的原因 */
+export function lastImgError(): string | undefined {
+	return lastError;
+}
+
+/** 测试用：清掉攒下的失败原因 */
+export function clearImgError(): void {
+	lastError = undefined;
+}
+
+/** 按扩展名判 mime。认不出的类型直接不展开：mime 塞错模型就看不到图 */
+const MIME_BY_EXT: Record<string, string> = {
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png": "image/png",
+	".webp": "image/webp",
+};
+
+export function imageMimeOf(path: string): string | undefined {
+	return MIME_BY_EXT[extname(path).toLowerCase()];
+}
+
+function note(message: string): void {
+	lastError = message;
+}
+
+/** 读一张图并包成展开结果；认不出类型或读不到都返回 undefined（原因进 lastError） */
+async function imagePartOf(path: string, label: string): Promise<FragmentCallResult | undefined> {
+	const mime = imageMimeOf(path);
+	if (!mime) {
+		note(`认不出 ${basename(path)} 的图片类型（只支持 jpg / jpeg / png / webp）`);
+		return undefined;
+	}
+	let data: Buffer;
+	try {
+		data = await readFile(path);
+	} catch (err) {
+		// 路径写进消息是给用户看的（自己引的照片，认得出来）；图片内容不进任何日志
+		note(`读不到照片文件 ${path}：${errorText(err)}`);
+		return undefined;
+	}
+	const image: ImageContent = { type: "image", data: data.toString("base64"), mimeType: mime };
+	return { text: label, images: [image] };
+}
+
+/**
+ * `&img(…)` 的 provider。
+ *
+ * 认三种形态：纯数字（查池子）、以 / 开头的绝对路径（直读）、其余不认（返回 undefined，
+ * 交给 fragments 按未知引用处理，原文留在文本里，不会被吞掉）。
+ */
+export const imgProvider: FragmentProvider = {
+	name: IMG_PROVIDER_NAME,
+	async expand(args: string): Promise<FragmentCallResult | undefined> {
+		// 括号里前后可能带空格、也可能被人顺手加了引号
+		const raw = args.trim().replace(/^["']+/, "").replace(/["']+$/, "").trim();
+		if (raw === "") {
+			note("&img 要带参数：&img(3) 引用编号，或 &img(/绝对/路径.jpg) 直接引用文件");
+			return undefined;
+		}
+
+		if (/^\d+$/.test(raw)) {
+			const n = Number(raw);
+			let item: RefItem | undefined;
+			try {
+				item = await getRef(n);
+			} catch (err) {
+				note(`查照片编号 #${n} 失败：${errorText(err)}`);
+				return undefined;
+			}
+			if (!item) {
+				note(`编号池里没有 #${n}（/photo:list 看现在有哪些）`);
+				return undefined;
+			}
+			const part = await imagePartOf(item.path, `[照片 #${n}]`);
+			if (!part) return undefined;
+			// 记一笔「这张用过了」给守护做回收参考。不 await：回执发不出去不该影响这次展开
+			useRef(n);
+			lastError = undefined;
+			return part;
+		}
+
+		if (raw.startsWith("/")) {
+			const part = await imagePartOf(raw, `[照片 ${basename(raw)}]`);
+			if (part) lastError = undefined;
+			return part;
+		}
+
+		note(`&img(…) 只认编号或绝对路径，不认「${raw}」`);
+		return undefined;
+	},
+};
+
+// ── /photo:list 的排版 ──
+
+/** 字节数给人看的写法；守护没给就留一个占位 */
+export function formatBytes(bytes?: number): string {
+	if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "大小未知";
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 时间戳：能解析就按本地时间显示到分钟，解析不了（守护换了格式）原样带出 */
+export function formatStamp(iso?: string): string {
+	if (!iso) return "";
+	const at = new Date(iso);
+	if (Number.isNaN(at.getTime())) return iso;
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+function refLine(item: RefItem): string {
+	const used = item.lastUsed ? `用过 ${formatStamp(item.lastUsed)}` : item.ts ? `拍于 ${formatStamp(item.ts)}` : "";
+	return [`#${item.ref}`, basename(item.path), formatBytes(item.bytes), used].filter((part) => part !== "").join("  ");
+}
+
+/** 池子的通知正文。空池、超长、上次展开失败都在这里收成一段话 */
+export function poolText(pool: RefPool): string {
+	const items = pool.items;
+	const lines: string[] = [];
+	if (items.length === 0) {
+		lines.push("池子还是空的，/photo:url 拿上传地址");
+	} else {
+		const size = pool.pool !== items.length ? `（守护报池 ${pool.pool}）` : "";
+		lines.push(`照片池：${items.length} 张${size}。在输入框里写 &img(编号) 就能引用`);
+		lines.push("");
+		for (const item of items.slice(0, MAX_LIST_ROWS)) lines.push(refLine(item));
+		if (items.length > MAX_LIST_ROWS) {
+			lines.push(`……还有 ${items.length - MAX_LIST_ROWS} 张没列（一共 ${items.length} 张）`);
+		}
+	}
+	if (lastError !== undefined) {
+		lines.push("");
+		lines.push(`上次 &img 没展开成：${lastError}`);
+	}
+	return lines.join("\n");
+}
+
+// ── 终端二维码 ──
+
+/**
+ * 用本机 qrencode 画一个终端二维码。
+ * 画不出来返回 undefined：二维码只是「省得手打 URL」的便利，没有它上传地址照样能用。
+ * token 在 URL 里，只在 argv 里过一趟，不写任何日志。
+ */
+export function qrCodeText(text: string, timeoutMs = 2000): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		execFile(
+			"qrencode",
+			["-t", "ANSIUTF8", "-o", "-", text],
+			{ timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+			(err, stdout) => {
+				if (err) {
+					resolve(undefined);
+					return;
+				}
+				const qr = stdout.replace(/\s+$/, "");
+				resolve(qr === "" ? undefined : qr);
+			},
+		);
+	});
 }
 
 export interface PhotoExtensionDeps {
-	/** 测试注入：默认 lib/photo-channel 的 connectPhoto */
-	connect?: (opts: PhotoConnectOptions) => Promise<PhotoConnection>;
-	/** 测试注入：默认 photoSocketPath() */
-	socketPath?: () => string;
-	/** 测试注入：默认 qrCodeText */
+	/** 测试注入：默认 qrCodeText（会起 qrencode 子进程） */
 	qrCode?: (text: string) => Promise<string | undefined>;
-	/** 心跳间隔（毫秒）。生产固定 10 秒，单测调小以免等真实时间 */
-	pingMs?: number;
 }
 
 export default function photoExtension(pi: ExtensionAPI, deps: PhotoExtensionDeps = {}): void {
-	const connect = deps.connect ?? connectPhoto;
-	const socketPath = deps.socketPath ?? photoSocketPath;
 	const qrCode = deps.qrCode ?? qrCodeText;
-	const pingMs = deps.pingMs ?? PING_MS;
 
-	/** 当前的监听态。undefined = 没在监听 */
-	let listener: Listener | undefined;
-	/**
-	 * 最近一次拿到的 ctx。推送（arrived / finish / preempted）到达时手上没有 ctx，
-	 * 状态栏与通知只能借最近这次。会话换了之后它可能已经过期，所以一律 try/catch：
-	 * 提示是锦上添花，注入图片才是本职。
-	 */
-	let lastCtx: ExtensionContext | undefined;
+	// 注册（同名覆盖，reload 是正常路径）。纯内存动作，没有 I/O、没有定时器。
+	registerFragmentProvider(imgProvider);
 
-	const setStatus = (text: string | undefined): void => {
-		try {
-			if (!lastCtx?.hasUI) return;
-			lastCtx.ui.setStatus(STATUS_KEY, text);
-		} catch {
-			// 没有 UI（rpc / print）或 ctx 已过期：状态栏本来就不存在，跳过
-		}
-	};
-
-	const notify = (message: string, level: "info" | "warning" | "error" = "info"): void => {
-		try {
-			lastCtx?.ui.notify(message, level);
-		} catch {
-			// 同上：提示失败不能影响收图
-		}
-	};
-
-	const statusText = (received: number): string => `📷 监听中 · 已收 ${received} 张`;
-
-	/**
-	 * 退出监听态：停心跳、按需 detach、断连接、清状态栏。
-	 * 幂等——state 不是当前 listener 时只收自己的尾巴，不清别人刚立起来的状态。
-	 */
-	async function teardown(state: Listener, opts: { detach: boolean }): Promise<void> {
-		if (listener === state) {
-			listener = undefined;
-			setStatus(undefined);
-		}
-		if (state.timer) clearInterval(state.timer);
-		if (opts.detach && !state.conn.closed) {
-			try {
-				await state.conn.detach();
-			} catch {
-				// 守护那边可能已经先把锁收了：detach 失败不影响本地退出监听
-			}
-		}
-		state.conn.close();
-	}
-
-	/** 逐张读文件 → 注入会话 → 收齐成功的 id 再一次性 ack */
-	async function injectItems(state: Listener, items: PhotoItem[]): Promise<void> {
-		const injected: string[] = [];
-		for (const item of items) {
-			try {
-				const data = await readFile(item.path);
-				await Promise.resolve(
-					pi.sendUserMessage(
-						[
-							{ type: "text", text: "（手机发来的照片）" },
-							{ type: "image", data: data.toString("base64"), mimeType: mimeOf(item) },
-						],
-						{ deliverAs: "followUp" },
-					),
-				);
-				injected.push(item.id);
-				state.received += 1;
-			} catch (err) {
-				// 这张不 ack：守护留着它，/photo:wait 重新连上还能推过来
-				notify(`照片注入失败（${item.path}）：${errorText(err)}；这张没回执，守护会留着`, "error");
-			}
-		}
-		if (injected.length === 0) return;
-		state.conn.ack(injected);
-		setStatus(statusText(state.received));
-		notify(`收到 ${injected.length} 张照片，已排入当前会话（本轮结束后处理）`, "info");
-	}
-
-	const preemptText = (reason: PhotoPreemptReason): string =>
-		reason === "forced"
-			? "照片锁被别的会话强制抢走了"
-			: reason === "stale"
-				? "照片锁被收回（心跳超时，可能机器休眠过）"
-				: `照片锁被收回（${reason}）`;
-
-	/** 建立一条连接的推送回调。state 是闭包变量：attach 之前就挂好，图不会掉缝里 */
-	function eventsFor(state: () => Listener | undefined): PhotoConnectOptions["events"] {
-		return {
-			onArrived: items => {
-				const current = state();
-				if (current) void injectItems(current, items);
-			},
-			onFinish: info => {
-				if (!state()) return;
-				notify(`手机端已结束，本轮共收 ${info.count} 张；锁还在，要退出用 /photo:stop`, "info");
-			},
-			onPreempted: reason => {
-				const current = state();
-				if (!current) return;
-				void teardown(current, { detach: false }).then(() => {
-					notify(`${preemptText(reason)}，已退出监听；要接着收就再 /photo:wait`, "warning");
-				});
-			},
-			onError: message => notify(`photo 守护报错：${message}`, "error"),
-			onClose: reason => {
-				const current = state();
-				if (!current) return;
-				void teardown(current, { detach: false }).then(() => {
-					// 不自动重连：守护不在时重连只会刷屏，下一次 /photo:wait 重连就行
-					const detail = reason ? `（${reason}）` : "";
-					notify(`photo 连接断了${detail}，已退出监听；要继续收就 /photo:wait`, "warning");
-				});
-			},
-		};
-	}
-
-	async function beginWait(ctx: ExtensionCommandContext, force: boolean): Promise<void> {
-		const sessionId = sessionIdOf(ctx);
-		const name = sessionNameOf(pi);
-		const state: { current?: Listener } = {};
-		const conn = await connect({
-			socketPath: socketPath(),
-			events: eventsFor(() => state.current),
-		});
-
-		// 先把状态立起来再 attach：守护回 attach-ok 的同一块数据里可能紧跟一批 arrived，
-		// 等 await 返回再挂状态的话，那批图就掉在缝里了。
-		const pendingListener: Listener = { conn, sessionId, name, received: 0 };
-		state.current = pendingListener;
-		listener = pendingListener;
-
-		let result: Awaited<ReturnType<PhotoConnection["attach"]>>;
-		try {
-			result = await conn.attach(sessionId, name, { force });
-		} catch (err) {
-			await teardown(pendingListener, { detach: false });
-			notify(`photo 抢锁失败：${errorText(err)}`, "error");
-			return;
-		}
-		if (listener !== pendingListener) {
-			// 抢锁途中被 stop / 掉线收走了：这条 attach 的结果已经没有意义
-			await teardown(pendingListener, { detach: true });
-			return;
-		}
-		if (!result.ok) {
-			await teardown(pendingListener, { detach: false });
-			notify(`${busyText(result.holder)}；要抢用 /photo:wait --force`, "warning");
-			return;
-		}
-
-		// 抢到锁才开始 ping：守护靠心跳判活，没拿到锁的连接不该替真正的持有者续命
-		pendingListener.timer = setInterval(() => conn.ping(), pingMs);
-		pendingListener.timer.unref?.();
-		setStatus(statusText(0));
-		const queued = result.queued > 0 ? `；守护那边还有 ${result.queued} 张排队，会马上推过来` : "";
-		notify(`照片监听已就绪：手机打开 /photo:url 给的地址拍照即可${queued}`, "info");
-	}
-
-	/** url 消息不需要监听态：没在监听就用一条短连接问一次，问完就关 */
-	async function fetchUrl(): Promise<string> {
-		if (listener) return listener.conn.url();
-		const conn = await connect({ socketPath: socketPath() });
-		try {
-			return await conn.url();
-		} finally {
-			conn.close();
-		}
-	}
-
-	pi.on("session_start", (_event, ctx) => {
-		lastCtx = ctx;
-	});
-
-	pi.on("session_shutdown", async () => {
-		// 幂等：没在监听就是空操作；重复触发也不会发第二次 detach
-		const current = listener;
-		if (current) await teardown(current, { detach: true });
-	});
-
-	pi.registerCommand("photo:wait", {
-		description: "向本机 photo 守护抢锁并进入后台监听态；手机发来的照片作为用户消息注入本会话（--force 抢占）",
-		handler: async (args, ctx) => {
-			lastCtx = ctx;
-			const force = /(^|\s)--force(\s|$)/.test(args ?? "");
-			if (listener) {
-				notify(`已经在监听中（已收 ${listener.received} 张）；要换会话先 /photo:stop`, "info");
-				return;
-			}
-			try {
-				await beginWait(ctx, force);
-			} catch (err) {
-				notify(`连不上 photo 守护（${socketPath()}）：${errorText(err)}。先确认守护在跑`, "error");
-			}
-		},
-	});
-
-	pi.registerCommand("photo:stop", {
-		description: "释放照片锁、退出监听态",
+	pi.registerCommand("photo:list", {
+		description: "列出照片编号池（输入框里 &img(编号) 引用）",
 		handler: async (_args, ctx) => {
-			lastCtx = ctx;
-			const current = listener;
-			if (!current) {
-				notify("当前没有在监听照片", "info");
+			let pool: RefPool;
+			try {
+				pool = await listRefs();
+			} catch (err) {
+				ctx.ui.notify(`拿不到照片池：${errorText(err)}`, "error");
 				return;
 			}
-			await teardown(current, { detach: true });
-			notify(`已停止监听照片，本次共收 ${current.received} 张`, "info");
+			ctx.ui.notify(poolText(pool), "info");
 		},
 	});
 
 	pi.registerCommand("photo:url", {
-		description: "显示手机上传地址（附终端二维码）",
+		description: "显示手机上传地址（附终端二维码）；拍完的照片进池子，用 &img(编号) 取",
 		handler: async (_args, ctx) => {
-			lastCtx = ctx;
 			let url: string;
 			try {
-				url = await fetchUrl();
+				url = await uploadUrl();
 			} catch (err) {
-				notify(`拿不到手机上传地址：${errorText(err)}`, "error");
+				ctx.ui.notify(`拿不到上传地址：${errorText(err)}`, "error");
 				return;
 			}
-			// 二维码是便利，不是功能本身：qrencode 不在 / 超时就不画，URL 照给
-			const qr = await qrCode(url);
 			const head = `手机上传地址（手机与电脑在同一局域网，浏览器打开）：\n${url}`;
-			notify(qr ? `${head}\n\n${qr}` : head, "info");
+			const qr = await qrCode(url);
+			ctx.ui.notify(qr ? `${head}\n\n${qr}` : head, "info");
 		},
 	});
 }
 
-/** 会话 id：拿不到就给空串，守护那边至少能看出是个没名字的会话 */
-function sessionIdOf(ctx: ExtensionContext): string {
-	try {
-		return ctx.sessionManager?.getSessionId?.() ?? "";
-	} catch {
-		return "";
-	}
-}
-
-function sessionNameOf(pi: ExtensionAPI): string {
-	try {
-		return pi.getSessionName() ?? "";
-	} catch {
-		return "";
-	}
-}
-
-function busyText(holder?: { sessionId?: string; name?: string; since?: string }): string {
-	if (!holder) return "照片锁被占用（守护没说是谁）";
-	const who = holder.name?.trim() || "（无名会话）";
-	const sid = holder.sessionId ? ` ${holder.sessionId}` : "";
-	const since = holder.since ? ` 自 ${holder.since} 起` : "";
-	return `照片锁被占用：${who}${sid}${since}`;
-}
-
-/** 守护给的 mime 为空时按扩展名兜底：image/* 塞错 mime 会让模型看不到图 */
-function mimeOf(item: PhotoItem): string {
-	const given = item.mime?.trim();
-	if (given) return given;
-	const ext = basename(item.path).toLowerCase();
-	if (ext.endsWith(".png")) return "image/png";
-	if (ext.endsWith(".webp")) return "image/webp";
-	if (ext.endsWith(".gif")) return "image/gif";
-	return "image/jpeg";
-}
-
 function errorText(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
+	if (!(err instanceof Error)) return String(err);
+	const cause = (err as { cause?: unknown }).cause;
+	const code = cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined;
+	return code ? `${err.message}（${code}）` : err.message;
 }
