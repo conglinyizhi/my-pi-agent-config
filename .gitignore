@@ -9,7 +9,7 @@ node_modules/
 mcp-cache.json
 # 提督名字（本机私有，不入库；重新部署时从 APPEND_SYSTEM.md.example 复制后全文替换占位符）
 APPEND_SYSTEM.md
-# 输入框 &碎片 的正文（本机私有，写得很长也不进库）
+# 输入框 &碎片 的正文（本机私有，写得很长也不进库）；模板见 fragments.toml.example
 fragments.toml
 docs/superpowers/
 .worktrees/
