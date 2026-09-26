@@ -40,6 +40,7 @@
 <div id="shots"></div>
 <h2>最近的编号</h2>
 <div id="refs">…</div>
+<p class="hint">看全部照片、删图的管理页只在主机本机打开（回环地址），手机上的这一页只用来上传。</p>
 <script>
 const K = new URLSearchParams(location.search).get("k") || "";
 const api = path => path + "?k=" + encodeURIComponent(K);
