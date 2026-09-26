@@ -1,6 +1,6 @@
 ---
 name: which-pi-docs
-description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发规范（重点是不要破坏 KV 缓存命中）。创建或修改 pi 扩展/插件前必读本技能。
+description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发规范（扩展文件布局与加载范围、不要破坏 KV 缓存命中）。创建或修改 pi 扩展/插件前必读本技能。
 ---
 
 # Pi 文档参考
@@ -39,6 +39,46 @@ description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发�
 ## 非官方插件
 
 - MCP 插件:https://github.com/nicobailon/pi-mcp-adapter/ 仓库下可参考的内容：`README.md`、`OAUTH.md`
+
+## 扩展的文件布局（先看这一节，错了 pi 直接起不来）
+
+pi 的扩展发现范围：
+
+| 位置 | 会被当扩展加载？ |
+|---|---|
+| `extensions/*.ts`、`extensions/*.js` | **会**。根目录下的每个 `.ts` / `.js` 都是一个扩展入口 |
+| `extensions/*.mjs` | 不会 |
+| `extensions/<名字>/index.ts`、`index.js` | **会**。子目录只认这两个文件名 |
+| `extensions/<名字>/` 下的其它文件 | 不会。它们只是普通模块，由 index 去 import |
+| `<cwd>/.pi/extensions/`、settings.json 的 `extensions` 数组、`pi --extension <文件>` | 会 |
+
+**本仓库真实踩过的坑**：把测试写成 `extensions/foo.test.ts`（放在根下），pi 启动时把它当扩展加载，它不导出 factory，于是启动失败：
+
+```
+Error: Failed to load extension ".../extensions/foo.test.ts":
+Extension does not export a valid factory function
+Hint: Start without extensions using "pi -ne".
+```
+
+同样的道理，根下的**任何**辅助模块（常量表、类型、工具函数）都会被当扩展加载一次，所以不要往 `extensions/` 根目录丢非扩展文件。
+
+**约定**：
+
+- 一个扩展要么是根下的单文件，要么是一个目录（入口 `index.ts`）
+- 扩展自己的测试、fixture、内部模块，放**它自己的目录里**：`extensions/<名字>/index.test.ts` 是安全的（入口只有 index）
+- 新建单文件扩展若要配套测试，从一开始就建成目录（`extensions/<名字>/index.ts` + `index.test.ts`），不要写成根下的 `foo.test.ts`
+- `.mjs` 不在加载范围内（仓库里的 `task-notification.test.mjs` 就是这么活下来的），但那是恰好，新文件优先放子目录
+- 扩展内部的辅助模块也可以放 `lib/`（与扩展同享），但那属于公共模块，别只为一个扩展往里丢
+
+**自检**（改完扩展、启动 pi 之前跑一遍）：
+
+```bash
+cd ~/.pi/agent && for f in extensions/*.ts; do
+  grep -q "export default function" "$f" || echo "✗ $f 没有 factory，会被当扩展加载而报错"
+done
+```
+
+新增或改动扩展后要 `/reload` 才会加载；`pi --extension <文件>` 用于临时调试单个扩展；`pi -ne` 可以不带扩展启动，用来区分“pi 本身起不来”还是“某个扩展把它带崩了”。
 
 ## 插件开发规范（写扩展前必读）
 
