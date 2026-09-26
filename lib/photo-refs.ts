@@ -3,12 +3,14 @@
 // 照片不再自动推给会话：守护把落盘的图编成短号（1..99），pi 侧只在真正用到时才去取——
 // 用户在输入框里打 `&img(3)`，展开的那一刻才问守护「3 号是哪张」。
 //
-// 这个文件只管「怎么跟守护说话」：地址、口令、超时、可读的错误文案。不 import 任何 pi API，
+// 这个文件只管「怎么跟守护说话」：地址、口令、超时、可读的错误文案，以及几个入口 URL。不 import 任何 pi API，
 // 所以单测可以直接对着一个假守护跑（见 extensions/photo/photo-refs.test.ts）。
 //
 // 两条约束：
 //   1. 口令（token）只在请求 query 里出现，绝不进错误消息、绝不进日志——
 //      日志会落盘，也会被 journalctl 一把捞出来。
+//      唯一的例外是 manageUrl()：它存在的意义就是把带口令的地址交给用户去浏览器里打开，
+//      所以调用方（/photo:list）必须把它当「给用户看的地址」用，不能拿去写日志。
 //   2. 连接与整体都封顶（默认 5s）。守护是本机进程，超时就是没在跑，
 //      与其让展开挂在那里，不如快点失败、把原因交给上层显示。
 
@@ -36,13 +38,9 @@ export interface RefPool {
 	items: RefItem[];
 }
 
-export interface PhotoRefsOptions {
+export interface PhotoRefsOptions extends PhotoTokenOptions {
 	/** 覆盖守护地址（默认 PI_PHOTO_BASE，再默认 127.0.0.1:8787） */
 	base?: string;
-	/** 直接给口令；给了就不再读文件 */
-	token?: string;
-	/** 口令文件路径（默认 PI_PHOTO_TOKEN_FILE，再默认 ~/.pi/agent/photo-state/token） */
-	tokenFile?: string;
 	timeoutMs?: number;
 	/** useRef 这类「不该影响主流程」的失败往哪写。默认丢进无声处：这个层里没有 ctx，
 	 *  而往 stdout 打日志在本仓库算调试残留（pre-commit 检查会拦）。调用方接管：
@@ -58,6 +56,8 @@ export interface PhotoRefsClient {
 	useRef(n: number): void;
 	/** 手机上传地址，一定带 ?k=<token> */
 	uploadUrl(): Promise<string>;
+	/** 本机管理页地址（缩略图与删除都在那儿），一定带 ?k=<token> */
+	manageUrl(): Promise<string>;
 }
 
 /** 口令对不上。单独一个类型，好在 uploadUrl 的回退逻辑里把它跟「拿不到」区分开 */
@@ -122,6 +122,42 @@ export function photoTokenPath(): string {
 	return raw && raw !== "" ? raw : join(homedir(), ".pi", "agent", "photo-state", "token");
 }
 
+export interface PhotoTokenOptions {
+	/** 直接给口令；给了就不再读文件 */
+	token?: string;
+	/** 口令文件路径（默认 PI_PHOTO_TOKEN_FILE，再默认 ~/.pi/agent/photo-state/token） */
+	tokenFile?: string;
+}
+
+/**
+ * 读 photo 口令（每次现取，不缓存：守护重启可能换文件内容）。
+ *
+ * 抽成导出是因为「跟守护说话」和「拼本机管理页地址」都要它：两处各读一遍，
+ * 迟早会在「文件不存在 / 文件为空」这些分支上分叉，提示语也会长得不一样。
+ */
+export async function readPhotoToken(opts: PhotoTokenOptions = {}): Promise<string> {
+	if (opts.token !== undefined) {
+		if (opts.token.trim() === "") throw new Error("photo 口令是空的：给进来的 token 是空串，检查调用方怎么传的");
+		return opts.token.trim();
+	}
+	const tokenFile = opts.tokenFile?.trim() || photoTokenPath();
+	let text: string;
+	try {
+		text = await readFile(tokenFile, "utf8");
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			throw new Error(`photo 守护还没初始化：口令文件不存在（${tokenFile}）。先把 photo 守护跑起来，它会生成口令`);
+		}
+		throw new Error(`photo 守护还没初始化：读不了口令文件 ${tokenFile}：${errorText(err)}`);
+	}
+	const value = text.trim();
+	if (value === "") {
+		throw new Error(`photo 守护还没初始化：口令文件是空的（${tokenFile}）。删掉它再重启守护会重新生成`);
+	}
+	return value;
+}
+
 export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 	const explicit = opts.base?.trim() || explicitPhotoBase();
 	const base = (opts.base?.trim() || photoBase()).replace(/\/+$/, "");
@@ -131,28 +167,8 @@ export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const log = opts.logger ?? (() => {});
 
-	/** 口令每次现取：守护重启可能换文件内容，缓存住只会拿到旧口令 */
-	const token = async (): Promise<string> => {
-		if (opts.token !== undefined) {
-			if (opts.token.trim() === "") throw new Error("photo 口令是空的：给进来的 token 是空串，检查调用方怎么传的");
-			return opts.token.trim();
-		}
-		let text: string;
-		try {
-			text = await readFile(tokenFile, "utf8");
-		} catch (err) {
-			const code = (err as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				throw new Error(`photo 守护还没初始化：口令文件不存在（${tokenFile}）。先把 photo 守护跑起来，它会生成口令`);
-			}
-			throw new Error(`photo 守护还没初始化：读不了口令文件 ${tokenFile}：${errorText(err)}`);
-		}
-		const value = text.trim();
-		if (value === "") {
-			throw new Error(`photo 守护还没初始化：口令文件是空的（${tokenFile}）。删掉它再重启守护会重新生成`);
-		}
-		return value;
-	};
+	// 口令每次现取（readPhotoToken 内部不缓存）：守护重启可能换文件内容，缓存住只会拿到旧口令
+	const token = (): Promise<string> => readPhotoToken(opts.token !== undefined ? { token: opts.token, tokenFile } : { tokenFile });
 
 	const call = async (
 		apiPath: string,
@@ -227,6 +243,13 @@ export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 			});
 		},
 
+		async manageUrl(): Promise<string> {
+			const key = await token();
+			// 这是给本机浏览器看的：用 base（默认 127.0.0.1），不换成局域网地址——
+			// 管理页的口令就在地址里，不该跟着手机那边的地址一起往局域网里跑
+			return `${base}/manage?k=${encodeURIComponent(key)}`;
+		},
+
 		async uploadUrl(): Promise<string> {
 			const key = await token();
 			let fromStatus = "";
@@ -269,6 +292,11 @@ export function useRef(n: number): void {
 
 export function uploadUrl(): Promise<string> {
 	return defaultPhotoRefs().uploadUrl();
+}
+
+/** 本机管理页地址（带口令）。/photo:list 用它把入口带出来 */
+export function manageUrl(): Promise<string> {
+	return defaultPhotoRefs().manageUrl();
 }
 
 /** 给 URL 补上 ?k=；已经有了就原样返回（守护可能自己带了口令） */
