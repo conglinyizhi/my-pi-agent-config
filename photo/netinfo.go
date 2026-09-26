@@ -4,13 +4,15 @@ import (
 	"net"
 )
 
-// webURL 拼出手机该打开的那个地址。监听地址是 0.0.0.0（默认）时，
-// 0.0.0.0 对手机毫无意义，得另找一个本机真实存在的地址；
-// 一个都找不到就回 127.0.0.1，本机还能用，也好过给一个连不上的假地址。
-func (s *Server) webURL() string {
-	host, port, err := net.SplitHostPort(s.webAddr)
+// lanURL 把监听地址换成手机能打开的地址。默认监听 0.0.0.0，而 0.0.0.0 对手机
+// 毫无意义，得另找一个本机真实存在的地址；一个都找不到就用 127.0.0.1，
+// 本机还能用，好过给一个连不上的假地址。
+//
+// 这里不拼 token：这行会进 journal，口令不该跟着进去。
+func lanURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return "http://127.0.0.1/?k=" + s.st.Token()
+		return "127.0.0.1"
 	}
 	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
 		if lan := lanIPv4(); lan != "" {
@@ -19,7 +21,7 @@ func (s *Server) webURL() string {
 			host = "127.0.0.1"
 		}
 	}
-	return "http://" + net.JoinHostPort(host, port) + "/?k=" + s.st.Token()
+	return net.JoinHostPort(host, port)
 }
 
 // lanIPv4 挑一个非回环的 IPv4，私有网段优先。
