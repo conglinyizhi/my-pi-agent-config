@@ -10,6 +10,8 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { clearFragmentProviders, registerFragmentProvider } from "../../lib/fragment-providers.ts";
 import { loadFragments } from "./core.ts";
 import fragmentsExtension, { resetFragmentCache, resetFragmentNotices } from "./index.ts";
 
@@ -103,10 +105,12 @@ beforeEach(() => {
 	resetFragmentCache();
 	resetFragmentNotices();
 	providers.length = 0;
+	clearFragmentProviders();
 });
 
 afterEach(() => {
 	delete process.env.PI_CODING_AGENT_DIR;
+	clearFragmentProviders();
 });
 
 /** 装载一次扩展，拿到它的 handler / command */
@@ -172,6 +176,74 @@ describe("input：提交前展开", () => {
 		const env = fakeCtx();
 		await input({ type: "input", text: "&坏 试试", source: "interactive" }, env.ctx);
 		assert.ok(env.notices.some((n) => /缺少 text/.test(n.message)));
+	});
+});
+
+describe("input：动态调用交给 provider", () => {
+	const png = (tag: string): ImageContent => ({ type: "image", data: `data-${tag}`, mimeType: "image/png" });
+
+	it("&名字(参数) 命中 provider：展开正文并把图附上（返回里带 images）", async () => {
+		registerFragmentProvider({
+			name: "img",
+			expand: (args) => (args === "3" ? { text: "（第 3 张照片）", images: [png("3")] } : undefined),
+		});
+		const { input } = load();
+		const result = await input({ type: "input", text: "看这张 &img(3)", source: "interactive" }, fakeCtx().ctx);
+		assert.deepEqual(result, { action: "transform", text: "看这张 （第 3 张照片）", images: [png("3")] });
+	});
+
+	it("只把图附上、正文没变：照样 transform（否则图就丢了）", async () => {
+		registerFragmentProvider({ name: "img", expand: () => ({ text: "", images: [png("1")] }) });
+		const { input } = load();
+		const result = await input({ type: "input", text: "&img(1)", source: "interactive" }, fakeCtx().ctx);
+		assert.deepEqual(result, { action: "transform", text: "", images: [png("1")] });
+	});
+
+	it("这条输入上本来就带着的图（粘的截图）不会被 provider 的图顶掉", async () => {
+		registerFragmentProvider({ name: "img", expand: () => ({ text: "", images: [png("3")] }) });
+		const { input } = load();
+		const result = await input(
+			{ type: "input", text: "看看 &img(3)", images: [png("粘贴")], source: "interactive" },
+			fakeCtx().ctx,
+		);
+		assert.deepEqual(result, { action: "transform", text: "看看 ", images: [png("粘贴"), png("3")] });
+	});
+
+	it("provider 返回 undefined / 没注册：当未知名字，原文放行 + 提示一句", async () => {
+		registerFragmentProvider({ name: "img", expand: () => undefined });
+		const { input } = load();
+		const env = fakeCtx();
+		const miss = await input({ type: "input", text: "看 &img(9)", source: "interactive" }, env.ctx);
+		assert.deepEqual(miss, { action: "continue" });
+		const none = await input({ type: "input", text: "看 &photo(9)", source: "interactive" }, env.ctx);
+		assert.deepEqual(none, { action: "continue" });
+		assert.deepEqual(
+			env.notices.map((notice) => notice.message),
+			["没有 &img 这个碎片（/frag:list 看已定义的）", "没有 &photo 这个碎片（/frag:list 看已定义的）"],
+		);
+	});
+
+	it("provider 抛错：原文放行，报一行 error，不吞输入", async () => {
+		registerFragmentProvider({
+			name: "img",
+			expand: () => {
+				throw new Error("手机那边没接上");
+			},
+		});
+		const { input } = load();
+		const env = fakeCtx();
+		const result = await input({ type: "input", text: "看 &img(3) 这张", source: "interactive" }, env.ctx);
+		assert.deepEqual(result, { action: "continue" });
+		assert.equal(env.notices.length, 1);
+		assert.equal(env.notices[0]?.level, "error");
+		assert.match(env.notices[0]?.message ?? "", /&img\(3\) 展开失败：手机那边没接上/);
+	});
+
+	it("带括号的调用不会去查静态表，也不影响别的碎片展开", async () => {
+		const { input } = load();
+		const result = await input({ type: "input", text: "&单步计划(随便) 然后 &单步计划", source: "interactive" }, fakeCtx().ctx);
+		assert.equal(result.action, "transform");
+		assert.equal(result.text, "&单步计划(随便) 然后 对于这一步，只做调查、不要动手\n");
 	});
 });
 
@@ -350,6 +422,19 @@ describe("autocomplete", () => {
 		sessionStart({ type: "session_start" }, fakeCtx().ctx);
 		assert.equal(providers.length, 1);
 		assert.deepEqual(providers[0](fakeCurrent().current).triggerCharacters, ["&"]);
+	});
+
+	it("名字带冒号：补全也认得（名字字符集与 core.ts 一套）", async () => {
+		writeFileSync(join(agentDir, "fragments.toml"), `${CONFIG}\n[[fragment]]\nname = "photo:2"\ntext = "第二张照片"\n`, "utf8");
+		resetFragmentCache();
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { calls: currentCalls, current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		const hit = await provider.getSuggestions(["看图 &photo:"], 0, 10, { signal: new AbortController().signal });
+		assert.deepEqual(hit.items.map((item: { value: string }) => item.value), ["&photo:2"]);
+		assert.deepEqual(currentCalls, [], "认得出的 & 名字不该回退给原补全器");
 	});
 
 	it("输入 & 时给候选，并沿用原来的补全器", async () => {
