@@ -1,0 +1,16 @@
+[Unit]
+Description=pi photo gateway (LAN HTTP + unix socket)
+# 等网络就绪：手机要从局域网进来，地址也要在链路起来之后才是真的。
+# 注意不能写 After=default.target：WantedBy=default.target 的单元隐含 Before=default.target，
+# 自己再写一条 After 就成了自指环（hub 踩过这个坑，见 hub/README.md）。
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/pi-photo
+Restart=on-failure
+RestartSec=2
+# stdout 交给 journal 就够，不额外写日志文件
+
+[Install]
+WantedBy=default.target
