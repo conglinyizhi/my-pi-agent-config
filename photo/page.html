@@ -8,6 +8,7 @@
   body { margin:0; padding:20px; font:16px/1.5 system-ui,-apple-system,sans-serif;
          background:#11161d; color:#e6edf3; }
   h1 { font-size:19px; margin:0 0 4px; }
+  h2 { font-size:14px; margin:24px 0 8px; color:#8b98a5; font-weight:600; }
   p.hint { color:#8b98a5; font-size:14px; margin:0 0 14px; }
   #stat { display:flex; align-items:center; gap:9px; font-size:14px; line-height:1.45;
           padding:11px 13px; border-radius:10px; background:#182230; color:#c8d3de;
@@ -20,67 +21,82 @@
               background:#1f6feb; color:#fff; font-weight:600; user-select:none; }
   label.btn.alt { background:#2b3947; }
   label.btn:active { filter:brightness(1.2); }
-  button.end { width:100%; padding:13px 10px; border:0; border-radius:12px;
-               background:#2b3947; color:#e6edf3; font:600 15px system-ui,sans-serif; }
-  button.end:active { filter:brightness(1.2); }
-  #out { font-size:14px; color:#8b98a5; white-space:pre-wrap; margin-top:16px; }
-  .shot { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  #out { font-size:15px; color:#c8d3de; white-space:pre-wrap; }
+  .shot { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:14px; color:#8b98a5; }
   .shot img { width:64px; height:64px; object-fit:cover; border-radius:8px; }
+  .ref { display:flex; align-items:baseline; gap:10px; font-size:13px; padding:7px 0;
+         border-bottom:1px solid #1e2733; }
+  .ref b { font-size:16px; color:#e6edf3; flex:0 0 2.8em; }
+  .ref span { color:#8b98a5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
 <h1>发给 pi</h1>
-<p class="hint">拍完自动压缩再传（长边 1600）。没有会话接单时先排队，等 pi 连上再投递。</p>
+<p class="hint">拍完自动压缩再传（长边 1600）。存下来会有一个短编号，在输入框里用 &amp;img(3) 引用。</p>
 <div id="stat"><span class="dot"></span><span id="stat-text">正在连接…</span></div>
 <div class="row">
   <label class="btn">拍照<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
   <label class="btn alt">相册多选<input id="lib" type="file" accept="image/*" multiple hidden></label>
 </div>
-<button class="end" id="end">结束这一轮</button>
 <div id="out">还没有图片</div>
+<div id="shots"></div>
+<h2>最近的编号</h2>
+<div id="refs">…</div>
 <script>
 const K = new URLSearchParams(location.search).get("k") || "";
 const api = path => path + "?k=" + encodeURIComponent(K);
 const stat = document.getElementById("stat");
 const statText = document.getElementById("stat-text");
 const out = document.getElementById("out");
-const MAX = 1600, Q = 0.82;
-let sent = 0;
+const shots = document.getElementById("shots");
+const refBox = document.getElementById("refs");
+const MAX = 1600, Q = 0.82, SHOW = 12;
 
-function renderStatus(j) {
-  const l = j.listener;
-  const tail = `队列 ${j.queued} · 已归档 ${j.delivered}`;
-  if (l) {
-    stat.className = "on";
-    statText.textContent = `${l.name || l.sessionId} 正在接收 · ${tail}`;
-  } else {
-    stat.className = "";
-    statText.textContent = `没有会话接单，图片先排队 · ${tail}`;
-  }
+function fmtTime(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s || "";
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 async function poll() {
   try {
     const r = await fetch(api("/status"), { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    renderStatus(await r.json());
+    const j = await r.json();
+    stat.className = "on";
+    statText.textContent = `编号池 ${j.pool} · 已用 ${j.used}`;
   } catch (e) {
     stat.className = "";
     statText.textContent = "守护没应答（" + e.message + "）";
   }
 }
-poll();
-setInterval(poll, 3000);
 
-document.getElementById("end").addEventListener("click", async () => {
+// 「最近的编号」按入库时间倒序：池子满时回收的是「最久没用过」的那条，
+// 跟「最近拍过」不是一回事，但页面上按拍摄时间排更符合直觉。
+async function loadRefs() {
   try {
-    const r = await fetch(api("/finish"), { method: "POST" });
+    const r = await fetch(api("/refs"), { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
     const j = await r.json();
-    if (!j.ok) throw new Error("HTTP " + r.status);
-    statText.textContent = "已结束这一轮，等 pi 收尾";
+    const items = (j.items || []).slice().sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+    refBox.textContent = "";
+    if (!items.length) { refBox.textContent = "池子还是空的"; return; }
+    for (const it of items.slice(0, SHOW)) {
+      const row = document.createElement("div");
+      row.className = "ref";
+      const b = document.createElement("b");
+      b.textContent = "#" + it.ref;
+      const s = document.createElement("span");
+      s.textContent = `${fmtTime(it.ts)} · ${(it.bytes / 1024).toFixed(0)}KB · ${it.path}`;
+      row.append(b, s);
+      refBox.append(row);
+    }
   } catch (e) {
-    statText.textContent = "结束失败（" + e.message + "）";
+    refBox.textContent = "读编号失败（" + e.message + "）";
   }
-  poll();
-});
+}
+poll();
+loadRefs();
+setInterval(poll, 5000);
 
 async function shrink(file) {
   let bmp;
@@ -99,7 +115,7 @@ async function shrink(file) {
   return { dataUrl: cv.toDataURL("image/jpeg", Q), w, h, bytes: file.size };
 }
 
-function show(name, dataUrl, text) {
+function show(dataUrl, text) {
   const div = document.createElement("div");
   div.className = "shot";
   const img = document.createElement("img");
@@ -107,21 +123,23 @@ function show(name, dataUrl, text) {
   const span = document.createElement("span");
   span.textContent = text;
   div.append(img, span);
-  out.prepend(div);
+  shots.prepend(div);
+  return span;
 }
 
 async function handle(files) {
   if (!files || !files.length) return;
-  const payload = [];
+  const payload = [], thumbs = [];
   for (const f of files) {
+    let s;
     try {
-      const s = await shrink(f);
-      payload.push({ name: f.name || "shot.jpg", dataUrl: s.dataUrl });
-      show(f.name, s.dataUrl, `${f.name || "shot"}: ${(s.bytes / 1024).toFixed(0)}KB → ${s.w}×${s.h}`);
+      s = await shrink(f);
     } catch (e) {
       out.textContent = "压缩失败: " + e.message;
       return;
     }
+    payload.push({ name: f.name || "shot.jpg", dataUrl: s.dataUrl });
+    thumbs.push(show(s.dataUrl, `${(s.bytes / 1024).toFixed(0)}KB → ${s.w}×${s.h}`));
   }
   try {
     const r = await fetch(api("/upload"), {
@@ -131,13 +149,19 @@ async function handle(files) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-    sent += j.accepted;
-    const extra = j.rejected ? `，${j.rejected} 张被拒` : "";
-    out.textContent = `已收 ${sent} 张（本轮投递 ${j.delivered}，队列 ${j.queued}）${extra}`;
+    const saved = j.saved || [];
+    // 没有被拒时 saved 与本地缩略图一一对应，可以直接把编号贴回缩略图
+    if (!j.rejected && saved.length === thumbs.length) {
+      thumbs.forEach((el, i) => { el.textContent = `#${saved[i].ref} · ` + el.textContent; });
+    }
+    out.textContent = saved.length
+      ? `已存为 ${saved.map(s => "#" + s.ref).join("、")}` + (j.rejected ? `（${j.rejected} 张被拒）` : "")
+      : "没有图片入库";
   } catch (e) {
     out.textContent = "上传失败: " + e.message;
   }
   poll();
+  loadRefs();
 }
 
 document.getElementById("cam").addEventListener("change", e => handle(e.target.files));
