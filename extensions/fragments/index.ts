@@ -2,6 +2,7 @@
 //
 // 四件事：
 //   1 提交前展开：`&单步计划` 在你按回车后换成 fragments.toml 里那段正文（input 事件，只动你自己的输入）
+//     另外 `&名字(参数)` 交给注册的 provider 展开（动态内容，可以带回图片），见 lib/fragment-providers.ts
 //   2 /frag:build <名字>：把正文插进输入框，改完再发
 //   3 /frag:list：列出全部碎片，选中即插入
 //   4 /frag:add：两个 TUI（先「名字 描述」再正文）加一条，追加进配置
@@ -23,7 +24,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import {
 	addFragmentToFile,
 	checkFragmentName,
-	expandFragments,
+	expandFragmentsAsync,
 	findFragment,
 	loadFragments,
 	triggerNames,
@@ -120,17 +121,25 @@ function splitFragmentSpec(raw: string): { name: string; desc: string } {
 
 export default function (pi: ExtensionAPI): void {
 	// 1 提交前展开。只认 interactive 来源：别人（rpc/扩展）发进来的文本不该被我们改写。
-	pi.on("input", (event, ctx) => {
+	// 展开是异步的：`&名字(参数)` 要问 provider（没注册 provider 就是不存在的名字，行为跟以前一样）。
+	pi.on("input", async (event, ctx) => {
 		try {
 			if (event.source !== "interactive") return { action: "continue" };
 			const file = currentFile();
 			reportProblems(ctx, file);
-			const result = expandFragments(event.text, file.fragments);
+			const result = await expandFragmentsAsync(event.text, file.fragments);
 			for (const name of result.unknown) {
 				const hint = file.missing
 					? `还没有 ${configPath()}，&${name} 不会展开`
 					: `没有 &${name} 这个碎片（/frag:list 看已定义的）`;
 				tell(ctx, `unknown:${name}`, hint, "warning");
+			}
+			// provider 出错的调用原文还在文本里，这里只说一句为什么没展开
+			for (const error of result.errors) tell(ctx, `expand-error:${error}`, error, "error");
+			// 有图就一定要 transform：正文可能一个字没变，但图得附到这条消息上
+			// pi 那边是拿返回值里的 images 整组替掉，所以原本就在这条输入上的图（比如粘的截图）要一起带回来
+			if (result.images.length > 0) {
+				return { action: "transform", text: result.text, images: [...(event.images ?? []), ...result.images] };
 			}
 			if (result.text === event.text) return { action: "continue" };
 			return { action: "transform", text: result.text };
@@ -224,7 +233,8 @@ export default function (pi: ExtensionAPI): void {
 				async getSuggestions(lines, cursorLine, cursorCol, options) {
 					const line = lines[cursorLine] ?? "";
 					const before = line.slice(0, cursorCol);
-					const match = /(?:^|\s)&([\p{L}\p{N}_-]*)$/u.exec(before);
+					// 名字字符集与 core.ts 的 NAME_CHAR 一套（含冒号）；带 `(` 之后就不弹了，参数自己打
+					const match = /(?:^|\s)&([\p{L}\p{N}_:-]*)$/u.exec(before);
 					if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 					const query = match[1] ?? "";
 					const needle = query.toLowerCase();
