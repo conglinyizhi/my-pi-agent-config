@@ -91,6 +91,15 @@ pi
 - 飞书走本机 `lark-cli`（`hub/adapters/feishu/`）。没有 CLI：`pnpm add -g @larksuite/cli && lark-cli config init && lark-cli auth login`，然后 `systemctl --user start pi-hub-feishu.service`。缺 CLI 时适配器退出码 78，不再狂重启
 - 主线只推 Linux。别的系统从 tag `pre-linux-hub` 自己接（没有归档分支，checkout tag 看）。未公开 IM 适配器放 `hub/private/`，不入库
 
+### 手机照片网关（pi-photo）
+
+手机拍照直接发给 pi：局域网 HTTP 收图（唤起系统相机，前端压到长边 1600 再传），Unix socket 给 pi 侧提供独占监听锁，图片到达即注入当前会话。守护 `pi-photo`（systemd --user，与 hub 并列），上传地址由 `/photo:url` 给出（带口令，附终端二维码）。
+
+- 装 / 热更：`photo/install.sh`（`--reload` 热更、`--status` 看状态）。非公开地址，口令在 `~/.pi/agent/photo-state/token`
+- pi 侧：`/photo:wait` 抢锁进后台监听（状态栏显示已收张数）、`/photo:stop` 释放、`/photo:wait --force` 抢占用中的锁；心跳超 30 秒的假死占用会自动让位
+- 没人监听时上传的图落盘排队，等下一次 `/photo:wait` 一起投递；投递并确认后才从 `queue/` 移到 `archive/日期/`
+- 默认监听 `0.0.0.0:8787`（`-addr` 可改）。口令只挡同一 wifi 里的随手访问，不是鉴权边界，别往公网放
+
 ### 沙箱（bash 内核隔离）
 
 **landlock-shell** — pi 的 bash 工具默认经 `scripts/sandbox-shell.mjs` 包装进
