@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>发给 pi</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:20px; font:16px/1.5 system-ui,-apple-system,sans-serif;
+         background:#11161d; color:#e6edf3; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  p.hint { color:#8b98a5; font-size:14px; margin:0 0 14px; }
+  #stat { display:flex; align-items:center; gap:9px; font-size:14px; line-height:1.45;
+          padding:11px 13px; border-radius:10px; background:#182230; color:#c8d3de;
+          margin:0 0 16px; }
+  #stat .dot { width:9px; height:9px; border-radius:50%; background:#8b98a5; flex:0 0 auto; }
+  #stat.on .dot { background:#3fb950; }
+  #stat.on { color:#e6edf3; }
+  .row { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+  label.btn { flex:1 1 46%; text-align:center; padding:16px 10px; border-radius:12px;
+              background:#1f6feb; color:#fff; font-weight:600; user-select:none; }
+  label.btn.alt { background:#2b3947; }
+  label.btn:active { filter:brightness(1.2); }
+  button.end { width:100%; padding:13px 10px; border:0; border-radius:12px;
+               background:#2b3947; color:#e6edf3; font:600 15px system-ui,sans-serif; }
+  button.end:active { filter:brightness(1.2); }
+  #out { font-size:14px; color:#8b98a5; white-space:pre-wrap; margin-top:16px; }
+  .shot { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .shot img { width:64px; height:64px; object-fit:cover; border-radius:8px; }
+</style>
+<h1>发给 pi</h1>
+<p class="hint">拍完自动压缩再传（长边 1600）。没有会话接单时先排队，等 pi 连上再投递。</p>
+<div id="stat"><span class="dot"></span><span id="stat-text">正在连接…</span></div>
+<div class="row">
+  <label class="btn">拍照<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
+  <label class="btn alt">相册多选<input id="lib" type="file" accept="image/*" multiple hidden></label>
+</div>
+<button class="end" id="end">结束这一轮</button>
+<div id="out">还没有图片</div>
+<script>
+const K = new URLSearchParams(location.search).get("k") || "";
+const api = path => path + "?k=" + encodeURIComponent(K);
+const stat = document.getElementById("stat");
+const statText = document.getElementById("stat-text");
+const out = document.getElementById("out");
+const MAX = 1600, Q = 0.82;
+let sent = 0;
+
+function renderStatus(j) {
+  const l = j.listener;
+  const tail = `队列 ${j.queued} · 已归档 ${j.delivered}`;
+  if (l) {
+    stat.className = "on";
+    statText.textContent = `${l.name || l.sessionId} 正在接收 · ${tail}`;
+  } else {
+    stat.className = "";
+    statText.textContent = `没有会话接单，图片先排队 · ${tail}`;
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch(api("/status"), { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    renderStatus(await r.json());
+  } catch (e) {
+    stat.className = "";
+    statText.textContent = "守护没应答（" + e.message + "）";
+  }
+}
+poll();
+setInterval(poll, 3000);
+
+document.getElementById("end").addEventListener("click", async () => {
+  try {
+    const r = await fetch(api("/finish"), { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) throw new Error("HTTP " + r.status);
+    statText.textContent = "已结束这一轮，等 pi 收尾";
+  } catch (e) {
+    statText.textContent = "结束失败（" + e.message + "）";
+  }
+  poll();
+});
+
+async function shrink(file) {
+  let bmp;
+  try {
+    // from-image：iPhone 拍的照片方向写在 EXIF 里，canvas 一画就丢，不这么读会躺倒
+    bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    bmp = await createImageBitmap(file);
+  }
+  const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  return { dataUrl: cv.toDataURL("image/jpeg", Q), w, h, bytes: file.size };
+}
+
+function show(name, dataUrl, text) {
+  const div = document.createElement("div");
+  div.className = "shot";
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  const span = document.createElement("span");
+  span.textContent = text;
+  div.append(img, span);
+  out.prepend(div);
+}
+
+async function handle(files) {
+  if (!files || !files.length) return;
+  const payload = [];
+  for (const f of files) {
+    try {
+      const s = await shrink(f);
+      payload.push({ name: f.name || "shot.jpg", dataUrl: s.dataUrl });
+      show(f.name, s.dataUrl, `${f.name || "shot"}: ${(s.bytes / 1024).toFixed(0)}KB → ${s.w}×${s.h}`);
+    } catch (e) {
+      out.textContent = "压缩失败: " + e.message;
+      return;
+    }
+  }
+  try {
+    const r = await fetch(api("/upload"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ images: payload }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    sent += j.accepted;
+    const extra = j.rejected ? `，${j.rejected} 张被拒` : "";
+    out.textContent = `已收 ${sent} 张（本轮投递 ${j.delivered}，队列 ${j.queued}）${extra}`;
+  } catch (e) {
+    out.textContent = "上传失败: " + e.message;
+  }
+  poll();
+}
+
+document.getElementById("cam").addEventListener("change", e => handle(e.target.files));
+document.getElementById("lib").addEventListener("change", e => handle(e.target.files));
+</script>
+</html>
