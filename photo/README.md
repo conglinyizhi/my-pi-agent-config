@@ -1,28 +1,51 @@
 # pi-photo
 
-手机拍照 → 直接进 pi 会话的常驻网关。一台机器一个进程，干两件事：
+手机拍照 → 存成短编号，给 pi 会话按编号取用。一台机器一个进程，只干两件事：
 
 - **局域网 HTTP**：手机打开一个页面，调系统相机拍完在浏览器里压到长边 1600，POST 上来落盘
-- **Unix socket**：pi 侧连上来拿「谁在收听」的独占锁，图片一到就推给它
+- **短编号池**：每张图登记一个编号（`1..pool`，默认 99），用户在输入框里用 `&img(3)` 引用
 
-锁是这块的核心：同一时刻只有一个 pi 会话收图，别的会话要么等、要么显式抢。没有会话在听时上传的图**一律落盘入队**，等 pi 上来再投递，不丢。
+图不再自动推给某个会话：落盘、登记完这个进程的事就结束了。
+所以锁、心跳、抢占、Unix socket 协议一概没有——要的是编号，不是独占。
 
 ## 落盘
 
 ```
-~/.pi/agent/photo-state/       (-state)
-  queue/<id>.jpg               待投递 / 已推未 ack
-  archive/YYYYMMDD/<id>.jpg    已被 pi ack
-  token                        HTTP 口令，32 位 hex，0600
-~/.pi/agent/run/photo.sock     (-socket)，0600，只收同一 UID
+~/.pi/agent/photo-state/          (-state)
+  archive/YYYYMMDD/<id>.jpg       图片本体，落了就不删
+  refs/index.json                 短编号表
+  token                           HTTP 口令，32 位 hex，0600
 ```
 
-- `<id>` 形如 `1758859200123-0007-a1b2c3d4`：毫秒时间戳 + 同毫秒序号 + 随机后缀。
-  字符串序就是投递顺序，重启后扫 `queue/` 重建的顺序与拍的时候一致。
-  id 一经发出不再变，pi 侧可以拿它去重。
-- 队列以文件为唯一事实来源，不另存索引：索引和文件一旦不同步，就得临时决定信谁。
-- `queue/` 里的项只有在 pi 发 `ack` 之后才移到 `archive/`（按 ack 当天分目录）。
-  ack 前重启守护，那些项会重新推给下一个 holder。
+- `<id>` 形如 `1758859200123-0007-a1b2c3d4`：毫秒时间戳 + 同毫秒序号 + 随机后缀，
+  字符串序就是拍摄顺序。它只是文件名，**编号与它的对应关系全在 `refs/index.json` 里**。
+- 图片一旦落盘就不再移动、不再删除：编号被回收时只摘掉表项，文件留在 `archive/`，
+  用户照样能用绝对路径引用。
+- `index.json` 是编号表的唯一事实来源，写盘走「临时文件 + `rename`」，
+  不会留下半截索引。启动时读它恢复编号，重启前后编号不变。
+- 索引坏掉（手改坏了）时不挡启动：改名留档成 `index.json.bad-<时间>`，
+  按空表起。图片文件都还在，重传一次或直接用路径都能救回来。
+
+## 编号池
+
+```json
+{"items":[{"ref":3,"path":"/home/u/.pi/agent/photo-state/archive/20250926/1758859200123-0007-a1b2c3d4.jpg",
+           "bytes":123456,"ts":"2025-09-26T12:48:00.123Z","lastUsed":"2025-09-26T13:01:02.456Z"}]}
+```
+
+分配与回收的规则，按顺序：
+
+1. 取 `1..pool` 里**最小的空号**。
+2. 一个空号都没有（池满）时，**回收** `lastUsed` 最早的那条；没有 `lastUsed` 就比 `ts`。
+3. 时间完全相同时回收**编号最小**的那条：同一批图在池满时，回收谁不该随 map 遍历顺序变。
+4. 回收只摘表项，**不删文件**。原图还在 `archive/`，绝对路径继续可用。
+
+- `lastUsed` 由 `POST /refs/<n>/use` 刷成当下，含义是「这张刚被用过」，
+  池满时就不会先砍到它。刷完立刻落盘：只在内存里记，重启后回收会开始按入库时间乱砍。
+- 两个时间戳都是 RFC3339（UTC，带小数秒）。小数秒是必要的：同一秒里连传几张图时，
+  回收顺序要靠它排出来。时间解析不出来时按零值算，也就是最先被回收。
+- 池子大小由 `-pool` 控制，默认 99。调大不拦，只是编号会长，不再「短」。
+- 池调小之后留在表里的越界编号不参与回收：它们既不是空号，也不该被当成候选砍掉。
 
 ## HTTP（默认 `0.0.0.0:8787`，`-addr`）
 
@@ -30,93 +53,38 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/?k=` | 页面：拍照 / 相册多选 / canvas 压缩，顶部状态行每 3 秒轮询 `/status`，底部「结束」按钮 |
-| GET | `/status?k=` | `{"listener":{...}\|null,"queued":n,"delivered":n}` |
-| POST | `/upload?k=` | 请求体 `{"images":[{"name":"x.jpg","dataUrl":"data:image/jpeg;base64,..."}]}` |
-| POST | `/finish?k=` | `{"ok":true}`，释放锁并给 holder 发 `finish` |
+| GET | `/?k=` | 页面：拍照 / 相册多选 / canvas 压缩，顶部显示池子用量，底部列最近的编号 |
+| POST | `/upload?k=` | body `{"images":[{"name":"x.jpg","dataUrl":"data:image/jpeg;base64,..."}]}` |
+| GET | `/refs?k=` | `{"pool":99,"items":[{ref,path,bytes,ts,lastUsed?}...]}`，按 ref 升序 |
+| GET | `/refs/<n>?k=` | 单条，就是上面 items 里的那个对象；不存在回 `404` 与 `{"error":"..."}` |
+| POST | `/refs/<n>/use?k=` | 刷新该条的 `lastUsed`，回 `{"ok":true}`；不存在回 `404` |
+| GET | `/status?k=` | `{"pool":99,"used":<已用号数>}` |
 
 字段口径：
 
-- `queued` = `queue/` 里还没被 ack 的张数（跟着磁盘走，重启后口径不变）
-- `delivered`（`/status`）= `archive/` 里已归档的总张数
-- `delivered`（`/upload` 回执）= 本批里已经推给当前 holder 的张数
-- `accepted` = 本批落盘的张数；`rejected` = 本批被拒的张数（口令之外的额外字段，便于页面提示）
-
-`/status` 不回 token，也不回 socket 路径：状态行是给手机看的，手机不需要新口令。
+- `/upload` 回 `{"saved":[{"ref":3,"path":"/abs/x.jpg","bytes":123}],"rejected":0}`。
+  `saved` 按接受顺序排列，`path` 是绝对路径；`rejected` 是本批被拒的张数，
+  被拒的图不落盘、不占号。一张都没存下时 `saved` 是 `[]`，不是 `null`。
+- `used` = 编号表里的条数（≤ pool）。回收之后它会降回去。
+- 任何回执都不回 token：手机拿着 URL 里那个就够了，回显只是白白多一份副本。
 
 接受的图片类型只有 `image/jpeg`、`image/png`、`image/webp`，扩展名按类型落。
 页面永远发 JPEG（canvas 压完就是 JPEG），另两种是给手搓请求留的路，免得默默丢图。
 请求体上限 64 MiB。
 
-## socket 协议（JSON 行，`v:1`）
+## pi 侧怎么用
 
-连上先 `hello`，之后任意顺序。未知 `type` 回 `error{message}`，连接不断。
-
-pi → 守护：
-
-| type | 字段 | 回执 |
-| --- | --- | --- |
-| `hello` | `role:"pi"` | `hello-ok` |
-| `attach` | `sessionId`,`name`,`force` | `attach-ok{queued}` / `busy{holder}` |
-| `detach` | | `detach-ok` |
-| `ping` | | `pong`（同时刷新该连接的心跳） |
-| `ack` | `ids:[...]` | `ack-ok{moved}` |
-| `url` | | `url-ok{url}` |
-
-守护 → pi：
-
-| type | 字段 | 时机 |
-| --- | --- | --- |
-| `arrived` | `items:[{id,path,mime,bytes,ts}]` | attach 后推积压；有 holder 时上传立即推 |
-| `finish` | `by:"web"`,`count` | 页面点了「结束」 |
-| `preempted` | `reason:"stale"\|"forced"` | 锁被抢（随后连接被关） |
-| `error` | `message` | 请求无法处理 |
-
-`path` 是绝对路径，pi 直接读，不去猜目录布局。`count` 是这一任 holder 任期内收到过的张数。
-
-## 锁的语义
-
-| 情况 | 结果 |
-| --- | --- |
-| 无 holder | attach 成功 |
-| holder 的连接已断 | 锁在断连那一刻已释放，attach 直接成功 |
-| holder 心跳超期（`-stale`，默认 30s） | 判假死：给旧连接 `preempted{stale}` 并关掉，锁给新来的 |
-| holder 正常 | 回 `busy{holder}`，不静默抢 |
-| `attach` 带 `force:true` | 抢占：给旧连接 `preempted{forced}` 并关掉，锁给新来的 |
-| `detach` 或 holder 断连 | 释放锁 |
-| 同一个连接重复 attach | 幂等更新会话名，不重推图 |
-
-细节：
-
-- 心跳由 pi 侧每 10 秒 `ping` 一次，守护记 `lastSeen`。连接还在但进程冻住时，
-  TCP 层不会给任何提示，只能靠心跳判出来。
-- 每一步都是「先换锁，再通知旧连接」：关连接会触发旧连接的清理路径，
-  那时它不是 holder，不会把刚给新人的锁顺手释放掉。
-- 守护每 `-tick`（默认 5s）主动扫一次假死 holder：没人来抢时锁也不会一直挂在
-  一条没人读的连接上，页面状态行才不会一直显示「有人在收」。
-- 新 holder 接手时，`queue/` 里所有未 ack 的项全部重置为未投再推。
-  上一任收了没 ack 就断了，那些图只有靠这一步才能回到下一任手上；
-  重复投递由 pi 按 id 去重。
-- `finish` 只释放锁，不关连接，也不归档：pi 想再 attach 就再 attach。
-
-## 对接要点（pi 侧）
-
-- 连上先 `hello`，然后 `attach`；`attach-ok` 之后才可能收到 `arrived`。
-- **`ack` 会把文件从 `queue/` 移走**：先把 `path` 的内容读走，再 `ack`。
-  ack 之后原路径就不存在了（新的位置在 `archive/YYYYMMDD/`）。
-- 同一个 id 可能重推：被抢占、断线重连、守护重启之后，`queue/` 里未 ack 的项会再推一遍。
-  按 id 去重，不要假设「一张图只来一次」。
-- 每 10 秒发一次 `ping`，回 `pong`；超过 `-stale` 没心跳会被判假死抢锁。
-- 收到 `busy` 就等或问用户要不要抢；收到 `preempted` 说明锁已经不在自己手上，
-  连接随后会被关，重连后重新 `attach` 即可。
-- `finish` 表示用户在网页上结束了这一轮：锁已释放，该收尾的收尾，连接还在。
+- 用户在输入框里写 `&img(3)`，pi 侧把这个短编号换成真实路径。
+- 查编号：`GET /refs/3`，或者一次看全表 `GET /refs`。
+- 真用上了就 `POST /refs/3/use`，这样池满回收时不会先动刚用过的图。
+- `path` 是绝对路径，pi 直接读，不去猜目录布局。
 
 ## 安全
 
-- socket `0600` + Linux `SO_PEERCRED` 只接受同一 UID（`peer_linux.go`）
 - HTTP 没有 TLS：局域网里本来就不设防，token 的作用是「别让同一个 wifi 的人随手打开
   你的页面」，不是鉴权边界。token 走 URL query，会被浏览器历史记下来。
-- token 不进 journal，`/status` 也不回显；要拿它去 `cat <state>/token`。
+- token 只存在 `state/token`（0600），不进 journal，任何接口都不回显；
+  要看就 `cat <state>/token`。
 
 ## 装
 
@@ -129,7 +97,7 @@ photo/install.sh --status   # 只看状态
 手工跑（临时目录，不碰 systemd、不碰真实 state）：
 
 ```bash
-cd photo && go run . -state /tmp/photo-state -socket /tmp/photo.sock -addr 127.0.0.1:8787
+cd photo && go run . -state /tmp/photo-state -pool 3 -addr 127.0.0.1:8787
 ```
 
 ### systemd 一个坑
@@ -143,9 +111,11 @@ hub 踩过一次，`hub/README.md` 有完整经过，这里只等 `network.targe
 ## 测试
 
 ```bash
-go test ./...
+go test ./...          # 加 -race 也行
 ```
 
-单测不碰真实端口与用户目录：state 用 `t.TempDir()`，socket 在临时目录，
-HTTP 走 `httptest`（随机端口）。覆盖 token 校验、上传入队与 attach 后 flush、
-ack 归档、busy/detach、心跳超期抢占、force 抢占、holder 断连释锁。
+单测不碰真实端口与用户目录：state 用 `t.TempDir()`，HTTP 走 `httptest`（随机端口）。
+覆盖 token 校验（含所有接口不回显 token）、上传分配编号（连续上传拿 1/2/3）、
+最小空号优先、池满回收最久未用（`lastUsed` 优先、无 `lastUsed` 看 `ts`）、
+`/refs/<n>` 与 404、`/refs/<n>/use` 刷新并落盘 `lastUsed`、
+回收后文件仍在 `archive/`、重启后编号表从 `index.json` 恢复、索引原子写。
