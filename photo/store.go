@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -22,42 +23,65 @@ var (
 	errUnknownMime = errors.New("不支持的图片类型")
 	errBadDataURL  = errors.New("dataUrl 格式不对")
 	errEmptyImage  = errors.New("图片内容为空")
+	errNoRef       = errors.New("编号不存在")
+	errBadPool     = errors.New("编号池大小必须 ≥ 1")
+	errNoFreeRef   = errors.New("编号池分配不出编号")
 )
 
 // 落盘布局（-state，默认 ~/.pi/agent/photo-state）：
 //
-//	queue/<id>.<ext>             待投递
-//	archive/YYYYMMDD/<id>.<ext>  已被 pi ack
+//	archive/YYYYMMDD/<id>.<ext>  图片本体，落了就不删
+//	refs/index.json              短编号表
 //	token                        HTTP 口令，0600
 //
-// 文件就是队列的唯一事实来源：重启后扫一遍 queue/ 就恢复了，
-// 不再另写一份索引文件——索引一旦和文件不同步，就得临时决定信谁，
-// 那是白白多出来的一种失败模式。
+// 编号表要单独落一份索引，因为「文件叫什么」和「用户引用几号」是两层语义：
+// 图片按时间戳命名，短编号推不回来（回收之后更推不回来）。
+// 索引和 archive 不同步时以索引为准：多出来的文件最多是孤儿，编号错了才是错。
 type Store struct {
 	root  string
+	pool  int
 	token string
 
 	mu    sync.Mutex
-	items []*queueItem
-	// delivered 是已归档张数。启动时扫一次 archive/，之后按 ack 递增：
-	// 宁可启动时慢一点，也不想为了一个计数再落一份状态。
-	delivered int
+	items map[int]*RefItem
 }
 
-// queueItem 是队列里的一项。落盘信息全在文件名与文件本身，进程内的只有 pushed。
-type queueItem struct {
-	ID    string
-	Path  string
-	Mime  string
-	Bytes int64
-	TS    time.Time
-	// pushed 表示已经推给过当前 holder。新的 holder 接手时全部按未推算：
-	// 上一任收了没 ack 就断了，那些图还在 queue 里，该由下一任拿走。
-	pushed bool
+// RefItem 是编号池里的一条。时间字段用 RFC3339(UTC) 字符串而不是 time.Time：
+// 落盘格式、HTTP 回应、内存里存的是同一份东西，不必再为「内存里怎么放」定一套转换。
+// 小数秒是必要的——同一秒里连传几张图时，回收顺序要靠它排出来。
+type RefItem struct {
+	Ref      int    `json:"ref"`
+	Path     string `json:"path"`
+	Bytes    int64  `json:"bytes"`
+	TS       string `json:"ts"`
+	LastUsed string `json:"lastUsed,omitempty"`
 }
 
-func (q *queueItem) item() Item {
-	return Item{ID: q.ID, Path: q.Path, Mime: q.Mime, Bytes: q.Bytes, TS: rfc3339(q.TS)}
+func (it *RefItem) clone() *RefItem {
+	c := *it
+	return &c
+}
+
+// evictKey 是回收排序用的时间：用过就以最后一次使用为准，没用过按入库时间。
+// 两个都解析不出来时归零值；零值最早，也就是最先被回收。
+func (it *RefItem) evictKey() time.Time {
+	for _, s := range []string{it.LastUsed, it.TS} {
+		if s == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// indexFile 是 refs/index.json 的结构。外面套一层 items 是为了以后还能加字段
+// （比如记下当时的 pool 大小）而不破坏老读法。
+type indexFile struct {
+	Items []*RefItem `json:"items"`
 }
 
 // mimeExt 是允许落盘的类型。页面永远发 JPEG（canvas 压完就是 JPEG），
@@ -69,27 +93,18 @@ var mimeExt = map[string]string{
 	"image/webp": ".webp",
 }
 
-func extMime(ext string) (string, bool) {
-	switch ext {
-	case ".jpg", ".jpeg":
-		return "image/jpeg", true
-	case ".png":
-		return "image/png", true
-	case ".webp":
-		return "image/webp", true
-	}
-	return "", false
-}
-
-func newStore(root string) (*Store, error) {
+func newStore(root string, pool int) (*Store, error) {
 	if root == "" {
 		return nil, errors.New("state 目录为空")
 	}
-	s := &Store{root: root}
-	if err := os.MkdirAll(s.queueDir(), 0o700); err != nil {
+	if pool < 1 {
+		return nil, errBadPool
+	}
+	s := &Store{root: root, pool: pool, items: map[int]*RefItem{}}
+	if err := os.MkdirAll(filepath.Join(root, "archive"), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, "archive"), 0o700); err != nil {
+	if err := os.MkdirAll(s.refsDir(), 0o700); err != nil {
 		return nil, err
 	}
 	token, err := loadToken(filepath.Join(root, "token"))
@@ -97,19 +112,20 @@ func newStore(root string) (*Store, error) {
 		return nil, err
 	}
 	s.token = token
-	s.loadQueue()
-	s.delivered = countArchived(filepath.Join(root, "archive"))
+	if err := s.loadIndex(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
-func (s *Store) queueDir() string { return filepath.Join(s.root, "queue") }
-func (s *Store) Token() string    { return s.token }
-func (s *Store) Root() string     { return s.root }
-func (s *Store) Delivered() int   { s.mu.Lock(); defer s.mu.Unlock(); return s.delivered }
+func (s *Store) refsDir() string   { return filepath.Join(s.root, "refs") }
+func (s *Store) indexPath() string { return filepath.Join(s.refsDir(), "index.json") }
+func (s *Store) Token() string     { return s.token }
+func (s *Store) Root() string      { return s.root }
+func (s *Store) Pool() int         { return s.pool }
 
-// Queued 是 queue/ 里还没被 ack 的张数。已推未 ack 的也算在内：
-// 图在被 ack 之前一直躺在 queue 里，口径跟着磁盘走才不会有两种「剩余」。
-func (s *Store) Queued() int {
+// Used 是编号表里当前的条数（≤ pool，池调小之后可能暂时超出）。
+func (s *Store) Used() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.items)
@@ -156,52 +172,120 @@ func validToken(t string) bool {
 	return true
 }
 
-// loadQueue 重建内存队列。排序按 id 再按文件名：id 前缀是毫秒时间戳，
-// 字符串序就是时间序，重启后投递顺序和拍的时候一致。
-func (s *Store) loadQueue() {
-	ents, err := os.ReadDir(s.queueDir())
+// loadIndex 从磁盘恢复编号表。文件坏了不当场挂掉：图片都还在 archive，
+// 编号表本来就能靠重新上传或直接用路径重建，起不来才是真的没法用。
+// 坏文件改名留档，好让「编号怎么全变了」这件事有据可查。
+func (s *Store) loadIndex() error {
+	buf, err := os.ReadFile(s.indexPath())
 	if err != nil {
-		log.Printf("读 queue 目录失败: %v", err)
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
-	var items []*queueItem
-	for _, e := range ents {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		ext := filepath.Ext(name)
-		mime, ok := extMime(ext)
-		if !ok {
-			continue
-		}
-		id := strings.TrimSuffix(name, ext)
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		items = append(items, &queueItem{
-			ID:    id,
-			Path:  filepath.Join(s.queueDir(), name),
-			Mime:  mime,
-			Bytes: info.Size(),
-			TS:    info.ModTime(),
-		})
+	var idx indexFile
+	if err := json.Unmarshal(buf, &idx); err != nil {
+		bad := s.indexPath() + ".bad-" + time.Now().Format("20060102T150405")
+		log.Printf("index.json 解析失败，已改名留档 %s: %v", bad, err)
+		return os.Rename(s.indexPath(), bad)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].ID != items[j].ID {
-			return items[i].ID < items[j].ID
+	items := make(map[int]*RefItem, len(idx.Items))
+	for _, it := range idx.Items {
+		// 手改坏的行直接跳过：宁可少一条编号，也不想让一条没有路径的表项占着号
+		if it == nil || it.Ref < 1 || it.Path == "" {
+			continue
 		}
-		return items[i].Path < items[j].Path
-	})
+		items[it.Ref] = it
+	}
 	s.mu.Lock()
 	s.items = items
 	s.mu.Unlock()
+	return nil
 }
 
-// Enqueue 把一张图落到 queue/。mime 不在表里就拒收，不落盘：
-// 落一张扩展名和内容对不上的文件，后面每个读它的人都要多判一次。
-func (s *Store) Enqueue(mime string, data []byte) (*queueItem, error) {
+// saveLocked 原子写 index.json：先写同目录的临时文件，再 rename 覆盖。
+// 直接截断重写的话，进程死在写一半会留下半截索引，比丢一次更新更难收拾；
+// rename 在同一文件系统内是原子的，读到的只会是完整的一版。
+func (s *Store) saveLocked() error {
+	buf, err := json.Marshal(indexFile{Items: s.sortedLocked()})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.refsDir(), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(s.refsDir(), "index-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	// rename 成功之后这一下删不到东西，只有失败路径上才真的清掉半成品
+	defer os.Remove(name)
+
+	if _, err := tmp.Write(append(buf, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, s.indexPath())
+}
+
+// sortedLocked 返回按编号升序排列的副本。给出去的是副本：调用方只读，
+// 改了也不会回头污染表里那条（回收顺序就靠这些时间字段）。
+func (s *Store) sortedLocked() []*RefItem {
+	out := make([]*RefItem, 0, len(s.items))
+	for _, it := range s.items {
+		out = append(out, it.clone())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	return out
+}
+
+// Refs 是给页面和 pi 看的全表，按编号升序。要按编号念给人听，顺序稳定比快重要。
+func (s *Store) Refs() []*RefItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sortedLocked()
+}
+
+func (s *Store) Get(ref int) (*RefItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it, ok := s.items[ref]
+	if !ok {
+		return nil, errNoRef
+	}
+	return it.clone(), nil
+}
+
+// Touch 把编号刷成「刚用过」。它是回收顺序的唯一输入，所以刷完必须落盘：
+// 只记在内存里的话，重启之后这些使用记录就没了，回收会开始按入库时间乱砍。
+func (s *Store) Touch(ref int) (*RefItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it, ok := s.items[ref]
+	if !ok {
+		return nil, errNoRef
+	}
+	prev := it.LastUsed
+	it.LastUsed = rfc3339(time.Now())
+	if err := s.saveLocked(); err != nil {
+		it.LastUsed = prev
+		return nil, err
+	}
+	return it.clone(), nil
+}
+
+// Enqueue 把一张图落进 archive/YYYYMMDD/ 并分配一个短编号。
+// mime 不在表里就拒收、不落盘：落一张扩展名和内容对不上的文件，
+// 后面每个读它的人都要多判一次。
+func (s *Store) Enqueue(mime string, data []byte) (*RefItem, error) {
 	ext, ok := mimeExt[mime]
 	if !ok {
 		return nil, errUnknownMime
@@ -210,156 +294,83 @@ func (s *Store) Enqueue(mime string, data []byte) (*queueItem, error) {
 		return nil, errEmptyImage
 	}
 	now := time.Now()
-	id := newItemID(now)
-	path := filepath.Join(s.queueDir(), id+ext)
+	dir := filepath.Join(s.root, "archive", now.Format("20060102"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, newItemID(now)+ext)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return nil, err
 	}
-	it := &queueItem{ID: id, Path: path, Mime: mime, Bytes: int64(len(data)), TS: now}
+
 	s.mu.Lock()
-	s.items = append(s.items, it)
-	s.mu.Unlock()
-	return it, nil
+	defer s.mu.Unlock()
+	prev := s.snapshotLocked()
+	ref, evicted := s.allocLocked()
+	if ref < 1 {
+		s.items = prev
+		return nil, errNoFreeRef
+	}
+	it := &RefItem{Ref: ref, Path: path, Bytes: int64(len(data)), TS: rfc3339(now)}
+	s.items[ref] = it
+	if err := s.saveLocked(); err != nil {
+		// 索引没写成就当没登记过。图片文件留在 archive：内容本身是真的，
+		// 删了不可逆；用户下次还能拿绝对路径找到它。
+		log.Printf("编号表写盘失败，%s 未登记（文件保留）: %v", path, err)
+		s.items = prev
+		return nil, err
+	}
+	if evicted != nil {
+		log.Printf("编号池满：%d 号让给新图，原图仍在 %s", evicted.Ref, evicted.Path)
+	}
+	return it.clone(), nil
 }
 
-// newItemID 形如 1758859200123-0007-a1b2c3d4：毫秒时间戳在前，id 的字符串序就是
-// 投递顺序；同毫秒内再垫一个自增序号，否则同一批上传的几张图在重启后会按随机后缀
-// 重排。id 一旦发出就不再变，pi 侧可以拿它去重。
+// snapshotLocked 浅拷贝一张表，用于写盘失败时回滚。
+// 浅拷贝够用：分配只做插入和删除，不会改到 RefItem 内部。
+func (s *Store) snapshotLocked() map[int]*RefItem {
+	m := make(map[int]*RefItem, len(s.items))
+	for k, v := range s.items {
+		m[k] = v
+	}
+	return m
+}
+
+// allocLocked 分配编号：1..pool 里最小的空号；一个空号都没有时，回收 lastUsed 最早
+// 的那条（没 lastUsed 看 ts）把号让出来。
+//
+// 池调小之后留下的越界编号不参与回收：它们既不是空号，也不该被当成候选砍掉。
+func (s *Store) allocLocked() (ref int, evicted *RefItem) {
+	for r := 1; r <= s.pool; r++ {
+		if _, ok := s.items[r]; !ok {
+			return r, nil
+		}
+	}
+	// 池满。时间相同时按编号小的先走，免得同一批图在池满时回收谁随 map 遍历顺序变。
+	victim := 0
+	var victimAt time.Time
+	for r, it := range s.items {
+		if r > s.pool {
+			continue
+		}
+		at := it.evictKey()
+		if victim == 0 || at.Before(victimAt) || (at.Equal(victimAt) && r < victim) {
+			victim, victimAt = r, at
+		}
+	}
+	if victim == 0 {
+		return 0, nil // 走不到：池 ≥ 1，池满时必然有候选
+	}
+	evicted = s.items[victim]
+	delete(s.items, victim)
+	return victim, evicted
+}
+
+// newItemID 形如 1758859200123-0007-a1b2c3d4：毫秒时间戳在前，文件名排序就是
+// 拍摄顺序；同毫秒内再垫一个自增序号，否则同一批上传的几张图在重启后会按随机后缀
+// 重排。id 只是文件名，编号与它的对应关系在 refs/index.json 里。
 func newItemID(t time.Time) string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%013d-%04d-%s", t.UnixMilli(), itemSeq.Add(1)%10000, hex.EncodeToString(b[:]))
-}
-
-// Unpushed 返回还没推给当前 holder 的项。返回的是副本指针，
-// 调用方只读，改动一律走 MarkPushed，免得两处各记一份状态。
-func (s *Store) Unpushed() []*queueItem {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*queueItem, 0, len(s.items))
-	for _, it := range s.items {
-		if !it.pushed {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-func (s *Store) MarkPushed(ids []string) {
-	if len(ids) == 0 {
-		return
-	}
-	set := map[string]bool{}
-	for _, id := range ids {
-		set[id] = true
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, it := range s.items {
-		if set[it.ID] {
-			it.pushed = true
-		}
-	}
-}
-
-// ResetPushed：新的 holder 接手，队列里所有未 ack 的都算没推过。上一任断线前
-// 收到但没 ack 的图，只有靠这一下才能回到下一任手上；重复投递由 pi 按 id 去重。
-func (s *Store) ResetPushed() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, it := range s.items {
-		it.pushed = false
-	}
-}
-
-// PushedCount 数这批 id 里有多少已经在当前 holder 手上，用于 upload 回执。
-func (s *Store) PushedCount(ids []string) int {
-	if len(ids) == 0 {
-		return 0
-	}
-	set := map[string]bool{}
-	for _, id := range ids {
-		set[id] = true
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, it := range s.items {
-		if set[it.ID] && it.pushed {
-			n++
-		}
-	}
-	return n
-}
-
-// Ack 把指定 id 从 queue 移到 archive/YYYYMMDD/。归档日期取 ack 当天，
-// 不取拍摄时间：这份目录是「哪天的投递被消费了」的日志，不是相册。
-func (s *Store) Ack(ids []string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir := filepath.Join(s.root, "archive", time.Now().Format("20060102"))
-	moved := 0
-	for _, id := range ids {
-		idx := -1
-		for i, it := range s.items {
-			if it.ID == id {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			continue // 不在队列里：重复 ack，或已被抢占后的重推前就被移走
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return moved, err
-		}
-		src := s.items[idx].Path
-		dst := filepath.Join(dir, filepath.Base(src))
-		if _, err := os.Stat(dst); err == nil {
-			// id 唯一，撞名只可能是人为搬回来的。换个后缀两份都留着，
-			// 归档目录里覆盖或删除都不可逆，不值得为这点整洁冒风险
-			dst = dupName(dir, filepath.Base(src))
-		}
-		if err := os.Rename(src, dst); err != nil {
-			log.Printf("归档 %s 失败: %v", id, err)
-			continue
-		}
-		s.items = append(s.items[:idx], s.items[idx+1:]...)
-		moved++
-	}
-	s.delivered += moved
-	return moved, nil
-}
-
-func dupName(dir, base string) string {
-	ext := filepath.Ext(base)
-	stem := strings.TrimSuffix(base, ext)
-	for i := 1; i < 100; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("%s-dup%d%s", stem, i, ext))
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return path
-		}
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s-dup%s", stem, ext))
-}
-
-// countArchived 数归档总张数。只在启动时跑一次，之后维护计数，
-// 免得页面每几秒轮询一次 status 就去遍历一遍 archive。
-func countArchived(dir string) int {
-	days, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, d := range days {
-		if !d.IsDir() {
-			continue
-		}
-		files, err := os.ReadDir(filepath.Join(dir, d.Name()))
-		if err != nil {
-			continue
-		}
-		n += len(files)
-	}
-	return n
 }
