@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>照片管理</title>
+<style>
+  /* 配色跟上传页 page.html 同一套：同一台机器上两张页面，走进去不该像换了个产品 */
+  :root { color-scheme: dark; }
+  body { margin:0; padding:20px; font:16px/1.5 system-ui,-apple-system,sans-serif;
+         background:#11161d; color:#e6edf3; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  p.hint { color:#8b98a5; font-size:14px; margin:0 0 14px; }
+  #stat { display:flex; align-items:center; gap:9px; font-size:14px; line-height:1.45;
+          padding:11px 13px; border-radius:10px; background:#182230; color:#c8d3de;
+          margin:0 0 8px; }
+  #stat .dot { width:9px; height:9px; border-radius:50%; background:#8b98a5; flex:0 0 auto; }
+  #stat.on .dot { background:#3fb950; }
+  #stat.on { color:#e6edf3; }
+  #stat button { margin-left:auto; padding:6px 12px; border:1px solid #2b3947; border-radius:8px;
+                 background:#2b3947; color:#e6edf3; font-size:13px; }
+  .where { font-size:13px; color:#8b98a5; margin:0 0 16px; }
+  .where code { color:#c8d3de; word-break:break-all; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+  .card { background:#182230; border:1px solid #1e2733; border-radius:10px; overflow:hidden;
+          display:flex; flex-direction:column; }
+  .card a { display:block; background:#0d1117; }
+  .card img { width:100%; height:150px; object-fit:cover; display:block; }
+  .card .meta { padding:8px 10px 4px; font-size:12px; color:#8b98a5; }
+  .card .meta b { color:#e6edf3; font-size:13px; }
+  .card button { margin:6px 10px 10px; padding:7px 10px; border:1px solid #5a2530;
+                 border-radius:8px; background:#2d1a1f; color:#f0a0a8; font-size:13px; }
+  .card button:disabled { opacity:.5; }
+  .card button:active { filter:brightness(1.3); }
+  #out { font-size:14px; color:#c8d3de; white-space:pre-wrap; margin:14px 0 0; }
+</style>
+<h1>照片管理</h1>
+<p class="hint">点缩略图看大图。删除会同时删掉文件并释放编号，之后上传可以重用这个号。</p>
+<div id="stat"><span class="dot"></span><span id="stat-text">正在连接…</span>
+  <button id="reload" type="button">刷新</button></div>
+<p class="where">归档目录 <code>{{ARCHIVE}}</code> · 本页只在主机本机（回环地址）可打开</p>
+<div id="grid" class="grid"></div>
+<div id="out"></div>
+<script>
+// 口令从地址栏的 ?k= 里拿，跟上传页一个口径：页面本身不内联 token，
+// 保存下来的 HTML 或者被谁扫走的页面源码里都不会带一份口令。
+const K = new URLSearchParams(location.search).get("k") || "";
+const api = path => path + "?k=" + encodeURIComponent(K);
+const stat = document.getElementById("stat");
+const statText = document.getElementById("stat-text");
+const grid = document.getElementById("grid");
+const out = document.getElementById("out");
+
+function fmtTime(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s || "";
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function fmtBytes(n) {
+  if (!(n > 0)) return "0KB";
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(n / 1024)) + "KB";
+}
+
+async function load() {
+  try {
+    const [sr, rr] = await Promise.all([
+      fetch(api("/status"), { cache: "no-store" }),
+      fetch(api("/refs"), { cache: "no-store" }),
+    ]);
+    if (!sr.ok || !rr.ok) throw new Error(`HTTP ${sr.status}/${rr.status}`);
+    const st = await sr.json(), rf = await rr.json();
+    stat.className = "on";
+    statText.textContent = `编号池 ${st.pool} · 已用 ${st.used}`;
+    render(rf.items || []);
+  } catch (e) {
+    stat.className = "";
+    statText.textContent = "守护没应答（" + e.message + "）";
+    out.textContent = "读编号失败。地址里的口令（?k=）是不是过时了？";
+  }
+}
+
+// 按入库时间倒序：池子满时回收的是「最久没用过」，跟「最近拍过」不是一回事，
+// 但看图的人按拍摄时间找更顺手。
+function render(items) {
+  items.sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+  grid.textContent = "";
+  if (!items.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "池子还是空的。用手机打开上传页拍几张，这里就会出现缩略图。";
+    grid.append(p);
+    return;
+  }
+  for (const it of items) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const a = document.createElement("a");
+    a.href = api(`/refs/${it.ref}/raw`);
+    a.target = "_blank";
+    a.rel = "noopener";
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.src = a.href;
+    img.alt = "#" + it.ref;
+    a.append(img);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const b = document.createElement("b");
+    b.textContent = "#" + it.ref;
+    const span = document.createElement("span");
+    span.textContent = ` · ${fmtTime(it.ts)} · ${fmtBytes(it.bytes)}`;
+    meta.append(b, span);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "删除";
+    btn.addEventListener("click", () => del(it.ref, btn));
+    card.append(a, meta, btn);
+    grid.append(card);
+  }
+}
+
+// 破坏性操作先 confirm：点错一下就把照片从磁盘上删掉，代价太大。
+async function del(ref, btn) {
+  if (!confirm(`删除 #${ref}？\n图片文件会从归档目录里删掉，编号 ${ref} 释放，之后上传会重用这个号。`)) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(api(`/refs/${ref}/delete`), { method: "POST", cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    out.textContent = `已删除 #${ref}`;
+    await load();
+  } catch (e) {
+    out.textContent = `删除 #${ref} 失败：${e.message}`;
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("reload").addEventListener("click", load);
+load();
+</script>
+</html>
