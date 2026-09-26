@@ -27,6 +27,14 @@ func TestTokenRequired(t *testing.T) {
 		{"编号表口令错", http.MethodGet, "/refs", "deadbeef"},
 		{"单号口令错", http.MethodGet, "/refs/1", "deadbeef"},
 		{"标记使用口令错", http.MethodPost, "/refs/1/use", "deadbeef"},
+		// 管理页与删除是新增的两个入口：口令没对上时，来源是不是回环都不重要，
+		// 一律 401，且不许先回 403 把「这个路径存在」告诉对方。
+		{"管理页无口令", http.MethodGet, "/manage", ""},
+		{"管理页口令错", http.MethodGet, "/manage", "deadbeef"},
+		{"原图无口令", http.MethodGet, "/refs/1/raw", ""},
+		{"原图口令错", http.MethodGet, "/refs/1/raw", "deadbeef"},
+		{"删除无口令", http.MethodPost, "/refs/1/delete", ""},
+		{"删除口令错", http.MethodPost, "/refs/1/delete", "deadbeef"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,6 +70,10 @@ func TestResponsesDoNotLeakToken(t *testing.T) {
 	}
 	if _, body := r.get("/refs", r.token()); strings.Contains(string(body), r.token()) {
 		t.Fatalf("refs 回显里带上了 token: %s", body)
+	}
+	// 管理页是 HTML，token 只从地址栏的 ?k= 读，不内联进页面
+	if _, body := r.get("/manage", r.token()); strings.Contains(string(body), r.token()) {
+		t.Fatalf("管理页里带上了 token: %s", body)
 	}
 	r.upload(jpegImage("a.jpg", 64))
 	if _, body := r.post("/upload", r.token(), uploadReq{Images: []uploadImage{jpegImage("b.jpg", 64)}}); strings.Contains(string(body), r.token()) {
