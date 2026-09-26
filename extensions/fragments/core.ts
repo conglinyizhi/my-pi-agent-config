@@ -7,7 +7,9 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { parse as parseToml } from "smol-toml";
+import { lookupFragmentProvider, type FragmentCallResult } from "../../lib/fragment-providers.ts";
 
 export interface Fragment {
 	name: string;
@@ -30,10 +32,11 @@ export interface FragmentFile {
 }
 
 /**
- * 名字允许的字符：字母、数字、下划线、连字符，外加中日韩等广义字母（\p{L} 覆盖）。
+ * 名字允许的字符：字母、数字、下划线、连字符、冒号，外加中日韩等广义字母（\p{L} 覆盖）。
+ * 冒号是给动态调用留的命名空间（`&photo:2`、`&git:branch` 这类），静态碎片想用也可以。
  * `&` 后面必须紧跟这些字符才算触发，所以 `&&` 与 URL 里的 `&x=1` 不会命中。
  */
-const NAME_CHAR = /[\p{L}\p{N}_-]/u;
+const NAME_CHAR = /[\p{L}\p{N}_:-]/u;
 
 /** 一条碎片能响应的全部触发词：主名 + 别名 */
 export function triggerNames(fragment: Fragment): string[] {
@@ -142,104 +145,226 @@ function isTriggerAt(line: string, index: number): boolean {
 	return /\s/.test(line[index - 1]);
 }
 
-function expandLine(line: string, byName: Map<string, Fragment>, expanded: string[], unknown: string[]): string {
-	let result = "";
+/**
+ * 一行里切出来的一块：要么是原样正文，要么是一个待展开的触发。
+ *
+ * 拆成片段而不是边扫边替换，是为了让同步版（只认静态表）与异步版（会问 provider）
+ * 共用同一套扫描：语法只有一份，两边的差异只剩「找谁去展开」。
+ */
+type Piece =
+	/** 原样输出的一段 */
+	| { kind: "text"; text: string }
+	/** 一个触发；args 为 undefined 表示没带括号，带括号时哪怕空串也算调用（`&img()`） */
+	| { kind: "trigger"; name: string; args: string | undefined; raw: string };
+
+/** 从 start 起读名字字符，返回名字结束的位置；等于 start 就表示这里没有名字 */
+function scanName(line: string, start: number): number {
+	let j = start;
+	while (j < line.length && NAME_CHAR.test(line[j])) j++;
+	return j;
+}
+
+/**
+ * 把一行切成正文与触发两种片段。触发有两种写法：
+ *
+ * - `&名字` —— 静态碎片，或不需要参数的 provider
+ * - `&名字(参数)` —— 动态调用，参数读到**本行第一个** `)` 为止；不做嵌套与转义
+ *
+ * 名字后面没有紧跟着 `(`，或者扫完这一行都找不到 `)`，都退回「普通名字」：
+ * 括号与后面的内容原样留给用户，绝不因为少个右括号就把人家后面写的东西吞掉。
+ */
+function scanLine(line: string): Piece[] {
+	const pieces: Piece[] = [];
+	let text = "";
 	let i = 0;
 	let inCode = false;
+	const flush = (): void => {
+		if (text !== "") {
+			pieces.push({ kind: "text", text });
+			text = "";
+		}
+	};
 	while (i < line.length) {
 		const ch = line[i];
 		if (ch === "`") {
 			inCode = !inCode;
-			result += ch;
+			text += ch;
 			i++;
 			continue;
 		}
 		if (ch === "&" && !inCode && isTriggerAt(line, i)) {
-			let j = i + 1;
-			while (j < line.length && NAME_CHAR.test(line[j])) j++;
-			const name = line.slice(i + 1, j);
-			if (name !== "") {
-				const fragment = byName.get(name);
-				if (fragment) {
-					expanded.push(name);
-					result += fragment.text;
-					i = j;
-					continue;
+			const j = scanName(line, i + 1);
+			if (j > i + 1) {
+				const name = line.slice(i + 1, j);
+				if (line[j] === "(") {
+					const close = line.indexOf(")", j + 1);
+					if (close !== -1) {
+						flush();
+						pieces.push({ kind: "trigger", name, args: line.slice(j + 1, close), raw: line.slice(i, close + 1) });
+						i = close + 1;
+						continue;
+					}
 				}
-				unknown.push(name);
+				flush();
+				pieces.push({ kind: "trigger", name, args: undefined, raw: line.slice(i, j) });
+				i = j;
+				continue;
 			}
 		}
-		result += ch;
+		text += ch;
 		i++;
 	}
-	return result;
+	flush();
+	return pieces;
+}
+
+/** 按行切片段；fenced 代码块整行原样留着（与原来「代码块里不展开」同一套判断） */
+function scanText(text: string): Piece[][] {
+	const lines: Piece[][] = [];
+	let inFence = false;
+	for (const line of text.split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			lines.push([{ kind: "text", text: line }]);
+			continue;
+		}
+		if (inFence) {
+			lines.push([{ kind: "text", text: line }]);
+			continue;
+		}
+		lines.push(scanLine(line));
+	}
+	return lines;
+}
+
+/** 静态表：主名与别名都入库，先到先得（同名时配置里靠前的那条赢） */
+function indexFragments(fragments: Fragment[]): Map<string, Fragment> {
+	const byName = new Map<string, Fragment>();
+	for (const fragment of fragments) {
+		for (const key of triggerNames(fragment)) if (!byName.has(key)) byName.set(key, fragment);
+	}
+	return byName;
 }
 
 /**
- * 展开文本里的 `&名字`。
+ * 展开文本里的 `&名字`（只认静态表，不碰 provider）。
  *
  * - 只认行首/空白后的 `&名字`（`&&`、`a & b` 不碰）
  * - 跳过 fenced 代码块与行内反引号里的内容（贴 shell 代码时不误伤）
  * - 没定义的名字原样留在文本里，只在外层提示一次
  * - 单趟展开：片段正文里再写 `&xxx` 不会继续展开
+ * - 带括号的调用（`&img(3)`）不进静态表：参数对固定正文没有意义，
+ *   硬展会把括号里的意图默默丢掉；这一种交给 expandFragmentsAsync 找 provider
+ *
+ * 同步版保留下来给旧调用方与旧测试；input handler 走 expandFragmentsAsync。
  */
 export function expandFragments(
 	text: string,
 	fragments: Fragment[],
 ): { text: string; expanded: string[]; unknown: string[] } {
-	if (text === "" || fragments.length === 0) {
-		const unknown: string[] = [];
-		if (fragments.length === 0) for (const name of collectNames(text)) unknown.push(name);
-		return { text, expanded: [], unknown: [...new Set(unknown)] };
-	}
-	const byName = new Map<string, Fragment>();
-	for (const fragment of fragments) {
-		for (const key of triggerNames(fragment)) if (!byName.has(key)) byName.set(key, fragment);
-	}
+	const byName = indexFragments(fragments);
 	const expanded: string[] = [];
 	const unknown: string[] = [];
-	let inFence = false;
-	const lines = text.split("\n").map((line) => {
-		if (/^\s*(```|~~~)/.test(line)) {
-			inFence = !inFence;
-			return line;
-		}
-		if (inFence) return line;
-		return expandLine(line, byName, expanded, unknown);
-	});
+	const lines = scanText(text).map((pieces) =>
+		pieces
+			.map((piece) => {
+				if (piece.kind === "text") return piece.text;
+				const fragment = piece.args === undefined ? byName.get(piece.name) : undefined;
+				if (fragment) {
+					expanded.push(piece.name);
+					return fragment.text;
+				}
+				unknown.push(piece.name);
+				return piece.raw;
+			})
+			.join(""),
+	);
 	return { text: lines.join("\n"), expanded: [...new Set(expanded)], unknown: [...new Set(unknown)] };
 }
 
-/** 只找名字不替换：配置为空时也要能提示「你写的这些名字一个都没有」 */
-function collectNames(text: string): string[] {
-	const names: string[] = [];
-	let inFence = false;
-	for (const line of text.split("\n")) {
-		if (/^\s*(```|~~~)/.test(line)) {
-			inFence = !inFence;
-			continue;
-		}
-		if (inFence) continue;
-		let i = 0;
-		let inCode = false;
-		while (i < line.length) {
-			const ch = line[i];
-			if (ch === "`") {
-				inCode = !inCode;
-				i++;
+/** 异步版比同步版多出来的两个字段：要附到消息上的图，以及 provider 报的错 */
+export interface AsyncExpandResult {
+	text: string;
+	expanded: string[];
+	unknown: string[];
+	/** 按出现顺序拼起来的图片，交给 input handler 附到这条消息上 */
+	images: ImageContent[];
+	/** provider 抛错时的一句话；对应的调用原样保留在文本里 */
+	errors: string[];
+}
+
+/**
+ * 带 provider 的展开：input handler 走这条。
+ *
+ * 找谁展开的优先级：
+ * - 带括号：只问 provider（没注册、或返回 undefined，都当未知名字）
+ * - 不带括号：先静态表，查不到再问 provider（provider 可能不需要参数）
+ *
+ * 同一趟扫描里同一个「名字 + 参数」只问一次（结果也缓存，包括 undefined 与报错）；
+ * 展开是热路径，不能让一次输入里的重复引用反复去读盘。
+ *
+ * provider 抛错只影响那一个调用：报一行错、原文留着，绝不把用户写的输入吞掉。
+ */
+export async function expandFragmentsAsync(text: string, fragments: Fragment[]): Promise<AsyncExpandResult> {
+	const byName = indexFragments(fragments);
+	const expanded: string[] = [];
+	const unknown: string[] = [];
+	const images: ImageContent[] = [];
+	const errors: string[] = [];
+	// key 是「名字 + 参数」；undefined 也缓存，否则同一个不认得的名字会被问好几遍
+	const cache = new Map<string, { result: FragmentCallResult | undefined } | { error: string }>();
+	const lines: string[] = [];
+	for (const pieces of scanText(text)) {
+		let line = "";
+		for (const piece of pieces) {
+			if (piece.kind === "text") {
+				line += piece.text;
 				continue;
 			}
-			if (ch === "&" && !inCode && isTriggerAt(line, i)) {
-				let j = i + 1;
-				while (j < line.length && NAME_CHAR.test(line[j])) j++;
-				if (j > i + 1) names.push(line.slice(i + 1, j));
-				i = j;
+			if (piece.args === undefined) {
+				const fragment = byName.get(piece.name);
+				if (fragment) {
+					expanded.push(piece.name);
+					line += fragment.text;
+					continue;
+				}
+			}
+			const provider = lookupFragmentProvider(piece.name);
+			if (!provider) {
+				unknown.push(piece.name);
+				line += piece.raw;
 				continue;
 			}
-			i++;
+			const args = piece.args ?? "";
+			const key = `${piece.name}\u0000${args}`;
+			let entry = cache.get(key);
+			if (entry === undefined) {
+				try {
+					entry = { result: await provider.expand(args) };
+				} catch (err) {
+					entry = { error: `&${piece.name}(${args}) 展开失败：${err instanceof Error ? err.message : String(err)}` };
+				}
+				cache.set(key, entry);
+			}
+			if ("error" in entry) {
+				errors.push(entry.error);
+				line += piece.raw;
+				continue;
+			}
+			const result = entry.result;
+			if (!result) {
+				// 注册了 provider 但这个名字/参数它不认：与没定义过的名字同等对待
+				unknown.push(piece.name);
+				line += piece.raw;
+				continue;
+			}
+			expanded.push(piece.name);
+			line += result.text;
+			if (result.images) for (const image of result.images) images.push(image);
 		}
+		lines.push(line);
 	}
-	return names;
+	return { text: lines.join("\n"), expanded: [...new Set(expanded)], unknown: [...new Set(unknown)], images, errors: [...new Set(errors)] };
 }
 
 // ── 写配置：/frag:add 的落盘那一段 ──
@@ -248,7 +373,7 @@ function collectNames(text: string): string[] {
  * 名字允许的字符，跟展开时的触发扫描同一套（见上面的 NAME_CHAR）。
  * 不在这套字符里的名字 `&` 后面根本打不出来，写进去也是死条目，所以这里直接拦下。
  */
-const NAME_ALLOWED = /^[\p{L}\p{N}_-]+$/u;
+const NAME_ALLOWED = /^[\p{L}\p{N}_:-]+$/u;
 
 /** 不能直接落进 TOML 字符串的控制字符（换行与制表符另算，它们有合法的写法） */
 const CTRL_CHAR = /[\u0000-\u0008\u000b-\u001f\u007f]/;
@@ -308,7 +433,7 @@ export function checkFragmentName(name: string, existing: Fragment[]): string | 
 	const trimmed = name.trim();
 	if (trimmed === "") return "名字不能为空";
 	if (/\s/.test(trimmed)) return `名字里不能有空白（${trimmed}）`;
-	if (!NAME_ALLOWED.test(trimmed)) return `名字只能用字母、数字、下划线、连字符，${trimmed} 打不出 & 触发`;
+	if (!NAME_ALLOWED.test(trimmed)) return `名字只能用字母、数字、下划线、连字符、冒号，${trimmed} 打不出 & 触发`;
 	const clash = existing.find((fragment) => triggerNames(fragment).includes(trimmed));
 	if (!clash) return undefined;
 	return clash.name === trimmed ? `已经有 &${trimmed} 了` : `&${trimmed} 已经是 ${clash.name} 的别名了`;
