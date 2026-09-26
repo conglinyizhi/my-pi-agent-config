@@ -1,5 +1,5 @@
 [Unit]
-Description=pi photo gateway (LAN HTTP + unix socket)
+Description=pi photo gateway (LAN HTTP + 短编号池)
 # 等网络就绪：手机要从局域网进来，地址也要在链路起来之后才是真的。
 # 注意不能写 After=default.target：WantedBy=default.target 的单元隐含 Before=default.target，
 # 自己再写一条 After 就成了自指环（hub 踩过这个坑，见 hub/README.md）。
