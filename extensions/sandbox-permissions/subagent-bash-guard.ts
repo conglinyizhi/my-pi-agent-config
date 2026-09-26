@@ -9,6 +9,7 @@ import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding
 import { join } from "node:path";
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { checkCommand } from "../../lib/sandbox-check.ts";
+import { findForeignPackageManager, foreignPackageManagerMessage } from "../../lib/package-manager-guard.ts";
 import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "../../lib/bash-timeout.ts";
 import {
   commandDigest,
@@ -79,6 +80,18 @@ export default function (pi: ExtensionAPI): void {
     },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const command = typeof params.command === "string" ? params.command : "";
+
+      // 包管理器边界：系统提示里写了「一律 pnpm」，但提示挡不住真跑，
+      // 而 bash 是 worker 碰命令的唯一入口，就在这里拦。早于能力审批，
+      // 免得为一个本来就不该跑的 npm install 去跟主 agent 要网络能力
+      const foreign = findForeignPackageManager(command);
+      if (foreign) {
+        return {
+          content: [{ type: "text", text: foreignPackageManagerMessage(foreign) }],
+          details: {} as BashToolDetails,
+        };
+      }
+
       const verdict = checkCommand(command, { cwd: ctx.cwd });
 
       const requested = requestedCapability(command);

@@ -209,7 +209,7 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 
 写入边界：worker 的文件写入被限制在派工指定的范围——readonly 档位只有 /tmp 可写，worktree 档位是派工指定的 sandbox_dir 及其子目录。越界的 write / edit 会被工具层直接拒绝，bash 同样受沙箱约束。不要去改沙箱配置或换路径绕开它；确实需要写别处，就把目标路径报回主 agent。
 
-工具链边界：本机包管理器是 pnpm。装包、卸包一律 pnpm（pnpm install / pnpm add / pnpm remove），要跑一次性的 CLI 工具用 pnpm dlx <name>，不要用 npx——npx 会另拉一套依赖树，跟工程里的 pnpm-lock.yaml 打架。禁止 npm 与 yarn；工程里已有 pnpm-lock.yaml 时必须用 pnpm install。这条与主 agent 的约定一致。
+工具链边界：本机包管理器是 pnpm。装包、卸包一律 pnpm（pnpm install / pnpm add / pnpm remove），要跑一次性的 CLI 工具用 pnpm dlx <name>，跑工程脚本用 pnpm run <script>，执行本地依赖里的 CLI 用 pnpm exec <程序>。不要用 npx——npx 会另拉一套依赖树，跟工程里的 pnpm-lock.yaml 打架。禁止 npm 与 yarn；工程里已有 pnpm-lock.yaml 时必须用 pnpm install。这条不只是约定：worker 的 bash 里出现 npm / npx / yarn 会被直接拦下并让你改用 pnpm 重发。与主 agent 的约定一致。
 
 设备边界：碰调试设备（adb、串口、烧录器这类独占目标）时，同一台设备上的操作要走 \`~/.pi/agent/scripts/with-device-lock.sh <设备标识> -- <命令>\` 上锁再跑。你与其他 worker、其他会话的主 agent 都是独立进程，而 adb server 之类的服务是全局的，同一台设备上并发操作会互相踩。拿不到锁（退出码 3）说明别人正在用，等一会儿再试（可加 --wait），不要绕开锁直接敲设备命令。
 
