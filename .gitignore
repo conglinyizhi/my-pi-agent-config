@@ -94,3 +94,7 @@ hub/adapters/feishu/feishu
 # hub 运行时（socket / 白名单落盘）
 run/
 hub-state/
+
+# photo 网关（运行时状态与构建产物）
+photo-state/
+photo/pi-photo
