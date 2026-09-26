@@ -1,19 +1,20 @@
-// extensions/photo/index.test.ts — &img 展开与 /photo:list|url 的接线
+// extensions/photo/index.test.ts — &img 展开与 /photo:list|open|url 的接线
 //
 // 跑法：node --experimental-strip-types extensions/photo/index.test.ts
 //
 // 用假的 pi / ctx 跑真 factory，守护那边起一个真的假 HTTP 守护（临时端口）：
 // provider 通过 lib/photo-refs 的默认入口说话，所以这里用 PI_PHOTO_BASE / PI_PHOTO_TOKEN_FILE
 // 把默认入口指到假守护上——测的就是扩展里那条真实路径，不用另外注入客户端。
+// 唯一注入的是「打开器」：单测不能真弹 Gwenview 窗口（见 boot 的 opener）。
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearFragmentProviders, lookupFragmentProvider, type FragmentProvider } from "../../lib/fragment-providers.ts";
-import photoExtension, { clearImgError, formatBytes, formatStamp, imageMimeOf, lastImgError } from "./index.ts";
+import photoExtension, { clearImgError, formatBytes, formatStamp, imageMimeOf, lastImgError, openWithSystemViewer, type ViewerProcess, type ViewerSpawn } from "./index.ts";
 import { startFakeDaemon, waitFor, type FakeDaemon } from "./fake-daemon.ts";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
@@ -59,6 +60,8 @@ let tokenFile = "";
 let daemon: FakeDaemon | undefined;
 let pi: FakePi | undefined;
 const qrCalls: string[] = [];
+/** 假 opener 记下的「被打开的路径」；每个用例开头清空 */
+const opened: string[] = [];
 const touchedEnv = new Set<string>();
 
 beforeEach(() => {
@@ -68,6 +71,7 @@ beforeEach(() => {
 	clearImgError();
 	clearFragmentProviders();
 	qrCalls.length = 0;
+	opened.length = 0;
 });
 
 afterEach(async () => {
@@ -92,6 +96,10 @@ interface BootOptions {
 	daemon?: Parameters<typeof startFakeDaemon>[0];
 	/** 二维码实现；默认回一个假二维码，传 undefined 就是「画不出来」 */
 	qrCode?: (text: string) => Promise<string | undefined>;
+	/** 打开器：默认只记下路径（不真起 xdg-open）；传一个会把自己的错抛穿，用于测失败分支 */
+	opener?: (path: string) => Promise<void>;
+	/** 无参 /photo:open 要开的目录；默认 photoArchiveDir() */
+	archiveDir?: string;
 }
 
 /** 起假守护 + 装扩展，并把扩展指向它 */
@@ -101,7 +109,10 @@ async function boot(opts: BootOptions = {}) {
 	setEnv("PI_PHOTO_TOKEN_FILE", tokenFile);
 	pi = fakePi();
 	const qrCode = opts.qrCode ?? (async (text: string) => (qrCalls.push(text), "█▀█\n▀▀▀"));
-	photoExtension(pi.api, { qrCode });
+	const opener = opts.opener ?? (async (path: string) => {
+		opened.push(path);
+	});
+	photoExtension(pi.api, { qrCode, opener, archiveDir: opts.archiveDir });
 	const provider = lookupFragmentProvider("img");
 	assert.ok(provider, "factory 跑完应该注册出 img provider");
 	return { d: daemon, provider, commands: pi.commands };
@@ -116,7 +127,13 @@ async function bootAgainstDeadDaemon() {
 	setEnv("PI_PHOTO_BASE", base);
 	setEnv("PI_PHOTO_TOKEN_FILE", tokenFile);
 	pi = fakePi();
-	photoExtension(pi.api, { qrCode: async () => undefined });
+	photoExtension(pi.api, {
+		qrCode: async () => undefined,
+		// 守护都死了，这里也不该有任何人真去弹窗口
+		opener: async (path: string) => {
+			opened.push(path);
+		},
+	});
 	return { base, provider: lookupFragmentProvider("img") as FragmentProvider, commands: pi.commands };
 }
 
@@ -249,10 +266,19 @@ describe("/photo:list", () => {
 		return { ...booted, env };
 	}
 
-	it("空池：给出 /photo:url 的指引", async () => {
+	it("空池：给出 /photo:url 的指引，后面跟上管理页入口", async () => {
 		const { env } = await list();
 		assert.equal(env.last()?.level, "info");
-		assert.equal(env.last()?.message, "池子还是空的，/photo:url 拿上传地址");
+		const message = env.last()?.message ?? "";
+		assert.match(message, /^池子还是空的，\/photo:url 拿上传地址/);
+		assert.match(message, new RegExp(`/manage\\?k=${TOKEN}`));
+		assert.match(message, /本机浏览器打开可以看缩略图与管理/);
+	});
+
+	it("末尾的管理页地址是回环地址（带口令），不换成本机局域网 IP", async () => {
+		const { env, d } = await list();
+		const message = env.last()?.message ?? "";
+		assert.match(message, new RegExp(`${d.base.replace(/[/.]/g, "\\$&")}/manage\\?k=${TOKEN}`));
 	});
 
 	it("列出编号、文件名、大小、最后使用时间", async () => {
@@ -267,6 +293,7 @@ describe("/photo:list", () => {
 		assert.match(message, /1790398718082-0003\.jpg/);
 		assert.match(message, /4\.0 KB/);
 		assert.match(message, /用过 09-26 13:10/); // 时间戳按本地时间渲染
+		assert.match(message, /\/manage\?k=/); // 列表之后还要有管理页入口
 	});
 
 	it("超过 20 行就截断并提醒还有多少张", async () => {
@@ -296,6 +323,158 @@ describe("/photo:list", () => {
 		await commands.get("photo:list")?.handler("", env.ctx);
 		assert.equal(env.last()?.level, "error");
 		assert.match(env.last()?.message ?? "", /拿不到照片池/);
+	});
+});
+
+describe("/photo:open", () => {
+	async function open(args: string, opts: BootOptions = {}) {
+		const booted = await boot(opts);
+		const env = fakeCtx();
+		await booted.commands.get("photo:open")?.handler(args, env.ctx);
+		return { ...booted, env };
+	}
+
+	it("编号命中：把守护给的路径交给查看器，并带上方向键提示", async () => {
+		const image = makeImage("3.jpg");
+		const { env } = await open("3", { daemon: { refs: [{ ref: 3, path: image }] } });
+		assert.deepEqual(opened, [image]);
+		assert.equal(env.last()?.level, "info");
+		assert.match(env.last()?.message ?? "", /照片 #3/);
+		assert.match(env.last()?.message ?? "", /方向键/);
+	});
+
+	it("绝对路径：直接开，不去问守护", async () => {
+		const image = makeImage("shot.png");
+		const { d, env } = await open(image);
+		assert.deepEqual(opened, [image]);
+		assert.deepEqual(d.requests, []);
+		assert.equal(env.last()?.level, "info");
+		assert.match(env.last()?.message ?? "", /shot\.png/);
+	});
+
+	it("无参：开归档目录", async () => {
+		const archive = join(dir, "archive");
+		mkdirSync(archive, { recursive: true });
+		const { env } = await open("", { archiveDir: archive });
+		assert.deepEqual(opened, [archive]);
+		assert.equal(env.last()?.level, "info");
+		assert.match(env.last()?.message ?? "", /归档目录/);
+		assert.match(env.last()?.message ?? "", /方向键/);
+	});
+
+	it("编号不在池里：不调 opener，给一行提示", async () => {
+		const { env } = await open("9", { daemon: { refs: [{ ref: 1, path: makeImage("1.jpg") }] } });
+		assert.deepEqual(opened, []);
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /没有 #9/);
+	});
+
+	it("编号指的文件已经删了：不调 opener，说清盘上没有了", async () => {
+		const { env } = await open("4", { daemon: { refs: [{ ref: 4, path: join(dir, "已经删了.jpg") }] } });
+		assert.deepEqual(opened, []);
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /不在了/);
+	});
+
+	it("绝对路径不存在：不调 opener", async () => {
+		const { env } = await open(join(dir, "没有这张.jpg"));
+		assert.deepEqual(opened, []);
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /文件不在/);
+	});
+
+	it("归档目录还没建（刚装上还没拍过）：不调 opener，指路 /photo:url", async () => {
+		const { env } = await open("", { archiveDir: join(dir, "还没有这个目录") });
+		assert.deepEqual(opened, []);
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /归档目录还不存在/);
+	});
+
+	it("守护没跑：不调 opener，报一行错", async () => {
+		const { commands } = await bootAgainstDeadDaemon();
+		const env = fakeCtx();
+		await commands.get("photo:open")?.handler("3", env.ctx);
+		assert.deepEqual(opened, []);
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /查照片编号 #3 失败/);
+	});
+
+	it("opener 抛错（比如没有 xdg-open）：给提示，不冒泡", async () => {
+		const image = makeImage("3.jpg");
+		const { env } = await open(image, {
+			opener: async () => {
+				throw new Error("PATH 里没有 xdg-open：装一个 xdg-utils");
+			},
+		});
+		assert.equal(env.last()?.level, "error");
+		assert.match(env.last()?.message ?? "", /没能打开/);
+		assert.match(env.last()?.message ?? "", /xdg-open/);
+	});
+
+	it("参数不是编号也不是绝对路径：不调 opener", async () => {
+		// 只装一次：boot 每调一次就多一个假守护，重复 boot 会把上一个漏在后台，
+		// 进程到点也退不出去（命令 handler 本身可以反复调）
+		const booted = await boot();
+		const handler = booted.commands.get("photo:open");
+		const env = fakeCtx();
+		for (const args of ["../relative.jpg", "http://x/y.jpg", "abc"]) {
+			opened.length = 0;
+			await handler?.handler(args, env.ctx);
+			assert.deepEqual(opened, [], `args=${args}`);
+			assert.equal(env.last()?.level, "error", `args=${args}`);
+			assert.match(env.last()?.message ?? "", /只认编号或绝对路径/, `args=${args}`);
+		}
+	});
+});
+
+describe("openWithSystemViewer", () => {
+	/** 假子进程：按用例的意愿发 'spawn' / 'error'，并记下注册了哪些事件、unref 了几次 */
+	function fakeSpawn(emit: "spawn" | { error: NodeJS.ErrnoException }) {
+		const registered: string[] = [];
+		const calls: string[] = [];
+		let unreffed = 0;
+		const proc: ViewerProcess = {
+			once(event, listener) {
+				registered.push(event);
+				if (event === "spawn" && emit === "spawn") queueMicrotask(() => listener());
+				if (event === "error" && emit !== "spawn") queueMicrotask(() => listener(emit.error));
+				return proc;
+			},
+			unref() {
+				unreffed += 1;
+				return proc;
+			},
+		};
+		const spawnFn: ViewerSpawn = (bin, args) => {
+			calls.push([bin, ...args].join(" "));
+			return proc;
+		};
+		return { spawnFn, registered, calls, unreffed: () => unreffed };
+	}
+
+	it("起得来：resolve + unref；不听 exit / close（用户关窗不算失败）", async () => {
+		const fake = fakeSpawn("spawn");
+		await openWithSystemViewer("/tmp/x.jpg", fake.spawnFn);
+		assert.deepEqual(fake.calls, ["xdg-open /tmp/x.jpg"]);
+		assert.equal(fake.unreffed(), 1);
+		assert.deepEqual([...fake.registered].sort(), ["error", "spawn"]);
+	});
+
+	it("PATH 里没有 xdg-open：给可读提示，不静默失败", async () => {
+		const err = Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" });
+		await assert.rejects(() => openWithSystemViewer("/tmp/x.jpg", fakeSpawn({ error: err }).spawnFn), /PATH 里没有 xdg-open/);
+	});
+
+	it("其它启动失败（比如不可执行）：也带一句人话", async () => {
+		const err = Object.assign(new Error("EACCES"), { code: "EACCES" });
+		await assert.rejects(() => openWithSystemViewer("/tmp/x.jpg", fakeSpawn({ error: err }).spawnFn), /xdg-open 起不来/);
+	});
+
+	it("spawn 自己同步抛错：也收成一句提示", async () => {
+		const spawnFn: ViewerSpawn = () => {
+			throw new Error("参数非法");
+		};
+		await assert.rejects(() => openWithSystemViewer("/tmp/x.jpg", spawnFn), /起不了 xdg-open/);
 	});
 });
 
