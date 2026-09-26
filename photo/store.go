@@ -26,6 +26,12 @@ var (
 	errNoRef       = errors.New("编号不存在")
 	errBadPool     = errors.New("编号池大小必须 ≥ 1")
 	errNoFreeRef   = errors.New("编号池分配不出编号")
+	// errNoFile：表里那条记录的图片文件已经不在磁盘上。删除时它和 errNoRef 一样
+	// 回 404——「这个号现在没图」对用户是同一件事，不报 500。
+	errNoFile = errors.New("图片文件已不在")
+	// errOutside：表里的路径不落在归档目录内。表是磁盘上的文件，可能被手改过，
+	// 删除不可逆，按可疑记录去删比拒绝更糟。
+	errOutside = errors.New("编号表里的路径不在归档目录内")
 )
 
 // 落盘布局（-state，默认 ~/.pi/agent/photo-state）：
@@ -280,6 +286,66 @@ func (s *Store) Touch(ref int) (*RefItem, error) {
 		return nil, err
 	}
 	return it.clone(), nil
+}
+
+// Delete 删掉编号对应的图片文件，并摘掉表项把号还回池子（后续上传会重用这个号）。
+//
+// 文件路径只从编号表里取，绝不拿请求参数拼：/refs/<n>/delete 里的 <n> 只用来查表，
+// 所以这个接口能删的东西严格限定在「表里登记的、且那个号指向的文件」，
+// archive/ 里别的文件或任意路径都碰不到。
+//
+// 表项摘除与文件删除的顺序：先删文件、再摘表。反过来的话，摘完表删文件失败就丢了
+// 一条记录，文件成了没人认领的孤儿；这个顺序下最坏是文件已删、表还在，用户再看一眼
+// 还看得到这条，重试一次就清了。
+func (s *Store) Delete(ref int) (*RefItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it, ok := s.items[ref]
+	if !ok {
+		return nil, errNoRef
+	}
+	if !s.insideArchive(it.Path) {
+		return nil, fmt.Errorf("%w: %s", errOutside, it.Path)
+	}
+	if err := os.Remove(it.Path); err != nil {
+		if !os.IsNotExist(err) {
+			// 权限、忙之类的真失败：文件没动，表也不动，编号还留着，用户至少还看得到它
+			return nil, err
+		}
+		// 文件本来就不在：表里这条已经是空壳，编号一样要还回去，只是告诉调用方 404
+		if err := s.dropLocked(ref, it); err != nil {
+			return nil, err
+		}
+		return nil, errNoFile
+	}
+	if err := s.dropLocked(ref, it); err != nil {
+		return nil, err
+	}
+	return it.clone(), nil
+}
+
+// dropLocked 摘掉一条表项并落盘，写盘失败就放回来。
+// 索引是编号表的唯一事实来源，只在内存里删等于重启后编号又回来了。
+func (s *Store) dropLocked(ref int, it *RefItem) error {
+	delete(s.items, ref)
+	if err := s.saveLocked(); err != nil {
+		s.items[ref] = it
+		return err
+	}
+	return nil
+}
+
+// insideArchive 判断表里的路径确实落在 archive/ 里。用 Rel 加前缀判断而不是字符串
+// HasPrefix：HasPrefix("/a/b", "/a/bc") 也会为真，那种写法放进删除路径就是隐患。
+//
+// 只认 archive/ 之下：图片本来就只落在那里。表被手改成指向 state 里的别的东西
+// （比如 refs/index.json）甚至指向 state 目录本身时，删除应当拒绝，而不是照着删。
+func (s *Store) insideArchive(path string) bool {
+	rel, err := filepath.Rel(filepath.Join(s.root, "archive"), path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Enqueue 把一张图落进 archive/YYYYMMDD/ 并分配一个短编号。
