@@ -15,8 +15,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 UNIT_DIR="${HOME}/.config/systemd/user"
 STATE_DIR="${HOME}/.pi/agent/photo-state"
-RUN_DIR="${HOME}/.pi/agent/run"
-SOCKET="${RUN_DIR}/photo.sock"
 
 reload=0
 skip_test=0
@@ -51,10 +49,11 @@ print_status() {
   echo "== 状态 =="
   systemctl --user --no-pager --lines=8 status pi-photo.service 2>/dev/null || echo "pi-photo: 未安装"
   echo
-  if [[ -S "$SOCKET" ]]; then
-    echo "socket: $SOCKET"
+  echo "state:  $STATE_DIR"
+  if [[ -f "$STATE_DIR/refs/index.json" ]]; then
+    echo "编号表: $STATE_DIR/refs/index.json"
   else
-    echo "socket: 不存在"
+    echo "编号表: 未生成（守护还没跑过）"
   fi
   if [[ -f "$STATE_DIR/token" ]]; then
     echo "token:  $STATE_DIR/token"
@@ -64,7 +63,7 @@ print_status() {
   fi
   echo
   echo "只读运行示例（临时目录，不碰 systemd、不碰真实 state）："
-  echo "  cd $ROOT && go run . -state /tmp/photo-state -socket /tmp/photo.sock -addr 127.0.0.1:8787"
+  echo "  cd $ROOT && go run . -state /tmp/photo-state -pool 3 -addr 127.0.0.1:8787"
 }
 
 if [[ "$status_only" -eq 1 ]]; then
@@ -77,7 +76,7 @@ need install
 need systemctl
 
 if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "只支持 Linux + systemd --user：锁与 socket 权限都建在 Unix 语义上。" >&2
+  echo "只支持 Linux + systemd --user：install.sh 装的是 user unit。" >&2
   exit 1
 fi
 
@@ -87,7 +86,7 @@ if [[ "$skip_test" -eq 0 ]]; then
 fi
 
 echo "== build =="
-mkdir -p "$BIN_DIR" "$UNIT_DIR" "$RUN_DIR" "$STATE_DIR"
+mkdir -p "$BIN_DIR" "$UNIT_DIR" "$STATE_DIR"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 (cd "$ROOT" && go build -o "$tmp/pi-photo" .)
