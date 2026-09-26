@@ -4,7 +4,7 @@
 //
 // 不启动真 pi 会话，只做三件事：
 //   1. 用 jiti（pi 加载扩展用的那套）import 本目录的 index.ts，拿到 factory
-//   2. 用假的 pi API 跑一遍 factory，确认注册出 name=img 的 provider 与两条命令
+//   2. 用假的 pi API 跑一遍 factory，确认注册出 name=img 的 provider 与三条命令
 //   3. 确认没挂 session_start / session_shutdown 这类常驻资源（长连接已经没有了）
 // 这个文件不是扩展入口（pi 只加载目录里的 index.ts），只是给人手动跑的自检。
 
@@ -64,7 +64,7 @@ const providers = jitiPath
 const img = providers.lookupFragmentProvider("img");
 if (!img) throw new Error("没有注册出 name=img 的 provider");
 if (typeof img.expand !== "function") throw new Error("img provider 没有 expand");
-for (const name of ["photo:list", "photo:url"]) {
+for (const name of ["photo:list", "photo:open", "photo:url"]) {
 	if (!commands.some((command) => command.name === name && command.hasHandler)) {
 		throw new Error(`缺命令 /${name}`);
 	}
