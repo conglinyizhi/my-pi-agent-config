@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
 import { networkInterfaces } from "node:os";
-import { createPhotoRefs, listRefs, pickLanHost, reachableBase } from "../../lib/photo-refs.ts";
+import { createPhotoRefs, listRefs, manageUrl, pickLanHost, reachableBase, readPhotoToken } from "../../lib/photo-refs.ts";
 import { startFakeDaemon, startSilentServer, waitFor, type FakeDaemon } from "./fake-daemon.ts";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
@@ -231,6 +231,47 @@ describe("uploadUrl", () => {
 		daemon = undefined;
 		const url = await createPhotoRefs({ base, tokenFile, timeoutMs: 1000 }).uploadUrl();
 		assert.equal(url, `${base}/?k=${TOKEN}`);
+	});
+});
+
+describe("manageUrl", () => {
+	it("拼出带口令的本机管理页地址（回环地址不换成本机局域网 IP）", async () => {
+		daemon = await startFakeDaemon();
+		assert.equal(await createPhotoRefs({ base: daemon.base, tokenFile }).manageUrl(), `${daemon.base}/manage?k=${TOKEN}`);
+	});
+
+	it("默认入口读的是同一份口令文件", async () => {
+		daemon = await startFakeDaemon();
+		setEnv("PI_PHOTO_BASE", daemon.base);
+		setEnv("PI_PHOTO_TOKEN_FILE", tokenFile);
+		assert.equal(await manageUrl(), `${daemon.base}/manage?k=${TOKEN}`);
+	});
+
+	it("口令文件不在：报「守护还没初始化」，不是裸 ENOENT", async () => {
+		await assert.rejects(
+			() => createPhotoRefs({ tokenFile: join(dir, "没有这个文件") }).manageUrl(),
+			/守护还没初始化/,
+		);
+	});
+});
+
+describe("readPhotoToken", () => {
+	it("从文件读，去掉末尾换行", async () => {
+		assert.equal(await readPhotoToken({ tokenFile }), TOKEN);
+	});
+
+	it("显式给的 token 优先，不再碰文件", async () => {
+		assert.equal(await readPhotoToken({ token: " 临时口令 ", tokenFile: join(dir, "没有这个文件") }), "临时口令");
+	});
+
+	it("给了空 token 参数：直接说清是调用方传错", async () => {
+		await assert.rejects(() => readPhotoToken({ token: "   " }), /口令是空的/);
+	});
+
+	it("文件是空的：报「守护还没初始化」", async () => {
+		const empty = join(dir, "empty-token");
+		writeFileSync(empty, "\n");
+		await assert.rejects(() => readPhotoToken({ tokenFile: empty }), /口令文件是空的/);
 	});
 });
 
