@@ -72,6 +72,8 @@ const OK_REPORT = JSON.stringify({
 });
 
 const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.0"}'; exit 0 ;; esac`;
+// v0.4.1 的版本答复：origin 与「候选集只在穷尽时给」都从这一版起；0.4.x 互通，expectedVersion 仍是 "0.4"
+const VERSION_041 = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.1"}'; exit 0 ;; esac`;
 
 function configFor(bin: string, over: Partial<PreshellConfig> = {}): PreshellConfig {
   return { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.4", ...over };
@@ -224,6 +226,44 @@ describe("analyzeCommand", () => {
     const old = analyzeCommand("rm $x", { config: configFor(legacy) });
     assert.equal(old.ok, true);
     if (old.ok) assert.equal(old.facts.effects[0].candidates, undefined);
+  });
+
+  it("v0.4.1 的 origin 原样带进 facts；旧报告（≤v0.4.0）没有这个字段就是 undefined", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "/usr/bin/jq", vars: [], candidates: [], origin: "$x", dynamic: false, modeled: false, line: 1 },
+          { kind: "Exec", target: "cat", vars: [], candidates: [], dynamic: false, modeled: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: [],
+        cwd: "/tmp",
+      },
+    });
+    const bin = stub("origin.sh", `${VERSION_041}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("x=/usr/bin/jq; $x -n 1", { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(outcome.version, "0.4.1", "0.4.x 互通：expectedVersion=\"0.4\" 要吃得下 0.4.1");
+    assert.equal(outcome.facts.effects[0].origin, "$x", "引用原文要原样带过来（对命令文本是纯文本比较）");
+    assert.equal(outcome.facts.effects[0].target, "/usr/bin/jq", "target 仍是解出来的值，不是引用");
+    assert.equal(outcome.facts.effects[1].origin, undefined, "target 就是词面本身时没有这个字段");
+
+    // 旧版二进制（≤v0.4.0）不报 origin：字段就是 undefined，收窄那一侧要能当「没这回事」处理
+    const legacy = stub("origin-legacy.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
+      status: "Complete",
+      impact: { effects: [{ kind: "Exec", target: "$x", vars: ["x"], candidates: [], dynamic: true, line: 1 }], write_roots: [], uncertain: true, vars: ["x"], cwd: "/tmp" },
+    })}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const old = analyzeCommand("x=/usr/bin/jq; $x -n 1", { config: configFor(legacy) });
+    assert.equal(old.ok, true);
+    if (old.ok) assert.equal(old.facts.effects[0].origin, undefined);
   });
 
   it("$PWD / ~+ 用报告回的基准（命令内部 cd 过就是 cd 之后那个），不用 pi 进程的 PWD", () => {
@@ -458,10 +498,13 @@ describe("缺件提示（人看的）", () => {
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.4\.0 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.4\.0-x86_64-linux/);
+    assert.match(INSTALL_HINT, /gh release download v0\.4\.1 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.4\.1-x86_64-linux/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
+    // v0.4.1 的两条新事实要写在提示里：origin 与「候选集只在穷尽时给」
+    assert.match(INSTALL_HINT, /origin/);
+    assert.match(INSTALL_HINT, /候选集只在穷尽时才给/);
   });
 
   it("同一个原因只弹一次，但状态标一直挂着；恢复后收掉", () => {

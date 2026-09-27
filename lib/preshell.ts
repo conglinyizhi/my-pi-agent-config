@@ -10,10 +10,12 @@
 //
 // 契约（preshell 仓库 docs/integration.md）：
 //   命令走 stdin，stdout 恰好一个 JSON；退出码 0 = 有报告，2 = 用法错误，其它 = 工具没跑起来
-//   --version → {"tool":"preshell","version":"0.4.0"}：**兼容性只跟版本号走**
+//   --version → {"tool":"preshell","version":"0.4.1"}：**兼容性只跟版本号走**
 //   拿不到报告（缺二进制/超时/坏 JSON/版本不符）时默认动作是保守兜底，绝不因此放行
 //
-// v0.4.0（本文件按它适配）的三处变化：
+// 本文件按 v0.4.1 适配。v0.4.0 与 v0.4.1 是同一个契约版本（0.4.x 互通），v0.4.1 只多了
+// 一条信息和一条口径：effect.origin（第 4 条），以及 candidates 改成「只在穷尽时给」
+// （第 3 条）。下面几条从 v0.4.0 起就成立：
 //   0 破坏性：schema 号删掉了。判定「这次升级会不会打挂我」只看版本号——次版本号变即
 //     不兼容（0.5 起要重新适配），修订号变是兼容的（0.4.x 互通）。旧版（≤0.3.0）的
 //     --version 还带 schema 字段，读的时候要能两种都吃（见 queryPreshellVersion）
@@ -25,8 +27,14 @@
 //     ——环境在调用方手上，见下面「变量的收尾」一节
 //   3 条件分支让一个名字可能有多个取值时，那条洞多一份 effect.candidates（候选集）。
 //     它是**可能性**不是事实：候选里会有哪一个跑，工具不保证；判定拿它收紧（候选逐个判，
-//     命中就拦），不拿它当「只有这几个值」。列表要么给全、要么整个不出现（超 8 条、
-//     自己补不出来的可能都会被丢掉），所以「没有 candidates」不等于「只有一个可能」
+//     命中就拦），不拿它当「只有这几个值」。
+//     v0.4.1 把口径收紧成「**只在穷尽时给**」：列表要么是完整的可能取值、要么整个不出现
+//     （超 8 条、叫不出名字的路径一律撤掉，不再给半截）。所以空数组既不代表「只有一个
+//     可能」，也不代表「这个洞解不出东西」——见到空数组照旧按未知处理（保守方向没变，
+//     代价是 v0.4.0 那种半截候选能收紧的场合现在收不到了，见 lib/sandbox-check.ts）
+//   4 命令自己写出来的赋值解出来的效果带 effect.origin（v0.4.1 起）：它是这个 target
+//     原来写在命令里的那处引用。`x=/usr/bin/jq; $x -n 1` 报 target=/usr/bin/jq、
+//     origin=$x——程序名在命令文本里根本没有这个串，要把它对回命令行只能靠 origin
 //
 // 本文件走的是「一条命令一个子进程」的单条模式：实时路径一次只问一条，起进程那 2ms 无所谓。
 // 批量场景用 lib/preshell-stream.ts 的长驻子进程（--stream），那边省下的才是真开销。
@@ -55,10 +63,21 @@ export interface PreshellEffect {
    *
    * 空数组 = 没有候选（非 dynamic 的效果一律是空数组），**不等于「没有这个字段」**——
    * 旧版二进制（≤0.3.0）根本不报 candidates，那才叫没有这个字段。
-   * 语义是「这些值之一是它」，不是「都是」；列表要么给全要么整个不出现（不截断），
-   * 所以空数组也不等于「只有一个可能」
+   * 语义是「这些值之一是它」，不是「都是」。v0.4.1 起口径是「**只在穷尽时给**」：
+   * 要么是完整的可能取值、要么整个不出现（不截断），所以空数组也不等于「只有一个
+   * 可能」——半截候选（v0.4.0 会给）在新版里被整个撤掉了
    */
   candidates?: string[];
+  /**
+   * 这个 target 是照命令里哪处引用解出来的（v0.4.1 起）：`x=/usr/bin/jq; $x -n 1`
+   * 报 `target: "/usr/bin/jq"` 加 `origin: "$x"`——程序名在命令文本里根本不出现，
+   * 要按文本把效果对回命令行就用这个字段。
+   *
+   * 渲染与 dynamic 目标的 target 同形（`rm -rf "$x"` 报 `$x`，不带引号），所以对
+   * 命令文本是纯文本比较。没有值参与时（target 就是词面本身）不出现这个字段；
+   * 旧版二进制（≤v0.4.0）一律不报，读到 undefined 是常态
+   */
+  origin?: string;
   /** false = 程序跑了，但它碰什么由它自己决定（git/node/python/docker 这类） */
   modeled?: boolean;
   line?: number;
@@ -183,11 +202,12 @@ export function versionsCompatible(toolVersion: string, expectedVersion: string)
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.4.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.4.0-x86_64-linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.4.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.4.1-x86_64-linux ~/.pi/runtime/preshell",
   "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "v0.3 起 --cwd 事实上必填（单条与流式都是进程级参数）；词首带变量/~/~+ 的路径由调用方收尾",
   "v0.4 起兼容性只看版本号（次版本号变即不兼容）；条件分支的候选值走 effect.candidates",
+  "v0.4.1 起：赋值解出来的目标带 origin（它原来写的那处引用），候选集只在穷尽时才给",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
 ].join("\n");

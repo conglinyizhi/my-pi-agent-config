@@ -18,7 +18,7 @@ import { join } from "node:path";
 import {
   checkCommand,
   isInterpreterProgram,
-  preshellProgramCandidates,
+  preshellProgramValues,
   splitProgramCandidates,
   summarizeTokens,
   unquotedPathTokens,
@@ -343,16 +343,19 @@ describe("动态构造收窄：preshell 的命令名候选集（v0.4.0）", () =
     });
   });
 
-  it("解析层：只有 Exec/Spawn 上 dynamic 且候选非空的引用才算候选", () => {
+  it("解析层：只有 Exec/Spawn 上带取值的引用才算；确定值与候选集分得清", () => {
     const bin = stubPreshell({
       version: 1,
       status: "Complete",
       impact: {
         effects: [
           { kind: "Exec", target: "$x", vars: ["x"], candidates: ["/usr/bin/jq", "/usr/bin/jq", "/usr/bin/rg"], dynamic: true, line: 1 },
-          { kind: "Delete", target: "$y", vars: ["y"], candidates: ["/a", "/b"], dynamic: true, line: 1 },
+          { kind: "Exec", target: "/usr/bin/jq", vars: [], candidates: [], origin: "$y", dynamic: false, line: 1 },
+          { kind: "Delete", target: "$p", vars: ["p"], candidates: ["/a", "/b"], dynamic: true, line: 1 },
           { kind: "Exec", target: "cat", vars: [], candidates: [], dynamic: false, line: 1 },
           { kind: "Exec", target: "$z", vars: ["z"], candidates: [], dynamic: true, line: 1 },
+          // dynamic: true 时 target 是引用原文，origin 不是这回事（旧报告里没有这个字段，这里是防备）
+          { kind: "Exec", target: "$w", vars: ["w"], candidates: ["/usr/bin/curl", "/usr/bin/wget"], origin: "$other", dynamic: true, line: 1 },
         ],
         write_roots: [],
         uncertain: true,
@@ -365,12 +368,195 @@ describe("动态构造收窄：preshell 的命令名候选集（v0.4.0）", () =
     withStubPreshell(bin, () => {
       // 借 checkCommand 走一遍事实层拿到 facts（拿不到就直接调 analyzeCommand）
       const result = checkCommand("if c; then x=/usr/bin/jq; fi; $x -n 1", { cwd: "/tmp" });
-      const map = preshellProgramCandidates(result.facts);
-      assert.deepEqual([...map.keys()], ["$x"], "路径效果与空候选不进这张表");
-      assert.deepEqual(map.get("$x"), ["/usr/bin/jq", "/usr/bin/rg"], "同值要去重");
-      const split = splitProgramCandidates(["$x", "$z", "$(echo jq)"], map);
-      assert.deepEqual(split.keep, ["$z", "$(echo jq)"], "没候选的与不是变量引用的都留在动态里");
-      assert.deepEqual(split.narrowed, [{ token: "$x", programs: ["/usr/bin/jq", "/usr/bin/rg"] }]);
+      const map = preshellProgramValues(result.facts);
+      assert.deepEqual([...map.keys()], ["$x", "$y", "$w"], "路径效果与空候选不进这张表");
+      assert.deepEqual(map.get("$x"), { programs: ["/usr/bin/jq", "/usr/bin/rg"], certain: false }, "同值要去重");
+      assert.deepEqual(map.get("$y"), { programs: ["/usr/bin/jq"], certain: true }, "dynamic:false + origin 是确定值");
+      assert.deepEqual(
+        map.get("$w"),
+        { programs: ["/usr/bin/curl", "/usr/bin/wget"], certain: false },
+        "dynamic 的那条只看 target、不看 origin",
+      );
+      const split = splitProgramCandidates(["$x", "$y", "$z", "$(echo jq)"], map);
+      assert.deepEqual(split.keep, ["$z", "$(echo jq)"], "没取值的与不是变量引用的都留在动态里");
+      assert.deepEqual(split.narrowed, [
+        { token: "$x", programs: ["/usr/bin/jq", "/usr/bin/rg"], certain: false },
+        { token: "$y", programs: ["/usr/bin/jq"], certain: true },
+      ]);
+    });
+  });
+
+  it("同一个引用在两处使用点各报一条：取并集，`certain` 宁紧不宽", () => {
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "/usr/bin/jq", vars: [], candidates: [], origin: "$x", dynamic: false, line: 1 },
+          { kind: "Exec", target: "$x", vars: ["x"], candidates: ["/usr/bin/rg", "/usr/bin/curl"], dynamic: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: ["x"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const result = checkCommand("x=/usr/bin/jq; $x; if c; then $x; fi", { cwd: "/tmp" });
+      const map = preshellProgramValues(result.facts);
+      // 并集是可能取值的超集，往大了算是保守那侧；mixed 时不叫「确定值」
+      assert.deepEqual(map.get("$x"), { programs: ["/usr/bin/jq", "/usr/bin/rg", "/usr/bin/curl"], certain: false });
+    });
+  });
+});
+
+// v0.4.1：命令自己赋值解出来的效果带 origin（它原来写的那处引用）。命令文本里没有解出来的
+// 程序名这个串，pi 侧过去对不上命令名位置的 token，只能保守报 dynamic-construct——明明
+// 信息比候选集更强。拿 origin 对上之后，两类事实走同一道窄门槛、同一条预审规则。
+describe("动态构造收窄：事实层解出的确定值（v0.4.1 的 origin）", () => {
+  /** 命令名变量 `$x` 已被解出确定值：target 是程序名，origin 是引用原文 */
+  const certainReport = (target: string) => ({
+    version: 1,
+    status: "Complete",
+    impact: {
+      effects: [{ kind: "Exec", target, vars: [], candidates: [], origin: "$x", dynamic: false, modeled: false, line: 1 }],
+      write_roots: [],
+      uncertain: true,
+      effects_dropped: 0,
+      vars: [],
+      cwd: "/tmp",
+    },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("两路设置同一个值 → 能收窄了（改前只能报 dynamic-construct）", () => {
+    // 这条命令 pi 自己的静态渲染器解不出（条件分支里两个赋值，它不敢确定）——
+    // 改前事实层报的是 Exec "/usr/bin/jq"（origin: "$x"），在旧解析里 `$x` 这个键对不上，
+    // 于是留在 dynamic-construct；现在按 origin 对上，改报 narrowed
+    const command = "if c; then x=/usr/bin/jq; else x=/usr/bin/jq; fi; $x -n 1";
+    withStubPreshell(stubPreshell(certainReport("/usr/bin/jq")), () => {
+      const result = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(result.allow, false, `收窄后仍要交预审，实际 reason=${result.reason}`);
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.equal(rules[0].autoReject, false, "收窄不是放行：它只把命令送进 LLM 预审");
+      // tip 要把解出来的程序摆出来，且措辞与「已静态确定」区分开（来源不同）
+      assert.match(rules[0].tip, /事实层已解出它是 \$x = \/usr\/bin\/jq/);
+      assert.doesNotMatch(rules[0].tip, /已静态确定/, "静态渲染是另一个来源，不能写反");
+      assert.doesNotMatch(rules[0].tip, /已确定安全/);
+      assert.deepEqual(rules[0].matched, ["$x"]);
+      // 收窄过的 token 不再算残余动态构造
+      assert.deepEqual(result.audit?.dynamicTokens, ["$x"]);
+    });
+  });
+
+  it("单赋值那条命令（pi 自己就能静态渲染）不因新来源重复报一遍", () => {
+    // `x=/usr/bin/jq; $x -n 1` 的静态渲染走的是 pi 自己的 var-render（audit.narrowed），
+    // 事实层同时也会报 origin——同一件事的两个来源只报一次
+    withStubPreshell(stubPreshell(certainReport("/usr/bin/jq")), () => {
+      const result = checkCommand("x=/usr/bin/jq; $x -n 1", { cwd: "/tmp" });
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.deepEqual(rules[0].matched, ["$x"]);
+      assert.match(rules[0].tip, /已静态确定为 \$x = \/usr\/bin\/jq/);
+      assert.equal((rules[0].tip.match(/\$x/g) ?? []).length, 1, `tip 里只应该出现一份 $x：${rules[0].tip}`);
+    });
+  });
+
+  it("${x} 这种花括号写法与 $x 是同一处引用（事实层报的 origin 是 $x）", () => {
+    withStubPreshell(stubPreshell(certainReport("/usr/bin/jq")), () => {
+      const result = checkCommand("if c; then x=/usr/bin/jq; else x=/usr/bin/jq; fi; ${x} -n 1", { cwd: "/tmp" });
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.deepEqual(rules[0].matched, ["${x}"], "高亮用的 token 保持命令里的原样");
+      assert.match(rules[0].tip, /\$\{x\} = \/usr\/bin\/jq/, "tip 也跟着命令文本写，与 matched 对得上号");
+    });
+  });
+
+  it("确定值过不了窄门槛 → 保持 dynamic-construct（信息更强不等于门槛更松）", () => {
+    for (const [target, command] of [
+      ["/tmp/tool", "x=/tmp/tool; $x"],
+      ["python3", "x=python3; $x -c 'print(1)'"],
+      ["/usr/bin/rm", "x=/usr/bin/rm; $x -rf /tmp/build"],
+      ["/opt/x/tool", "x=/opt/x/tool; $x"],
+      ["tool.sh", "x=tool.sh; $x"],
+    ] as const) {
+      withStubPreshell(stubPreshell(certainReport(target)), () => {
+        const result = checkCommand(command, { cwd: "/tmp" });
+        const names = (result.rules ?? []).map((r) => r.name);
+        assert.ok(names.includes("dynamic-construct"), `${target} 应仍命中 dynamic-construct，实际 ${names}`);
+        assert.ok(!names.includes("dynamic-construct-narrowed"), `${target} 不该收窄，实际 ${names}`);
+      });
+    }
+  });
+
+  it("旧报告（没有 origin 字段）行为与改动前一致：仍旧 dynamic-construct", () => {
+    // v0.4.0 及更早的报告就是这个形状：确定的情况只给 target，命令名位置对不上
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "c", vars: [], candidates: [], dynamic: false, modeled: false, line: 1 },
+          { kind: "Exec", target: "/usr/bin/jq", vars: [], candidates: [], dynamic: false, modeled: false, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: [],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const result = checkCommand("if c; then x=/usr/bin/jq; else x=/usr/bin/jq; fi; $x -n 1", { cwd: "/tmp" });
+      assert.deepEqual((result.rules ?? []).map((r) => r.name), ["dynamic-construct"], JSON.stringify(result.rules));
+      assert.equal(result.audit?.dynamicTokens.includes("$x"), true);
+    });
+  });
+
+  it("tip 区分两个来源：确定值写「已解出它是」，候选集写「候选全落在已知程序上」", () => {
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "/usr/bin/jq", vars: [], candidates: [], origin: "$a", dynamic: false, line: 1 },
+          { kind: "Exec", target: "$b", vars: ["b"], candidates: ["/usr/bin/rg", "/usr/bin/curl"], dynamic: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: ["b"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const command =
+        "if c; then a=/usr/bin/jq; else a=/usr/bin/jq; fi; $a -n; if d; then b=/usr/bin/rg; else b=/usr/bin/curl; fi; $b -x";
+      const result = checkCommand(command, { cwd: "/tmp" });
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.match(rules[0].tip, /事实层已解出它是 \$a = \/usr\/bin\/jq/);
+      assert.match(rules[0].tip, /候选全落在已知程序上（\$b = \/usr\/bin\/rg、\/usr\/bin\/curl，跑的是其中之一）/);
+      assert.doesNotMatch(rules[0].tip, /已确定安全/);
+      assert.deepEqual(rules[0].matched, ["$a", "$b"]);
+      assert.equal(rules[0].autoReject, false);
+    });
+  });
+
+  it("确定值那一侧也走不通时（取值含空白/展开字符）不当确定值用", () => {
+    // `A='rm -rf' && $A /` 这种：值里有空白，命令行会按词拆开，不算「知道跑什么程序」
+    withStubPreshell(stubPreshell(certainReport("rm -rf")), () => {
+      const result = checkCommand("A='rm -rf' && $A /", { cwd: "/tmp" });
+      const names = (result.rules ?? []).map((r) => r.name);
+      assert.ok(names.includes("dynamic-construct"), JSON.stringify(result.rules));
+      assert.ok(!names.includes("dynamic-construct-narrowed"), JSON.stringify(result.rules));
     });
   });
 });

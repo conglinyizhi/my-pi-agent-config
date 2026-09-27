@@ -148,7 +148,7 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 `hasDynamicConstructs` 识别 bash 动态构造（命令替换 `$()`/反引号、`eval`、`bash -c`、反斜杠拼接命令名、变量作命令、ANSI-C 引号、别名/函数定义、进程替换）。命中时即使无危险规则也降级为人工确认——静态检测对动态构造不可靠，交给用户判断。`dynamicConstructTokens` 返回命中的特性 token，GUI 高亮动态点。
 
-变量作命令名这一类还有一条收窄路：程序名能静态确定时（pi 自己的变量渲染，或命令事实层 preshell 在 Exec/Spawn 上给出的候选集，v0.4.0 起），规则名从 `dynamic-construct` 换成 `dynamic-construct-narrowed`，tip 里把程序名/候选摆出来。它仍是 `autoReject: false`，仍然要过 LLM 预审，不是放行；preshell 只提供一个候选过不了窄门槛（`narrowableProgramName`：已知程序、非 rm/sudo 那类、非解释器/脚本、非 `/tmp` 下的）就整个留在 `dynamic-construct`。
+变量作命令名这一类还有一条收窄路：程序名能静态确定时，规则名从 `dynamic-construct` 换成 `dynamic-construct-narrowed`，tip 里把程序名/取值摆出来。取值有三个来源：pi 自己的变量渲染；命令事实层 preshell 在 Exec/Spawn 上给出的候选集（v0.4.0 起，条件分支让名字有多个取值）；以及 v0.4.1 起 `dynamic: false` 效果上的 `origin`——命令自己赋值解出来的确定值（`x=/usr/bin/jq; $x -n 1` 报 `target: "/usr/bin/jq"` 加 `origin: "$x"`，程序名在命令文本里不出现，只有 origin 能把这个效果对回命令名位置）。它仍是 `autoReject: false`，仍然要过 LLM 预审，不是放行；确定值只是信息更强，不是门槛更松：有一个取值过不了窄门槛（`narrowableProgramName`：已知程序、非 rm/sudo 那类、非解释器/脚本、非 `/tmp` 下的）就整个留在 `dynamic-construct`。
 
 ### 如何扩展
 

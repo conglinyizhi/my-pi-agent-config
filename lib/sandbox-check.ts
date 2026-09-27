@@ -142,56 +142,101 @@ function programRefKey(reference: string): string | undefined {
 }
 
 /**
- * preshell 对命令名位置给出的程序候选：规范化引用（`$x`）→ 候选集。
+ * 命令名位置一处引用在事实层里的取值。
  *
- * 只认 Exec/Spawn 上「dynamic 且 candidates 非空」的效果：那是「这个位置可能跑哪几个
- * 程序」的候选。确定的情况（`x=/usr/bin/jq; $x -n 1`）工具直接报真程序名而不是引用，
- * 效果上根本没有 `$x` 这个键能对上，拿不到关联就不收窄（保守）。
+ * 两个来源合在一张表里（都以规范化引用 `$x` 为键）：
+ *   - `dynamic: false` 且带 `origin` → 工具已经把值解出来了（v0.4.1），单元素、`certain: true`
+ *   - `dynamic: true` 且 `candidates` 非空 → 候选集（v0.4.0），`certain: false`
+ * 两类都只是「这个位置可能跑什么」的描述，不是安全结论：判定侧拿它们过同一道窄门槛，
+ * 过了也只是从「未知动态构造」改成「交预审」
+ */
+export interface ProgramValues {
+	programs: string[];
+	/** true = 事实层解出的确定值（每个使用点都是一个定值）；false = 候选集（跑的是其中之一） */
+	certain: boolean;
+}
+
+/**
+ * preshell 对命令名位置给出的取值：规范化引用（`$x`）→ 确定值或候选集。
  *
- * v0.4.0 起才有 candidates；旧二进制 / 没装 preshell 时这里拿到的是一张空表，
+ * 两类都看：
+ *   - 确定值（v0.4.1 的 `origin`）：`x=/usr/bin/jq; $x -n 1` 报的是 `Exec: /usr/bin/jq`，
+ *     程序名在命令文本里根本不出现，只有 `origin: "$x"` 能把这个效果对回命令名位置。
+ *     只认 `dynamic: false` 的那些：`dynamic: true` 时 target 本身就是引用原文，不是解出来的值
+ *   - 候选集（v0.4.0 的 `candidates`）：条件分支让名字有多个取值时才有，`dynamic: true`
+ *
+ * 同一个键出现多条时取并集，`certain` 要求「每条都是确定值且只剩一个取值」：
+ * 一个名字在两处使用点（或一条命令写了两遍）可能各报一条，并集永远是可能取值的
+ * 超集，而窄门槛是「全过才收窄」，往大了算是保守的那一侧。
+ *
+ * 旧二进制（≤v0.4.0 没有 origin）或没装 preshell 时这里拿到的是一张空表，
  * 判定与接入前完全一致。
  */
-export function preshellProgramCandidates(facts: PreshellFacts | undefined): Map<string, string[]> {
-	const found = new Map<string, string[]>();
+export function preshellProgramValues(facts: PreshellFacts | undefined): Map<string, ProgramValues> {
+	const programs = new Map<string, string[]>();
+	const allCertain = new Map<string, boolean>();
+	const add = (key: string, values: string[], certain: boolean) => {
+		const seen = programs.get(key);
+		programs.set(key, seen ? [...new Set([...seen, ...values])] : [...new Set(values)]);
+		allCertain.set(key, (allCertain.get(key) ?? true) && certain);
+	};
 	for (const effect of facts?.effects ?? []) {
 		if (effect.kind !== "Exec" && effect.kind !== "Spawn") continue;
-		if (effect.dynamic !== true || !Array.isArray(effect.candidates)) continue;
-		const key = programRefKey(effect.target);
+		if (effect.dynamic === true) {
+			if (!Array.isArray(effect.candidates)) continue;
+			const key = programRefKey(effect.target);
+			if (!key) continue;
+			const values = effect.candidates.filter((v): v is string => typeof v === "string" && v.length > 0);
+			if (values.length === 0) continue;
+			add(key, values, false);
+			continue;
+		}
+		// 确定值：v0.4.1 起才有 origin，旧报告里这个字段是 undefined（那就当没这回事）
+		if (typeof effect.origin !== "string" || effect.target.length === 0) continue;
+		const key = programRefKey(effect.origin);
 		if (!key) continue;
-		const values = effect.candidates.filter((v): v is string => typeof v === "string" && v.length > 0);
-		if (values.length === 0) continue;
-		found.set(key, [...new Set(values)]);
+		add(key, [effect.target], true);
+	}
+	const found = new Map<string, ProgramValues>();
+	for (const [key, values] of programs) {
+		found.set(key, { programs: values, certain: allCertain.get(key) === true && values.length === 1 });
 	}
 	return found;
 }
 
-/** 一条命令名变量的候选集：token 是引用原文，programs 是 preshell 报出的候选 */
+/** 一条命令名变量的取值：token 是引用原文，programs 是确定值（单元素）或候选集 */
 export interface ProgramCandidate {
 	token: string;
 	programs: string[];
+	/** true = 事实层解出的确定值；false = 候选集（跑的是其中之一） */
+	certain: boolean;
 }
 
 /**
- * 把「候选全落在已知程序上」的命令名变量从 dynamic-construct 里摘出来。
+ * 把命令名位置那些「取值全落在已知程序上」的引用从 dynamic-construct 里摘出来。
  *
+ * 两类输入走同一道门槛：确定值（v0.4.1 的 origin）与候选集（v0.4.0 的 candidates）。
  * 门槛只有一个：narrowableProgramName（与 pi 自己的静态渲染用同一道，见 rule-engine）。
- * 有一候选过不了（rm / sudo / 解释器 / `/tmp` 下的程序 / 脚本…）就整个保动态构造——
+ * 有一个取值过不了（rm / sudo / 解释器 / `/tmp` 下的程序 / 脚本…）就整个保动态构造——
  * 候选是「其中之一」，不能拿一部分候选的“看着安全”去替另一部分担保。
+ *
+ * 「确定值」比「候选」多的是信息，不是保证：值本身也可能过不了窄门槛（`x=/tmp/tool; $x`），
+ * 那就照旧算动态构造（收窄与否只看门槛，不看这个是确定值还是候选集）。
  *
  * 摘出去≠放行：调用方仍会出一条 autoReject:false 的 dynamic-construct-narrowed 规则，
  * 命令照样进 LLM 预审（与 pi 自己渲染出程序名时走同一条）。
  */
 export function splitProgramCandidates(
 	tokens: readonly string[],
-	candidates: Map<string, string[]>,
+	values: Map<string, ProgramValues>,
 ): { keep: string[]; narrowed: ProgramCandidate[] } {
 	const keep: string[] = [];
 	const narrowed: ProgramCandidate[] = [];
 	for (const token of tokens) {
 		const key = programRefKey(token);
-		const programs = key ? candidates.get(key) : undefined;
-		if (programs && programs.length > 0 && programs.every(narrowableProgramName)) {
-			narrowed.push({ token, programs });
+		const hint = key ? values.get(key) : undefined;
+		if (hint && hint.programs.length > 0 && hint.programs.every(narrowableProgramName)) {
+			narrowed.push({ token, programs: hint.programs, certain: hint.certain });
 			continue;
 		}
 		keep.push(token);
@@ -200,11 +245,14 @@ export function splitProgramCandidates(
 }
 
 /**
- * 候选集描述给审核模型看的一句话。
- * 措辞不能写成「已确定为」：候选是可能性（跑的是其中之一），交预审时要让人/模型
- * 看出这是集合而不是事实——但集合全员都是已知程序，比「未知动态构造」多给了信息。
+ * 取值描述给审核模型看的一句话。
+ * 两类事实的写法不同，但都不能写成「已确定安全」：
+ *   - 确定值：事实层已解出它是什么程序（但仍是预审项，不是放行）
+ *   - 候选集：措辞不能写成「已确定为」——候选是可能性（跑的是其中之一），交预审时要让人/模型
+ *     看出这是集合而不是事实
+ * 共用的是「`引用 = 值`」这个形状（审批窗高亮、模型对命令行都用它）。
  */
-function describeProgramCandidates(items: readonly ProgramCandidate[]): string {
+function describeProgramValues(items: readonly ProgramCandidate[]): string {
 	return items.map((item) => `${item.token} = ${item.programs.join("、")}`).join("；");
 }
 
@@ -412,13 +460,14 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	}
 
 	// 组合危险信号（与 gate 一致：不合并成一条，逐条可高亮）
-	// preshell 对命令名位置的变量可能给出候选集（v0.4.0 的 candidates）：候选全落在已知程序上
-	// 就把它从 dynamic-construct 摘到 dynamic-construct-narrowed——那是同一条「仍要 LLM 预审」
-	// 的路，只是 tip 里多给模型一层信息（到底可能跑什么）。有一个候选过不了窄门槛就留在
-	// dynamic 里（保守）：候选是可能性，不是事实。事实层不可用 / 旧版没 candidates 时那张表
-	// 是空的，这里就是原来的行为
-	const { keep, narrowed: candidateNarrowed } = audit.dynamic
-		? splitProgramCandidates(audit.dynamicTokens, preshellProgramCandidates(sensitive.facts))
+	// preshell 对命令名位置的变量给出两类事实（见 preshellProgramValues）：确定值（v0.4.1 的
+	// origin）与候选集（v0.4.0 的 candidates）。取值全落在已知程序上就把它从 dynamic-construct
+	// 摘到 dynamic-construct-narrowed——那是同一条「仍要 LLM 预审」的路，只是 tip 里多给
+	// 模型一层信息（到底跑什么）。有一个取值过不了窄门槛就留在 dynamic 里（保守）：
+	// 候选是可能性、确定值也可能是个 /tmp 下的程序，两者都得过同一道门槛。
+	// 事实层不可用 / 旧版没 origin 与 candidates 时那张表是空的，这里就是原来的行为
+	const { keep, narrowed: factNarrowed } = audit.dynamic
+		? splitProgramCandidates(audit.dynamicTokens, preshellProgramValues(sensitive.facts))
 		: { keep: audit.dynamicTokens, narrowed: [] as ProgramCandidate[] };
 
 	// tip 里带上命中的 token：只说「含动态构造」的话，人得自己在一屏命令里找是哪一处
@@ -430,22 +479,34 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 			matched: [...keep],
 		});
 	}
-	// 收窄过的命令名变量：程序名静态确定了（或候选全落在已知程序上），但规则层拿着 token 原文
+	// 收窄过的命令名变量：程序名静态确定了（或取值全落在已知程序上），但规则层拿着 token 原文
 	// 判不了它是什么程序。这条规则把这层信息交给审核模型（tip 里带上 `$P = /usr/bin/jq`），
 	// 仍要预审，不直接放行。autoReject:false 是硬要求：它只把命令送进 LLM 预审，不能让 LLM
 	// 判 safe 之后还要人工（那是真·危险信号才该给的待遇）。
-	// 两个来源合并成一条：pi 自己的静态渲染（已确定为）与 preshell 的候选集（可能是）。
+	// 三个来源合并成一条：pi 自己的静态渲染（已确定为）、事实层解出的确定值（v0.4.1）、
+	// 事实层的候选集（可能是）。前两者说的是同一件事的两个来源，同一个引用不重复报。
+	const staticKeys = new Set(audit.narrowed.map((n) => programRefKey(n.token) ?? n.token));
+	const factOnly = factNarrowed.filter((n) => !staticKeys.has(programRefKey(n.token) ?? n.token));
+	const certainFromFacts = factOnly.filter((n) => n.certain);
+	const candidateFromFacts = factOnly.filter((n) => !n.certain);
 	const narrowedParts: string[] = [];
 	const narrowedTokens: string[] = [];
 	if (audit.narrowed.length > 0) {
 		narrowedParts.push(`命令名是变量，已静态确定为 ${audit.narrowed.map((n) => `${n.token} = ${n.program}`).join("、")}`);
 		narrowedTokens.push(...audit.narrowed.map((n) => n.token));
 	}
-	if (candidateNarrowed.length > 0) {
+	// 确定值（origin）：事实已经解出跑的是什么程序。措辞与「已静态确定」区分开——来源不同
+	// （一个是 pi 自己的静态渲染，一个是事实层解出的赋值），但同样不能写成「已确定安全」：
+	// 这条规则是 autoReject:false 的预审项，收窄只是把命令从「未知动态构造」换成「知道跑什么」
+	if (certainFromFacts.length > 0) {
+		narrowedParts.push(`命令名是变量，事实层已解出它是 ${describeProgramValues(certainFromFacts)}`);
+		narrowedTokens.push(...certainFromFacts.map((n) => n.token));
+	}
+	if (candidateFromFacts.length > 0) {
 		narrowedParts.push(
-			`命令名是变量，事实层给出的候选全落在已知程序上（${describeProgramCandidates(candidateNarrowed)}，跑的是其中之一）`,
+			`命令名是变量，事实层给出的候选全落在已知程序上（${describeProgramValues(candidateFromFacts)}，跑的是其中之一）`,
 		);
-		narrowedTokens.push(...candidateNarrowed.map((n) => n.token));
+		narrowedTokens.push(...candidateFromFacts.map((n) => n.token));
 	}
 	if (narrowedParts.length > 0) {
 		rulesOut.push({
