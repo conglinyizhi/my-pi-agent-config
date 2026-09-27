@@ -338,3 +338,61 @@ describe("纠正消息", () => {
 		assert.ok(buildCorrectionPrompt({ ...base, intruderRatio: 0.25 }).includes("占窗口内 75% 的行"));
 	});
 });
+
+describe("极纯档接线", () => {
+	/** 极纯循环：单句「好。」反复（极纯档专抓的形态，重复量远不及现行 9000 线） */
+	function pureStall(cycles: number): string {
+		const lines: string[] = [];
+		for (let i = 0; i < cycles; i++) lines.push("好。", "");
+		return lines.join("\n");
+	}
+
+	it("极纯档让纯循环提前中止，关掉极纯档则现行档不会动手", async () => {
+		const { pi, emit, sent } = fakePi();
+		createLoopGuard(pi, cfg());
+		const { ctx, notes, aborts } = fakeCtx();
+		feed(emit, ctx, pureStall(2000));
+		await flush();
+		assert.equal(aborts(), 1, "极纯档应该中止");
+		assert.ok(
+			notes.some((n) => n.text.includes("极纯档提前")),
+			"提示应标明是极纯档提前拦下的",
+		);
+		emit("agent_settled", {}, ctx);
+		assert.equal(sent.length, 1);
+		assert.equal(sent[0].message.details.tier, "pure", "details 应记下档位");
+
+		// 同一段内容、关掉极纯档：重复量不够现行 9000 线，现行档不该动手
+		const only = fakePi();
+		createLoopGuard(only.pi, cfg({ detector: { pureEnabled: false } }));
+		const c2 = fakeCtx();
+		feed(only.emit, c2.ctx, pureStall(2000));
+		await flush();
+		assert.equal(c2.aborts(), 0, "现行档单独跑不该中止");
+	});
+
+	it("确认期内块结束不中止（不白付一次 abort 与纠正消息）", async () => {
+		const { pi, emit, sent } = fakePi();
+		createLoopGuard(pi, cfg());
+		const { ctx, notes, aborts } = fakeCtx();
+		// 够 armed、不够持续确认
+		feed(emit, ctx, pureStall(1400));
+		await flush();
+		emit("agent_settled", {}, ctx);
+		assert.equal(aborts(), 0, "确认期没走完不该中止");
+		assert.equal(sent.length, 0, "不该注入纠正消息");
+		assert.ok(
+			!notes.some((n) => n.text.includes("已中止")),
+			"不该报中止",
+		);
+	});
+
+	it("同一段块尾内容：确认量置 0 就会被中止（确认期是唯一原因）", async () => {
+		const { pi, emit } = fakePi();
+		createLoopGuard(pi, cfg({ detector: { pureConfirmChars: 0 } }));
+		const { ctx, aborts } = fakeCtx();
+		feed(emit, ctx, pureStall(1400));
+		await flush();
+		assert.equal(aborts(), 1);
+	});
+});

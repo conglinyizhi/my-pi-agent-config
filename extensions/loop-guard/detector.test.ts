@@ -15,6 +15,7 @@ import {
 	normalizeLine,
 	windowStats,
 	type LoopGuardOptions,
+	type LoopHit,
 } from "./detector.ts";
 
 const opts = (over: Partial<LoopGuardOptions> = {}): LoopGuardOptions => ({ ...DEFAULT_OPTIONS, ...over });
@@ -37,6 +38,33 @@ function stallLoop(cycles: number, lines = ["好。", "（输出）", "（现在
 	const out: string[] = [];
 	for (let i = 0; i < cycles; i++) for (const l of lines) out.push(l, "");
 	return out.join("\n");
+}
+
+/** 极纯循环：只有一句「好。」反复（极纯档专抓的形态） */
+function pureStall(cycles: number): string {
+	const out: string[] = [];
+	for (let i = 0; i < cycles; i++) out.push("好。", "");
+	return out.join("\n");
+}
+
+/**
+ * 按固定片长喂完整个块，收集全部命中，并记下极纯档首次 armed 的位置。
+ * 用 chunk=8 贴近真机 delta 粒度。
+ */
+function runAll(text: string, over: Partial<LoopGuardOptions> = {}, chunk = 8) {
+	const det = new LoopDetector(over);
+	const hits: LoopHit[] = [];
+	let armAt: number | null = null;
+	let armChars = 0;
+	for (let i = 0; i < text.length; i += chunk) {
+		const hit = det.feed(text.slice(i, i + chunk));
+		if (det.pureArmed && armAt === null) {
+			armAt = det.fedChars;
+			armChars = det.pureArmedAtChars;
+		}
+		if (hit) hits.push(hit);
+	}
+	return { det, hits, armAt, armChars };
 }
 
 /** 复刻 tar 刷屏：同一句长警告重复 */
@@ -212,5 +240,141 @@ describe("流式行为", () => {
 		let hit = null;
 		for (let i = 0; i < text.length; i += 32) hit = det.feed(text.slice(i, i + 32)) ?? hit;
 		assert.equal(hit, null, "没有换行分隔就不该当成行重复");
+	});
+});
+
+describe("极纯档（附加的提前中止）", () => {
+	it("极纯形态：先 armed，攒够确认量才中止，且早于现行 abort 线", () => {
+		const { hits, armAt, armChars } = runAll(pureStall(5000));
+		assert.ok(armAt !== null, "应该先进入 armed");
+		assert.ok(
+			armChars >= DEFAULT_OPTIONS.pureRepeatChars,
+			`armed 时的重复量应达起始线，实得 ${armChars}`,
+		);
+
+		const pure = hits.find((h) => h.tier === "pure");
+		assert.ok(pure, "确认期满后应该中止");
+		assert.equal(pure.severity, "abort");
+		assert.ok(
+			pure.repeatChars - armChars >= DEFAULT_OPTIONS.pureConfirmChars,
+			`确认量不足不该动手：armed@${armChars} → 命中@${pure.repeatChars}`,
+		);
+		assert.ok(pure.offset > armAt, "armed 当拍不能动手");
+
+		const defAbort = hits.find((h) => h.severity === "abort" && h.tier !== "pure");
+		assert.ok(defAbort, "现行档最终也会拦");
+		assert.ok(pure.offset < defAbort.offset, "极纯档应该比现行 abort 早得多");
+		assert.equal(pure.alphabet, 1);
+		assert.equal(pure.avgLineChars, 2);
+	});
+
+	it("确认量越大，动手越晚；置 0 时 armed 当拍即中止", () => {
+		const text = pureStall(5000);
+		const zero = runAll(text, { pureConfirmChars: 0 });
+		const mid = runAll(text, { pureConfirmChars: 800 });
+		const late = runAll(text, { pureConfirmChars: 4000 });
+		const pureOf = (r: ReturnType<typeof runAll>) => r.hits.find((h) => h.tier === "pure");
+		const z = pureOf(zero);
+		const m = pureOf(mid);
+		const l = pureOf(late);
+		assert.ok(z && m && l, "三档都该中止");
+		assert.ok(z.offset < m.offset, "确认量为 0 时更早");
+		assert.ok(m.offset < l.offset, "确认量 4000 时最晚");
+		// 确认量为 0 时在 armed 当拍动手：命中重复量还贴着起始线（± 一个检查粒度）
+		assert.ok(
+			z.repeatChars < DEFAULT_OPTIONS.pureRepeatChars + 400,
+			`确认量为 0 应该贴着起始线动手，实得 ${z.repeatChars}`,
+		);
+		assert.equal(zero.det.pureArmCount, 1, "确认量为 0 也是先 armed 再 fire");
+		assert.ok(z.repeatChars >= DEFAULT_OPTIONS.pureRepeatChars);
+	});
+
+	it("确认期内块结束则静默放弃（贴块尾白拦）", () => {
+		// 只够 armed、不够确认的块
+		const short = pureStall(1050);
+		const { hits, armAt } = runAll(short);
+		assert.ok(armAt !== null, "应该已进入 armed");
+		assert.equal(
+			hits.find((h) => h.tier === "pure"),
+			undefined,
+			"确认期内不该中止",
+		);
+
+		// 块结束：reset 丢弃 armed，新块不受牵连
+		const det = new LoopDetector();
+		let armed = false;
+		for (let i = 0; i < short.length; i += 8) {
+			det.feed(short.slice(i, i + 8));
+			if (det.pureArmed) armed = true;
+		}
+		assert.ok(armed, "块尾前应处在 armed");
+		det.reset();
+		assert.equal(det.pureArmed, false, "reset 应丢弃 armed");
+		assert.equal(det.pureArmCount, 0);
+		assert.equal(det.feed(pureStall(600)), null, "新块不该被上一块的 armed 牵连");
+	});
+
+	it("形态中断解除 armed，之后可重新 armed 并确认", () => {
+		const det = new LoopDetector();
+		const feedChunks = (text: string, stopOnPure = false) => {
+			for (let i = 0; i < text.length; i += 8) {
+				const hit = det.feed(text.slice(i, i + 8));
+				if (stopOnPure && hit?.tier === "pure") return hit;
+			}
+			return null;
+		};
+		feedChunks(pureStall(1050));
+		assert.equal(det.pureArmed, true, "先 armed");
+
+		// 插一段内容在推进的推理：字母表被撑大，形态破裂
+		const prose = Array.from(
+			{ length: 60 },
+			(_, i) => `第 ${i} 步：检查嵌套括号深度与变量作用域，然后继续往下看。`,
+		).join("\n");
+		feedChunks(`${prose}\n`);
+		assert.equal(det.pureArmed, false, "形态中断应解除 armed");
+
+		// 又滑回极纯循环：重新 armed，再攒够确认量才中止
+		const hit = feedChunks(pureStall(1600), true);
+		assert.ok(hit, "重新 armed 后确认期满应中止");
+		assert.equal(hit.tier, "pure");
+		assert.equal(det.pureArmCount, 2, "本块应该进过两次 armed");
+	});
+
+	it("关掉极纯档：不产生 pure 命中，现行档触发点一字不变", () => {
+		const text = pureStall(5000);
+		const on = runAll(text);
+		const off = runAll(text, { pureEnabled: false });
+		assert.equal(off.armAt, null, "关掉后不该 armed");
+		assert.equal(
+			off.hits.find((h) => h.tier === "pure"),
+			undefined,
+			"关掉后不该有 pure 命中",
+		);
+		// 现行档的 warn 与 abort 触发点两轮必须完全相同
+		const firstBy = (hits: LoopHit[], severity: "warn" | "abort") =>
+			hits.find((h) => h.tier !== "pure" && h.severity === severity)?.offset ?? null;
+		assert.equal(firstBy(on.hits, "warn"), firstBy(off.hits, "warn"), "warn 触发点应不变");
+		assert.equal(firstBy(on.hits, "abort"), firstBy(off.hits, "abort"), "abort 触发点应不变");
+		assert.ok(firstBy(off.hits, "warn") !== null && firstBy(off.hits, "abort") !== null);
+	});
+
+	it("纯符号行重复不算极纯循环（与现行档同一条底线）", () => {
+		const braces = Array.from({ length: 4000 }, () => "}").join("\n");
+		const { hits } = runAll(braces);
+		assert.equal(
+			hits.find((h) => h.tier === "pure"),
+			undefined,
+			"纯符号行不该被极纯档掐",
+		);
+	});
+
+	it("极纯档只在极纯形态下成立：长行日志与新行推进都不算", () => {
+		// 同一句 20 字以上的话反复：形态过不了平均行长那道闸
+		const longLine = Array.from({ length: 1500 }, () => "tar: 忽略未知的扩展头关键字‘SCHILY.fflags’").join("\n");
+		assert.equal(runAll(longLine).det.pureArmCount, 0);
+		// 每几行就冒一条新内容：过不了新行占比那道闸
+		const ci = Array.from({ length: 400 }, (_, i) => `✓ build (job-${i}) in 2m3${i % 10}s\n  ✓ Set up job\n  ✓ Build binary`).join("\n");
+		assert.equal(runAll(ci).det.pureArmCount, 0);
 	});
 });

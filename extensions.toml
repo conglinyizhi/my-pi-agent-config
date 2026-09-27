@@ -180,7 +180,10 @@ singletonPackages = true
 [loop-guard]
 enabled = true
 mode = "abort" # off=不检测 | warn=只提示 | abort=提示并中止
-maxActionsPerSession = 3 # 每个 session 的中止次数上限
+# 每个 session 的中止次数上限。一次中止 = 掐掉当前生成 + 注入一条约 4~5 千字符的
+# 纠正消息，所以这是「一次会话能救几次」的预算，不是「能报几次」。
+# 6 = 479 个历史会话里观测到的最坏一次卡死（同一会话 6 个真循环块）；代码兜底仍是 3。
+maxActionsPerSession = 6
 cooldownMs = 15000 # 两次中止之间的最小间隔（毫秒）
 
 [loop-guard.detector]
@@ -190,12 +193,26 @@ cooldownMs = 15000 # 两次中止之间的最小间隔（毫秒）
 # maxAvgLineChars = 20 # 重复行平均行长上限（主要精度来源）
 # maxIntruderRatio = 0.3 # 窗口内新行占比上限
 # maxAlphabet = 10 # 重复字母表大小上限
+#
+# ── 极纯档：附加的更早 abort（默认开）──
+# 形态比现行判据严得多（字母表 ≤ 3、平均行长 ≤ 5、新行占比 ≤ 0.05），所以中止线
+# 能从 9000 压到 2000。命中形态且重复量过 pureRepeatChars 先进 armed，再确认
+# pureConfirmChars 仍然这个形态才真中止 —— 确认期用来避开「贴块尾白拦」：命中点
+# 之后只剩几百字符的块，掐了也省不下什么，反而白付一条纠正消息。
+# 校准（479 会话 / 16.1 万块）：confirm 800 时 9 个 armed 里 7 个真中止、2 个贴块尾
+# 被挡下，正文与 toolResult 对照组零命中。详见 README 的「校准依据」。
+# pureEnabled = true # 极纯档总开关（关掉后行为与旧版一字不差）
+# pureRepeatChars = 2000 # 极纯形态的重复字符起始线
+# pureConfirmChars = 800 # armed 后需再重复积累多少字符才真中止
+# pureMaxAlphabet = 3 # 极纯形态：字母表上限
+# pureMaxAvgLineChars = 5 # 极纯形态：重复行平均行长上限
+# pureMaxIntruderRatio = 0.05 # 极纯形态：窗口内新行占比上限
 
 # ─────────────────────────────────────────────────────────────
-# thinking-fold：把 thinking 块尾部的重复输出折成一行提示
+# thinking-fold：把 thinking 块里的重复输出折成一行提示（块内所有复读段，不只尾部）
 # 纯渲染层，只改 TUI 显示，不动会话内容与模型上下文。
 # 与 loop-guard 同族但分工不同：loop-guard 管「整块失控」并中止生成，
-# 这里管「模型能自愈、但屏幕被刷满」的轻症。
+# 这里管「模型能自愈、但屏幕被刷满」的轻症（复读不一定落在块尾）。
 # 判据、误伤与阈值取舍见 extensions/thinking-fold/README.md。
 # ─────────────────────────────────────────────────────────────
 [thinking-fold]
@@ -203,7 +220,8 @@ enabled = true
 
 [thinking-fold.detector]
 # 空缺项用 detector.ts 的 DEFAULT_DUP_OPTIONS；常用旋钮：
-# minDensity = 0.75 # 窗口内复读字符占比下限，调高更保守（误伤更少、折得也更少）
+# minDensity = 0.75 # 段内复读字符占比下限，调高更保守（误伤更少、折得也更少）
+# gapMax = 2 # 段内允许夹几个连续非复读行不断段
 # minChars = 600 # 折叠段字符下限
 # minLines = 40 # 折叠段行数下限
 # minCount = 3 # 一行至少出现几次才算复读行

@@ -64,6 +64,27 @@
 「平均行长」与「新行占比」是两个互相独立的把关：停滞标记都是短句，
 而日志回显要么整行长，要么每隔几行就冒出一条新内容。两个判据任一不满足就放过。
 
+### 极纯档：附加的更早 abort
+
+「好。」这类单句循环的形态比上表的闸门纯得多，等到 9000 字符才动手太晚 ——
+实测里模型吐了 4500 行「好。」才被掐掉，前面那几千行白烧。所以另加一档：
+
+| 判据 | 含义 | 默认 |
+|---|---|---|
+| 形态（三条同时成立） | 字母表 ≤ 3、重复行平均行长 ≤ 5、窗口内新行占比 ≤ 0.05 | 比现行档严得多 |
+| 起始线 | 形态成立且重复量到这个数，进入 armed（先不动手） | ≥ 2000 |
+| 持续确认 | armed 后再重复积累这么多仍然这个形态，才真 abort | ≥ 800 |
+| 中断解除 | armed 后形态不再成立（字母表变大 / 新行占比回升）就解除 armed | 立即 |
+| 块结束 | 确认期没走完块就结束了：静默放弃，不 abort | 静默 |
+
+为什么要「持续确认」：极纯形态在块尾也会成立（模型刚开始重复几百字符、块就结束了），
+那时掐掉等于白付一次 abort 加一条约 4000 字符的纠正消息。校准里 9 次命中就有 2 次
+命中点之后只剩 432 / 437 字符，拦下来纯亏。块结束（模型自己收尾、生成结束）由
+`reset()` 丢弃 armed，不进中止路径。
+
+这一档是**附加**的，不是替换：现行 warn / abort 的判据与触发时机一字未动，两档取先到者
+（极纯形态下极纯档总是更早）。关掉 `pureEnabled` 后行为与旧版一字不差。
+
 ## 校准依据
 
 拿本机 408 个历史会话、13.3 万个 assistant 输出块离线回放（把每块按
@@ -84,6 +105,36 @@ delta 粒度重放进检测器），结论：
 | 200 条同款 tar 警告回显（6367 字符重复，行长 31） | 不触发 |
 | 同一句占位话重复 5000 行 | 2670 字预警 → 9078 字中止 → 注入纠正 → 新回合继续 |
 
+极纯档的校准（`scripts/loop-guard-candidate-calib.mjs`，479 个会话 / 16.1 万个输出块，
+delta 8 字符全量回放；扫描 confirmChars = 0/400/800/1200/2000）：
+
+| confirmChars | 命中块（armed） | 真 abort | 被确认期挡下 | 其中贴块尾 | 少烧字符 |
+|---|---|---|---|---|---|
+| 0 | 9 | 9 | 0 | 0 | 71,202 |
+| 400 | 9 | 7 | 2 | 2 | 64,733 |
+| 800 | 9 | 7 | 2 | 2 | 59,133 |
+| 1200 | 9 | 7 | 2 | 2 | 53,533 |
+| 2000 | 9 | 5 | 4 | 4 | 41,600 |
+
+（命中块与真 abort 都只在 thinking 通道；assistant 正文与 toolResult 两个对照组
+在每一档都是 0 命中。）
+
+- 扫 0 的那一行就是「不用确认期、重复到 2000 就掐」：9 次命中里 2 次是块尾白拦
+  （命中点之后只剩 432 / 437 字符），confirm ≥ 400 就把这两次挡下来
+- 400 ~ 1200 之间被挡下的还是那 2 个块（它们 armed 之后只剩不到 300 重复字符的余量），
+  再多加确认量不增加收益，只是每次动手都更晚；2000 开始误伤真循环（4 个块被挡下，
+  其中 2 个是块尾还剩 2,497 / 6,636 字符的正常救援）
+- 取 **800**：离那 2 个块尾命中留出约 500 重复字符的余量（约 750 字符的生成时间），
+  同时把那 7 个真循环的动手点压在 repeat 2,864 ~ 4,948 之间
+- 误伤对账：没进 armed 的块里，极纯形态成立时的最大重复量只到 1,202（正文 0、
+  toolResult 14），离 2,000 这条线还有 798 字符的空隙
+- 逐例核对：7 个真 abort 的样例全是「好。」「做。」「（输出）」这类占位句，
+  其中 5 个现行判据也会拦（只是晚 8,800 ~ 12,400 字符），2 个现行判据整块拦不住
+  （重复量到不了 9,000，只出过 warn）
+- 校验：mirror 的极纯状态机与真 `LoopDetector` 并行回放、逐检查点比对
+  armed 状态与首次 fire 偏移，3,790 次比对 0 不一致；现行档（`pureEnabled=false`）
+  在前 60 个文件上并行回放 758 次比对同样 0 不一致
+
 ## 刻意不做
 
 - **不盯 `toolcall_delta`**：拦在工具调用 JSON 中间会毁掉这一轮
@@ -99,7 +150,10 @@ delta 粒度重放进检测器），结论：
 - 平均行长超过 20 的形态：只做 warn 提示，不进中止路径
 - 「实义字符」少于 3 个的行的重复（`{"a":1},`、`0,`、`}` 这类）：
   被 `hasSubstance` 直接忽略，因为正常 fixture / 代码里它们天然重复。
-  代价是模型真在这类行上空转时抓不到 —— 拿误伤率换来的，接受
+  代价是模型真在这类行上空转时抓不到 —— 拿误伤率换来的，接受。
+  极纯档沿用同一条底线，所以「。」这种纯标点循环也不在极纯档覆盖内
+  （实测语料里有两处，重复量都在 1300 上下，会自然结束）
+- 极纯档的起始线以下（重复量 2000 以内）的极纯循环：会自然结束，不提前掐
 
 ## 配置
 
@@ -109,7 +163,7 @@ delta 粒度重放进检测器），结论：
 [loop-guard]
 enabled = true
 mode = "abort"              # off | warn | abort
-maxActionsPerSession = 3    # 每个 session 的中止次数上限
+maxActionsPerSession = 6    # 每个 session 的中止次数上限（见下）
 cooldownMs = 15000          # 两次中止之间的最小间隔
 
 # 判据阈值，键名见 detector.ts 的 LoopGuardOptions / DEFAULT_OPTIONS
@@ -117,31 +171,53 @@ cooldownMs = 15000          # 两次中止之间的最小间隔
 # warnRepeatChars = 2500
 # abortRepeatChars = 9000
 # maxAvgLineChars = 20
+# 极纯档（附加的更早 abort，默认开）
+# pureEnabled = true
+# pureRepeatChars = 2000
+# pureConfirmChars = 800
+# pureMaxAlphabet = 3
+# pureMaxAvgLineChars = 5
+# pureMaxIntruderRatio = 0.05
 ```
+
+`maxActionsPerSession` 取 6 的依据：加了确认期之后，479 个会话里真 abort 只有 7 次，
+分在两个会话里，最坏的那个会话（一次卡死里连续 6 个真循环块）正好 6 次。
+预算按「一次会话能救几次」定 —— 3 会在第 3 次救援后放弃剩下的，而那些块剩下的
+重复量（9,646 / 12,401 / 12,418 字符）正是最该掐的部分。`cooldownMs` 不变。
 
 ## 命令
 
-- `/loop-guard` 查看状态（模式、预算、判据、最近一次命中）
+- `/loop-guard` 查看状态（模式、预算、现行档与极纯档的判据、最近一次命中）
 - `/loop-guard off|warn|abort` 本 session 临时切换模式
 - `/loop-guard reset` 重置本 session 的中止预算
 
 ## 实现
 
 - `detector.ts` — 纯逻辑状态机，不依赖 pi API：归一化行 → 取尾部字母表 →
-  算重复窗口统计 → 判级别。行缓冲按行数/字符数双上限滚动，检查按字符数节流
+  算重复窗口统计 → 判级别。行缓冲按行数/字符数双上限滚动，检查按字符数节流。
+  两个判定档共用同一个窗口、同一批检查点：`judgeStats` 是现行档，
+  `PureTier`（`isPureShape` + armed/确认状态机）是极纯档，两档取先到者。
+  `reset()` 丢弃 armed —— 块结束就是「确认期没走完」，不进中止路径
 - `index.ts` — pi 接线：`message_update` 喂增量（按 `contentIndex` 分块）、
   命中后通知/中止、`agent_settled` 注入纠正消息、`/loop-guard` 命令
 - `detector.test.ts` / `index.test.ts` — 单元与接线测试（假 pi 驱动真实 handler）
 - `scripts/loop-guard-calibrate.mjs` — 拿一批历史会话回归阈值，动阈值前先跑这个
+- `scripts/loop-guard-candidate-calib.mjs` — 极纯档的 confirmChars 扫描与误伤对账
+  （mirror 直接复用 `PureTier`，并与真 `LoopDetector` 并行回放比对）
 
 ```bash
 node --test --experimental-strip-types extensions/loop-guard/detector.test.ts extensions/loop-guard/index.test.ts
 node --experimental-strip-types scripts/loop-guard-calibrate.mjs ~/.pi/agent/sessions
+node --experimental-strip-types scripts/loop-guard-candidate-calib.mjs \
+  --root=/home/clyzhi/.pi/agent/sessions --limit=0 --chunk=8 --pure-confirm=0,400,800,1200,2000
 ```
 
 `loop-guard-calibrate.mjs` 会把每个输出块按 delta 粒度重放进检测器（模拟真实流式），
-列出命中项与最强近失，人眼核对命中是否都是真循环。改阈值后命中集合不应变大；
-变大就说明精度在丢。
+列出命中项与最强近失，人眼核对命中是否都是真循环。它跑的是带极纯档的完整检测器，
+所以命中列表里既有现行档也有极纯档的 abort；只看现行档的触发时机时用
+`loop-guard-candidate-calib.mjs`（那里现行档的对账固定跑 `pureEnabled=false`）。
+现行档的阈值改动后命中集合不应变大，变大就说明精度在丢；极纯档改 `confirmChars`
+时用 `loop-guard-candidate-calib.mjs` 重扫，看「真 abort」与「被确认期挡下」两列怎么变。
 
 安全闸门：一个块只中止一次；每次中止叠 `cooldownMs` 冷却与
 `maxActionsPerSession` 预算；预算耗尽后退回只提示。

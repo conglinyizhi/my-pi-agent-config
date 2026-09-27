@@ -4,12 +4,17 @@
 // 「好。/ 做。/（输出）」这类占位句，单块最高 13 万字符，白白烧掉大量
 // token 与时间（详见 README.md 的事故记录）。
 //
-// 做法：在流式阶段盯 thinking / 正文的增量，判定交给 detector.ts（纯逻辑，
-// 已用 408 个历史 session、13.3 万个输出块离线校准，命中 7 次全是真循环，
-// 零误伤）。命中后：
+// 做法：在流式阶段盯 thinking / 正文的增量，判定交给 detector.ts（纯逻辑）。
+// 命中后：
 //   warn  → 状态栏 + 一次性提示，不动输出
 //   abort → 中止本次生成，并在 agent 停歇后注入一条纠正消息，
 //           让模型带着「别再写占位句」的指令继续干活
+//
+// 判定分两档，共用同一个窗口：现行档（warnRepeatChars / abortRepeatChars）与
+// 极纯档（字母表 ≤3、平均行长 ≤5、新行占比 ≤0.05 的形态，重复 ≥2000 先进
+// armed，再确认 800 仍满足形态才 abort）。极纯档是附加的更早中止，现行档的
+// 判据与触发时机一字未动，两档取先到者。校准依据见 README 与
+// scripts/loop-guard-candidate-calib.mjs 的输出。
 //
 // 配置：extensions.toml 的 [loop-guard] / [loop-guard.detector]
 // 手动：/loop-guard 查看与临时切换
@@ -31,6 +36,7 @@ import {
 	LoopDetector,
 	type LoopGuardOptions,
 	type LoopHit,
+	type LoopTier,
 } from "./detector.ts";
 
 const STATUS_KEY = "loop-guard";
@@ -93,6 +99,8 @@ export function loadConfig(path = TOML_PATH): GuardConfig {
 
 /** 注入消息的 details（渲染器与事后排查都靠它） */
 export interface CorrectionDetails {
+	/** 由哪一档中止：default=现行判据；pure=极纯档 */
+	tier?: LoopTier;
 	repeatChars: number;
 	repeatLines: number;
 	alphabet: number;
@@ -129,7 +137,14 @@ export function buildCorrectionPrompt(hit: LoopHit, filler: string = generateRan
 }
 
 function describeHit(hit: LoopHit): string {
-	const head = hit.severity === "abort" ? "🛑 重复输出已中止" : "⚠️ 疑似重复输出";
+	// 极纯档也走 abort 路径，只是提前得多；文案保留「重复输出已中止」这个统一说法，
+	// 括号里标明是哪一档提前拦下的
+	const head =
+		hit.severity === "abort"
+			? hit.tier === "pure"
+				? "🛑 重复输出已中止（极纯档提前）"
+				: "🛑 重复输出已中止"
+			: "⚠️ 疑似重复输出";
 	return `${head}：${hit.repeatChars} 字符 / ${hit.repeatLines} 行集中在 ${hit.alphabet} 种短句（${hit.sample}）`;
 }
 
@@ -293,6 +308,7 @@ export function createLoopGuard(pi: ExtensionAPI, cfg: GuardConfig) {
 		try {
 			const filler = generateRandomFiller();
 			const details: CorrectionDetails = {
+				tier: hit.tier,
 				repeatChars: hit.repeatChars,
 				repeatLines: hit.repeatLines,
 				alphabet: hit.alphabet,
@@ -329,7 +345,7 @@ export function createLoopGuard(pi: ExtensionAPI, cfg: GuardConfig) {
 			const d = message.details;
 			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 			const head = d
-				? `${d.repeatChars} 字符 / ${d.repeatLines} 行 · ${d.alphabet} 种短句`
+				? `${d.tier === "pure" ? "极纯循环 · " : ""}${d.repeatChars} 字符 / ${d.repeatLines} 行 · ${d.alphabet} 种短句`
 				: "";
 			box.addChild(new Text(`${theme.fg("accent", "🛑 重复输出已中止")}  ${theme.fg("dim", head)}`, 0, 0));
 			if (expanded) {
@@ -365,13 +381,17 @@ export function createLoopGuard(pi: ExtensionAPI, cfg: GuardConfig) {
 				return;
 			}
 			const d = { ...DEFAULT_OPTIONS, ...cfg.detector };
+			const pureState = d.pureEnabled
+				? `极纯档：重复 ≥ ${d.pureRepeatChars} 且形态（字母表 ≤ ${d.pureMaxAlphabet}、平均行长 ≤ ${d.pureMaxAvgLineChars}、新行占比 ≤ ${d.pureMaxIntruderRatio}）成立后，再确认 ${d.pureConfirmChars} 字即中止`
+				: "极纯档：关";
 			const lines = [
 				`模式：${mode}（配置默认 ${cfg.enabled ? cfg.mode : "off"}）`,
 				`本 session 已中止：${actionsUsed}/${cfg.maxActionsPerSession}，冷却 ${cfg.cooldownMs}ms`,
 				`判定：重复 ≥ ${d.warnRepeatChars} 字提示，≥ ${d.abortRepeatChars} 字中止`,
 				`　　　重复行平均行长 ≤ ${d.maxAvgLineChars}，新行占比 ≤ ${d.maxIntruderRatio}，字母表 ≤ ${d.maxAlphabet}`,
+				pureState,
 				lastHit
-					? `最近命中：${lastHit.severity} ${lastHit.repeatChars}字/${lastHit.repeatLines}行 alpha=${lastHit.alphabet} avg=${lastHit.avgLineChars} @${lastHit.offset}`
+					? `最近命中：${lastHit.severity}${lastHit.tier === "pure" ? "(极纯)" : ""} ${lastHit.repeatChars}字/${lastHit.repeatLines}行 alpha=${lastHit.alphabet} avg=${lastHit.avgLineChars} @${lastHit.offset}`
 					: "最近命中：无",
 			];
 			notify(ctx, lines.join("\n"), "info");

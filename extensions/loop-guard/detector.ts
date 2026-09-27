@@ -25,8 +25,13 @@
 /** 判定级别：warn=只提示；abort=证据充分，可中止当前输出 */
 export type LoopSeverity = "warn" | "abort";
 
+/** 命中来自哪一档：default=现行判据；pure=附加的「极纯循环」提前中止档 */
+export type LoopTier = "default" | "pure";
+
 export interface LoopHit {
 	severity: LoopSeverity;
+	/** 命中来自哪一档（缺省按 default 读） */
+	tier?: LoopTier;
 	/** 触发时已喂入的字符数 */
 	offset: number;
 	/** 重复内容字符数 */
@@ -76,6 +81,24 @@ export interface LoopGuardOptions {
 	longStallRepeatChars: number;
 	longStallMaxAlphabet: number;
 	longStallMaxAvgLineChars: number;
+	// ── 极纯档（附加的提前中止档）──────────────────────────────
+	// 极纯循环的形态与现行判据完全同族，只是三条闸都拧到最紧：
+	// 字母表 ≤ 3、平均行长 ≤ 5、新行占比 ≤ 0.05。形态这么纯时没必要等到
+	// abortRepeatChars 才动手，可以把中止线压到 pureRepeatChars；
+	// 但「块尾命中」会白付一次 abort，所以再要求持续确认 pureConfirmChars。
+	// 关掉（false）后行为与旧版一字不差。
+	/** 极纯档总开关 */
+	pureEnabled: boolean;
+	/** 极纯档：形态成立且重复字符达这个量进入 armed（持续确认开始） */
+	pureRepeatChars: number;
+	/** 极纯档：armed 后还要再重复积累这么多字符才真中止 */
+	pureConfirmChars: number;
+	/** 极纯档形态：重复字母表上限 */
+	pureMaxAlphabet: number;
+	/** 极纯档形态：重复行平均行长上限 */
+	pureMaxAvgLineChars: number;
+	/** 极纯档形态：窗口内新行占比上限 */
+	pureMaxIntruderRatio: number;
 }
 
 export const DEFAULT_OPTIONS: LoopGuardOptions = {
@@ -94,6 +117,12 @@ export const DEFAULT_OPTIONS: LoopGuardOptions = {
 	longStallRepeatChars: 25000,
 	longStallMaxAlphabet: 4,
 	longStallMaxAvgLineChars: 40,
+	pureEnabled: true,
+	pureRepeatChars: 2000,
+	pureConfirmChars: 800,
+	pureMaxAlphabet: 3,
+	pureMaxAvgLineChars: 5,
+	pureMaxIntruderRatio: 0.05,
 };
 
 const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/gu;
@@ -227,6 +256,92 @@ export function judgeStats(st: WindowStats, opts: LoopGuardOptions): LoopSeverit
 }
 
 /**
+ * 极纯档的形态判据（三条同时成立）：
+ *   字母表 ≤ pureMaxAlphabet ∧ 重复行平均行长 ≤ pureMaxAvgLineChars
+ *   ∧ 窗口内新行占比 ≤ pureMaxIntruderRatio
+ *
+ * 另外保留现行档同一条底线「主导重复行要有实义字符」：纯符号行
+ * （} ``` │ ──┬──）在正常代码、表格、ASCII 图里天然重复，不能当停滞证据。
+ *
+ * 注：窗口统计在字母表超过 maxAlphabet 时直接不成立（windowStats 返回 null），
+ * 所以极纯档实际能看到的字母表上限是 min(pureMaxAlphabet, maxAlphabet)。
+ */
+export function isPureShape(st: WindowStats, opts: LoopGuardOptions): boolean {
+	if (st.alphabet > Math.min(opts.pureMaxAlphabet, opts.maxAlphabet)) return false;
+	if (st.avgLineChars > opts.pureMaxAvgLineChars) return false;
+	if (st.intruderRatio > opts.pureMaxIntruderRatio) return false;
+	return hasSubstance(st.dominant);
+}
+
+/**
+ * 极纯档状态机：idle → armed →（持续确认）→ fire。
+ *
+ * armed 是干嘛的：极纯形态在块尾也会成立 —— 模型刚开始重复几百字符、块就结束了。
+ * 那时动手等于白付一次 abort 加一条约 4000 字符的纠正消息。实测 9 次命中里有 2 次
+ * 命中点之后只剩 432 / 437 字符，拦下来纯亏。所以形态成立且重复量过线时先只记下
+ * armed 位置，要求再重复积累 pureConfirmChars 仍满足形态，才认为是真循环。
+ *
+ * 形态中断（字母表变大 / 新行占比回升）立即解除 armed；块结束（模型自己收尾、
+ * 生成结束）由调用方 reset() 丢弃，不 fire。
+ *
+ * 独立成类是为了让离线校准脚本用同一份状态机（scripts/loop-guard-candidate-calib.mjs），
+ * 不必再抄一遍逻辑。
+ */
+export class PureTier {
+	private armed = false;
+	private armedRepeatChars = 0;
+	/** 一个块最多 fire 一次：fire 后不再 arm，直到 reset() */
+	private fired = false;
+	/** 本块进入 armed 的次数（观测/校准用） */
+	private armEvents = 0;
+
+	/** 是否正处于「已 armed、等持续确认」 */
+	get isArmed(): boolean {
+		return this.armed;
+	}
+
+	/** armed 时的重复字符数（未 armed 返回 0） */
+	get armedAtChars(): number {
+		return this.armed ? this.armedRepeatChars : 0;
+	}
+
+	/** 本块进入 armed 的次数 */
+	get armCount(): number {
+		return this.armEvents;
+	}
+
+	reset(): void {
+		this.armed = false;
+		this.armedRepeatChars = 0;
+		this.fired = false;
+		this.armEvents = 0;
+	}
+
+	/**
+	 * 每个检查点喂一次窗口统计，返回 true 表示持续确认期满、可以中止。
+	 * st 为 null（窗口统计不成立）等同于形态不成立，会解除 armed。
+	 */
+	tick(st: WindowStats | null, opts: LoopGuardOptions): boolean {
+		if (this.fired || !opts.pureEnabled || !st || !isPureShape(st, opts)) {
+			this.armed = false;
+			return false;
+		}
+		if (!this.armed) {
+			if (st.repeatChars < opts.pureRepeatChars) return false;
+			this.armed = true;
+			this.armedRepeatChars = st.repeatChars;
+			this.armEvents += 1;
+		}
+		// 「再重复积累」按重复字符数算（与 pureRepeatChars 同单位），
+		// 不按喂入字符数：一行「好。」带换行喂进去是 3 字符、重复量只算 2。
+		if (st.repeatChars - this.armedRepeatChars < opts.pureConfirmChars) return false;
+		this.armed = false;
+		this.fired = true;
+		return true;
+	}
+}
+
+/**
  * 流式检测器：喂入增量文本，命中时返回 LoopHit。
  * 一个实例对应一个输出块（thinking 或正文），块结束调用 reset()。
  */
@@ -240,6 +355,8 @@ export class LoopDetector {
 	private fed = 0;
 	private sinceCheck = 0;
 	private fired = false;
+	/** 极纯档状态机（与现行判据共用同一个窗口、同一批检查点） */
+	private pure = new PureTier();
 
 	constructor(opts: Partial<LoopGuardOptions> = {}) {
 		this.opts = { ...DEFAULT_OPTIONS, ...opts };
@@ -252,6 +369,7 @@ export class LoopDetector {
 		this.fed = 0;
 		this.sinceCheck = 0;
 		this.fired = false;
+		this.pure.reset();
 	}
 
 	get fedChars(): number {
@@ -261,6 +379,21 @@ export class LoopDetector {
 	/** 本块是否已经报过 */
 	get alreadyFired(): boolean {
 		return this.fired;
+	}
+
+	/** 极纯档是否处于「已 armed、等持续确认」 */
+	get pureArmed(): boolean {
+		return this.pure.isArmed;
+	}
+
+	/** 极纯档 armed 时的重复字符数（未 armed 返回 0） */
+	get pureArmedAtChars(): number {
+		return this.pure.armedAtChars;
+	}
+
+	/** 本块极纯档进入 armed 的次数 */
+	get pureArmCount(): number {
+		return this.pure.armCount;
 	}
 
 	feed(delta: string): LoopHit | null {
@@ -286,14 +419,30 @@ export class LoopDetector {
 	/** 立即判定一次 */
 	check(): LoopHit | null {
 		const st = windowStats(this.lines, this.opts);
+		// 极纯档先看一眼：形态成立时它的中止线比现行 abort 早得多，两档取先到者。
+		// st 为 null 时也要 tick，好让形态中断解除 armed。
+		const pureFire = this.pure.tick(st, this.opts);
 		if (!st) return null;
+		if (pureFire) {
+			this.fired = true;
+			return this.buildHit("abort", st, "pure");
+		}
+		// 现行档：判据与触发时机一字未动，只是可能被上面更早的极纯档抢在前头
 		const severity = judgeStats(st, this.opts);
 		if (!severity) return null;
 		this.fired = true;
-		const spanScore = Math.min(1, st.repeatChars / (this.opts.abortRepeatChars * 2));
+		return this.buildHit(severity, st, "default");
+	}
+
+	private buildHit(severity: LoopSeverity, st: WindowStats, tier: LoopTier): LoopHit {
+		// 置信度按本档自己的参考跨度归一：极纯档的线本来就低，别拿 9000 去比
+		const refSpan =
+			tier === "pure" ? this.opts.pureRepeatChars + this.opts.pureConfirmChars : this.opts.abortRepeatChars;
+		const spanScore = Math.min(1, st.repeatChars / (Math.max(1, refSpan) * 2));
 		const alphaScore = 1 - st.alphabet / (this.opts.maxAlphabet + 1);
 		return {
 			severity,
+			tier,
 			offset: this.fed,
 			repeatChars: st.repeatChars,
 			repeatLines: st.repeatLines,
