@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { checkCommand, isInterpreterProgram, unquotedPathTokens } from "./sandbox-check.ts";
+import { checkCommand, isInterpreterProgram, summarizeTokens, unquotedPathTokens } from "./sandbox-check.ts";
 import { loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
 import { clearPreshellCache, resetPreshellBreaker, resetPreshellVersionCache } from "./preshell.ts";
 
@@ -207,6 +207,17 @@ describe("动态构造收窄：变量渲染参与判定", () => {
       assert.ok((result.rules ?? []).some((r) => r.name === "dynamic-construct"), JSON.stringify(result.rules));
       assert.ok(!(result.rules ?? []).some((r) => r.name === "dynamic-construct-narrowed"));
       assert.equal(result.audit?.dynamicTokens.includes("$P"), true);
+    });
+  });
+
+  it("dynamic-construct 的 tip 带出命中的 token（人不用自己在命令里找）", () => {
+    withStubPreshell(stubPreshell(varProgramReport("$P")), () => {
+      const result = checkCommand("P=/usr/bin/jq $P --version", { cwd: "/tmp" });
+      const rule = (result.rules ?? []).find((r) => r.name === "dynamic-construct");
+      assert.ok(rule, JSON.stringify(result.rules));
+      assert.equal(rule.tip, "命令含动态构造（$P），请人工确认");
+      // matched 仍然原样带着，供审批窗高亮用
+      assert.deepEqual(rule.matched, ["$P"]);
     });
   });
 
@@ -461,5 +472,22 @@ describe("unquotedPathTokens", () => {
     for (const token of unquotedPathTokens("-rf . x foo")) {
       assert.ok(token !== "-rf" && token !== "." && token !== "x" && token !== "foo", `不该收：${token}`);
     }
+  });
+});
+
+describe("summarizeTokens：审批提示里的 token 摘要", () => {
+  it("少量且短的照原样列出来", () => {
+    assert.equal(summarizeTokens(["$P", "eval"]), "$P、eval");
+  });
+
+  it("条数封顶，剩下的用总数交代", () => {
+    assert.equal(summarizeTokens(["a", "b", "c", "d", "e"]), "a、b、c、d 等 5 项");
+  });
+
+  it("单个 token 超长要截断，多行要折平", () => {
+    const out = summarizeTokens([`$(printf '%s\n' ${"x".repeat(60)})`], 4, 20);
+    assert.ok(out.endsWith("…"), `应截断，实得 ${out}`);
+    assert.ok(out.length <= 21, `长度应受限，实得 ${out.length}`);
+    assert.ok(!out.includes("\n"), "不该把换行带进提示");
   });
 });

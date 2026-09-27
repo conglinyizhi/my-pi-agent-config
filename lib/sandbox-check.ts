@@ -231,6 +231,22 @@ export function loadSandboxRules(): ReturnType<typeof loadBlacklist> {
 }
 
 /**
+ * 把命中的 token 拼成一句能塞进审批提示的摘要。
+ * token 可能是 `$P` / `eval` / `probe()`，也可能是整段命令替换 `$(...)`，
+ * 所以单个 token 要截断、条数也要封顶，否则 tip 会把审批窗撜爆。
+ * 摘要里不保留换行：多行 token 折成一行，免得提示框被撞开。
+ */
+export function summarizeTokens(tokens: string[], maxItems = 4, maxChars = 32): string {
+	const flatten = (t: string) => t.replace(/\s+/g, " ").trim();
+	const shown = tokens.slice(0, maxItems).map((t) => {
+		const one = flatten(t);
+		return one.length > maxChars ? `${one.slice(0, maxChars)}…` : one;
+	});
+	const rest = tokens.length - shown.length;
+	return rest > 0 ? `${shown.join("、")} 等 ${tokens.length} 项` : shown.join("、");
+}
+
+/**
  * 判定层主入口：一条 bash 命令是否放行。
  * 顺序与 gate/guard 的原拦截顺序对齐：敏感路径 → 内联脚本 → 危险规则 → 白名单豁免。
  * 返回 { allow:false, reason } 时调用方应在执行前阻止。
@@ -304,7 +320,15 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	}
 
 	// 组合危险信号（与 gate 一致：不合并成一条，逐条可高亮）
-	if (audit.dynamic) rulesOut.push({ name: "dynamic-construct", tip: "命令含动态构造，请人工确认", autoReject: false, matched: [...audit.dynamicTokens] });
+	if (audit.dynamic) {
+		// tip 里带上命中的 token：只说「含动态构造」的话，人得自己在一屏命令里找是哪一处
+		rulesOut.push({
+			name: "dynamic-construct",
+			tip: `命令含动态构造（${summarizeTokens(audit.dynamicTokens)}），请人工确认`,
+			autoReject: false,
+			matched: [...audit.dynamicTokens],
+		});
+	}
 	// 收窄过的命令名变量：程序名静态确定了，但规则层拿着 token 原文判不了它是什么程序。
 	// 第一条规则把这层信息交给审核模型（tip 里带上 `$P = /usr/bin/jq`），仍要预审，不直接放行。
 	// autoReject:false 是硬要求：它只把命令送进 LLM 预审，不能让 LLM 判 safe 之后还要人工
