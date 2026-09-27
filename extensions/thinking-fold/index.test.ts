@@ -73,6 +73,15 @@ function thinkingBlock(head = 300, cycles = 100): string {
 	return lines.join("\n");
 }
 
+/** 构造「头部 + 中间复读段 + 尾部正常内容」的 thinking 块 */
+function midRepeatBlock(head = 200, cycles = 150, tail = 100): string {
+	const lines: string[] = [];
+	for (let i = 0; i < head; i++) lines.push(`- 第 ${i} 项：核对模块 ${i} 的导出与依赖。`);
+	for (let c = 0; c < cycles; c++) lines.push("好。", "跑。");
+	for (let i = 0; i < tail; i++) lines.push(`尾段第 ${i} 行：复读完了继续写正事，这段不能折。`);
+	return lines.join("\n");
+}
+
 const transformOf = (transformers: Transformer[]): Transformer => {
 	assert.equal(transformers.length, 1, "应该恰好注册一个 markdown transformer");
 	return transformers[0];
@@ -126,6 +135,46 @@ describe("命中折叠", () => {
 		assert.ok(out.startsWith("⋯ [已折叠 200 行重复输出："));
 	});
 
+	it("中间复读段也被折，段后的正常内容原样留下", () => {
+		const { pi, transformers } = fakePi();
+		createThinkingFold(pi, cfg());
+		const transform = transformOf(transformers);
+		const source = midRepeatBlock();
+		const out = transform(source, ctxFor("assistant-thinking"));
+
+		assert.notEqual(out, source);
+		const lines = out.split("\n");
+		// 200 行头 + 1 行提示 + 100 行尾（复读段那 300 行被折掉）
+		assert.equal(lines.length, 301);
+		assert.equal(lines[200].startsWith("⋯ [已折叠 300 行重复输出："), true);
+		assert.equal(lines[201], "尾段第 0 行：复读完了继续写正事，这段不能折。");
+		assert.equal(lines[lines.length - 1], "尾段第 99 行：复读完了继续写正事，这段不能折。");
+		assert.equal(lines.filter((l) => l === "好。" || l === "跑。").length, 0);
+	});
+
+	it("多段：一段一行提示，段与段之间的内容不动", () => {
+		const { pi, transformers } = fakePi();
+		const state = createThinkingFold(pi, cfg());
+		const transform = transformOf(transformers);
+		const middle = Array.from({ length: 90 }, (_, i) => `中间第 ${i} 行：这段是真推理，只出现一次。`);
+		const source = [
+			...Array.from({ length: 300 }, (_, i) => (i % 2 ? "跑。" : "好。")),
+			...middle,
+			...Array.from({ length: 300 }, (_, i) => (i % 2 ? "停。" : "发。")),
+		].join("\n");
+		const out = transform(source, ctxFor("assistant-thinking"));
+
+		const lines = out.split("\n");
+		assert.equal(lines.length, 2 + middle.length, "两行提示 + 中间的 90 行");
+		assert.equal(lines[0].startsWith("⋯ [已折叠 300 行重复输出："), true);
+		assert.deepEqual(lines.slice(1, 1 + middle.length), middle, "段之间的内容逐行原样保留");
+		assert.equal(lines[lines.length - 1].startsWith("⋯ [已折叠 300 行重复输出："), true);
+		const last = state.last;
+		assert.ok(last, "应该记下了最近一次折叠");
+		assert.equal(last.segments, 2);
+		assert.equal(last.lines, 600);
+	});
+
 	it("流式中也折（否则屏幕照样被刷满）", () => {
 		const { pi, transformers } = fakePi();
 		createThinkingFold(pi, cfg());
@@ -145,7 +194,7 @@ describe("命中折叠", () => {
 		assert.equal(state.folds, 1, "重复渲染不该重复计数");
 	});
 
-	it("命中后状态栏短暂显示一行统计", async () => {
+	it("命中后不碰状态栏（地皮留给别的扩展）", async () => {
 		const { pi, transformers, emit } = fakePi();
 		createThinkingFold(pi, cfg());
 		const transform = transformOf(transformers);
@@ -154,10 +203,7 @@ describe("命中折叠", () => {
 
 		transform(thinkingBlock(), ctxFor("assistant-thinking"));
 		await flush();
-		assert.ok(
-			statuses.some((s) => s.key === "thinking-fold" && s.text?.startsWith("✂️ 折叠 ")),
-			`状态栏应有折叠统计，实得 ${JSON.stringify(statuses)}`,
-		);
+		assert.deepEqual(statuses, [], `折叠不该写状态栏，实得 ${JSON.stringify(statuses)}`);
 	});
 });
 
@@ -247,7 +293,7 @@ describe("命令与快捷键", () => {
 		assert.ok(notes.some((n) => n.text.includes("用法：")));
 	});
 
-	it("快捷键切换开关并同步状态栏", () => {
+	it("快捷键切换开关（只发通知，不动状态栏）", () => {
 		const { pi, transformers, shortcuts } = fakePi();
 		createThinkingFold(pi, cfg());
 		const transform = transformOf(transformers);
@@ -258,11 +304,12 @@ describe("命令与快捷键", () => {
 		shortcut.handler(ctx);
 		assert.ok(notes.some((n) => n.text.includes("已关闭")));
 		assert.equal(transform(source, ctxFor("assistant-thinking")), source);
-		assert.equal(statuses[statuses.length - 1].text, undefined, "关闭时清掉状态栏");
+		assert.deepEqual(statuses, [], "开关不该动状态栏");
 
 		shortcut.handler(ctx);
 		assert.ok(notes.some((n) => n.text.includes("已开启")));
 		assert.ok(transform(source, ctxFor("assistant-thinking")).includes("⋯ [已折叠 "));
+		assert.deepEqual(statuses, [], "开启也不该动状态栏");
 	});
 });
 
@@ -315,12 +362,13 @@ describe("纯函数", () => {
 		const text = "第一行\n第二行\n第三行";
 		const r = applyFold(text);
 		assert.equal(r.text, text);
-		assert.equal(r.suffix, null);
+		assert.deepEqual(r.segments, []);
 	});
 
 	it("buildFoldNotice 最多列 3 个样例", () => {
 		const notice = buildFoldNotice({
 			startLine: 0,
+			endLine: 236,
 			lines: 236,
 			chars: 2000,
 			kinds: 5,
@@ -331,8 +379,21 @@ describe("纯函数", () => {
 
 	it("前缀为空时只输出提示行", () => {
 		const r = applyFold(Array.from({ length: 200 }, () => "好。").join("\n"));
-		assert.ok(r.suffix);
-		assert.equal(r.suffix.startLine, 0);
+		assert.equal(r.segments.length, 1);
+		assert.equal(r.segments[0].startLine, 0);
 		assert.equal(r.text.split("\n").length, 1);
+	});
+
+	it("段与段之间的内容逐行原样保留", () => {
+		const middle = Array.from({ length: 80 }, (_, i) => `中间第 ${i} 行：这段是真推理，只能出现一次。`);
+		const source = [
+			...Array.from({ length: 300 }, (_, i) => (i % 2 ? "跑。" : "好。")),
+			...middle,
+			...Array.from({ length: 300 }, (_, i) => (i % 2 ? "停。" : "发。")),
+		].join("\n");
+		const r = applyFold(source);
+		assert.equal(r.segments.length, 2);
+		assert.equal(r.text.split("\n").filter((l) => l.startsWith("⋯ [已折叠 ")).length, 2);
+		for (const line of middle) assert.ok(r.text.includes(line), `中间内容不该动：${line}`);
 	});
 });
