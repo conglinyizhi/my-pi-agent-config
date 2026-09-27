@@ -154,6 +154,22 @@ describe("var-render：拿不准的一律不渲染", () => {
 		assert.match(String(x?.reason), /特殊参数/);
 	});
 
+	it("${2:-bash} / ${?} 这类参数展开也不进变量表", () => {
+		for (const command of ["echo ${2:-bash}", "echo ${?}", "echo ${10}", "echo ${#}", "f() { echo ${1:-x}; }", "echo $1 ${2:-x}"]) {
+			assert.deepEqual(collectVarRenders(command, env), [], command);
+		}
+		// 主体仍是变量的展开保留：它确实是个变量，只是这处语法解析不了
+		for (const [command, name] of [
+			["echo ${#USER}", "USER"],
+			["echo ${USER/u/v}", "USER"],
+		] as const) {
+			const sites = collectVarRenders(command, env);
+			assert.equal(sites.length, 1, command);
+			assert.equal(sites[0].name, name, command);
+			assert.match(String(sites[0].reason), /不支持的参数展开/, command);
+		}
+	});
+
 	it("命令替换：值里的算不出来，引用处的值也从那处阻塞", () => {
 		const site = one("SRC=$(pwd) && cp $SRC /tmp", "SRC");
 		assert.equal(site?.known, false);

@@ -383,6 +383,13 @@ function readReferenceAt(text: string, i: number): Omit<RefSite, "segment" | "co
 			return { name: inner, text: written, start: i, end: close + 1, special: false };
 		}
 		// `${A:-x}` / `${#A}` / `${A/u/v}` 这类：名字尽量取，值一律不猜
+		// 但 `${2:-bash}` / `${?}` / `${10}` 这种主体是位置参数或状态变量，它们不是变量，
+		// 收进变量表只是噪音（见 collectVarRenders 里对 special 的处理）。
+		// `${#A}` / `${!A}` 的主体仍是变量，不在这里拦，走下面的「不支持的展开」
+		const head = inner[0] ?? "";
+		if (/^[0-9]/.test(head) || (inner.length === 1 && SPECIAL_PARAMS.has(head))) {
+			return { name: inner, text: written, start: i, end: close + 1, special: true };
+		}
 		const lead = /^#?([A-Za-z_][A-Za-z0-9_]*)/.exec(inner);
 		return {
 			name: lead ? lead[1] : inner,
