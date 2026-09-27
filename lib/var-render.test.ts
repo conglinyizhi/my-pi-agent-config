@@ -144,13 +144,14 @@ describe("var-render：赋值与引用的作用域（bash 实测过的边界）"
 });
 
 describe("var-render：拿不准的一律不渲染", () => {
-	it("$1 / $@ / $? 这类特殊参数", () => {
-		for (const command of ["echo $1", "echo $@", "echo $?", "echo $#", "echo $*"]) {
-			const sites = collectVarRenders(command, env);
-			assert.equal(sites.length, 1, command);
-			assert.equal(sites[0].known, false, command);
-			assert.match(String(sites[0].reason), /特殊参数/, command);
+	it("$1 / $@ / $? 这类特殊参数不进变量表（它们不是变量）", () => {
+		for (const command of ["echo $1", "echo $@", "echo $?", "echo $#", "echo $*", "echo $$", `f() { printf '%s' "$1"; }`]) {
+			assert.deepEqual(collectVarRenders(command, env), [], command);
 		}
+		// 但值里含特殊参数的赋值仍是「真变量渲不出来」，由引用处带出原因
+		const x = one("X=$? && echo $X", "X");
+		assert.equal(x?.known, false);
+		assert.match(String(x?.reason), /特殊参数/);
 	});
 
 	it("命令替换：值里的算不出来，引用处的值也从那处阻塞", () => {

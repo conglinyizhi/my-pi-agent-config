@@ -706,6 +706,11 @@ export function collectVarRenders(command: string, env: NodeJS.ProcessEnv = proc
 	const out: VarRenderSite[] = [];
 	const seen = new Set<string>();
 	for (const ref of a.refs) {
+		// 特殊参数（$? / $1 / $@ / $$ 这类）不进变量表：它们不是变量，环境里也没有，
+		// 永远渲染不了（$? 是上一个进程的退出码，只有运行到才知道）。列出来只是一行
+		// 与审批决策无关的噪音，还会占掉 MAX_RENDERS 的名额。
+		// 「命令名位置写了 $? 这种写法」由 rule-engine 的动态构造规则负责，不靠这里。
+		if (ref.special) continue;
 		const site = toSite(ref, resolveRef(ref, a, env));
 		const key = [site.name, site.target, site.kind, String(site.known), site.known ? site.value : site.reason].join("\u0000");
 		if (seen.has(key)) continue;
