@@ -138,12 +138,12 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
 | preshell 目标 | 相对路径、带引号的路径、`cd` 后的基准、`$HOME/x` 这类变量目标（v0.3.0 起由我们收尾成绝对路径） | `cd ~/.pi/agent && sed -n '610,630p' providers.toml`（旧子串匹配漏掉，实测语料里漏了 21 条）、`cat "$HOME/.ssh/id_rsa"`（引号里，token 层盖不到） |
 | 未引号路径 token | 存在性探测这类不产生 Read 效果的用法 | `test -f .env`（preshell 对 `test` 只报 Exec） |
 | 解释器/脚本载荷退回旧匹配 | 解释器与本地脚本的命令行字符串/heredoc 里的路径 | `node <<EOF` 里 `readFileSync('凭据文件')` |
-| （事实层不可用）退整条旧匹配 | 缺二进制/超时/坏 JSON/schema 不符 | 宁可多拦，不能因为缺工具而变宽 |
+| （事实层不可用）退整条旧匹配 | 缺二进制/超时/坏 JSON/版本不符 | 宁可多拦，不能因为缺工具而变宽 |
 
 误伤那一侧就是这次接入的目的：引号里的字符串（`grep -rn "process.env"`）、词内片段（`env-prep.sh`）、
 模板文件名（`.env.example`）、提交信息里提到 `.env` 都不再拦。
 
-- 配置在 `extensions.toml` 的 `[preshell]`（`enabled`/`bin`/`timeoutMs`/`schema`）；二进制缺省在
+- 配置在 `extensions.toml` 的 `[preshell]`（`enabled`/`bin`/`timeoutMs`/`version`）；二进制缺省在
   `~/.pi/runtime/preshell`（不在 `/tmp`，重启不丢），也可用环境变量 `PRESHELL_BIN` 覆盖
 - **v0.3.0 起路径一律输出绝对路径**，`--cwd=<绝对路径>` 事实上必填（它是「这条命令会在哪个目录里跑」
   的断言，不是 `cd`，命令内部的 `cd` 优先）。我们传的就是 `checkCommand` 拿到的 `ctx.cwd`；
@@ -175,9 +175,9 @@ Landlock 内核文件系统沙箱（`scripts/vendor/landlock-run`，Go 实现，
   闲下来（默认 60s）收工，宿主退出时把子进程带走（`unref` + exit 钩子，不拖住宿主退出）
 - **没装/装坏也能工作**：拿不到报告时判定退回旧匹配（token 层仍然在，所以不会比接入前更松），
   不抛异常、不静默放行；TUI 会提醒一次并附上安装命令，状态栏常驻 `✗ 事实层 <原因>`，恢复后自动收掉；
-  能动手解决的原因（缺件 / schema 不符 / 关掉）另发一条桌面通知，经 hub/IM 用 pi 没有 TUI 时靠它到人
+  能动手解决的原因（缺件 / 版本不符 / 关掉）另发一条桌面通知，经 hub/IM 用 pi 没有 TUI 时靠它到人
   （`PI_NO_DESKTOP_NOTIFY=1` 可关）
-- **熔断**：分两类。确定性失败（缺件/schema 不符）一次就断；瞬时失败（超时/坏 JSON/非零退出）
+- **熔断**：分两类。确定性失败（缺件/版本不符）一次就断；瞬时失败（超时/坏 JSON/非零退出）
   要连续 5 次，因为 100ms 之后这类更常见，而误熔断的代价是整个会话退回旧匹配（误报全回来）。
   真卡死的二进制最多担误 5 × 100ms。`/reload` 或重启后重试
 

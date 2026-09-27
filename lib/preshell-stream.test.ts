@@ -42,8 +42,12 @@ if (argv.includes("--help")) {
   process.exit(0);
 }
 if (argv.includes("--version")) {
-  const old = mode === "old-schema";
-  process.stdout.write(JSON.stringify({ tool: "preshell", version: old ? "9.9.9" : "0.2.0", schema: old ? 2 : 1 }) + "\\n");
+  // old-version 模式：旧契约的输出形状（带 schema），也是「次版本号不再匹配」的例子
+  const version =
+    mode === "old-version"
+      ? { tool: "preshell", version: "0.3.0", schema: 1 }
+      : { tool: "preshell", version: mode === "new-patch" ? "0.4.1" : "0.4.0" };
+  process.stdout.write(JSON.stringify(version) + "\\n");
   process.exit(0);
 }
 if (!argv.includes("--stream") || !argv.includes("--shell=probe")) process.exit(3);
@@ -300,15 +304,23 @@ describe("preshell-stream：能力与契约探测", () => {
 		await client.close();
 	});
 
-	it("schema 不符按事实层不可用处理", async () => {
-		const client = open(stub("old-schema"));
+	it("契约版本不符按事实层不可用处理：旧契约（带 schema 的 0.3.0）不放过", async () => {
+		const client = open(stub("old-version"));
 		const result = await client.analyze("ls");
 		assert.equal(result.ok, false);
 		if (!result.ok) {
-			assert.equal(result.reason, "schema");
-			assert.match(result.detail ?? "", /schema=2/);
+			assert.equal(result.reason, "version");
+			assert.match(result.detail ?? "", /version=0\.3\.0/);
 		}
 		assert.equal(client.stats().spawns, 0);
+		await client.close();
+	});
+
+	it("修订号不同是兼容的：0.4.1 照用", async () => {
+		const client = open(stub("new-patch"));
+		const result = await client.analyze("ls");
+		assert.equal(result.ok, true);
+		assert.equal(client.stats().spawns, 1);
 		await client.close();
 	});
 

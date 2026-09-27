@@ -24,6 +24,7 @@ import {
   auditCommand,
   extractTmpRedirectTargets,
   isTmpRedirectTargetSafe,
+  narrowableProgramName,
   type AuditResult,
   type TokenRule,
 } from "../extensions/sandbox-permissions/rule-engine.ts";
@@ -131,11 +132,90 @@ export function isInterpreterProgram(target: string): boolean {
 }
 
 /**
+ * 命令名位置那个引用的规范化键：`$x` 与 `${x}` 是同一处引用（preshell 报的是 `$x`，
+ * 而 pi 的 token 可能是 `${x}` 这种带花括号的写法）。不是变量引用（`$(...)`、`eval`、`-c`…）
+ * 返回 undefined：那些没有候选可言。
+ */
+function programRefKey(reference: string): string | undefined {
+	const m = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(reference.trim());
+	return m ? `$${m[1]}` : undefined;
+}
+
+/**
+ * preshell 对命令名位置给出的程序候选：规范化引用（`$x`）→ 候选集。
+ *
+ * 只认 Exec/Spawn 上「dynamic 且 candidates 非空」的效果：那是「这个位置可能跑哪几个
+ * 程序」的候选。确定的情况（`x=/usr/bin/jq; $x -n 1`）工具直接报真程序名而不是引用，
+ * 效果上根本没有 `$x` 这个键能对上，拿不到关联就不收窄（保守）。
+ *
+ * v0.4.0 起才有 candidates；旧二进制 / 没装 preshell 时这里拿到的是一张空表，
+ * 判定与接入前完全一致。
+ */
+export function preshellProgramCandidates(facts: PreshellFacts | undefined): Map<string, string[]> {
+	const found = new Map<string, string[]>();
+	for (const effect of facts?.effects ?? []) {
+		if (effect.kind !== "Exec" && effect.kind !== "Spawn") continue;
+		if (effect.dynamic !== true || !Array.isArray(effect.candidates)) continue;
+		const key = programRefKey(effect.target);
+		if (!key) continue;
+		const values = effect.candidates.filter((v): v is string => typeof v === "string" && v.length > 0);
+		if (values.length === 0) continue;
+		found.set(key, [...new Set(values)]);
+	}
+	return found;
+}
+
+/** 一条命令名变量的候选集：token 是引用原文，programs 是 preshell 报出的候选 */
+export interface ProgramCandidate {
+	token: string;
+	programs: string[];
+}
+
+/**
+ * 把「候选全落在已知程序上」的命令名变量从 dynamic-construct 里摘出来。
+ *
+ * 门槛只有一个：narrowableProgramName（与 pi 自己的静态渲染用同一道，见 rule-engine）。
+ * 有一候选过不了（rm / sudo / 解释器 / `/tmp` 下的程序 / 脚本…）就整个保动态构造——
+ * 候选是「其中之一」，不能拿一部分候选的“看着安全”去替另一部分担保。
+ *
+ * 摘出去≠放行：调用方仍会出一条 autoReject:false 的 dynamic-construct-narrowed 规则，
+ * 命令照样进 LLM 预审（与 pi 自己渲染出程序名时走同一条）。
+ */
+export function splitProgramCandidates(
+	tokens: readonly string[],
+	candidates: Map<string, string[]>,
+): { keep: string[]; narrowed: ProgramCandidate[] } {
+	const keep: string[] = [];
+	const narrowed: ProgramCandidate[] = [];
+	for (const token of tokens) {
+		const key = programRefKey(token);
+		const programs = key ? candidates.get(key) : undefined;
+		if (programs && programs.length > 0 && programs.every(narrowableProgramName)) {
+			narrowed.push({ token, programs });
+			continue;
+		}
+		keep.push(token);
+	}
+	return { keep, narrowed };
+}
+
+/**
+ * 候选集描述给审核模型看的一句话。
+ * 措辞不能写成「已确定为」：候选是可能性（跑的是其中之一），交预审时要让人/模型
+ * 看出这是集合而不是事实——但集合全员都是已知程序，比「未知动态构造」多给了信息。
+ */
+function describeProgramCandidates(items: readonly ProgramCandidate[]): string {
+	return items.map((item) => `${item.token} = ${item.programs.join("、")}`).join("；");
+}
+
+/**
  * 敏感路径黑名单：解析出来的目标优先，未引号 token 兜底。
  *
  * 三层都跑（而非二选一），是因为它们盖的是不同的洞：
  *   preshell    → 相对路径、带引号的路径、cd 后的基准（旧子串匹配在相对路径上漏了 21 条）；
- *                  v0.3.0 起还包括它交出的变量与 `~` 目标，由我们用环境变量收尾成绝对路径
+ *                  v0.3.0 起还包括它交出的变量与 `~` 目标，由我们用环境变量收尾成绝对路径；
+ *                  v0.4.0 起还包括动态目标的候选集（`if c; then x=/a; else x=/b; fi; rm $x`
+ *                  里的 /a 与 /b），逐个当路径判——候选是「其中之一」，不是在拿可能性当事实
  *   token       → 存在性探测这类不产生 Read 效果的用法（preshell 对 `test -f x` 只报 Exec）
  *   interpreter → 解释器载荷（`node -e …` / `python -c …` / 交给解释器的 heredoc 正文）：
  *                   preshell 不建模这类程序，引号里的路径既没效果也不在未引号 token 里
@@ -170,9 +250,21 @@ export function detectSensitivePaths(
 		// 原值，跟以前一样拿它去匹配：不会比接入前更松
 		for (const item of outcome.facts.settledPaths) {
 			if (!["Read", "Write", "Delete"].includes(item.effect.kind)) continue;
-			if (item.path.length === 0) continue;
-			const hit = rules.find((rule) => pathBlocked(item.path, base, [rule]));
-			if (hit) push(hit.pattern, item.path, "preshell");
+			if (item.path.length > 0) {
+				const hit = rules.find((rule) => pathBlocked(item.path, base, [rule]));
+				if (hit) push(hit.pattern, item.path, "preshell");
+			}
+			// v0.4.0 的候选集：动态目标的 target 是 `$x` 这种引用，item.path 不是真路径
+			// （变量补不上就保留原值，等于判不了），以前这类只能漏。候选集里那些确定的值
+			// 逐个按同一套规则判一遍，命中就拦。方向只会更严：候选是「其中之一」，
+			// 命中的那个可能本来就是要跑的那个；而 `$x` 原文从来不会匹配上黑名单
+			if (item.effect.dynamic === true && Array.isArray(item.effect.candidates)) {
+				for (const candidate of item.effect.candidates) {
+					if (typeof candidate !== "string" || candidate.length === 0) continue;
+					const hit = rules.find((rule) => pathBlocked(candidate, base, [rule]));
+					if (hit) push(hit.pattern, candidate, "preshell");
+				}
+			}
 		}
 	}
 
@@ -320,25 +412,47 @@ export function checkCommand(command: string, ctx: SandboxCheckContext): Sandbox
 	}
 
 	// 组合危险信号（与 gate 一致：不合并成一条，逐条可高亮）
-	if (audit.dynamic) {
-		// tip 里带上命中的 token：只说「含动态构造」的话，人得自己在一屏命令里找是哪一处
+	// preshell 对命令名位置的变量可能给出候选集（v0.4.0 的 candidates）：候选全落在已知程序上
+	// 就把它从 dynamic-construct 摘到 dynamic-construct-narrowed——那是同一条「仍要 LLM 预审」
+	// 的路，只是 tip 里多给模型一层信息（到底可能跑什么）。有一个候选过不了窄门槛就留在
+	// dynamic 里（保守）：候选是可能性，不是事实。事实层不可用 / 旧版没 candidates 时那张表
+	// 是空的，这里就是原来的行为
+	const { keep, narrowed: candidateNarrowed } = audit.dynamic
+		? splitProgramCandidates(audit.dynamicTokens, preshellProgramCandidates(sensitive.facts))
+		: { keep: audit.dynamicTokens, narrowed: [] as ProgramCandidate[] };
+
+	// tip 里带上命中的 token：只说「含动态构造」的话，人得自己在一屏命令里找是哪一处
+	if (audit.dynamic && keep.length > 0) {
 		rulesOut.push({
 			name: "dynamic-construct",
-			tip: `命令含动态构造（${summarizeTokens(audit.dynamicTokens)}），请人工确认`,
+			tip: `命令含动态构造（${summarizeTokens(keep)}），请人工确认`,
 			autoReject: false,
-			matched: [...audit.dynamicTokens],
+			matched: [...keep],
 		});
 	}
-	// 收窄过的命令名变量：程序名静态确定了，但规则层拿着 token 原文判不了它是什么程序。
-	// 第一条规则把这层信息交给审核模型（tip 里带上 `$P = /usr/bin/jq`），仍要预审，不直接放行。
-	// autoReject:false 是硬要求：它只把命令送进 LLM 预审，不能让 LLM 判 safe 之后还要人工
-	// （那是真·危险信号才该给的待遇）。
+	// 收窄过的命令名变量：程序名静态确定了（或候选全落在已知程序上），但规则层拿着 token 原文
+	// 判不了它是什么程序。这条规则把这层信息交给审核模型（tip 里带上 `$P = /usr/bin/jq`），
+	// 仍要预审，不直接放行。autoReject:false 是硬要求：它只把命令送进 LLM 预审，不能让 LLM
+	// 判 safe 之后还要人工（那是真·危险信号才该给的待遇）。
+	// 两个来源合并成一条：pi 自己的静态渲染（已确定为）与 preshell 的候选集（可能是）。
+	const narrowedParts: string[] = [];
+	const narrowedTokens: string[] = [];
 	if (audit.narrowed.length > 0) {
+		narrowedParts.push(`命令名是变量，已静态确定为 ${audit.narrowed.map((n) => `${n.token} = ${n.program}`).join("、")}`);
+		narrowedTokens.push(...audit.narrowed.map((n) => n.token));
+	}
+	if (candidateNarrowed.length > 0) {
+		narrowedParts.push(
+			`命令名是变量，事实层给出的候选全落在已知程序上（${describeProgramCandidates(candidateNarrowed)}，跑的是其中之一）`,
+		);
+		narrowedTokens.push(...candidateNarrowed.map((n) => n.token));
+	}
+	if (narrowedParts.length > 0) {
 		rulesOut.push({
 			name: "dynamic-construct-narrowed",
-			tip: `命令名是变量，已静态确定为 ${audit.narrowed.map((n) => `${n.token} = ${n.program}`).join("、")}，交预审确认`,
+			tip: `${narrowedParts.join("；")}，交预审确认`,
 			autoReject: false,
-			matched: audit.narrowed.map((n) => n.token),
+			matched: narrowedTokens,
 		});
 	}
 	if (audit.dangerous.length > 0) rulesOut.push({ name: "subst-danger", tip: "命令替换内部含危险指令", autoReject: false, matched: [...audit.dangerous] });

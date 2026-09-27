@@ -395,8 +395,12 @@ function isKnownProgramPath(value: string): boolean {
  * 渲染值 → 能不能收窄成「已知程序」。
  * 收窄不等于放行：调用方拿到 narrowed 之后仍要出一条 autoReject:false 的规则，
  * 把命令送去 LLM 预审。收窄只决定「这条命令按已知程序报，而不是按未知动态构造报」。
+ *
+ * 导出的理由：lib/sandbox-check.ts 要把 preshell 给的命令名候选（v0.4.0 的 candidates）
+ * 过同一道门槛——全过了才收窄，有一个过不了就照旧算动态构造。门槛只有一份，
+ * 别让调用方自己再写一套。
  */
-function narrowableProgramName(value: string): boolean {
+export function narrowableProgramName(value: string): boolean {
   return isPlainProgramName(value) && isKnownProgramPath(value);
 }
 

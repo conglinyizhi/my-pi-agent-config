@@ -71,10 +71,10 @@ const OK_REPORT = JSON.stringify({
   },
 });
 
-const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"9.9.9","schema":1}'; exit 0 ;; esac`;
+const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.0"}'; exit 0 ;; esac`;
 
 function configFor(bin: string, over: Partial<PreshellConfig> = {}): PreshellConfig {
-  return { enabled: true, bin, timeoutMs: 2000, schema: 1, ...over };
+  return { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.4", ...over };
 }
 
 describe("analyzeCommand", () => {
@@ -85,7 +85,7 @@ describe("analyzeCommand", () => {
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
-    assert.equal(outcome.version, "9.9.9");
+    assert.equal(outcome.version, "0.4.0");
     assert.equal(outcome.facts.status, "Complete");
     assert.equal(outcome.facts.uncertain, true);
     assert.equal(outcome.facts.cwd, "/work");
@@ -177,6 +177,55 @@ describe("analyzeCommand", () => {
     assert.match(outcome.facts.settledPaths[2].reason ?? "", /补不上/);
   });
 
+  it("v0.4.0 的候选集原样带进 facts；旧报告没有这个字段就是 undefined", () => {
+    const report = JSON.stringify({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "rm", vars: [], candidates: [], dynamic: false, modeled: true, line: 1 },
+          {
+            kind: "Delete",
+            target: "$x",
+            vars: ["x"],
+            candidates: ["/a", "/b"],
+            dynamic: true,
+            modeled: true,
+            line: 1,
+          },
+        ],
+        write_roots: [],
+        uncertain: true,
+        vars: ["x"],
+        cwd: "/work",
+      },
+    });
+    const bin = stub("candidates.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("if c; then x=/a; else x=/b; fi; rm $x", { config: configFor(bin) });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.deepEqual(outcome.facts.effects[0].candidates, [], "空数组 = 无候选（字段在，但没得选）");
+    assert.deepEqual(outcome.facts.effects[1].candidates, ["/a", "/b"]);
+    // 候选是可能性不是事实：路径收尾依旧按 target 走（x 不在环境里就保留原值）
+    assert.deepEqual(
+      outcome.facts.settledPaths.map((item) => [item.path, item.known]),
+      [["$x", false]],
+    );
+
+    // 旧版二进制（≤0.3.0）不报 candidates：字段就是 undefined，不是空数组
+    const legacy = stub("candidates-legacy.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
+      status: "Complete",
+      impact: { effects: [{ kind: "Delete", target: "$x", vars: ["x"], dynamic: true, line: 1 }], write_roots: [], uncertain: true, vars: ["x"], cwd: "/work" },
+    })}'`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const old = analyzeCommand("rm $x", { config: configFor(legacy) });
+    assert.equal(old.ok, true);
+    if (old.ok) assert.equal(old.facts.effects[0].candidates, undefined);
+  });
+
   it("$PWD / ~+ 用报告回的基准（命令内部 cd 过就是 cd 之后那个），不用 pi 进程的 PWD", () => {
     const report = JSON.stringify({
       version: 1,
@@ -252,12 +301,48 @@ describe("analyzeCommand", () => {
     assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1);
   });
 
-  it("契约版本不符 → schema 不可用（不猜）", () => {
-    const bin = stub("schema.sh", `printf '%s' '{"tool":"preshell","version":"9.9.9","schema":7}'; exit 0`);
+  it("契约版本不符 → version 不可用（不猜）；次版本号一致就继续，修订号不一致不管", () => {
+    const cases: Array<[string, boolean]> = [
+      ["0.4.0", true],
+      ["0.4.1", true],
+      ["0.5.0", false],
+    ];
+    for (const [version, compatible] of cases) {
+      clearPreshellCache();
+      resetPreshellVersionCache();
+      const bin = stub(
+        `version-${version}.sh`,
+        `case "$1" in --version) printf '%s' '${JSON.stringify({ tool: "preshell", version })}'; exit 0 ;; esac\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`,
+      );
+      const outcome = analyzeCommand("ls", { config: configFor(bin) });
+      assert.equal(outcome.ok, compatible, `${version} 期望 ok=${compatible}`);
+      if (!outcome.ok) {
+        assert.equal(outcome.reason, "version");
+        assert.match(outcome.detail ?? "", /期望 0\.4\.x/);
+      }
+    }
+  });
+
+  it("旧契约的 --version（带 schema 字段）读得出来，但不兼容（0.3 ≠ 0.4）", () => {
+    // v0.3.0 的输出形状：多个 schema 字段。v0.4.0 删了它，所以解析不能拿 schema 当准入条件
+    const bin = stub("old-version.sh", `printf '%s' '{"tool":"preshell","version":"0.3.0","schema":1}'; exit 0`);
     clearPreshellCache();
     resetPreshellVersionCache();
-    const outcome = analyzeCommand("ls", { config: configFor(bin, { schema: 1 }) });
-    assert.deepEqual(outcome, { ok: false, reason: "schema", detail: "工具报 schema=7，期望 1" });
+    const outcome = analyzeCommand("ls", { config: configFor(bin) });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) {
+      assert.equal(outcome.reason, "version");
+      assert.match(outcome.detail ?? "", /version=0\.3\.0/);
+    }
+  });
+
+  it("--version 里没有版本号（只有工具名）→ bad-json，不当成某个版本", () => {
+    const bin = stub("no-version.sh", `printf '%s' '{"tool":"preshell"}'; exit 0`);
+    clearPreshellCache();
+    resetPreshellVersionCache();
+    const outcome = analyzeCommand("ls", { config: configFor(bin) });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason, "bad-json");
   });
 
   it("缺二进制 → missing（调用方据此走保守兜底）", () => {
@@ -367,14 +452,14 @@ describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超�
 describe("缺件提示（人看的）", () => {
   it("describeUnavailable 说清是什么毛病", () => {
     assert.match(describeUnavailable("missing"), /未安装或路径不对/);
-    assert.match(describeUnavailable("schema", "工具报 schema=7"), /契约版本不符（工具报 schema=7）/);
+    assert.match(describeUnavailable("version", "工具报 version=0.5.0"), /契约版本不符（工具报 version=0\.5\.0）/);
     assert.match(describeUnavailable("disabled"), /enabled=false/);
   });
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.3\.0 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.3\.0-x86_64-linux/);
+    assert.match(INSTALL_HINT, /gh release download v0\.4\.0 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.4\.0-x86_64-linux/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
   });
@@ -433,7 +518,17 @@ describe("配置与二进制解析", () => {
     const cfg = loadPreshellConfig("/nonexistent/extensions.toml");
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.bin, "~/.pi/runtime/preshell");
-    assert.equal(cfg.schema, 1);
+    assert.equal(cfg.expectedVersion, "0.4");
+  });
+
+  it("配置读 `version` 键；老的 `schema = 1` 不再参与判定（缺省仍是 0.4）", () => {
+    const path = join(dir, "config-version.toml");
+    writeFileSync(path, `[preshell]\nenabled = true\nschema = 1\n`, "utf8");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.4", "老键不该被当成版本号");
+    writeFileSync(path, `[preshell]\nversion = "0.4"\n`, "utf8");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.4");
+    writeFileSync(path, `[preshell]\nversion = "0.5"\n`, "utf8");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.5", "配置要能钉一个不同的期望版本");
   });
 
   it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {

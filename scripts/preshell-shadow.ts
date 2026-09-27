@@ -13,7 +13,7 @@
 //   --no-stream  不走 --stream，回到「每条起一次进程」（对照用；默认流式，v0.1 那种
 //                不认识 --stream 的二进制会自动退回去）
 //
-// 报告开头会打出现用二进制的 version / schema / sha256，跟 PINNED_SHA256 对比——
+// 报告开头会打出现用二进制的 version / sha256，跟 PINNED_SHA256 对比——
 // 结论必须能归到哪个具体产物上，不然下次改版就说不清是它变了还是我们的策略变了。
 //
 // v0.1 实测（2026-09-24）：version 0.1.0 · schema 1 ·
@@ -25,6 +25,9 @@
 // v0.3.0 实测（2026-09-25）：version 0.3.0 · schema 1 · 路径一律绝对路径、--cwd 事实上必填、
 //   每条 effect 带 vars（影响面里要替换的变量名）·
 //   sha256 28a481c9a5258119d003b28125e216a92dfbe500da6b1d9c344fb86a9e1b191f
+// v0.4.0 实测（2026-09-27）：version 0.4.0 · 删了 schema 号（兼容性只看版本号）·
+//   effect 带 candidates（变量目标有多个可能值时给候选集）·
+//   sha256 efd6634a073bb3302c27b865613e47141a2e4a496afc0d390071f501b49c047c
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -83,8 +86,8 @@ function arg(name: string, fallback = ""): string {
 }
 
 const BIN = arg("bin", process.env.PRESHELL_BIN ?? (fs.existsSync(join(homedir(), ".pi", "runtime", "preshell")) ? join(homedir(), ".pi", "runtime", "preshell") : "preshell"));
-/** 当前 pin 的发布物 sha256（v0.3.0；发布方带 SHA256SUMS，不一致时报告要说得出来） */
-const PINNED_SHA256 = "28a481c9a5258119d003b28125e216a92dfbe500da6b1d9c344fb86a9e1b191f";
+/** 当前 pin 的发布物 sha256（v0.4.0；发布方带 SHA256SUMS，不一致时报告要说得出来） */
+const PINNED_SHA256 = "efd6634a073bb3302c27b865613e47141a2e4a496afc0d390071f501b49c047c";
 /** transitions = 三档策略对比；blacklist = 只看敏感路径这一维（旧子串匹配 vs 新事实层+token 兼底） */
 const MODE = arg("mode", "transitions");
 const N = Number(arg("n", "1500"));

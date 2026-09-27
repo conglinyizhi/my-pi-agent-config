@@ -10,16 +10,23 @@
 //
 // 契约（preshell 仓库 docs/integration.md）：
 //   命令走 stdin，stdout 恰好一个 JSON；退出码 0 = 有报告，2 = 用法错误，其它 = 工具没跑起来
-//   --version → {"tool":"preshell","version":"0.3.0","schema":1}：解析形状锁 schema
-//   拿不到报告（缺二进制/超时/坏 JSON）时默认动作是保守兜底，绝不因此放行
+//   --version → {"tool":"preshell","version":"0.4.0"}：**兼容性只跟版本号走**
+//   拿不到报告（缺二进制/超时/坏 JSON/版本不符）时默认动作是保守兜底，绝不因此放行
 //
-// v0.3.0（本文件按它适配）有两处行为变化，形状仍是 schema=1（加字段是加法）：
+// v0.4.0（本文件按它适配）的三处变化：
+//   0 破坏性：schema 号删掉了。判定「这次升级会不会打挂我」只看版本号——次版本号变即
+//     不兼容（0.5 起要重新适配），修订号变是兼容的（0.4.x 互通）。旧版（≤0.3.0）的
+//     --version 还带 schema 字段，读的时候要能两种都吃（见 queryPreshellVersion）
 //   1 路径一律输出绝对路径。`--cwd=<绝对路径>` 事实上必填：它是「这条命令会在哪个目录里
 //     跑」的断言，不是 cd（命令内部的 cd 优先）。不给时工具拿自己进程的当前目录推演，
 //     报告附一条 Note 并置 uncertain: true
 //   2 词首是运行时展开的目标（`$HOME/x`、`~/x`、`~+/x`）给不出绝对路径：原值原样保留、
 //     dynamic: true，要替换的名字在 effect.vars / impact.vars 里。替换是调用方的事
 //     ——环境在调用方手上，见下面「变量的收尾」一节
+//   3 条件分支让一个名字可能有多个取值时，那条洞多一份 effect.candidates（候选集）。
+//     它是**可能性**不是事实：候选里会有哪一个跑，工具不保证；判定拿它收紧（候选逐个判，
+//     命中就拦），不拿它当「只有这几个值」。列表要么给全、要么整个不出现（超 8 条、
+//     自己补不出来的可能都会被丢掉），所以「没有 candidates」不等于「只有一个可能」
 //
 // 本文件走的是「一条命令一个子进程」的单条模式：实时路径一次只问一条，起进程那 2ms 无所谓。
 // 批量场景用 lib/preshell-stream.ts 的长驻子进程（--stream），那边省下的才是真开销。
@@ -43,6 +50,15 @@ export interface PreshellEffect {
   vars?: string[];
   /** 目标不是封闭集合（有洞或通配）：`rm -rf $DIR/*` 报不出一份完整文件表 */
   dynamic?: boolean;
+  /**
+   * 这个目标的候选取值（v0.4.0 起）：条件分支让名字有多个可能取值时才有。
+   *
+   * 空数组 = 没有候选（非 dynamic 的效果一律是空数组），**不等于「没有这个字段」**——
+   * 旧版二进制（≤0.3.0）根本不报 candidates，那才叫没有这个字段。
+   * 语义是「这些值之一是它」，不是「都是」；列表要么给全要么整个不出现（不截断），
+   * 所以空数组也不等于「只有一个可能」
+   */
+  candidates?: string[];
   /** false = 程序跑了，但它碰什么由它自己决定（git/node/python/docker 这类） */
   modeled?: boolean;
   line?: number;
@@ -103,7 +119,7 @@ export interface PreshellFacts {
   writeRoots: string[];
 }
 
-export type PreshellUnavailableReason = "disabled" | "missing" | "timeout" | "exit" | "bad-json" | "schema";
+export type PreshellUnavailableReason = "disabled" | "missing" | "timeout" | "exit" | "bad-json" | "version";
 
 export type PreshellOutcome =
   | { ok: true; facts: PreshellFacts; version: string }
@@ -113,8 +129,14 @@ export interface PreshellConfig {
   enabled: boolean;
   bin: string;
   timeoutMs: number;
-  /** 期望的契约版本；不一致按「事实层不可用」处理（保守兜底） */
-  schema: number;
+  /**
+   * 期望的契约版本（主次版号，如 "0.4"）；次版本号不一致就按「事实层不可用」处理。
+   *
+   * v0.4.0 起 preshell 删掉了 schema 号，兼容性只跟版本号走（见文件头）。扩展配置里的
+   * 新键名是 `version`（extensions.toml 的 [preshell] 段）；旧配置里那个 `schema = 1`
+   * 已经没意义，读了也不参与判定（它只是留在文件里，不报错）。
+   */
+  expectedVersion: string;
 }
 
 /** 缺省二进制位置：重启不丢（/tmp 是内存盘） */
@@ -128,8 +150,32 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  * 真正的收益在坏情况：二进制卡住时，每条命令的阻塞从 2s 降到 100ms。
  */
 export const DEFAULT_TIMEOUT_MS = 100;
-/** 我们验证过的契约版本（v0.1 / v0.2 / v0.2.1 / v0.3.0 都是 schema=1；版号本身不参与判定） */
-export const EXPECTED_SCHEMA = 1;
+/**
+ * 我们适配过的契约版本（主次版号）。比较只看这两个数：
+ * 次版本号变了就是不兼容（0.5 起要重新适配），修订号变了是兼容的（0.4.x 互通）。
+ * 适配过的：0.4.0 / 0.4.1。旧契约（≤0.3.0 的 schema 号）到这里就断了。
+ */
+export const EXPECTED_VERSION = "0.4";
+
+/**
+ * 版本号 → 主次版号（"0.4.1" → "0.4"）；读不出版号时 undefined。
+ * 多出来的东西（预发布后缀之类）不管：兼容性只看前两段。
+ */
+export function compatVersion(version: string): string | undefined {
+  const m = /^(\d+)\.(\d+)/.exec(String(version).trim());
+  return m ? `${m[1]}.${m[2]}` : undefined;
+}
+
+/**
+ * 契约是否兼容：主次版号一致。
+ *
+ * 任何一个读不出来（工具没报版本号、配置写坏）都算不兼容——保守兜底，不猜。
+ */
+export function versionsCompatible(toolVersion: string, expectedVersion: string): boolean {
+  const tool = compatVersion(toolVersion);
+  const expected = compatVersion(expectedVersion);
+  return tool !== undefined && expected !== undefined && tool === expected;
+}
 
 /**
  * 安装说明：通知、配置注释、文档共用一份，避免三处各写一句、各有出入。
@@ -137,10 +183,11 @@ export const EXPECTED_SCHEMA = 1;
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.3.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.3.0-x86_64-linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.4.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.4.0-x86_64-linux ~/.pi/runtime/preshell",
   "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "v0.3 起 --cwd 事实上必填（单条与流式都是进程级参数）；词首带变量/~/~+ 的路径由调用方收尾",
+  "v0.4 起兼容性只看版本号（次版本号变即不兼容）；条件分支的候选值走 effect.candidates",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
 ].join("\n");
@@ -159,7 +206,7 @@ export function describeUnavailable(reason: PreshellUnavailableReason, detail?: 
       return `工具没跑起来${suffix}`;
     case "bad-json":
       return `输出不是合法的报告${suffix}`;
-    case "schema":
+    case "version":
       return `契约版本不符${suffix}`;
   }
 }
@@ -176,7 +223,7 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
     enabled: true,
     bin: DEFAULT_PRESHELL_BIN,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    schema: EXPECTED_SCHEMA,
+    expectedVersion: EXPECTED_VERSION,
   };
   try {
     const doc = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -187,7 +234,9 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
       enabled: section.enabled === undefined ? fallback.enabled : section.enabled === true,
       bin: typeof section.bin === "string" && section.bin.trim() ? section.bin.trim() : fallback.bin,
       timeoutMs: num(section.timeoutMs, fallback.timeoutMs),
-      schema: num(section.schema, fallback.schema),
+      // 老配置里的 `schema = 1` 到此为止：v0.4.0 起它没有对照物了，读也不读，免得把
+      // 「一个数字」误当成版本号。要钉版本写 `version = "0.4"`（缺省就是它）
+      expectedVersion: typeof section.version === "string" && section.version.trim() ? section.version.trim() : fallback.expectedVersion,
     };
   } catch {
     return fallback;
@@ -392,13 +441,13 @@ const cache = new Map<string, PreshellOutcome>();
  * 熔断：失败到阈值就不再试。
  *
  * 分两类，因为两类失败的代价不一样：
- *   - 确定性失败（缺件、schema 不符）：不会自愈，一次就断（但每进程只试一次）
+ *   - 确定性失败（缺件、契约版本不符）：不会自愈，一次就断（但每进程只试一次）
  *   - 瞬时失败（超时、坏 JSON、非零退出）：可能只是机器忙了一下。
  *     超时 100ms 之后这类更容易碰上，而误熔断的代价是整个会话退回旧匹配（误报全回来），
  *     所以要求连续 5 次。真卡死的二进制最多担误 5 × 100ms。
  * `/reload` 或重启后重试。
  */
-export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "schema"]);
+export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "version"]);
 export const BREAKER_TRANSIENT_THRESHOLD = 5;
 
 /**
@@ -439,16 +488,22 @@ export function clearPreshellCache(): void {
   cache.clear();
 }
 
-/** 每次进程只问一次 --version（版本/schema 是产物属性，不随命令变）；流式客户端也用这份缓存 */
-const versionCache = new Map<string, { version: string; schema: number } | { error: PreshellUnavailableReason }>();
+/**
+ * 每次进程只问一次 --version（版本是产物属性，不随命令变）；流式客户端也用这份缓存。
+ *
+ * 两个版都要能读：v0.4.0 是 `{"tool":"preshell","version":"0.4.0"}`（没有 schema 了），
+ * 旧版（≤0.3.0）多一个 `schema` 字段。多出来的字段一律忽略——**版本号才是兼容性依据**；
+ * 读不出 `version` 字符串（字符串以外的类型也算）就当坏 JSON。
+ */
+const versionCache = new Map<string, { version: string } | { error: PreshellUnavailableReason }>();
 
 export function queryPreshellVersion(
   bin: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): { version: string; schema: number } | { error: PreshellUnavailableReason } {
+): { version: string } | { error: PreshellUnavailableReason } {
   const hit = versionCache.get(bin);
   if (hit) return hit;
-  let result: { version: string; schema: number } | { error: PreshellUnavailableReason };
+  let result: { version: string } | { error: PreshellUnavailableReason };
   try {
     const proc = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: timeoutMs });
     if (proc.error) {
@@ -457,10 +512,7 @@ export function queryPreshellVersion(
       result = { error: "exit" };
     } else {
       const parsed = JSON.parse(proc.stdout) as { version?: unknown; schema?: unknown };
-      result =
-        typeof parsed.version === "string" && typeof parsed.schema === "number"
-          ? { version: parsed.version, schema: parsed.schema }
-          : { error: "bad-json" };
+      result = typeof parsed.version === "string" ? { version: parsed.version } : { error: "bad-json" };
     }
   } catch {
     result = { error: "bad-json" };
@@ -510,8 +562,12 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
   const outcome = ((): PreshellOutcome => {
     const version = queryPreshellVersion(bin, config.timeoutMs);
     if ("error" in version) return { ok: false, reason: version.error };
-    if (version.schema !== config.schema) {
-      return { ok: false, reason: "schema", detail: `工具报 schema=${version.schema}，期望 ${config.schema}` };
+    if (!versionsCompatible(version.version, config.expectedVersion)) {
+      return {
+        ok: false,
+        reason: "version",
+        detail: `工具报 version=${version.version}，期望 ${config.expectedVersion}.x`,
+      };
     }
     try {
       const proc = spawnSync(bin, ["--shell=probe", ...(cwd ? [`--cwd=${cwd}`] : [])], {
@@ -566,7 +622,7 @@ const STATUS_KEY = "preshell";
  * 会往桌面弹通知的原因：能动手解决的那些。
  * 瞬时的超时/坏 JSON 不打扰，否则一次网络抖就弹一次。
  */
-const DESKTOP_REASONS: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "schema", "disabled"]);
+const DESKTOP_REASONS: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "version", "disabled"]);
 
 export interface FactLayerNotifyDeps {
   /** 测试注入；缺省走 lib/notify-send（失败静默，不影响判定） */

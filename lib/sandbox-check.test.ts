@@ -15,7 +15,14 @@ import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { checkCommand, isInterpreterProgram, summarizeTokens, unquotedPathTokens } from "./sandbox-check.ts";
+import {
+  checkCommand,
+  isInterpreterProgram,
+  preshellProgramCandidates,
+  splitProgramCandidates,
+  summarizeTokens,
+  unquotedPathTokens,
+} from "./sandbox-check.ts";
 import { loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
 import { clearPreshellCache, resetPreshellBreaker, resetPreshellVersionCache } from "./preshell.ts";
 
@@ -25,7 +32,7 @@ function stubPreshell(report: unknown): string {
   const path = join(dir, "preshell");
   const body = [
     "#!/bin/sh",
-    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"9.9.9","schema":1}'; exit 0 ;; esac`,
+    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.0"}'; exit 0 ;; esac`,
     "cat >/dev/null",
     `printf '%s' '${JSON.stringify(report)}'`,
   ].join("\n");
@@ -247,6 +254,127 @@ describe("动态构造收窄：变量渲染参与判定", () => {
   });
 });
 
+// v0.4.0：条件分支让命令名位置的名字有多个取值时，Exec/Spawn 上多一份 candidates。
+// 候选全落在已知程序上就摘到 narrowed（仍是 autoReject:false，仍要过 LLM 预审）；
+// 有一个过不了窄门槛就留在 dynamic-construct（保守）。
+describe("动态构造收窄：preshell 的命令名候选集（v0.4.0）", () => {
+  /** 命令名变量 `$x` 的 Exec 效果，带候选集 */
+  const programCandidatesReport = (candidates: string[]) => ({
+    version: 1,
+    status: "Complete",
+    impact: {
+      effects: [{ kind: "Exec", target: "$x", vars: ["x"], candidates, dynamic: true, modeled: true, line: 1 }],
+      write_roots: [],
+      uncertain: true,
+      effects_dropped: 0,
+      vars: ["x"],
+      cwd: "/tmp",
+    },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("候选全可收窄 → dynamic-construct-narrowed（不是放行）", () => {
+    const bin = stubPreshell(programCandidatesReport(["/usr/bin/jq", "/usr/bin/ripgrep"]));
+    withStubPreshell(bin, () => {
+      const result = checkCommand("if c; then x=/usr/bin/jq; else x=/usr/bin/ripgrep; fi; $x -n 1", { cwd: "/tmp" });
+      assert.equal(result.allow, false, `收窄后仍要交预审，实际 reason=${result.reason}`);
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.equal(rules[0].autoReject, false);
+      // tip 要把候选摆出来：审核模型得看到可能跑哪几个程序，而不是只知道「有动态构造」
+      assert.match(rules[0].tip, /\$x = \/usr\/bin\/jq、\/usr\/bin\/ripgrep/);
+      assert.match(rules[0].tip, /其中之一/);
+      assert.deepEqual(rules[0].matched, ["$x"]);
+      // 候选是可能性，不是事实：规则不能写成「已确定」
+      assert.doesNotMatch(rules[0].tip, /已静态确定/);
+    });
+  });
+
+  it("${x} 这种花括号写法与 $x 是同一处引用（preshell 报的是 $x）", () => {
+    const bin = stubPreshell(programCandidatesReport(["/usr/bin/jq", "/usr/bin/ripgrep"]));
+    withStubPreshell(bin, () => {
+      const result = checkCommand("if c; then x=/usr/bin/jq; else x=/usr/bin/ripgrep; fi; ${x} -n 1", { cwd: "/tmp" });
+      const rules = result.rules ?? [];
+      assert.deepEqual(rules.map((r) => r.name), ["dynamic-construct-narrowed"], JSON.stringify(rules));
+      assert.deepEqual(rules[0].matched, ["${x}"], "高亮用的 token 保持命令里的原样");
+    });
+  });
+
+  it("候选里有一个过不了窄门槛 → 保持 dynamic-construct（候选是其中之一，不能部分担保）", () => {
+    for (const candidates of [
+      ["/usr/bin/jq", "/usr/bin/rm"],
+      ["/usr/bin/jq", "/tmp/mytool"],
+      ["/usr/bin/jq", "/tmp/probe.sh"],
+      ["/usr/bin/jq", "python3"],
+    ]) {
+      const bin = stubPreshell(programCandidatesReport(candidates));
+      withStubPreshell(bin, () => {
+        const result = checkCommand("if c; then x=/usr/bin/jq; else x=/tmp/mytool; fi; $x -n 1", { cwd: "/tmp" });
+        const names = (result.rules ?? []).map((r) => r.name);
+        assert.ok(names.includes("dynamic-construct"), `${candidates} 应仍命中 dynamic-construct，实际 ${names}`);
+        assert.ok(!names.includes("dynamic-construct-narrowed"), `${candidates} 不该收窄，实际 ${names}`);
+        assert.match((result.rules ?? [])[0].tip, /\$x/);
+      });
+    }
+  });
+
+  it("旧版二进制没有 candidates：行为与接入前一致（仍旧动态构造）", () => {
+    // 与上面同一张报告，只是没有 candidates 字段——v0.3.0 及更早就是这样
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [{ kind: "Exec", target: "$x", vars: ["x"], dynamic: true, modeled: true, line: 1 }],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["x"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const result = checkCommand("if c; then x=/usr/bin/jq; else x=/usr/bin/ripgrep; fi; $x -n 1", { cwd: "/tmp" });
+      const names = (result.rules ?? []).map((r) => r.name);
+      assert.deepEqual(names, ["dynamic-construct"], JSON.stringify(result.rules));
+      assert.equal(result.audit?.dynamicTokens.includes("$x"), true);
+    });
+  });
+
+  it("解析层：只有 Exec/Spawn 上 dynamic 且候选非空的引用才算候选", () => {
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [
+          { kind: "Exec", target: "$x", vars: ["x"], candidates: ["/usr/bin/jq", "/usr/bin/jq", "/usr/bin/rg"], dynamic: true, line: 1 },
+          { kind: "Delete", target: "$y", vars: ["y"], candidates: ["/a", "/b"], dynamic: true, line: 1 },
+          { kind: "Exec", target: "cat", vars: [], candidates: [], dynamic: false, line: 1 },
+          { kind: "Exec", target: "$z", vars: ["z"], candidates: [], dynamic: true, line: 1 },
+        ],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      // 借 checkCommand 走一遍事实层拿到 facts（拿不到就直接调 analyzeCommand）
+      const result = checkCommand("if c; then x=/usr/bin/jq; fi; $x -n 1", { cwd: "/tmp" });
+      const map = preshellProgramCandidates(result.facts);
+      assert.deepEqual([...map.keys()], ["$x"], "路径效果与空候选不进这张表");
+      assert.deepEqual(map.get("$x"), ["/usr/bin/jq", "/usr/bin/rg"], "同值要去重");
+      const split = splitProgramCandidates(["$x", "$z", "$(echo jq)"], map);
+      assert.deepEqual(split.keep, ["$z", "$(echo jq)"], "没候选的与不是变量引用的都留在动态里");
+      assert.deepEqual(split.narrowed, [{ token: "$x", programs: ["/usr/bin/jq", "/usr/bin/rg"] }]);
+    });
+  });
+});
+
 // v0.3.0：工具对 `$HOME/x` / `~/x` 这类目标只交出名字（target 按原值保留、dynamic: true），
 // 替换是调用方的事（integration.md「谁来替换那些变量」）。收尾之后，这类目标才进得了黑名单判定。
 describe("路径判定：变量目标（v0.3.0 的收尾）", () => {
@@ -310,6 +438,95 @@ describe("路径判定：变量目标（v0.3.0 的收尾）", () => {
       assert.equal(result.facts?.settledPaths[0]?.path, "$NOT_SET_ANYWHERE/.ssh/id_rsa", "保留原值");
       // 不变宽也不会变严：这条在接入前也是没拦住（token 层拿带 $ 的原值同样匹配不上）
       assert.equal(result.allow, true);
+    });
+  });
+});
+
+// v0.4.0：动态目标的候选集也要当路径判。`cats $x` 这种目标（target 是 `$x`，补不出路径）
+// 以前只能漏；候选里明明写着 `~/.ssh/id_rsa` 就写在眼前。逐个候选跑同一套黑名单规则，
+// 命中就拦——方向只会更严：候选是「其中之一」，不是在拿可能性当事实。
+describe("路径判定：动态目标的候选集（v0.4.0）", () => {
+  const candidateReport = (kind: string, candidates: string[]) => ({
+    version: 1,
+    status: "Complete",
+    impact: {
+      effects: [
+        { kind: "Exec", target: "cat", vars: [], candidates: [], dynamic: false, modeled: true, line: 1 },
+        { kind, target: "$x", vars: ["x"], candidates, dynamic: true, modeled: true, line: 1 },
+      ],
+      write_roots: [],
+      uncertain: true,
+      effects_dropped: 0,
+      vars: ["x"],
+      cwd: "/tmp",
+    },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("候选里有敏感路径 → 命中（改动前只拿 $x 判，什么都看不见）", () => {
+    // 改动前的行为先摆出来：`$x` 这个原值配不上任何一条黑名单规则，所以只有它的时候是漏的
+    assert.equal(pathBlocked("$x", "/tmp", loadBlacklist()), false, "原值本来就匹配不上（不是回归）");
+    // 赋值那一段带引号：未引号 token 层不看它（那是引号里的字符串），所以这条命令里
+    // 敏感路径只有 preshell 的候选集一个来源——命中与否全是这一条改动的功劳
+    const command = "if c; then x='/work/project/.env'; else x=/tmp/ok; fi; cat $x";
+    assert.deepEqual(unquotedPathTokens(command), ["x=/tmp/ok"], "引号里的那个不当 token（给下面的结论当基准）");
+    const bin = stubPreshell(candidateReport("Read", ["/work/project/.env", "/tmp/ok"]));
+    withStubPreshell(bin, () => {
+      // 默认 block：直接拒
+      const blocked = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(blocked.allow, false, "候选里的 .env 得拦下来");
+      assert.match(blocked.reason ?? "", /敏感路径黑名单/);
+      // ask：命中项交给审批窗，token 是那个候选值（让人一眼看到是哪个候选命中的）
+      const asked = checkCommand(command, { cwd: "/tmp", sensitivePaths: "ask" });
+      const hits = asked.sensitive ?? [];
+      assert.equal(hits.length, 1, JSON.stringify(hits));
+      assert.equal(hits[0].token, "/work/project/.env");
+      assert.equal(hits[0].via, "preshell");
+      assert.match(hits[0].pattern, /env/);
+    });
+  });
+
+  it("候选全安全 → 不报（候选不会凭空造出误报）", () => {
+    const command = "if c; then x=/tmp/a; else x=/tmp/b; fi; cat $x";
+    const bin = stubPreshell(candidateReport("Read", ["/tmp/a", "/tmp/b"]));
+    withStubPreshell(bin, () => {
+      const result = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(result.allow, true, `不该拦：${result.reason ?? ""}`);
+    });
+  });
+
+  it("候选命中写/删目标同样算（不只读）", () => {
+    const command = "if c; then x='/work/project/.env'; else x=/tmp/ok; fi; rm $x";
+    const bin = stubPreshell(candidateReport("Delete", ["/work/project/.env", "/tmp/ok"]));
+    withStubPreshell(bin, () => {
+      const result = checkCommand(command, { cwd: "/tmp" });
+      assert.equal(result.allow, false);
+      assert.match(result.reason ?? "", /敏感路径黑名单/);
+      const asked = checkCommand(command, { cwd: "/tmp", sensitivePaths: "ask" });
+      assert.equal((asked.sensitive ?? []).length, 1, JSON.stringify(asked.sensitive));
+    });
+  });
+
+  it("旧版二进制没有 candidates：行为与接入前一致（$x 照旧匹配不上）", () => {
+    const bin = stubPreshell({
+      version: 1,
+      status: "Complete",
+      impact: {
+        effects: [{ kind: "Read", target: "$x", vars: ["x"], dynamic: true, modeled: true, line: 1 }],
+        write_roots: [],
+        uncertain: true,
+        effects_dropped: 0,
+        vars: ["x"],
+        cwd: "/tmp",
+      },
+      issues: [],
+      issues_dropped: 0,
+    });
+    withStubPreshell(bin, () => {
+      const result = checkCommand("cat $x", { cwd: "/tmp" });
+      assert.equal(result.facts?.effects[0]?.candidates, undefined, "旧报告连字段都没有");
+      assert.equal(result.allow, true, "没有候选可供判定时保持原样（不凭一个 $x 造命中）");
     });
   });
 });

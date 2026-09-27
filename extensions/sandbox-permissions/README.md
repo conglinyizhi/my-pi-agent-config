@@ -148,6 +148,8 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 
 `hasDynamicConstructs` 识别 bash 动态构造（命令替换 `$()`/反引号、`eval`、`bash -c`、反斜杠拼接命令名、变量作命令、ANSI-C 引号、别名/函数定义、进程替换）。命中时即使无危险规则也降级为人工确认——静态检测对动态构造不可靠，交给用户判断。`dynamicConstructTokens` 返回命中的特性 token，GUI 高亮动态点。
 
+变量作命令名这一类还有一条收窄路：程序名能静态确定时（pi 自己的变量渲染，或命令事实层 preshell 在 Exec/Spawn 上给出的候选集，v0.4.0 起），规则名从 `dynamic-construct` 换成 `dynamic-construct-narrowed`，tip 里把程序名/候选摆出来。它仍是 `autoReject: false`，仍然要过 LLM 预审，不是放行；preshell 只提供一个候选过不了窄门槛（`narrowableProgramName`：已知程序、非 rm/sudo 那类、非解释器/脚本、非 `/tmp` 下的）就整个留在 `dynamic-construct`。
+
 ### 如何扩展
 
 添加新规则：编辑 `rule-engine.ts` 的 RULES 数组，push 一个结构化定义，并在 `rule-engine.test.ts` 补行为断言（先写测试，TDD）。
@@ -388,9 +390,10 @@ GateView.vue 的「📁 目录授权」区块在点允许/拒绝前可对多个�
 | 层 | 盖的洞 | via |
 |---|---|---|
 | preshell 解析出的 Read/Write/Delete 目标 | 相对路径、带引号路径、`cd` 后的基准 | `preshell` |
+| 动态目标的候选集（v0.4.0 起） | `if c; then x=/a; else x='凭据'; fi; cat $x`：`$x` 本身判不了，候选逐个当路径判 | `preshell` |
 | 未引号、像路径的 token | 存在性探测（`test -f x` 不产生 Read 效果） | `token` |
 | 解释器/脚本载荷退回旧子串 | `node <<EOF`、`python -c "…凭据路径…"`、`/tmp/x.sh '…'` | `interpreter` |
-| 事实层不可用（缺二进制/超时/坏 JSON/schema 不符） | 整条退回旧匹配，不因缺工具变宽 | `legacy` |
+| 事实层不可用（缺二进制/超时/坏 JSON/版本不符） | 整条退回旧匹配，不因缺工具变宽 | `legacy` |
 
 `via` 会写进命中项，审计条目与审批窗能区分「哪一层报的」。解释器名单与退回规则见
 `lib/sandbox-check.ts` 的 `INTERPRETER_PROGRAMS`/`isInterpreterProgram`；事实层适配在 `lib/preshell.ts`，
