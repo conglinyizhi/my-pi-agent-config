@@ -190,3 +190,20 @@ cooldownMs = 15000 # 两次中止之间的最小间隔（毫秒）
 # maxAvgLineChars = 20 # 重复行平均行长上限（主要精度来源）
 # maxIntruderRatio = 0.3 # 窗口内新行占比上限
 # maxAlphabet = 10 # 重复字母表大小上限
+
+# ─────────────────────────────────────────────────────────────
+# thinking-fold：把 thinking 块尾部的重复输出折成一行提示
+# 纯渲染层，只改 TUI 显示，不动会话内容与模型上下文。
+# 与 loop-guard 同族但分工不同：loop-guard 管「整块失控」并中止生成，
+# 这里管「模型能自愈、但屏幕被刷满」的轻症。
+# 判据、误伤与阈值取舍见 extensions/thinking-fold/README.md。
+# ─────────────────────────────────────────────────────────────
+[thinking-fold]
+enabled = true
+
+[thinking-fold.detector]
+# 空缺项用 detector.ts 的 DEFAULT_DUP_OPTIONS；常用旋钮：
+# minDensity = 0.75 # 窗口内复读字符占比下限，调高更保守（误伤更少、折得也更少）
+# minChars = 600 # 折叠段字符下限
+# minLines = 40 # 折叠段行数下限
+# minCount = 3 # 一行至少出现几次才算复读行
