@@ -4,10 +4,13 @@
 // 手里有动态内容的扩展（照片编号、当前分支、临时文件清单……）自己往这里注册一个 provider，
 // 这样多一种动态引用就多一个注册点，不用往 fragments 里塞业务分支，也不用为了发布新引用改它。
 //
-// 单例做法照 lib/status-bus.ts：模块级一份，同进程内扩展共享同一实例。
-// reload 时若模块被重新求值，新实例从空开始，各扩展的 factory 会重新注册，语义仍正确。
+// 单例做法：必须挂到 globalThis（见 lib/process-singleton.ts）。pi 给每个扩展单独建 jiti 实例，
+// 模块级变量在扩展之间不共享 —— 这里曾经写成模块级 Map，结果 photo 注册的 `img` provider
+// 在 fragments 侧永远看不见，`&img(…)` 一律不展开。
+// reload 时模块会被重新求值，但 globalThis 上那份不变，各扩展的 factory 重新注册即可。
 
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { processSingleton } from "./process-singleton.ts";
 
 /**
  * provider 展开一次的结果。
@@ -29,7 +32,7 @@ export interface FragmentProvider {
 	expand(args: string): FragmentCallResult | undefined | Promise<FragmentCallResult | undefined>;
 }
 
-const providers = new Map<string, FragmentProvider>();
+const providers = processSingleton<Map<string, FragmentProvider>>("fragment-providers", () => new Map());
 
 /**
  * 注册（或覆盖）一个 provider。

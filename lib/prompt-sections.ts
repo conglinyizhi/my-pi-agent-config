@@ -15,7 +15,15 @@
  * 用法（在扩展 factory 里无条件注册，禁用时不会被装配，无需感知加载顺序）：
  *   import { registerSection, registerVariable } from "../../lib/prompt-sections.ts";
  *   registerSection({ name: "tool-guidance:my-ext", order: 150, text: () => "...", complete: false });
+ *
+ * 单例做法：注册表必须进程内唯一（见 lib/process-singleton.ts）。注册方（dsh-goal /
+ * dsh-jobs / plan-mode / prompt-sections / tool-checker / trident-routing 各是一个扩展）
+ * 与装配方（prompt-sections 扩展）是两个扩展，pi 又给每个扩展单独建 jiti 实例：
+ * 注册表写成模块级的，各扩展各一份，于是谁注册的段都装不进去。开关 enabled 同理，
+ * 写方与读方不是一个扩展。
  */
+
+import { processSingleton } from "./process-singleton.ts";
 
 export interface PromptSection {
 	/** 唯一名；同名重复注册遮蔽前值。禁用的装配不会渲染任何段，注册本身无害。 */
@@ -69,16 +77,25 @@ interface SectionRegistration extends PromptSection {
 export const DEFAULT_SECTION_NAME = "pi:default";
 export const DEFAULT_SECTION_ORDER = 0;
 
-const sections = new Map<string, SectionRegistration>();
-const variables = new Map<string, (ctx: AssembleContext) => string | undefined | Promise<string | undefined>>();
-let enabled = false;
+/** 注册表 + 全局开关：一份进程内唯一的状态，跨扩展共享（键与模块名一致） */
+interface PromptSectionsRegistry {
+	sections: Map<string, SectionRegistration>;
+	variables: Map<string, (ctx: AssembleContext) => string | undefined | Promise<string | undefined>>;
+	enabled: boolean;
+}
+
+const registry = processSingleton<PromptSectionsRegistry>("prompt-sections", () => ({
+	sections: new Map(),
+	variables: new Map(),
+	enabled: false,
+}));
 
 /** 全局开关（由 prompt-sections 扩展在启动时按 settings/flag 设置；其他扩展只读） */
 export function setPromptSectionsEnabled(value: boolean): void {
-	enabled = value;
+	registry.enabled = value;
 }
 export function isPromptSectionsEnabled(): boolean {
-	return enabled;
+	return registry.enabled;
 }
 
 /**
@@ -91,11 +108,11 @@ export function registerSection(section: PromptSection): () => void {
 	const disposer = (): void => {
 		if (disposed) return;
 		disposed = true;
-		if (sections.get(section.name) === registration) {
-			sections.delete(section.name);
+		if (registry.sections.get(section.name) === registration) {
+			registry.sections.delete(section.name);
 		}
 	};
-	sections.set(section.name, registration);
+	registry.sections.set(section.name, registration);
 	return disposer;
 }
 
@@ -117,27 +134,30 @@ export function registerVariable(
 	const disposer = (): void => {
 		if (disposed) return;
 		disposed = true;
-		if (variables.get(name) === provider) {
-			variables.delete(name);
+		if (registry.variables.get(name) === provider) {
+			registry.variables.delete(name);
 		}
 	};
-	variables.set(name, provider);
+	registry.variables.set(name, provider);
 	return disposer;
 }
 
 /** 返回当前全部段（含隐式 pi:default 占位标记，name=DEFAULT_SECTION_NAME 时以显式注册为准） */
 export function getSections(): PromptSection[] {
-	return Array.from(sections.values());
+	return Array.from(registry.sections.values());
 }
 
 export function getVariables(): string[] {
-	return Array.from(variables.keys());
+	return Array.from(registry.variables.keys());
 }
 
-/** 清除所有段与变量（测试用） */
+/**
+ * 清除所有段与变量（测试用）。
+ * 清的是共享那份的内容，不是换一份引用：换引用会把别的扩展手里的注册丢掉。
+ */
 export function resetRegistry(): void {
-	sections.clear();
-	variables.clear();
+	registry.sections.clear();
+	registry.variables.clear();
 }
 
 /**
@@ -146,7 +166,7 @@ export function resetRegistry(): void {
  */
 export async function assemble(ctx: AssembleContext): Promise<PromptAssembly> {
 	const vars: Record<string, string | undefined> = {};
-	for (const [name, provider] of variables) {
+	for (const [name, provider] of registry.variables) {
 		vars[name] = await provider(ctx);
 	}
 
@@ -155,8 +175,8 @@ export async function assemble(ctx: AssembleContext): Promise<PromptAssembly> {
 		return value ?? "";
 	};
 
-	const explicitDefault = sections.get(DEFAULT_SECTION_NAME);
-	const entries = Array.from(sections.values());
+	const explicitDefault = registry.sections.get(DEFAULT_SECTION_NAME);
+	const entries = Array.from(registry.sections.values());
 	if (!explicitDefault) {
 		entries.push({
 			name: DEFAULT_SECTION_NAME,

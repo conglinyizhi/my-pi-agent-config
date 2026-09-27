@@ -34,6 +34,7 @@ import { parse as parseToml } from "smol-toml";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { notify } from "./notify-send.ts";
 import { collectVarRenders, referenceAppearsIn } from "./var-render.ts";
+import { processSingleton } from "./process-singleton.ts";
 
 export interface PreshellEffect {
   kind: string;
@@ -399,16 +400,39 @@ const cache = new Map<string, PreshellOutcome>();
  */
 export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "schema"]);
 export const BREAKER_TRANSIENT_THRESHOLD = 5;
-let consecutiveFailures = 0;
-let breakerReason: PreshellUnavailableReason | undefined;
 
-export function preshellBreakerState(): { broken: PreshellUnavailableReason | undefined; failures: number } {
-  return { broken: breakerReason, failures: consecutiveFailures };
+/**
+ * 熔断与提示去重状态。这一层挂在 globalThis 上（见 lib/process-singleton.ts）：
+ * preshell 的调用方散在多个扩展（bash-guard、dsh-jobs、sandbox-permissions），
+ * 当成模块级状态就是每扩展一份 —— 一个扩展试出「缺二进制」而熔断，另几个扩展照样
+ * 每次审计都去 spawn 一个不存在的进程、各弹一次同样的通知。
+ *
+ * 缓存的 cache / versionCache 不在共享范围内：那只是同一份事实的重复查询，各存一份不影响正确性。
+ */
+interface PreshellSharedState {
+  consecutiveFailures: number;
+  breakerReason: PreshellUnavailableReason | undefined;
+  /** 已弹过通知的原因（按进程去重，见 notifyFactLayerUnavailable） */
+  announced: Set<PreshellUnavailableReason>;
+  /** 状态栏的「事实层不可用」目前是否已设上 */
+  statusShown: boolean;
 }
 
+const shared = processSingleton<PreshellSharedState>("preshell", () => ({
+  consecutiveFailures: 0,
+  breakerReason: undefined,
+  announced: new Set<PreshellUnavailableReason>(),
+  statusShown: false,
+}));
+
+export function preshellBreakerState(): { broken: PreshellUnavailableReason | undefined; failures: number } {
+  return { broken: shared.breakerReason, failures: shared.consecutiveFailures };
+}
+
+/** 清的是共享那份的字段，不换引用 */
 export function resetPreshellBreaker(): void {
-  consecutiveFailures = 0;
-  breakerReason = undefined;
+  shared.consecutiveFailures = 0;
+  shared.breakerReason = undefined;
 }
 
 export function clearPreshellCache(): void {
@@ -472,7 +496,7 @@ export interface AnalyzeOptions {
 export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): PreshellOutcome {
   const config = opts.config ?? loadPreshellConfig();
   if (!config.enabled) return { ok: false, reason: "disabled" };
-  if (breakerReason) return { ok: false, reason: breakerReason, detail: "熔断中：本进程已连续失败，不再尝试（/reload 后重试）" };
+  if (shared.breakerReason) return { ok: false, reason: shared.breakerReason, detail: "熔断中：本进程已连续失败，不再尝试（/reload 后重试）" };
   const bin = resolvePreshellBin(config);
   // v0.3.0：--cwd 事实上必填，且只能是绝对路径（相对值 = 用法错误，退出码 2）
   const cwd = opts.cwd !== undefined && isAbsolute(opts.cwd) ? opts.cwd : undefined;
@@ -518,11 +542,11 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
 
   // 熔断计数：成功清零；确定性失败一次就断，瞬时失败要连续到阈值
   if (outcome.ok) {
-    consecutiveFailures = 0;
+    shared.consecutiveFailures = 0;
   } else if (outcome.reason !== "disabled") {
-    consecutiveFailures++;
-    if (BREAKER_IMMEDIATE.has(outcome.reason) || consecutiveFailures >= BREAKER_TRANSIENT_THRESHOLD) {
-      breakerReason = outcome.reason;
+    shared.consecutiveFailures++;
+    if (BREAKER_IMMEDIATE.has(outcome.reason) || shared.consecutiveFailures >= BREAKER_TRANSIENT_THRESHOLD) {
+      shared.breakerReason = outcome.reason;
     }
   }
   return outcome;
@@ -536,9 +560,7 @@ export interface FactLayerUi {
   setStatus?(key: string, text?: string): void;
 }
 
-const announced = new Set<PreshellUnavailableReason>();
 const STATUS_KEY = "preshell";
-let statusShown = false;
 
 /**
  * 会往桌面弹通知的原因：能动手解决的那些。
@@ -569,12 +591,12 @@ export function notifyFactLayerUnavailable(
 ): string {
   try {
     ui?.setStatus?.(STATUS_KEY, `✗ 事实层 ${reason}`);
-    statusShown = true;
+    shared.statusShown = true;
   } catch {
     // 状态栏不可用不影响判定
   }
-  if (announced.has(reason)) return "";
-  announced.add(reason);
+  if (shared.announced.has(reason)) return "";
+  shared.announced.add(reason);
 
   const message = `命令审核事实层不可用：${describeUnavailable(reason, detail)}\n${INSTALL_HINT}`;
   try {
@@ -596,8 +618,8 @@ export function notifyFactLayerUnavailable(
 
 /** 事实层恢复可用时把状态栏收掉（只在之前设过时才动） */
 export function clearFactLayerStatus(ui: FactLayerUi | undefined): void {
-  if (!statusShown) return;
-  statusShown = false;
+  if (!shared.statusShown) return;
+  shared.statusShown = false;
   try {
     ui?.setStatus?.(STATUS_KEY, undefined);
   } catch {
@@ -618,10 +640,10 @@ export function reportFactLayerState(
   clearFactLayerStatus(ui);
 }
 
-/** 测试用：清掉「已弹过」记录 */
+/** 测试用：清掉「已弹过」记录（清内容，不换引用） */
 export function resetFactLayerNotices(): void {
-  announced.clear();
-  statusShown = false;
+  shared.announced.clear();
+  shared.statusShown = false;
 }
 
 /** 事实 → 给模型/人看的紧凑文本（LLM 预审与审计条目共用，措辞保持同一套） */

@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { processSingleton } from "./process-singleton.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -236,7 +237,12 @@ export function formatGuiFallbackNotice(reason: GuiFallbackReason, d = collectGu
 	return lines.join("\n");
 }
 
-const announced = new Set<string>();
+/**
+ * 已提示过的回退原因。去重得按进程算：审批回退由各扩展各自的 approval-channel 实例
+ * 触发，写成模块级的就变成「每个扩展各提示一次」，同一条通知照样重复弹。
+ * 挂 globalThis（见 lib/process-singleton.ts）；reset 清内容，不换引用。
+ */
+const announced = processSingleton<Set<string>>("gui-diagnosis", () => new Set<string>());
 
 /** 测试用：清掉进程内去重状态 */
 export function resetGuiFallbackNotices(): void {

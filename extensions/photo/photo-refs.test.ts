@@ -323,3 +323,71 @@ describe("手机地址兜底", () => {
 		assert.equal(url, `${daemon.base}/?k=${TOKEN}`);
 	});
 });
+
+// 回归测试：真 pi 进程里 undici 装的是 EnvHttpProxyAgent，fetch 会把 127.0.0.1 也送进 HTTP_PROXY，
+// 本机守护的首次请求因此要等两三秒，有时直接撞 5s 超时（&img 就不展开）。
+// 所以回环这条通路必须不碰 globalThis.fetch：把 fetch 换成一碰就炸的函数，请求照样得通。
+describe("回环直连：不吃全局 fetch / 环境代理", () => {
+	/** 把 globalThis.fetch 临时换成一个调用即抛的函数，跑完还原 */
+	async function withoutFetch<T>(run: () => Promise<T>): Promise<{ value: T; calls: number }> {
+		const original = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (() => {
+			calls += 1;
+			throw new Error("回环请求不该走 fetch（会被 HTTP_PROXY 拖死）");
+		}) as typeof fetch;
+		try {
+			return { value: await run(), calls };
+		} finally {
+			globalThis.fetch = original;
+		}
+	}
+
+	it("fetch 一碰就炸：listRefs / getRef / useRef 的回环请求都照常通", async () => {
+		daemon = await startFakeDaemon({ refs: [{ ref: 2, path: "/tmp/a/2.jpg", bytes: 42 }] });
+		const refs = createPhotoRefs({ base: daemon.base, tokenFile, timeoutMs: 1000 });
+
+		const result = await withoutFetch(async () => {
+			const pool = await refs.listRefs();
+			const item = await refs.getRef(2);
+			const missing = await refs.getRef(9);
+			refs.useRef(2);
+			await waitFor(() => daemon !== undefined && daemon.requestsOn("POST", "/refs/2/use").length === 1);
+			return { pool, item, missing };
+		});
+
+		assert.equal(result.calls, 0);
+		assert.deepEqual(result.value.pool, { pool: 1, items: [{ ref: 2, path: "/tmp/a/2.jpg", bytes: 42 }] });
+		assert.deepEqual(result.value.item, { ref: 2, path: "/tmp/a/2.jpg", bytes: 42 });
+		assert.equal(result.value.missing, undefined); // 404 仍然算「没有这个号」
+		assert.equal(daemon.requestsOn("GET", "/refs")[0].token, TOKEN); // 口令照旧带上
+	});
+
+	it("fetch 一碰就炸：守护没跑时仍按「连不上」报，不糊成超时", async () => {
+		daemon = await startFakeDaemon();
+		const base = daemon.base;
+		await daemon.close();
+		daemon = undefined;
+
+		const result = await withoutFetch(async () =>
+			assert.rejects(() => createPhotoRefs({ base, tokenFile, timeoutMs: 1000 }).listRefs(), /连不上 photo 守护/),
+		);
+		assert.equal(result.calls, 0);
+	});
+
+	it("fetch 一碰就炸：不回话的守护仍按超时上报", async () => {
+		silent = await startSilentServer();
+		const result = await withoutFetch(async () =>
+			assert.rejects(() => createPhotoRefs({ base: silent?.base ?? "", tokenFile, timeoutMs: 150 }).listRefs(), /没响应|超时/),
+		);
+		assert.equal(result.calls, 0);
+	});
+
+	it("显式给的 https 非回环地址仍走 fetch（代理语义留给全局 dispatcher）", async () => {
+		const base = "https://photo.example.test:8787";
+		const result = await withoutFetch(async () => {
+			await assert.rejects(() => createPhotoRefs({ base, tokenFile, timeoutMs: 50 }).listRefs(), /连不上 photo 守护/);
+		});
+		assert.equal(result.calls, 1); // 这一支不是回环，照旧落到 fetch
+	});
+});

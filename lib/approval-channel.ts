@@ -21,6 +21,7 @@ import {
 } from "./gui-diagnosis.ts";
 import { collectEnvAssignments, type EnvNote } from "./env-notes.ts";
 import { varRendersForApproval, type VarRender } from "./var-render.ts";
+import { processSingleton } from "./process-singleton.ts";
 
 const GUI_TIMEOUT_MS = 3_600_000;
 
@@ -102,15 +103,25 @@ export type ApprovalChannel = (request: ApprovalRequest, ctx: ExtensionContext) 
 export type ApprovalSelect = (title: string, choices: string[]) => Promise<string | undefined>;
 export type ApprovalRunGui = (windowName: string, request: unknown, options?: GuiRunOptions) => Promise<GuiRunResult>;
 
-let overrideChannel: ApprovalChannel | undefined;
+/**
+ * 全局通道覆盖（IM / 测试桩）。
+ *
+ * 挂 globalThis（见 lib/process-singleton.ts）：审批通道是三条闸共用的「问人」出口，
+ * 装上 IM 通道的扩展与真正发起审批的扩展不是同一个，模块级变量会让覆盖只对本扩展生效，
+ * 其余扩展照旧走本机 GUI。holder 包一层是因为 set 之后要换值——清空要改 holder 的字段，
+ * 不能换 holder 引用（换了别的扩展手里那份就成孤儿了）。
+ */
+const overrideState = processSingleton<{ channel: ApprovalChannel | undefined }>("approval-channel", () => ({
+	channel: undefined,
+}));
 
 /** 换成 IM / 测试桩；传 undefined 恢复默认 GUI→TUI。 */
 export function setApprovalChannel(channel: ApprovalChannel | undefined): void {
-	overrideChannel = channel;
+	overrideState.channel = channel;
 }
 
 export function getApprovalChannel(): ApprovalChannel | undefined {
-	return overrideChannel;
+	return overrideState.channel;
 }
 
 export interface ResolveApprovalChannelOptions {
@@ -123,7 +134,7 @@ export interface ResolveApprovalChannelOptions {
 /** 单次注入 > 全局通道 > 测试注入的 GUI/TUI > hub（挂了回退 GUI→TUI）。 */
 export function resolveApprovalChannel(opts: ResolveApprovalChannelOptions = {}): ApprovalChannel {
 	if (opts.channel) return opts.channel;
-	if (overrideChannel) return overrideChannel;
+	if (overrideState.channel) return overrideState.channel;
 	if (opts.runGui || opts.selectApproval) {
 		return createGuiTuiApprovalChannel({ runGui: opts.runGui, selectApproval: opts.selectApproval });
 	}

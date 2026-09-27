@@ -13,8 +13,14 @@
 //      所以调用方（/photo:list）必须把它当「给用户看的地址」用，不能拿去写日志。
 //   2. 连接与整体都封顶（默认 5s）。守护是本机进程，超时就是没在跑，
 //      与其让展开挂在那里，不如快点失败、把原因交给上层显示。
+//   3. 回环地址（127.0.0.1 / localhost / ::1）用 node:http 直连，不走 fetch：
+//      pi 启动时装了 EnvHttpProxyAgent 当全局 dispatcher，fetch 会把 127.0.0.1 也交给
+//      HTTP_PROXY，本机守护的首次请求因此要等两三秒，有时直接撞上 5s 超时（&img 就不展开）。
+//      node:http 只认 URL 里的地址，不看那些环境变量。
 
 import { readFile } from "node:fs/promises";
+import { request as httpRequest, type ClientRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 
@@ -77,6 +83,15 @@ function explicitPhotoBase(): string {
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "0.0.0.0", "::1", "localhost"]);
 
 /**
+ * 这个主机名是不是本机（回环或未指定地址）？
+ * URL.hostname 对 IPv6 会留下方括号（`[::1]`），剥掉再比。
+ */
+function isLoopbackHost(hostname: string): boolean {
+	const bare = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+	return LOOPBACK_HOSTS.has(bare) || bare.startsWith("127.");
+}
+
+/**
  * 把回环/未指定地址换成本机一个真实存在的局域网 IPv4（挑法与 photo/netinfo.go 一致：
  * 私有网段优先，其次第一个非回环 IPv4，一个都找不到就原样返回）。
  * 换错网卡（docker0、tun0 这些）时用 PI_PHOTO_BASE 直接指定，那个值不会被改。
@@ -88,7 +103,7 @@ export function reachableBase(base: string, interfaces: ReturnType<typeof networ
 	} catch {
 		return base;
 	}
-	if (!LOOPBACK_HOSTS.has(url.hostname)) return base;
+	if (!isLoopbackHost(url.hostname)) return base;
 	const host = pickLanHost(interfaces);
 	if (host === undefined) return base;
 	url.hostname = host;
@@ -176,13 +191,13 @@ export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 		init: { method?: string } = {},
 	): Promise<{ status: number; text: string }> => {
 		const url = `${base}${apiPath}${apiPath.includes("?") ? "&" : "?"}k=${encodeURIComponent(key)}`;
-		let res: Response;
+		const method = init.method ?? "GET";
+		let res: { status: number; text: string };
 		try {
-			res = await fetch(url, {
-				method: init.method ?? "GET",
-				headers: { accept: "application/json" },
-				signal: AbortSignal.timeout(timeoutMs),
-			});
+			// 本机守护直连；只有非回环地址才交给 fetch（代理归全局 dispatcher 管）
+			res = isLoopbackHost(new URL(url).hostname)
+				? await directRequest(url, method, timeoutMs)
+				: await proxiedRequest(url, method, timeoutMs);
 		} catch (err) {
 			const name = err instanceof Error ? err.name : "";
 			if (name === "TimeoutError" || name === "AbortError") {
@@ -190,7 +205,7 @@ export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 			}
 			throw new Error(`连不上 photo 守护（${base}）：${errorText(err)}`);
 		}
-		return { status: res.status, text: await res.text() };
+		return res;
 	};
 
 	/** 非 2xx 的统一出口：401/403 单独说，别让人以为是网络问题 */
@@ -271,6 +286,68 @@ export function createPhotoRefs(opts: PhotoRefsOptions = {}): PhotoRefsClient {
 			return fromStatus !== "" ? withToken(fromStatus, key) : `${phoneBase}/?k=${encodeURIComponent(key)}`;
 		},
 	};
+}
+
+/**
+ * 非回环地址的原路径：走 fetch，代理/直连交给全局 dispatcher 决定。
+ * 这一支保持原样，别顺手换成 node:http——非回环的代理语义是 dispatcher 的事。
+ */
+async function proxiedRequest(url: string, method: string, timeoutMs: number): Promise<{ status: number; text: string }> {
+	const res = await fetch(url, {
+		method,
+		headers: { accept: "application/json" },
+		signal: AbortSignal.timeout(timeoutMs),
+	});
+	return { status: res.status, text: await res.text() };
+}
+
+/**
+ * 回环地址直连：node:http / node:https 自己发请求，不经过 fetch 的全局 dispatcher，
+ * 也就不吃 HTTP_PROXY / HTTPS_PROXY。
+ *
+ * 超时按原语义：连接与整体都封顶 timeoutMs——计时器在发起时就起，连接挂住同样会被掐。
+ * 超时错误带 name = "TimeoutError"，好在 call() 里与「连不上」分开报（文案不动）。
+ * agent: false 让每次请求自带一条用完就断的连接，不往全局 agent 里留 keep-alive 长连接
+ * （守护是临时端口的单测里 server.close() 不用等 5 秒的空闲连接）。
+ */
+function directRequest(url: string, method: string, timeoutMs: number): Promise<{ status: number; text: string }> {
+	const target = new URL(url);
+	const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		let req: ClientRequest;
+		const timer = setTimeout(() => {
+			settled = true;
+			req.destroy();
+			reject(timeoutError(timeoutMs));
+		}, timeoutMs);
+		const settle = (act: () => void): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			act();
+		};
+		try {
+			req = send(target, { method, headers: { accept: "application/json" }, agent: false }, (res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk: Buffer) => chunks.push(chunk));
+				res.on("end", () => settle(() => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") })));
+				res.on("error", (err) => settle(() => reject(err)));
+			});
+		} catch (err) {
+			settle(() => reject(err));
+			return;
+		}
+		req.on("error", (err) => settle(() => reject(err)));
+		req.end();
+	});
+}
+
+/** 超时哨兵：call() 靠 name 认它，不靠 message */
+function timeoutError(timeoutMs: number): Error {
+	const err = new Error(`请求超时（${timeoutMs}ms）`);
+	err.name = "TimeoutError";
+	return err;
 }
 
 /** 默认客户端。地址与口令在每次调用时现取，所以测试里改环境变量就能改指向 */

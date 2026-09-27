@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { processSingleton } from "./process-singleton.ts";
 
 export type SelectableModel = Model<Api>;
 export const DEFAULT_MODEL_SCOPE = "default";
@@ -174,11 +175,19 @@ async function readModelPreferencesFile(): Promise<ModelPreferences> {
   return { globalPinned: [], scopes: {} };
 }
 
-let preferenceWriteTail: Promise<void> = Promise.resolve();
+/**
+ * 写入串行化队列：偏好文件是多个扩展共写的一份文件（message-page / model-selection /
+ * trident-subagent），读改写必须排队，否则两次并发写会互相覆盖或落出半份。
+ * 队列必须进程内唯一——模块级变量时，每个扩展各排各的队，等于没排队。
+ * 挂 globalThis（见 lib/process-singleton.ts）；holder 包一层是因为尾指针要一直往后接。
+ */
+const writeState = processSingleton<{ tail: Promise<void> }>("model-selection", () => ({
+  tail: Promise.resolve(),
+}));
 
-/** 读取完整共享偏好；文件不存在时返回空结构。 */
+/** 读取完整共享偏好；文件不存在时返回空结构（先等排在前面的写入落盘）。 */
 export async function readModelPreferences(): Promise<ModelPreferences> {
-  await preferenceWriteTail;
+  await writeState.tail;
   return readModelPreferencesFile();
 }
 
@@ -194,10 +203,20 @@ async function writeModelPreferencesFile(preferences: ModelPreferences): Promise
 }
 
 function enqueuePreferenceWrite(operation: () => Promise<void>): Promise<void> {
-  const run = preferenceWriteTail.then(operation, operation);
-  preferenceWriteTail = run.then(() => undefined, () => undefined);
+  const run = writeState.tail.then(operation, operation);
+  writeState.tail = run.then(() => undefined, () => undefined);
   return run;
 }
+
+/**
+ * 测试用：共享写入队列的入口。
+ * tail 用来断言两个模块实例看的是同一条链；enqueue 用来往链尾挂一个可控操作，
+ * 从外面验证「A 实例挂起的写入会挡住 B 实例的读」。
+ */
+export const preferenceWriteQueueForTest = {
+  tail: (): Promise<void> => writeState.tail,
+  enqueue: (operation: () => Promise<void>): Promise<void> => enqueuePreferenceWrite(operation),
+};
 
 /** 写入完整共享偏好；插件通常应优先使用下面按 scope 的操作函数。 */
 export function writeModelPreferences(preferences: ModelPreferences): Promise<void> {

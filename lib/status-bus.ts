@@ -29,6 +29,12 @@
 // 已知边界：扩展加载顺序 = readdirSync（非字母序、不可控），attach 可能晚于少数
 //   扩展的 session_start 首轮写入；这些初始状态进不了 store（TUI 显示不受影响）。
 //   后续若要完整初始快照，可在目标侧做一次 reconcile（见 README）。
+//
+// 单例做法：总线挂在 globalThis 上（见 lib/process-singleton.ts）。pi 给每个扩展单独建
+//   jiti 实例，模块级 `new StatusBus()` 每个扩展各一份 —— 写入侧（status-bus 扩展包装的
+//   ctx.ui）与输出侧（subscribe / getSnapshot 的消费方）就不是同一份快照了。
+
+import { processSingleton } from "./process-singleton.ts";
 
 // ── 输出侧 JSON 契约类型（web/外部消费方的输入面）────────────────────────
 
@@ -264,5 +270,10 @@ export class StatusBus {
 	}
 }
 
-/** 进程级单例：跨事件共享同一份状态（reload 若重载模块则新实例从空开始，语义仍正确） */
-export const statusBus = new StatusBus();
+/**
+ * 进程级单例：跨扩展、跨事件共享同一份状态。
+ *
+ * 模块实例会有多份（每扩展一份），但 globalThis 上这份只有一份；reload 会重新求值模块，
+ * 拿到的仍是同一份。清状态走 reset()：它清的是内容、不换引用。
+ */
+export const statusBus = processSingleton("status-bus", () => new StatusBus());
