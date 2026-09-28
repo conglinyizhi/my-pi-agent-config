@@ -17,7 +17,7 @@
 // 新增 opt-in 的 effect.payload（第 5 条），并修了 wrapper（uv / docker run / conda run 这类）
 // 的 Spawn 目标解析。前面几条自 v0.4.0 起就成立：
 //   0 破坏性：schema 号删掉了。判定「这次升级会不会打挂我」只看版本号——次版本号变即
-//     不兼容（0.5 起要重新适配），修订号变是兼容的（0.4.x 互通）。旧版（≤0.3.0）的
+//     不兼容（0.6 起要重新适配），修订号变是兼容的（0.6.x 互通）。旧版（≤0.3.0）的
 //     --version 还带 schema 字段，读的时候要能两种都吃（见 queryPreshellVersion）
 //   1 路径一律输出绝对路径。`--cwd=<绝对路径>` 事实上必填：它是「这条命令会在哪个目录里
 //     跑」的断言，不是 cd（命令内部的 cd 优先）。不给时工具拿自己进程的当前目录推演，
@@ -210,7 +210,7 @@ export const DEFAULT_TIMEOUT_MS = 100;
  * 修订号变了是兼容的（0.5.x 互通；0.4.x 及更早的旧二进制一律走保守兜底）。
  * 当前是 0.5.0（payload 字段已解析但尚未接线使用，见 PreshellEffect.payload）。
  */
-export const EXPECTED_VERSION = "0.5";
+export const EXPECTED_VERSION = "0.6";
 
 /**
  * 版本号 → 主次版号（"0.4.1" → "0.4"）；读不出版号时 undefined。

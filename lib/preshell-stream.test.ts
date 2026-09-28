@@ -46,7 +46,7 @@ if (argv.includes("--version")) {
   const version =
     mode === "old-version"
       ? { tool: "preshell", version: "0.3.0", schema: 1 }
-      : { tool: "preshell", version: mode === "new-patch" ? "0.5.1" : "0.5.0" };
+      : { tool: "preshell", version: mode === "new-patch" ? "0.6.1" : "0.6.0" };
   process.stdout.write(JSON.stringify(version) + "\\n");
   process.exit(0);
 }
