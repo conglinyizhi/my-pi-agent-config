@@ -485,7 +485,7 @@ describe("autocomplete", () => {
 		assert.equal(currentCalls.length, lines.length, "每个非 & 上下文都要回退到原补全器");
 	});
 
-	it("刚打下一个 & 就弹；接着打第二个 & 或空格就退回去", async () => {
+	it("刚打下一个 & 就弹；接着打第二个 & 就退回去，打了空格则收起来（不回退成文件补全）", async () => {
 		const { sessionStart } = load();
 		sessionStart({ type: "session_start" }, fakeCtx().ctx);
 		const { current } = fakeCurrent();
@@ -497,6 +497,54 @@ describe("autocomplete", () => {
 		const second = await provider.getSuggestions(["a &&"], 0, 4, { signal: new AbortController().signal });
 		assert.deepEqual(second.items.map((item: { value: string }) => item.value), ["占位"]);
 		const spaced = await provider.getSuggestions(["a & "], 0, 4, { signal: new AbortController().signal });
-		assert.deepEqual(spaced.items.map((item: { value: string }) => item.value), ["占位"]);
+		assert.equal(spaced, null, "`& ` 之后不该回退给文件补全（那里会列出一整屏本地目录）");
+	});
+
+	it("名字写完、后面跟了标点或空格：收起来，不回退（本地目录就是这里冒出来的）", async () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { calls: currentCalls, current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		for (const line of ["（&单步计划）", "&单步计划 "]) {
+			const out = await provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
+			assert.equal(out, null, `${line} 应该收起来`);
+		}
+		assert.deepEqual(currentCalls, [], "收起来不等于回退：一次都不该落到默认补全器");
+
+		// 光标继续往后跑到别的词上，就不再是碎片的事了，交回默认补全
+		const moved = "（&单步计划）继续";
+		await provider.getSuggestions([moved], 0, moved.length, { signal: new AbortController().signal });
+		assert.deepEqual(currentCalls, ["delegate"]);
+	});
+
+	it("中文里夹的 & 也认：括号后给候选、汉字后给候选", async () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { calls: currentCalls, current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		const inParen = await provider.getSuggestions(["看看（&单"], 0, 6, { signal: new AbortController().signal });
+		assert.deepEqual(inParen.items.map((item: { value: string }) => item.value), ["&单步计划"]);
+		assert.equal(inParen.prefix, "&单");
+
+		const afterHan = await provider.getSuggestions(["我&单"], 0, 3, { signal: new AbortController().signal });
+		assert.deepEqual(afterHan.items.map((item: { value: string }) => item.value), ["&单步计划"]);
+
+		assert.deepEqual(currentCalls, []);
+	});
+
+	it("英文/数字紧贴的不认：x&me、URL 里的 & 仍回退", async () => {
+		const { sessionStart } = load();
+		sessionStart({ type: "session_start" }, fakeCtx().ctx);
+		const { calls: currentCalls, current } = fakeCurrent();
+		const provider = providers[0](current);
+
+		const lines = ["x&单", "curl 'http://x/?a=1&plan=2'"];
+		for (const line of lines) {
+			const out = await provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
+			assert.deepEqual(out.items.map((item: { value: string }) => item.value), ["占位"], `${line} 不该弹碎片候选`);
+		}
+		assert.equal(currentCalls.length, lines.length);
 	});
 });

@@ -6,7 +6,8 @@
 //   2 /frag:build <名字>：把正文插进输入框，改完再发
 //   3 /frag:list：列出全部碎片，选中即插入
 //   4 /frag:add：两个 TUI（先「名字 描述」再正文）加一条，追加进配置
-// 另外输入 `&` 时自动弹候选（autocomplete）。
+// 另外输入 `&` 时自动弹候选（autocomplete）：触发边界与展开同一套（行首、空白、中文之后），
+// 名字写完跟了右括号/空格就收起来，不会回退成文件补全（那里会冒出一整屏本地目录）。
 //
 // 配置在 ~/.pi/agent/fragments.toml（独立文件，不跟 extensions.toml 挤）：
 //   [[fragment]]
@@ -26,6 +27,7 @@ import {
 	checkFragmentName,
 	expandFragmentsAsync,
 	findFragment,
+	fragmentQueryContext,
 	loadFragments,
 	triggerNames,
 	type Fragment,
@@ -232,18 +234,20 @@ export default function (pi: ExtensionAPI): void {
 				triggerCharacters: ["&"],
 				async getSuggestions(lines, cursorLine, cursorCol, options) {
 					const line = lines[cursorLine] ?? "";
-					const before = line.slice(0, cursorCol);
-					// 名字字符集与 core.ts 的 NAME_CHAR 一套（含冒号）；带 `(` 之后就不弹了，参数自己打
-					const match = /(?:^|\s)&([\p{L}\p{N}_:-]*)$/u.exec(before);
-					if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
-					const query = match[1] ?? "";
-					const needle = query.toLowerCase();
+					const context = fragmentQueryContext(line, cursorCol);
+					// 不归碎片管（`&` 前面是英文/数字，或光标已经跑到别的词上）：照旧交给 pi 自己的补全
+					if (context === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+					// `&名字` 后面已经跟上右括号、空格这类收尾：这里不会再有候选，也不回退。
+					// 回退的话默认补全会把光标当成「空前缀」，一口气列出一整屏本地目录来。
+					if (context === "quiet") return null;
+					const needle = context.query.toLowerCase();
 					const items = currentFile()
 						.fragments.flatMap(autocompleteItemsFor)
 						.filter((item) => item.label.slice(1).toLowerCase().includes(needle))
 						.slice(0, 20);
-					if (items.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
-					return { items, prefix: `&${query}` };
+					// 一条都没筛出来：按 Tab（force）时仍让默认补全接手，自动弹出就干脆收起来
+					if (items.length === 0) return options.force ? current.getSuggestions(lines, cursorLine, cursorCol, options) : null;
+					return { items, prefix: `&${context.query}` };
 				},
 				applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 					return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);

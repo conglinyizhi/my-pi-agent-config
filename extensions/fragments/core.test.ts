@@ -17,6 +17,7 @@ import {
 	expandFragments,
 	expandFragmentsAsync,
 	findFragment,
+	fragmentQueryContext,
 	loadFragments,
 	parseFragments,
 	triggerNames,
@@ -151,6 +152,31 @@ describe("expandFragments", () => {
 	it("不碰 shell 与 URL 里的 &：&&、a & b、&x=1", () => {
 		const text = "make && ls -la\na & b\ncurl 'http://x/?a=1&b=2'";
 		const result = expandFragments(text, [单步, core]);
+		assert.equal(result.text, text);
+		assert.deepEqual(result.unknown, []);
+	});
+
+	it("中文里夹的 &名字 照展开：括号、汉字之后都算触发", () => {
+		const inParen = expandFragments("（&单步计划）", [单步]);
+		assert.equal(inParen.text, "（对于这一步，只做调查、不要动手）");
+		assert.deepEqual(inParen.expanded, ["单步计划"]);
+
+		const afterHan = expandFragments("我读一下&core-prompt，行尾", [core]);
+		assert.equal(afterHan.text, "我读一下读 ~/disk/core-prompt/\n然后继续，行尾");
+		assert.deepEqual(afterHan.unknown, []);
+	});
+
+	it("中文不算隔断：名字后面紧跟汉字会一起吃进去（中文没词边界）", () => {
+		// 这不是新增的限制，而是名字字符集本来就含汉字；写的时候用空格或括号隔开就准
+		const glued = expandFragments("&core-prompt然后继续", [core]);
+		assert.equal(glued.text, "&core-prompt然后继续");
+		assert.deepEqual(glued.unknown, ["core-prompt然后继续"]);
+	});
+
+	it("英文与数字紧贴的不触发：x&单步计划、URL 查询串", () => {
+		const plan: Fragment = { name: "plan", text: "仅调查" };
+		const text = "x&单步计划\ncurl 'http://x/?a=1&plan=2'";
+		const result = expandFragments(text, [单步, plan]);
 		assert.equal(result.text, text);
 		assert.deepEqual(result.unknown, []);
 	});
@@ -524,5 +550,28 @@ describe("写配置（/frag:add 的落盘那一段）", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("fragmentQueryContext（输入框补全的光标语境）", () => {
+	it("名字还没打完：给出已经打出来的那一段", () => {
+		assert.deepEqual(fragmentQueryContext("先 &单", 4), { query: "单" });
+		assert.deepEqual(fragmentQueryContext("（&core", 6), { query: "core" });
+		assert.deepEqual(fragmentQueryContext("我&me", 4), { query: "me" });
+		assert.deepEqual(fragmentQueryContext("&", 1), { query: "" });
+	});
+
+	it("名字后面跟了收尾（右括号、空格、中文标点）：quiet", () => {
+		assert.equal(fragmentQueryContext("（&me）", 5), "quiet");
+		assert.equal(fragmentQueryContext("&me ", 4), "quiet");
+		assert.equal(fragmentQueryContext("&me，", 4), "quiet");
+	});
+
+	it("不归碎片管：英文紧贴、URL 查询串、光标跑到别的词上、没有 &", () => {
+		assert.equal(fragmentQueryContext("x&me", 4), undefined);
+		assert.equal(fragmentQueryContext("?a=1&plan=2", 12), undefined);
+		assert.equal(fragmentQueryContext("&me 后面还有话", 10), undefined);
+		assert.equal(fragmentQueryContext("先看报错", 4), undefined);
+		assert.equal(fragmentQueryContext("a && b", 6), undefined);
 	});
 });

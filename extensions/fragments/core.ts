@@ -34,9 +34,28 @@ export interface FragmentFile {
 /**
  * 名字允许的字符：字母、数字、下划线、连字符、冒号，外加中日韩等广义字母（\p{L} 覆盖）。
  * 冒号是给动态调用留的命名空间（`&photo:2`、`&git:branch` 这类），静态碎片想用也可以。
- * `&` 后面必须紧跟这些字符才算触发，所以 `&&` 与 URL 里的 `&x=1` 不会命中。
+ * `&` 后面必须紧跟这些字符才算触发；`&` 本身算不算触发另看 isTriggerAt 的边界。
  */
-const NAME_CHAR = /[\p{L}\p{N}_:-]/u;
+const NAME_CHAR_CLASS = "\\p{L}\\p{N}_:-";
+const NAME_CHAR = new RegExp(`[${NAME_CHAR_CLASS}]`, "u");
+
+/** 从字符串开头吃名字，返回已经打出来的那一段（可能为空，即刚打完 `&`） */
+const NAME_PREFIX = new RegExp(`^[${NAME_CHAR_CLASS}]*`, "u");
+
+/**
+ * 中日韩文字（汉字、假名、韩文、注音）。中文母语的输入里，`&碎片` 常紧跟在汉字后面，
+ * 前面不一定有空格；这一类比空白更值得认，因为英文单词紧贴的情况（`x&me`）几乎只会是
+ * URL 参数或标识符，展开反而是误伤。
+ */
+const CJK_LETTER =
+	/[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
+
+/**
+ * 中日韩标点：全角括号、逗号、句号、引号等（`（&me）`、`。&me` 这类）。
+ * 取法与 pi 补全的边界同一套：明列一批全角标点，再补上「属于中日韩文字的标点」。
+ */
+const CJK_PUNCTUATION =
+	/(?:[\uFF0C\uFF0E\uFF1A\uFF1B\uFF01\uFF1F\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D\u201C\u201D\u2018\u2019\u2026\u2014]|(?=\p{Punctuation})[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}])/u;
 
 /** 一条碎片能响应的全部触发词：主名 + 别名 */
 export function triggerNames(fragment: Fragment): string[] {
@@ -139,10 +158,17 @@ export function findFragment(fragments: Fragment[], name: string): Fragment | un
 	return fragments.find((fragment) => triggerNames(fragment).includes(name));
 }
 
-/** 触发只认「行首或空白后的 &名字」；`&&`、`a & b`、URL 里的 `&` 都不算 */
+/**
+ * 触发边界：`&` 落在行首、空白后、或中文（汉字与中文标点）之后才算。
+ *
+ * 于是 `&单步计划`、`看看 &core-prompt`、`（&me）`、`我&me` 都算；
+ * 而 `&&`、`x&me`、`?a=1&plan=2`、`&x=1` 里的 `&` 不算 —— 英文与数字紧贴 `&` 的，
+ * 基本上是 URL 查询串和标识符，误展开的代价比少展开大。
+ */
 function isTriggerAt(line: string, index: number): boolean {
 	if (index === 0) return true;
-	return /\s/.test(line[index - 1]);
+	const before = line[index - 1];
+	return /\s/.test(before) || CJK_LETTER.test(before) || CJK_PUNCTUATION.test(before);
 }
 
 /**
@@ -237,6 +263,29 @@ function scanText(text: string): Piece[][] {
 	return lines;
 }
 
+/**
+ * 光标前是不是 `&碎片` 语境。给输入框补全用（展开走上面的 scanLine，两处共用 isTriggerAt）：
+ *
+ * - `{ query }` —— 名字还没打完（`&`、`&me`、`（&core`），该给候选
+ * - `"quiet"`   —— 在 `&` 语境里，但名字后面已经跟了收尾（`（&me）`、`&me `）：
+ *                  不给候选，也别让文件补全趁虚而入（否则那里会冒出一串本地目录）
+ * - `undefined` —— 不归碎片管（`&` 前面是英文/数字，或者光标已经跑到别的词上），交回默认补全
+ */
+export function fragmentQueryContext(line: string, cursorCol: number): { query: string } | "quiet" | undefined {
+	const before = line.slice(0, cursorCol);
+	const at = before.lastIndexOf("&");
+	if (at === -1) return undefined;
+	if (!isTriggerAt(line, at)) return undefined;
+	const after = before.slice(at + 1);
+	const query = NAME_PREFIX.exec(after)?.[0] ?? "";
+	const rest = after.slice(query.length);
+	if (rest === "") return { query };
+	// 名字后面还跟着东西。只有纯收尾（空白、括号、标点）才认：`&name(a,b)` 里的字母数字、
+	// 以及 `&me 后面又打了一段话` 的后续词，都说明光标不在碎片上，交回默认补全。
+	for (const ch of rest) if (/[\p{L}\p{N}]/u.test(ch)) return undefined;
+	return "quiet";
+}
+
 /** 静态表：主名与别名都入库，先到先得（同名时配置里靠前的那条赢） */
 function indexFragments(fragments: Fragment[]): Map<string, Fragment> {
 	const byName = new Map<string, Fragment>();
@@ -249,7 +298,7 @@ function indexFragments(fragments: Fragment[]): Map<string, Fragment> {
 /**
  * 展开文本里的 `&名字`（只认静态表，不碰 provider）。
  *
- * - 只认行首/空白后的 `&名字`（`&&`、`a & b` 不碰）
+ * - 只认落在行首、空白后、或中文（汉字与中文标点）之后的 `&名字`（`&&`、`x&me`、`a & b` 不碰）
  * - 跳过 fenced 代码块与行内反引号里的内容（贴 shell 代码时不误伤）
  * - 没定义的名字原样留在文本里，只在外层提示一次
  * - 单趟展开：片段正文里再写 `&xxx` 不会继续展开
