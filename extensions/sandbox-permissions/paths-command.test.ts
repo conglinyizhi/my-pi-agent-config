@@ -525,16 +525,21 @@ describe("yad 通道（假 runner）", () => {
 		assert.deepEqual(readConfig().trustedProgramDirs, []);
 	});
 
-	it("显式 list：窗口里展示三类现状", async () => {
+	it("显式 list：窗口只给概览，条目与说明不铺进弹窗", async () => {
 		writeConfig({ allowDirs: ["/tmp/a"], blockDirs: [], trustedProgramDirs: [] });
 		const yad = fakeYad([OK("")]);
 		const { ctx } = fakeCtx();
 		await pathsCommandHandler("list", ctx, guiDeps(yad.runner));
 		assert.equal(yad.calls.length, 1);
 		const text = argOf(yad.calls[0], "--text=") ?? "";
-		assert.match(text, /trustedProgramDirs/);
-		assert.match(text, /\/tmp\/a/);
-		assert.match(text, /用法：/);
+		assert.match(text, /沙箱路径配置/);
+		assert.match(text, /可信程序目录：0 个（人类的权限）/);
+		assert.match(text, /副工作区（长期可写根）：1 个/);
+		assert.match(text, /黑名单：0 个/);
+		// 条目与那套「来源/效果/范围」说明都不得进弹窗：
+		// 之前铺满时窗口能长到两屏高，而这些内容在终端 print 里能选中、能翻页
+		assert.ok(!text.includes("/tmp/a"), "条目不该铺进弹窗");
+		assert.ok(!text.includes("autoReject"), "细节说明不该铺进弹窗");
 	});
 });
 

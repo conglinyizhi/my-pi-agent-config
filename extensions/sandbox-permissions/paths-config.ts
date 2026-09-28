@@ -192,13 +192,12 @@ export function removeEntry(key: PathListKey, dir: string): boolean {
  */
 export function confirmBody(key: PathListKey, dir: string, file: string): string {
 	const meta = listMeta(key);
-	const action = meta.humanOnly ? `这一条会放宽对 AI 命令的审核` : `${meta.summary}（写入后即生效）`;
-	return [
-		`目标：${dir}`,
-		action,
-		...meta.points,
-		`写入：${file} 的 ${meta.key}`,
-	].join("\n");
+	// 窗口里只留必须当场知道的：改的是什么、后果是什么、写到哪。
+	// 细节（不改哪些、生效范围）放 print / help —— 确认框要的是「点不点」，不是读文档
+	const effect = meta.humanOnly
+		? "这会放宽对 AI 命令的审核 —— 它是人类的权限，只填你自己确认过、或你自己编译出来的产物"
+		: `${meta.summary}；写入后即生效`;
+	return [`目标：${dir}`, effect, `写入：${file} 的 ${meta.key}`].join("\n");
 }
 
 /** 确认框标题 */
@@ -209,7 +208,21 @@ export function confirmTitle(key: PathListKey, dir: string): string {
 		: `把 ${dir} 加入${meta.label}？`;
 }
 
-/** 三类配置的完整文本视图（TUI notify 与 yad 窗口共用同一份文案） */
+/**
+ * 窗口用的短文案：只回答「有哪几类、各几条、存在哪儿」。
+ *
+ * 弹窗里不该塞文档：之前把每类的定义、效果、边界、后果都铺进去，加上条目列表，
+ * 窗口能长到两屏高。详细的留给终端里的 print / help（那里能选中、能翻页）。
+ */
+export function formatPathsBrief(lists: PathLists, file: string): string {
+	const lines = PATH_LISTS.map((meta) => {
+		const count = lists[meta.key].length;
+		return `${meta.label}：${count} 个${meta.humanOnly ? "（人类的权限）" : ""}`;
+	});
+	return ["沙箱路径配置", "", ...lines, "", `存储：${file}`].join("\n");
+}
+
+/** 三类配置的完整文本视图（终端 print 与 help 用；窗口请用 formatPathsBrief） */
 export function formatPathsList(lists: PathLists, file: string): string {
 	const out = [`沙箱路径配置（三类）：${file}`];
 	for (const meta of PATH_LISTS) {

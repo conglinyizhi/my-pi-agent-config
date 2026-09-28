@@ -19,6 +19,7 @@ import {
 	addEntry,
 	confirmBody,
 	confirmTitle,
+	formatPathsBrief,
 	formatPathsList,
 	listKeyWords,
 	listMeta,
@@ -244,7 +245,7 @@ async function runYadFlow(
 		const menu = menuRows();
 		const picked = await yadPickRow(session, {
 			title: "沙箱路径配置 · pi",
-			text: `${formatPathsList(loadAllLists(), file)}\n\n存储：${file}\n选一行按「执行」。`,
+			text: `${formatPathsBrief(loadAllLists(), file)}\n\n选一行按「执行」。`,
 			headers: ["操作", "说明"],
 			rows: menu.rows,
 			okLabel: "执行",
@@ -265,7 +266,7 @@ async function runYadFlow(
 		// 显式 list：只展示
 		const shown = await yadText(session, {
 			title: "沙箱路径配置 · pi",
-			text: overviewText(),
+			text: formatPathsBrief(loadAllLists(), file),
 			okLabel: "关闭",
 		});
 		return shown.kind === "unavailable" ? shown : { kind: "done" };
@@ -281,7 +282,7 @@ async function runYadFlow(
 			.filter((x) => x.a?.kind === kind);
 		const picked = await yadPickRow(session, {
 			title: `${kind === "add" ? "添加" : "移除"} · 选配置类型`,
-			text: `${formatPathsList(loadAllLists(), file)}`,
+			text: formatPathsBrief(loadAllLists(), file),
 			headers: ["操作", "说明"],
 			rows: rows.map((x) => x.r),
 			okLabel: "继续",
