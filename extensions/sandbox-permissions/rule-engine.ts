@@ -21,6 +21,7 @@ import {
 } from "./scanner.ts";
 import type { SegWithSep, MaskedCommand } from "./scanner.ts";
 import { staticProgramValues, type StaticValue } from "../../lib/var-render.ts";
+import { isTrustedProgramPath } from "./trusted.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 // re-export：测试与外部调用从 rule-engine 导入的路径保持不变
@@ -380,6 +381,9 @@ function isPlainProgramName(value: string): boolean {
 
 /** 值的目录部分是不是系统 bin 目录（裸命令名单独放宽，见 NARROWABLE_BIN_DIRS） */
 function isKnownProgramPath(value: string): boolean {
+  // 人类列入可信的程序目录（默认空）：这些目录下是自己编译/自己确认的产物，
+  // 算「已知程序」。名单是人类的权限，代码只管读（见 trusted.ts）
+  if (isTrustedProgramPath(value)) return true;
   const slash = value.lastIndexOf("/");
   // 裸命令名，交给 PATH —— 那也是「已知程序」。`.` / `..` 不是程序（`.` 本来就在
   // NON_NARROWABLE_PROGRAMS 里，这里再兜一道，免得 `A=.. && $A` 被当成已知程序）
