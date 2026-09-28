@@ -28,7 +28,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@e
 import { join } from "node:path";
 import { loadRules, loadSettings } from "./config.ts";
 import { buildReport } from "./report.ts";
-import { registerRuleSections } from "./sections.ts";
+import { injectedRules, registerRuleSections } from "./sections.ts";
 import { noteWarning, takeWarnings } from "./warnings.ts";
 
 const EXTENSIONS_TOML = join(getAgentDir(), "extensions.toml");
@@ -60,6 +60,16 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// 没有可用 UI 就算了，问题仍在 /repo-prompts 里看得到
 			}
+		}
+
+		// 本目录的规则被注入了就说一声：让人知道上下文里多了什么、来自哪个文件
+		const injected = injectedRules(loaded.rules, settings.dir, ctx.cwd);
+		if (injected.length === 0) return;
+		const lines = injected.map((rule) => `· ${rule.name} ← ${rule.from}`);
+		try {
+			ctx.ui.notify(`[repo-prompts] 本目录注入了 ${injected.length} 条规则：\n${lines.join("\n")}`, "info");
+		} catch {
+			// 没有可用 UI：/repo-prompts 里仍能看到命中情况
 		}
 	});
 

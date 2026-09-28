@@ -15,6 +15,7 @@
 
 import type { AssembleContext } from "../../lib/prompt-sections.ts";
 import { noteWarning, resetWarnings } from "./warnings.ts";
+import { relative } from "node:path";
 import { registerSection } from "../../lib/prompt-sections.ts";
 import { processSingleton } from "../../lib/process-singleton.ts";
 import type { Rule } from "./config.ts";
@@ -110,4 +111,26 @@ export function registerRuleSections(rules: Rule[]): {
 			for (const dispose of disposers) dispose();
 		},
 	};
+}
+
+/** 一次注入的账：哪条规则真的进了上下文、来自哪个文件 */
+export interface InjectedRule {
+	name: string;
+	/** 相对存储目录的来源文案：文件规则给 md，内联规则给定义它的 toml */
+	from: string;
+}
+
+/**
+ * 本 cwd 下**真的**会注入哪些规则。
+ *
+ * 判据是段文本非空，不是路径命中：md 读不到的规则注入的是空段（prompt-sections 会丢掉
+ * 空段），那不算命中 —— 它的问题走告警，不该混进"注入了什么"这句话里。
+ */
+export function injectedRules(rules: Rule[], dir: string, cwd: string): InjectedRule[] {
+	return rules
+		.filter((rule) => ruleText(rule, cwd).length > 0)
+		.map((rule) => ({
+			name: rule.name,
+			from: rule.file ? relative(dir, rule.file) : `${relative(dir, rule.source)}（内联）`,
+		}));
 }

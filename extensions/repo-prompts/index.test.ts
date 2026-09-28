@@ -17,7 +17,7 @@ import { DEFAULT_ORDER, type Rule, loadRules, loadSettings } from "./config.ts";
 import { clearContentCache, readTextCached } from "./content.ts";
 import { expandHome, isUnder, matchingRules, normalizePath } from "./match.ts";
 import { buildReport } from "./report.ts";
-import { registerRuleSections, resetWarned, ruleSectionName, ruleText } from "./sections.ts";
+import { injectedRules, registerRuleSections, resetWarned, ruleSectionName, ruleText } from "./sections.ts";
 
 // ---------------------------------------------------------------------------
 // fixture
@@ -623,5 +623,36 @@ describe("[repo-prompts] 设置", () => {
 		assert.deepEqual(loadSettings(join(broken, "extensions.toml"), "/fallback"), { enabled: true, dir: "/fallback" });
 		const other = makeTree({ "extensions.toml": "[loop-guard]\nenabled = true\n" });
 		assert.deepEqual(loadSettings(join(other, "extensions.toml"), "/fallback"), { enabled: true, dir: "/fallback" });
+	});
+});
+
+describe("注入告知：本目录真的注入了什么", () => {
+	it("命中且文件可读 → 报出规则名与来源文件", () => {
+		const dir = makeTree({
+			"index.toml": `[[prompt]]\nname = "x"\npaths = ["/tmp"]\nfile = "x.md"\n`,
+			"x.md": "正文",
+		});
+		assert.deepEqual(injectedRules(loadRules(dir).rules, dir, "/tmp/sub"), [{ name: "x", from: "x.md" }]);
+	});
+
+	it("cwd 不命中 → 空", () => {
+		const dir = makeTree({
+			"index.toml": `[[prompt]]\nname = "x"\npaths = ["/home/nobody"]\nfile = "x.md"\n`,
+			"x.md": "正文",
+		});
+		assert.deepEqual(injectedRules(loadRules(dir).rules, dir, "/tmp/sub"), []);
+	});
+
+	it("路径命中但 md 读不到 → 不算注入（问题走告警）", () => {
+		const dir = makeTree({ "index.toml": `[[prompt]]\nname = "x"\npaths = ["/tmp"]\nfile = "missing.md"\n` });
+		assert.deepEqual(injectedRules(loadRules(dir).rules, dir, "/tmp/sub"), []);
+	});
+
+	it("内联规则的来源指向定义它的那份 toml", () => {
+		const dir = makeTree({ "rules.toml": `[[prompt]]\nname = "y"\npaths = ["/tmp"]\ntext = "短规则"\n` });
+		const hits = injectedRules(loadRules(dir).rules, dir, "/tmp/sub");
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].name, "y");
+		assert.match(hits[0].from, /rules\.toml（内联）$/);
 	});
 });
