@@ -21,7 +21,8 @@
 //   规则表改动要 /reload 才重注册段；md 正文改动下一轮装配即生效（mtime 缓存）。
 // 命令：/repo-prompts 列出规则（含来自哪个 toml）、路径、当前 cwd 命中、文件可读性与已注册段。
 // 告知：会话开始时会说一声注入了什么 —— notify 一次（醒目）+ 编辑器上方 widget 常驻（不会
-//   像 toast 那样闪一下就没，见 widget.ts）。没命中规则时把 widget 清掉，保持零打扰。
+//   像 toast 那样闪一下就没，见 widget.ts）。用户开始说话（interactive input）就把 widget
+//   收掉，它的价值只在刚进目录那一下；没命中规则时不设，保持零打扰。
 //
 // 与 pi 原生 AGENTS.md 的关系：共存，不替代。AGENTS.md 是仓库自带、面向任意 agent 的说明；
 // 本扩展是提督侧的、面向 pi 的集中规则，两者会同时进上下文。
@@ -56,6 +57,11 @@ export default function (pi: ExtensionAPI) {
 
 	// factory 期没有 ctx：告警先攒着，会话起来再交给 ui 发
 	// （不要在扩展里用 console：pi 的 TUI 下 stderr 是它的地皮，用户也看不见）
+	//
+	// widgetShown：那条常驻提示现在是不是挂着。它只在「刚进这个目录」那一下有价值，
+	// 用户真开始说话了就收掉（一直挂着只是占地皮）；想再看走 /repo-prompts。
+	let widgetShown = false;
+
 	pi.on("session_start", (_event, ctx) => {
 		const warnings = takeWarnings();
 		for (const message of warnings) {
@@ -81,9 +87,24 @@ export default function (pi: ExtensionAPI) {
 		const lines = buildWidgetLines({ warnings, injected });
 		try {
 			ctx.ui.setWidget(WIDGET_ID, lines.length > 0 ? lines : undefined);
+			widgetShown = lines.length > 0;
 		} catch {
 			// 没有可用 UI（json / print 模式）：跳过，报告仍在 /repo-prompts
 		}
+	});
+
+	// 用户真的开始说话了：把那行常驻提示收掉。
+	// interactive = 真人敲的（扩展自己发的消息不算，那种不算「用户看到了」）。
+	// 收过一次就不再碰 widget，免得每轮都重设一遍白触发重绘。
+	pi.on("input", (event, ctx) => {
+		if (event.source !== "interactive" || !widgetShown) return { action: "continue" as const };
+		widgetShown = false;
+		try {
+			ctx.ui.setWidget(WIDGET_ID, undefined);
+		} catch {
+			// 同 session_start：没有可用 UI 就算了
+		}
+		return { action: "continue" as const };
 	});
 
 	pi.registerCommand("repo-prompts", {
