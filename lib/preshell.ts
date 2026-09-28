@@ -10,12 +10,12 @@
 //
 // 契约（preshell 仓库 docs/integration.md）：
 //   命令走 stdin，stdout 恰好一个 JSON；退出码 0 = 有报告，2 = 用法错误，其它 = 工具没跑起来
-//   --version → {"tool":"preshell","version":"0.4.1"}：**兼容性只跟版本号走**
+//   --version → {"tool":"preshell","version":"0.5.0"}：**兼容性只跟版本号走**
 //   拿不到报告（缺二进制/超时/坏 JSON/版本不符）时默认动作是保守兜底，绝不因此放行
 //
-// 本文件按 v0.4.1 适配。v0.4.0 与 v0.4.1 是同一个契约版本（0.4.x 互通），v0.4.1 只多了
-// 一条信息和一条口径：effect.origin（第 4 条），以及 candidates 改成「只在穷尽时给」
-// （第 3 条）。下面几条从 v0.4.0 起就成立：
+// 本文件按 v0.5.0 适配。v0.5.0 是次要版本变更（0.4 → 0.5，按约定不兼容），但也只是加法：
+// 新增 opt-in 的 effect.payload（第 5 条），并修了 wrapper（uv / docker run / conda run 这类）
+// 的 Spawn 目标解析。前面几条自 v0.4.0 起就成立：
 //   0 破坏性：schema 号删掉了。判定「这次升级会不会打挂我」只看版本号——次版本号变即
 //     不兼容（0.5 起要重新适配），修订号变是兼容的（0.4.x 互通）。旧版（≤0.3.0）的
 //     --version 还带 schema 字段，读的时候要能两种都吃（见 queryPreshellVersion）
@@ -51,6 +51,25 @@ import { notify } from "./notify-send.ts";
 import { collectVarRenders, referenceAppearsIn } from "./var-render.ts";
 import { processSingleton } from "./process-singleton.ts";
 
+/**
+ * 解释器载荷（v0.5.0 起，opt-in）：工具搬运的原文，不是对它求值的结果。
+ * 它只说「这段文本被交给了这个程序」，不说文本会做什么。
+ */
+export interface PreshellPayload {
+  /** flag = 来自选项的值；heredoc = 来自 here-document 正文 */
+  source: string;
+  /** source 为 flag 时是那个选项（`-c` / `-e`） */
+  flag?: string;
+  /** source 为 heredoc 时是结束那段正文的词 */
+  delimiter?: string;
+  /** 原文；被截断时是前缀 */
+  text: string;
+  /** 全长（UTF-8 字节），即使 text 只是前缀 */
+  bytes: number;
+  /** text 是否只是前缀 */
+  truncated?: boolean;
+}
+
 export interface PreshellEffect {
   kind: string;
   target: string;
@@ -78,6 +97,23 @@ export interface PreshellEffect {
    * 旧版二进制（≤v0.4.0）一律不报，读到 undefined 是常态
    */
   origin?: string;
+  /**
+   * 这个程序把自己读的源码（v0.5.0 起，**opt-in**）：`python3 -c '<code>'`、`node -e '<code>'`、
+   * `python3 - <<'PY' … PY` 里的那段文本。
+   *
+   * 默认不报——要起子进程时传 `--payload`（或 `--payload-max=N`）才会出现；每个 text 默认封顶
+   * 4096 字节，超了给前缀并把 `truncated` 置真（`bytes` 始终是全长）。`text` 是原
+   * 地搬运：引号与转义已解，`$HOME` 这类展开原样保留。
+   *
+   * 归属已经算对了：循环体里、wrapper 后（`env python3 -c …`）、runner 后
+   * （`uv run --with X python3 -c …`）、容器后（`docker run --rm node -e …`）都算在这个程序名下。
+   * 只给「参数就是自己源码」的那几个程序（awk / sed 不在表里）。
+   *
+   * **本侧目前只解析、还没接线**：拿到手后可以扫黑名单、可以送预审。
+   * 现有那个 interpreter 层（lib/sandbox-check.ts）今天是从命令文本里自己抠的，
+   * 等上游版本稳定再换成用这个字段
+   */
+  payload?: PreshellPayload;
   /** false = 程序跑了，但它碰什么由它自己决定（git/node/python/docker 这类） */
   modeled?: boolean;
   line?: number;
@@ -170,11 +206,11 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  */
 export const DEFAULT_TIMEOUT_MS = 100;
 /**
- * 我们适配过的契约版本（主次版号）。比较只看这两个数：
- * 次版本号变了就是不兼容（0.5 起要重新适配），修订号变了是兼容的（0.4.x 互通）。
- * 适配过的：0.4.0 / 0.4.1。旧契约（≤0.3.0 的 schema 号）到这里就断了。
+ * 我们适配过的契约版本（主次版号）。比较只看这两个数：次版本号变了就是不兼容，
+ * 修订号变了是兼容的（0.5.x 互通；0.4.x 及更早的旧二进制一律走保守兜底）。
+ * 当前是 0.5.0（payload 字段已解析但尚未接线使用，见 PreshellEffect.payload）。
  */
-export const EXPECTED_VERSION = "0.4";
+export const EXPECTED_VERSION = "0.5";
 
 /**
  * 版本号 → 主次版号（"0.4.1" → "0.4"）；读不出版号时 undefined。
@@ -202,12 +238,13 @@ export function versionsCompatible(toolVersion: string, expectedVersion: string)
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.4.1 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.4.1-x86_64-linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.5.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.5.0-x86_64-linux ~/.pi/runtime/preshell",
   "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "v0.3 起 --cwd 事实上必填（单条与流式都是进程级参数）；词首带变量/~/~+ 的路径由调用方收尾",
   "v0.4 起兼容性只看版本号（次版本号变即不兼容）；条件分支的候选值走 effect.candidates",
   "v0.4.1 起：赋值解出来的目标带 origin（它原来写的那处引用），候选集只在穷尽时才给",
+  "v0.5.0 起：--payload（opt-in）在 Exec/Spawn 上带载荷原文；wrapper 的 Spawn 目标修正",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
 ].join("\n");

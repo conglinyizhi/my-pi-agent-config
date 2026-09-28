@@ -46,7 +46,7 @@ if (argv.includes("--version")) {
   const version =
     mode === "old-version"
       ? { tool: "preshell", version: "0.3.0", schema: 1 }
-      : { tool: "preshell", version: mode === "new-patch" ? "0.4.1" : "0.4.0" };
+      : { tool: "preshell", version: mode === "new-patch" ? "0.5.1" : "0.5.0" };
   process.stdout.write(JSON.stringify(version) + "\\n");
   process.exit(0);
 }
@@ -316,7 +316,7 @@ describe("preshell-stream：能力与契约探测", () => {
 		await client.close();
 	});
 
-	it("修订号不同是兼容的：0.4.1 照用", async () => {
+	it("修订号不同是兼容的：0.5.1 照用", async () => {
 		const client = open(stub("new-patch"));
 		const result = await client.analyze("ls");
 		assert.equal(result.ok, true);

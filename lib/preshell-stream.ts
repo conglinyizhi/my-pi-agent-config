@@ -51,7 +51,7 @@ export interface PreshellStreamOptions {
 	timeoutMs?: number;
 	/** 空闲多久就收工（毫秒）；0 = 不收工，活到调用方进程结束 */
 	idleMs?: number;
-	/** 期望的契约版本（主次版号，如 "0.4"）；不一致按「事实层不可用」处理 */
+	/** 期望的契约版本（主次版号，如 "0.5"）；不一致按「事实层不可用」处理 */
 	expectedVersion?: string;
 	/** 交给子进程的参数（默认 --shell=probe；方言与 --cwd 都是进程级设置，切换要重开） */
 	args?: string[];

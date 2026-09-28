@@ -218,7 +218,7 @@ describe("preshell：熔断器与提示去重跨扩展共享", () => {
 		a.resetPreshellBreaker();
 		a.resetFactLayerNotices();
 
-		const config = { enabled: true, bin: "/nonexistent/preshell-probe-for-test", timeoutMs: 100, expectedVersion: "0.4" };
+		const config = { enabled: true, bin: "/nonexistent/preshell-probe-for-test", timeoutMs: 100, expectedVersion: "0.5" };
 		const first = a.analyzeCommand("echo probe", { config });
 		assert.equal(first.ok, false);
 		assert.equal(b.preshellBreakerState().broken, "missing", "一个扩展试出熔断，其它扩展必须知道");

@@ -71,12 +71,12 @@ const OK_REPORT = JSON.stringify({
   },
 });
 
-const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.0"}'; exit 0 ;; esac`;
-// v0.4.1 的版本答复：origin 与「候选集只在穷尽时给」都从这一版起；0.4.x 互通，expectedVersion 仍是 "0.4"
-const VERSION_041 = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.1"}'; exit 0 ;; esac`;
+const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.5.0"}'; exit 0 ;; esac`;
+// 同一契约版本的另一个修订号：0.5.x 互通，expectedVersion 仍是 "0.5"
+const VERSION_051 = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.5.1"}'; exit 0 ;; esac`;
 
 function configFor(bin: string, over: Partial<PreshellConfig> = {}): PreshellConfig {
-  return { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.4", ...over };
+  return { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.5", ...over };
 }
 
 describe("analyzeCommand", () => {
@@ -87,7 +87,7 @@ describe("analyzeCommand", () => {
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
-    assert.equal(outcome.version, "0.4.0");
+    assert.equal(outcome.version, "0.5.0");
     assert.equal(outcome.facts.status, "Complete");
     assert.equal(outcome.facts.uncertain, true);
     assert.equal(outcome.facts.cwd, "/work");
@@ -243,13 +243,13 @@ describe("analyzeCommand", () => {
         cwd: "/tmp",
       },
     });
-    const bin = stub("origin.sh", `${VERSION_041}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("origin.sh", `${VERSION_051}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
     resetPreshellVersionCache();
     const outcome = analyzeCommand("x=/usr/bin/jq; $x -n 1", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
-    assert.equal(outcome.version, "0.4.1", "0.4.x 互通：expectedVersion=\"0.4\" 要吃得下 0.4.1");
+    assert.equal(outcome.version, "0.5.1", "0.5.x 互通：expectedVersion=\"0.5\" 要吃得下 0.5.1");
     assert.equal(outcome.facts.effects[0].origin, "$x", "引用原文要原样带过来（对命令文本是纯文本比较）");
     assert.equal(outcome.facts.effects[0].target, "/usr/bin/jq", "target 仍是解出来的值，不是引用");
     assert.equal(outcome.facts.effects[1].origin, undefined, "target 就是词面本身时没有这个字段");
@@ -343,9 +343,9 @@ describe("analyzeCommand", () => {
 
   it("契约版本不符 → version 不可用（不猜）；次版本号一致就继续，修订号不一致不管", () => {
     const cases: Array<[string, boolean]> = [
-      ["0.4.0", true],
-      ["0.4.1", true],
-      ["0.5.0", false],
+      ["0.5.0", true],
+      ["0.5.1", true],
+      ["0.4.1", false],
     ];
     for (const [version, compatible] of cases) {
       clearPreshellCache();
@@ -358,7 +358,7 @@ describe("analyzeCommand", () => {
       assert.equal(outcome.ok, compatible, `${version} 期望 ok=${compatible}`);
       if (!outcome.ok) {
         assert.equal(outcome.reason, "version");
-        assert.match(outcome.detail ?? "", /期望 0\.4\.x/);
+        assert.match(outcome.detail ?? "", /期望 0\.5\.x/);
       }
     }
   });
@@ -498,8 +498,8 @@ describe("缺件提示（人看的）", () => {
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.4\.1 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.4\.1-x86_64-linux/);
+    assert.match(INSTALL_HINT, /gh release download v0\.5\.0 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.5\.0-x86_64-linux/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
     // v0.4.1 的两条新事实要写在提示里：origin 与「候选集只在穷尽时给」
@@ -561,17 +561,17 @@ describe("配置与二进制解析", () => {
     const cfg = loadPreshellConfig("/nonexistent/extensions.toml");
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.bin, "~/.pi/runtime/preshell");
-    assert.equal(cfg.expectedVersion, "0.4");
+    assert.equal(cfg.expectedVersion, "0.5");
   });
 
-  it("配置读 `version` 键；老的 `schema = 1` 不再参与判定（缺省仍是 0.4）", () => {
+  it("配置读 `version` 键；老的 `schema = 1` 不再参与判定（缺省是 0.5）", () => {
     const path = join(dir, "config-version.toml");
     writeFileSync(path, `[preshell]\nenabled = true\nschema = 1\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.4", "老键不该被当成版本号");
-    writeFileSync(path, `[preshell]\nversion = "0.4"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.4");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.5", "老键不该被当成版本号");
     writeFileSync(path, `[preshell]\nversion = "0.5"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.5", "配置要能钉一个不同的期望版本");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.5");
+    writeFileSync(path, `[preshell]\nversion = "0.6"\n`, "utf8");
+    assert.equal(loadPreshellConfig(path).expectedVersion, "0.6", "配置要能钉一个不同的期望版本");
   });
 
   it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {

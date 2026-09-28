@@ -32,7 +32,7 @@ function stubPreshell(report: unknown): string {
   const path = join(dir, "preshell");
   const body = [
     "#!/bin/sh",
-    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.4.0"}'; exit 0 ;; esac`,
+    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.5.0"}'; exit 0 ;; esac`,
     "cat >/dev/null",
     `printf '%s' '${JSON.stringify(report)}'`,
   ].join("\n");
