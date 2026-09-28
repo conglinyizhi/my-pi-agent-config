@@ -278,7 +278,7 @@ function probeSpec(bin, timeoutMs = 10000) {
 function readExpectedVersion() {
   try {
     const text = fs.readFileSync(PRESHELL_LIB, "utf8");
-    const m = /export const EXPECTED_VERSION = "([^"]+)"/.exec(text);
+    const m = /export const RECOMMENDED_VERSION = "([^"]+)"/.exec(text);
     return m ? m[1] : undefined;
   } catch {
     return undefined;
@@ -294,16 +294,16 @@ function compatOf(version) {
 function printVersionCompat(version) {
   const expected = readExpectedVersion();
   if (!expected) {
-    log(`  · 版本对照：读不到 lib/preshell.ts 的 EXPECTED_VERSION，跳过（自报 version=${version}）`);
+    log(`  · 版本对照：读不到 lib/preshell.ts 的 RECOMMENDED_VERSION，跳过（自报 version=${version}）`);
     return;
   }
   const tool = compatOf(version);
   const want = compatOf(expected);
   if (tool && want && tool === want) {
-    log(`  · 版本对照：实测 ${version}，lib/preshell.ts 记的已知版本是 ${expected}（只作提示）`);
+    log(`  · 版本对照：实测 ${version}，lib/preshell.ts 记的推荐版本是 ${expected}（只作提示）`);
   } else {
     log(
-      `  · 版本对照：实测 ${version}，已知版本 ${expected} —— 不同不重要：pi 侧改看能力探测，` +
+      `  · 版本对照：实测 ${version}，推荐版本 ${expected} —— 不同不重要：pi 侧改看能力探测，` +
         `上面那份门禁清单通过就能用（版本号只影响提示与报告）`,
     );
   }
@@ -758,7 +758,7 @@ function cmdStatus() {
     return 0;
   }
   const expected = readExpectedVersion();
-  log(`已装版本（EXPECTED_VERSION=${expected ?? "读不到"}）：`);
+  log(`已装版本（RECOMMENDED_VERSION=${expected ?? "读不到"}）：`);
   for (const version of installed) {
     const target = versionPath(version);
     let line = `  ${version}`;

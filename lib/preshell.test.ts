@@ -29,6 +29,8 @@ import {
   preshellBreakerState,
   preshellSpecState,
   queryPreshellSpec,
+  RECOMMENDED_VERSION,
+  recommendedVersionOf,
   reportFactLayerState,
   REQUIRED_CAPABILITIES,
   resetFactLayerNotices,
@@ -139,7 +141,8 @@ const SPEC_OK = specCase();
 const SPEC_061 = specCase("0.6.1");
 
 function configFor(bin: string, over: Partial<PreshellConfig> = {}): PreshellConfig {
-  return { enabled: true, bin, timeoutMs: 2000, knownVersion: "0.6", ...over };
+  // 推荐版本就直接用常量（别再写一处字面量）：测试关心的不是这个值，是它怎么被用到
+  return { enabled: true, bin, timeoutMs: 2000, recommendedVersion: RECOMMENDED_VERSION, ...over };
 }
 
 describe("analyzeCommand", () => {
@@ -444,7 +447,7 @@ describe("analyzeCommand", () => {
       if (!outcome.ok) {
         assert.equal(outcome.reason, "capability");
         assert.match(outcome.detail ?? "", new RegExp(drop.replace(".", "\\.")), `detail 要点名缺了 ${drop}`);
-        assert.match(outcome.detail ?? "", /已知版本 0\.6/, "同时要写明已知版本（只作提示）");
+        assert.match(outcome.detail ?? "", /推荐版本 0\.6\.0/, "同时要写明推荐版本（只作提示）");
       }
     }
   });
@@ -472,8 +475,8 @@ describe("analyzeCommand", () => {
     const state = preshellSpecState(config);
     assert.deepEqual([...state.advisoryGaps], ["paths.payload"]);
     assert.equal(state.measuredVersion, "0.5.0");
-    assert.equal(state.knownVersion, "0.6");
-    assert.equal(state.compatibleWithKnown, false, "0.5 与已知 0.6 不同主次版号：只是提示，不影响可用性");
+    assert.equal(state.recommendedVersion, "0.6.0");
+    assert.equal(state.compatibleWithKnown, false, "0.5 与推荐 0.6 不同主次版号：只是提示，不影响可用性");
   });
 
   it("不认识 --spec 的旧二进制（用法错误、退出码 2）→ capability，不当成「没依赖」", () => {
@@ -700,22 +703,22 @@ describe("缺件提示（人看的）", () => {
   it("describeUnavailable 说清是什么毛病", () => {
     assert.match(describeUnavailable("missing"), /未安装或路径不对/);
     assert.match(
-      describeUnavailable("capability", "缺必需契约项 paths.candidates；实测 version=9.9.9，已知版本 0.6"),
+      describeUnavailable("capability", "缺必需契约项 paths.candidates；实测 version=9.9.9，推荐版本 0.6"),
       /契约能力不足（缺必需契约项 paths\.candidates/,
     );
     assert.match(describeUnavailable("disabled"), /enabled=false/);
   });
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
-    // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.6\.0 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.6\.0-x86_64-linux/);
+    // 推荐版本写成完整三段：它要能直接拼进命令行（scripts/preshell-install.mjs 也按这个名字读）
+    assert.match(RECOMMENDED_VERSION, /^\d+\.\d+\.\d+$/, "推荐版本要写全三段，才够直接粘");
+    assert.ok(
+      INSTALL_HINT.includes(`v${RECOMMENDED_VERSION}`),
+      "推荐版本要出现在安装命令里（别再另写一处字面量）",
+    );
+    assert.match(INSTALL_HINT, /preshell-install\.mjs install --release/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
-    // v0.4.1 起的两条事实要写在提示里：origin 与「候选集只在穷尽时给」
-    assert.match(INSTALL_HINT, /origin/);
-    assert.match(INSTALL_HINT, /候选集只在穷尽时才给/);
-    // 判据也变了：能力探测取代版本号门禁，提示里要说清
     assert.match(INSTALL_HINT, /看能力不看版本号/);
     assert.match(INSTALL_HINT, /--spec/);
   });
@@ -774,23 +777,24 @@ describe("配置与二进制解析", () => {
     const cfg = loadPreshellConfig("/nonexistent/extensions.toml");
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.bin, "~/.pi/runtime/preshell");
-    assert.equal(cfg.knownVersion, "0.6");
+    assert.equal(cfg.recommendedVersion, "0.6.0");
   });
 
-  it("配置读 `version` 键（现在含义是「已知版本」）；老的 `schema = 1` 不再读", () => {
+  it("配置读 `version` 键（现在含义是「推荐版本」）；老的 `schema = 1` 不再读", () => {
     const path = join(dir, "config-version.toml");
     writeFileSync(path, `[preshell]\nenabled = true\nschema = 1\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).knownVersion, "0.6", "老键不该被当成版本号");
+    assert.equal(loadPreshellConfig(path).recommendedVersion, "0.6.0", "老键不该被当成版本号");
     writeFileSync(path, `[preshell]\nversion = "0.6"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).knownVersion, "0.6");
+    assert.equal(loadPreshellConfig(path).recommendedVersion, "0.6");
     writeFileSync(path, `[preshell]\nversion = "0.7"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).knownVersion, "0.7", "配置只改「已知版本」，不影响可用性判定");
+    assert.equal(loadPreshellConfig(path).recommendedVersion, "0.7", "配置只改「推荐版本」，不影响可用性判定");
   });
 
   // 老调用方（与外面的脚本）还按 expectedVersion 传配置：名称换过，但要仍然能读
-  it("老字段名 expectedVersion 仍然认，它只是 knownVersion 的别名", () => {
-    assert.equal(loadPreshellConfig("/nonexistent/extensions.toml").knownVersion, KNOWN_VERSION);
-    assert.equal(KNOWN_VERSION, EXPECTED_VERSION, "KNOWN_VERSION 就是 EXPECTED_VERSION 的语义名");
+  it("老字段名 expectedVersion / knownVersion 仍然认，它们只是 recommendedVersion 的别名", () => {
+    assert.equal(loadPreshellConfig("/nonexistent/extensions.toml").recommendedVersion, RECOMMENDED_VERSION);
+    assert.equal(EXPECTED_VERSION, RECOMMENDED_VERSION, "旧名就是推荐版本的别名");
+    assert.equal(KNOWN_VERSION, RECOMMENDED_VERSION, "旧名就是推荐版本的别名");
     const bin = stub("alias-config.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
     resetPreshellSpecCache();
@@ -799,7 +803,8 @@ describe("配置与二进制解析", () => {
     });
     assert.equal(outcome.ok, true, "老字段名不该让可用性判定挂掉");
     assert.equal(knownVersionOf({ expectedVersion: "0.6" }), "0.6", "别名要认得出来");
-    assert.equal(knownVersionOf({}), EXPECTED_VERSION, "都没有就回退到已知版本的缺省值");
+    assert.equal(knownVersionOf({}), RECOMMENDED_VERSION, "都没有就回退到推荐版本的缺省值");
+    assert.equal(recommendedVersionOf({}), RECOMMENDED_VERSION);
   });
 
   it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {

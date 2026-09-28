@@ -35,7 +35,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
 	DEFAULT_TIMEOUT_MS,
-	KNOWN_VERSION,
+	RECOMMENDED_VERSION,
 	queryPreshellSpec,
 	type PreshellReport,
 	type PreshellUnavailableReason,
@@ -52,7 +52,7 @@ export interface PreshellStreamOptions {
 	/** 空闲多久就收工（毫秒）；0 = 不收工，活到调用方进程结束 */
 	idleMs?: number;
 	/** 已知版本（extensions.toml 的 version）；**不参与门禁**，只在缺能力的 detail 里提一句 */
-	knownVersion?: string;
+	recommendedVersion?: string;
 	/** 交给子进程的参数（默认 --shell=probe；方言与 --cwd 都是进程级设置，切换要重开） */
 	args?: string[];
 	/** stderr 逐行回调：工具自己的诊断汇总走这里，不混进报告 */
@@ -155,7 +155,7 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 	const bin = options.bin;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
 	const idleMs = options.idleMs ?? DEFAULT_STREAM_IDLE_MS;
-	const knownVersion = options.knownVersion ?? KNOWN_VERSION;
+	const recommendedVersion = options.recommendedVersion ?? RECOMMENDED_VERSION;
 	const args = options.args ?? ["--shell=probe"];
 
 	let child: ChildProcess | undefined;
@@ -280,7 +280,7 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 		const probe = queryPreshellSpec(bin, Math.max(timeoutMs, DEFAULT_TIMEOUT_MS));
 		if ("error" in probe) {
 			return probe.error === "capability"
-				? markDead("capability", `${probe.detail}；已知版本 ${knownVersion}`)
+				? markDead("capability", `${probe.detail}；推荐版本 ${recommendedVersion}`)
 				: markDead(probe.error, probe.detail);
 		}
 

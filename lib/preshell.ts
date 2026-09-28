@@ -207,14 +207,14 @@ export interface PreshellConfig {
   /**
    * 已知版本（extensions.toml 的 [preshell] version 键）。**不参与门禁**：能不能用看
    * --spec 的能力探测（REQUIRED_CAPABILITIES），这个值只进提示与报告（实测报的是哪个、
-   * 已知的是哪个）。读不到就用 EXPECTED_VERSION 的缺省值。
+   * 推荐的是哪个）。读不到就用 RECOMMENDED_VERSION 的缺省值。
    *
    * 旧配置里那个 `schema = 1` 已经没意义，读了也不参与任何判定（只是留在文件里，不报错）。
    */
-  knownVersion?: string;
+  recommendedVersion?: string;
   /**
    * @deprecated 旧字段名，当时它是硬门禁（主次版号相等才可用）。老调用方还在传，
-   * 读到就当 knownVersion 用（见 knownVersionOf）。新代码用 knownVersion。
+   * 读到就当 recommendedVersion 用（见 recommendedVersionOf）。新代码用 recommendedVersion。
    */
   expectedVersion?: string;
 }
@@ -231,18 +231,20 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  */
 export const DEFAULT_TIMEOUT_MS = 100;
 /**
- * 已知版本（原 EXPECTED_VERSION）：我们适配过的那一版，**不再参与门禁**。
+ * 推荐版本：**装的时候建议装哪个**（开箱即用，与本机 pi 侧适配过的契约面对齐）。
  *
- * 能不能用看 --spec 的能力探测（REQUIRED_CAPABILITIES）：字段在就能用，哪怕版本号没见过。
- * 这个名字与这行字面量保留有两个原因：
- *   1 scripts/preshell-install.mjs 拿一条正则从本文件里读它的值，用于装/status 时的
- *      「实测 vs 已知」对照（那条对照现在只是提示）
- *   2 外部（文档、脚本）还在按这个名字读
- * 提示/报告里更愿意用语义准的 KNOWN_VERSION。
+ * 它不参与任何可用性判定 —— 能不能用看 --spec 的能力探测（REQUIRED_CAPABILITIES）：
+ * 字段在就能用，哪怕版本号没见过。所以这是「推荐」不是「要求」：更新或更旧的版本
+ * 只要能过能力探测，照样直接用，不必等 pi 侧适配。
+ *
+ * 用途两处：安装提示（INSTALL_HINT）里给一条能直接粘的命令；报告里做「实测 vs 推荐」
+ * 的对照，提醒有没有落后。scripts/preshell-install.mjs 拿正则从本文件读这个值。
  */
-export const EXPECTED_VERSION = "0.6";
-/** 已知版本的语义名（= EXPECTED_VERSION）：提示与报告里用它 */
-export const KNOWN_VERSION = EXPECTED_VERSION;
+export const RECOMMENDED_VERSION = "0.6.0";
+/** @deprecated 旧名（语义已改成「推荐版本」，见 RECOMMENDED_VERSION） */
+export const EXPECTED_VERSION = RECOMMENDED_VERSION;
+/** @deprecated 旧名（同上） */
+export const KNOWN_VERSION = RECOMMENDED_VERSION;
 
 /**
  * 版本号 → 主次版号（"0.6.1" → "0.6"）；读不出版号时 undefined。
@@ -255,13 +257,20 @@ export function compatVersion(version: string): string | undefined {
 }
 
 /**
- * 已知版本：名称换过（expectedVersion → knownVersion），老配置对象两个都认。
- * 都读不到时回退到 EXPECTED_VERSION —— 它只进提示，读不出也不影响可用性。
+ * 推荐版本：配置里可以钉一个（extensions.toml 的 [preshell] version）。
+ * 名字换过（expectedVersion → knownVersion → recommendedVersion），老配置对象都认。
+ * 都读不到时回退到 RECOMMENDED_VERSION —— 它只进提示与安装建议，读不出不影响可用性。
  */
-export function knownVersionOf(config: { knownVersion?: string; expectedVersion?: string }): string {
-  const value = config.knownVersion ?? config.expectedVersion;
-  return typeof value === "string" && value.trim() ? value.trim() : EXPECTED_VERSION;
+export function recommendedVersionOf(config: {
+  recommendedVersion?: string;
+  knownVersion?: string;
+  expectedVersion?: string;
+}): string {
+  const value = config.recommendedVersion ?? config.knownVersion ?? config.expectedVersion;
+  return typeof value === "string" && value.trim() ? value.trim() : RECOMMENDED_VERSION;
 }
+/** @deprecated 旧名（= recommendedVersionOf） */
+export const knownVersionOf = recommendedVersionOf;
 
 /**
  * 安装说明：通知、配置注释、文档共用一份，避免三处各写一句、各有出入。
@@ -269,16 +278,14 @@ export function knownVersionOf(config: { knownVersion?: string; expectedVersion?
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.6.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.6.0-x86_64-linux ~/.pi/runtime/preshell",
-  "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
-  "v0.3 起 --cwd 事实上必填（单条与流式都是进程级参数）；词首带变量/~/~+ 的路径由调用方收尾",
-  "v0.4 起条件分支的候选值走 effect.candidates：候选集只在穷尽时才给（要么完整、要么不出现）",
-  "v0.4.1 起：赋值解出来的目标带 origin（它原来写的那处引用）",
-  "v0.5.0 起：--payload（opt-in）在 Exec/Spawn 上带载荷原文；wrapper 的 Spawn 目标修正",
-  "兼容性看能力不看版本号：起一次 --spec 查必需契约项在不在，缺项才退回旧匹配",
-  "或自己编：moon build --release --target native（再 install 到同一路径）",
+  `装它（推荐 v${RECOMMENDED_VERSION}，开箱即用）：`,
+  `  node ~/.pi/agent/scripts/preshell-install.mjs install --release v${RECOMMENDED_VERSION}`,
+  "  换版本或回滚：同一个脚本 use <版本>；status 看当前装了什么",
+  "  它会校验 sha256、过一遍契约门禁、跑影子对比再原子切链，坏了能退回去",
+  "兼容性看能力不看版本号：起一次 --spec 逐项查 pi 依赖的契约面在不在，字段在就能用",
+  "  —— 所以比推荐版本新或旧的版本，一般都不用等 pi 侧适配，装上就走",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
+  "自己编也行：moon build --release --target native，再按上面的流程装",
 ].join("\n");
 
 /** 给人和模型看的一句话：为什么不可用、意味着什么 */
@@ -312,7 +319,7 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
     enabled: true,
     bin: DEFAULT_PRESHELL_BIN,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    knownVersion: EXPECTED_VERSION,
+    recommendedVersion: RECOMMENDED_VERSION,
   };
   try {
     const doc = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -324,11 +331,11 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
       bin: typeof section.bin === "string" && section.bin.trim() ? section.bin.trim() : fallback.bin,
       timeoutMs: num(section.timeoutMs, fallback.timeoutMs),
       // 老配置里的 `schema = 1` 到此为止：它没有对照物了，读也不读。`version` 仍然认，
-      // 但含义已经换成「已知版本」（只进提示/报告，不参与门禁）——键名不改，免得到处改配置
-      knownVersion:
+      // 但含义已经换成「推荐版本」（只进提示/安装建议，不参与门禁）——键名不改，免得到处改配置
+      recommendedVersion:
         typeof section.version === "string" && section.version.trim()
           ? section.version.trim()
-          : fallback.knownVersion,
+          : fallback.recommendedVersion,
     };
   } catch {
     return fallback;
@@ -872,22 +879,22 @@ export function resetPreshellVersionCache(): void {
 export interface PreshellSpecState {
   /** 实测 --spec 自报的版本；没探测过就是 undefined */
   measuredVersion?: string;
-  /** 已知版本（extensions.toml 的 version / EXPECTED_VERSION）：只作提示 */
-  knownVersion: string;
-  /** 实测与已知同主次版号；探测过才有。false 不代表不可用 */
+  /** 推荐版本（extensions.toml 的 version / RECOMMENDED_VERSION）：只作提示 */
+  recommendedVersion: string;
+  /** 实测与推荐同主次版号；探测过才有。false 不代表不可用 */
   compatibleWithKnown?: boolean;
   /** 提示级能力缺口（实测缺了哪些） */
   advisoryGaps: readonly string[];
 }
 
 export function preshellSpecState(config: PreshellConfig = loadPreshellConfig()): PreshellSpecState {
-  const known = knownVersionOf(config);
+  const recommended = recommendedVersionOf(config);
   const measured = shared.specMeasuredVersion;
   const tool = measured ? compatVersion(measured) : undefined;
-  const want = compatVersion(known);
+  const want = compatVersion(recommended);
   return {
     ...(measured ? { measuredVersion: measured } : {}),
-    knownVersion: known,
+    recommendedVersion: recommended,
     ...(tool && want ? { compatibleWithKnown: tool === want } : {}),
     advisoryGaps: [...shared.capabilityGaps],
   };
@@ -935,9 +942,9 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
     const probe = queryPreshellSpec(bin, config.timeoutMs);
     if ("error" in probe) {
       if (probe.error !== "capability") return { ok: false, reason: probe.error, ...(probe.detail ? { detail: probe.detail } : {}) };
-      // 缺能力的 detail 里把「已知版本」也带上：它是提示值，不参与判定
-      const known = knownVersionOf(config);
-      return { ok: false, reason: "capability", detail: `${probe.detail}；已知版本 ${known}` };
+      // 缺能力的 detail 里把「推荐版本」也带上：它是提示值，不参与判定
+      const recommended = recommendedVersionOf(config);
+      return { ok: false, reason: "capability", detail: `${probe.detail}；推荐版本 ${recommended}` };
     }
     const version = probe.version;
     try {
