@@ -472,7 +472,7 @@ async function runWorker(
           )
         : undefined,
       inboxId, // 重试循环内由 runSubagent 原样复用，不在 attempt 内重建
-      timeout: opts.timeout ?? 600,
+      timeout: opts.timeout ?? 900,
       onSpawn: (pid) => updateWorker(id, { pid, status: "running" }),
       onUpdate: (r) => updateWorker(id, {
         usage: r.usage,

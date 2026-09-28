@@ -330,7 +330,7 @@ export default function (pi: ExtensionAPI) {
       timeout: Type.Optional(
         Type.Number({
           description:
-            "可选：worker 单次执行的时间预算（秒，下限 5，缺省 600）。预算见底时不会直接掐掉 worker，而是先暂存问你一次（继续给新预算 / 补充一句 / 停），所以长任务给紧预算也有退路。",
+            "可选：worker 单次执行的时间预算（秒，下限 5，缺省 900（15 分钟））。预算见底时不会直接掉挤 worker，而是先暂存问你一次（继续给新预算 / 补充一句 / 停），所以长任务给紧预算也有退路。",
         }),
       ),
     }),
