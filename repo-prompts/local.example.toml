@@ -1,0 +1,26 @@
+# local.example.toml — 私有规则的范文（全是占位文本，没有任何真实路径 / 内容）
+#
+# 私有规则 = 只留本地、不进 git 的规则，靠文件名后缀区分：
+#   <name>.local.toml   规则表
+#   <name>.local.md     正文
+# agent 仓的 .gitignore 排除了 repo-prompts/*.local.toml 与 repo-prompts/*.local.md，
+# 所以这类文件不会被提交，也不会随分发跑到别人机器上。
+# 共享 → 私有只改文件名（去掉 / 加上 .local），扩展不参与这个判断：
+# 它对目录下所有 *.toml 一视同仁，不看名字，私有与否是 git 的事。
+#
+# 用法：把下面 [[prompt]] 的注释去掉、按自己的情况改名成 <你的名字>.local.toml
+# （正文放 <名字>.local.md），扩展就会读到它。
+# 规则表改动要 /reload 才重新注册段；md 正文改动下一轮装配即生效。
+# 本文件整段保持注释状态，所以它解析出来是空的 —— 待在存储目录里也不会占一条永不命中的规则。
+
+# [[prompt]]
+# name = "your-private-repo"                  # 段名 = repo:<name>；只能用字母数字与 . _ -
+# paths = ["~/path/to/your/private/repo"]     # 路径前缀，可多条；支持 ~；须绝对路径或 ~/…
+# file = "your-private-repo.local.md"         # 正文，相对 repo-prompts 目录（也收绝对路径）
+# order = 200                                 # 可选，缺省 200
+
+# 一两句的短规则用 text 内联，不用单开 md：
+# [[prompt]]
+# name = "your-other-private-repo"
+# paths = ["/absolute/path/to/repo"]
+# text = "占位：这里写只在本机生效的规则。"

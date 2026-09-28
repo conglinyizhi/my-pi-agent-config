@@ -226,3 +226,18 @@ enabled = true
 # minChars = 600 # 折叠段字符下限
 # minLines = 40 # 折叠段行数下限
 # minCount = 3 # 一行至少出现几次才算复读行
+
+# ─────────────────────────────────────────────────────────────
+# repo-prompts：按目录（仓库）注入提示词段
+# 规则集中放在 dir 下（每条一个 md 正文），按 cwd 路径前缀匹配，
+# 注册成 prompt-sections 的段 repo:<name>（order 缺省 200）。
+# 规则表是该目录下所有 *.toml（不递归），按文件名序合并，同名规则后者覆盖前者。
+# 共享 / 私有靠 git 区分，扩展不看文件名：index.toml / xxx.toml 随仓提交，
+# xxx.local.toml / xxx.local.md 由 agent 仓 .gitignore 排除（改名即切换共享性）。
+# 这个目录本身可以 git init + push 当分发单元，扩展不管 git。
+# 见 extensions/repo-prompts/README.md；/repo-prompts 看当前命中情况。
+# ─────────────────────────────────────────────────────────────
+[repo-prompts]
+enabled = true
+# 改 dir 或规则表（含增删 / 改名 toml）要 /reload 才重新注册段；md 正文改了下一次装配即生效
+dir = "~/.pi/agent/repo-prompts"

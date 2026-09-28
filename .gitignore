@@ -98,3 +98,7 @@ hub-state/
 # photo 网关（运行时状态与构建产物）
 photo-state/
 photo/pi-photo
+
+# repo-prompts：只留本地的规则（改名即可切换共享性）
+repo-prompts/*.local.toml
+repo-prompts/*.local.md

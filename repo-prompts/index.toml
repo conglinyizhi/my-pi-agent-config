@@ -1,0 +1,23 @@
+# repo-prompts 规则表
+#
+# 每条 [[prompt]] 一段，命中后作为一个提示词段（repo:<name>）注入，正文放同目录的 md。
+# 规则表不限于本文件：目录下所有 *.toml（不递归）按文件名序合并，同名规则后者覆盖前者。
+# 所以可以把规则按主题拆成几个 toml，或者另开 xxx.local.toml 放只留本地的规则
+# （agent 仓 .gitignore 排除 *.local.toml / *.local.md，改名去掉 .local 就是转共享）。
+# 范文见同目录 local.example.toml。这个目录可以整体 git init + push，当分发单元用（扩展不管 git）。
+#
+# 字段：
+#   name  必填。段名 = repo:<name>，只能用字母数字与 . _ -
+#   paths 必填。本地路径前缀，至少一条；支持 ~ 写法；必须是绝对路径或 ~/…
+#         匹配规则：cwd 等于该路径，或在该路径的子目录下（前缀式，不做 glob、不递归推断）
+#   file  与 text 二选一。md 文件名，相对本目录（也收绝对路径）
+#   text  与 file 二选一。内联短规则，适合一两句话，不用单开文件
+#   order 可选。段顺序，缺省 200（200+ 是「动态」档，排在系统前缀尾部）
+#
+# 改规则表（含增删 / 改名 toml）后需要 /reload 才会重新注册段；md 正文改了下一次装配即生效。
+
+[[prompt]]
+name = "preshell"
+paths = ["~/disk/ai_workspace/preshell"]
+file = "preshell.md"
+order = 200
