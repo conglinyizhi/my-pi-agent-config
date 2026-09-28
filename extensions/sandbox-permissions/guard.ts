@@ -37,6 +37,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { loadSandboxPaths } from "./paths.ts";
+import { isTrustedProgramPath } from "./trusted.ts";
+import { beginSandboxSession, isSessionTrustedPath } from "./session-access.ts";
 import { yoloEnabled } from "./yolo.ts";
 
 const AGENT_DIR = getAgentDir();
@@ -237,6 +239,35 @@ function blockedReason(kind: string, target: string, rule: CompiledRule): string
   return `[sandbox-guard] ${kind} 命中敏感路径黑名单（${rule.pattern}）：${target}。为防恶意 skill 泄露凭据已拒绝。`;
 }
 
+/** 当前 session id：受保护路径的授权按 session 算（见 session-access.ts） */
+let guardSessionId: string | undefined;
+
+/**
+ * 可信程序目录兼作**写入保护**。
+ *
+ * 一份名单两个方向，看着矛盾，其实是一件事：这些目录里是本机自己编译、自己维护的产物，
+ * 「程序可信」所以可以执行，「产物重要」所以更不该被 agent 随手改。
+ * 开启后：程序照跑，但写这些目录要过 sandbox-allow（人批）。
+ * 名单默认为空——没启用时这个检查等于不存在（行为与从前完全一致）。
+ */
+export function trustedWriteBlockedReason(toolName: string, target: string): string | undefined {
+  let hit: boolean;
+  try {
+    hit = isTrustedProgramPath(target);
+  } catch {
+    // 读配置出事（坏 JSON 等）：宁可当没启用，也不要因为一个读错就拦下所有写入
+    return undefined;
+  }
+  if (!hit) return undefined;
+  if (isSessionTrustedPath(target, guardSessionId, process.cwd())) return undefined;
+  return (
+    `[sandbox-guard] ${toolName} 目标路径受保护（可信程序目录）：${target}。` +
+    `这里放的是本机自己编译/维护的产物：程序可以执行，但不许自动改写。` +
+    `确实要改就用 sandbox-allow 申请（permission=write-paths，paths 指定这个目录），` +
+    `人批过之后本次会话内可以写。`
+  );
+}
+
 // ── 仅写保护路径（原 protected-paths 扩展并入） ──
 // 黑名单是「防读也防写」的敏感凭据路径；而这里只拦 write/edit，不拦 read，
 // 因为 .git/ 与 node_modules/ 模型经常需要读，但绝不该写。
@@ -396,8 +427,11 @@ export default function (pi: ExtensionAPI) {
 
   // 双保险：session_start（含 reload）时刷新
   // 黑名单规则数不显示在状态栏（用户反馈用处不多，已隐藏）
-  pi.on("session_start", (_event, _ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     refresh();
+    // 受保护路径的授权按 session 算，这里同步一下（bash-guard 也会调，幂等）
+    guardSessionId = ctx.sessionManager.getSessionId();
+    beginSandboxSession(guardSessionId);
   });
 
   // 工具层拦截
@@ -427,6 +461,9 @@ export default function (pi: ExtensionAPI) {
       if (wp) {
         return { block: true, reason: `[sandbox-guard] ${event.toolName} 目标路径受保护（${wp.label}）：${writePath}。为防止误改工程/配置路径已拒绝。` };
       }
+      // 可信程序目录（人类列入）：那些目录里的东西自己编译/自己维护，程序可执行、文件不许自动改
+      const trustedBlocked = trustedWriteBlockedReason(event.toolName, writePath);
+      if (trustedBlocked) return { block: true, reason: trustedBlocked };
       // worker 的写入边界：readonly / sandbox_dir 对 bash 生效的那一套，在写入类工具上同样强制
       const scope = readWorkerWriteScope();
       if (scope) {

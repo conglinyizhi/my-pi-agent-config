@@ -5,10 +5,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
-import { loadBlacklist, pathBlocked, commandBlocked, matchBlacklistHits, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, targetPathOf } from "./guard.ts";
+import { loadBlacklist, pathBlocked, commandBlocked, matchBlacklistHits, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, targetPathOf, trustedWriteBlockedReason } from "./guard.ts";
+import { resetTrustedCache, setTrustedProgramsFile } from "./trusted.ts";
 import guardExtension from "./guard.ts";
 import { setYolo } from "./yolo.ts";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 
@@ -324,5 +325,55 @@ describe("tool_call 钩子（工具分发，不只是纯函数）", () => {
     } finally {
       setYolo(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 可信程序目录兼作写入保护
+//
+// 一份名单两个方向：这些目录里是本机自己编译/自己维护的产物，「程序可信」所以能执行，
+// 「产物重要」所以不该被 agent 随手改。默认空 —— 没启用时这里等于不存在。
+// 注意：授权按 session 算（session-access.ts），测试里要通过 setTrustedProgramsFile
+// 与 session 的 add/reset 来摆状态，别去改真实配置。
+// ---------------------------------------------------------------------------
+
+describe("可信程序目录的写入保护", () => {
+  it("名单为空 → 什么都不拦（未启用时的默认态）", () => {
+    const dir = mkdtempSync(joinPath(tmpdir(), "guard-trusted-"));
+    const file = joinPath(dir, "paths.json");
+    writeFileSync(file, JSON.stringify({ trustedProgramDirs: [] }));
+    setTrustedProgramsFile(file);
+    resetTrustedCache();
+    assert.equal(trustedWriteBlockedReason("write", "/opt/tools/bin/x"), undefined);
+  });
+
+  it("命中名单 → 拦下，且理由说清是受保护路径而非敏感凭据", () => {
+    const dir = mkdtempSync(joinPath(tmpdir(), "guard-trusted-"));
+    const file = joinPath(dir, "paths.json");
+    const target = joinPath(dir, "tools", "preshell");
+    writeFileSync(file, JSON.stringify({ trustedProgramDirs: [joinPath(dir, "tools")] }));
+    setTrustedProgramsFile(file);
+    resetTrustedCache();
+    const reason = trustedWriteBlockedReason("edit", target);
+    assert.ok(reason, "应被拦下");
+    assert.match(reason, /目标路径受保护/);
+    assert.match(reason, /可信程序目录/);
+    assert.match(reason, /sandbox-allow/, "要告诉 agent 怎么申请");
+    assert.ok(!/凭据/.test(reason), "不能跟敏感凭据黑名单混淆");
+  });
+
+  it("只认目录边界：前缀相似的别家不拦", () => {
+    const dir = mkdtempSync(joinPath(tmpdir(), "guard-trusted-"));
+    const file = joinPath(dir, "paths.json");
+    writeFileSync(file, JSON.stringify({ trustedProgramDirs: [joinPath(dir, "tools")] }));
+    setTrustedProgramsFile(file);
+    resetTrustedCache();
+    assert.equal(trustedWriteBlockedReason("write", joinPath(dir, "tools-evil", "x")), undefined);
+  });
+
+  it("读不到配置文件 → 当未启用，不因此拦下任何写入", () => {
+    setTrustedProgramsFile("/nonexistent/dir/paths.json");
+    resetTrustedCache();
+    assert.equal(trustedWriteBlockedReason("write", "/opt/anything"), undefined);
   });
 });

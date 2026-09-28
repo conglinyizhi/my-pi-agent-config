@@ -196,6 +196,29 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 `paths.ts` 的 `saveSandboxPaths` 写回时保留其它顶层字段，`trusted.ts` 的 add/remove 同样保留
 `allowDirs` / `blockDirs` —— 两条写入路径互不抹掉对方的键（`paths-config.test.ts` 盯着这条不变量）。
 
+### 同一份名单的第二个方向：写入保护
+
+列表里的路径**同时**是受写入保护的：
+
+- **允许执行** —— 这些目录下的程序照旧可以跑（单向放宽，它本来的语义）
+- **禁止编辑** —— `write` / `edit` / `be-*` 写向这些路径会被拦下，要改得走 `sandbox-allow`
+  （`permission=write-paths`，`paths` 指定目录）让人批；批过之后**本次 session 内**可以写
+
+一份名单两个方向看着矛盾，其实是一件事：这里放的是本机自己编译、自己维护的产物，
+**「程序可信」所以能执行，「产物重要」所以更不该被 agent 随手改**。
+
+判定在 `guard.ts` 的 `trustedWriteBlockedReason`（`tool_call` 里，与敏感黑名单、仅写保护、
+worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTrustedPath`。
+**列表为空时整段等于不存在**（未启用时的默认态，行为与从前完全一致）。
+
+**填目录还是填文件**：匹配是前缀式的，所以填目录会覆盖它下面全部；填单个文件就只护住那一个。
+比如列 `~/.pi/runtime/preshell` 不会覆盖 `~/.pi/runtime/preshell-0.6.0` —— 想护住一批就填目录。
+
+**bash 那侧的现状**：`scripts/sandbox-shell.mjs` 的 landlock grants 是「全系统只读 + `/tmp`、
+`/dev/null`、`cwd` 可写」，所以受保护目录只要在 cwd 之外就已经是只读的。landlock 是**白名单**
+（只能列举允许，不能“cwd 可写但底下某子目录不可写”），所以**没有**内核级的细粒度排除 ——
+真需要靠的就是上面这层工具层拦截加上「cwd 之外自然只读」。
+
 ### 如何扩展
 
 添加新规则：编辑 `rule-engine.ts` 的 RULES 数组，push 一个结构化定义，并在 `rule-engine.test.ts` 补行为断言（先写测试，TDD）。
