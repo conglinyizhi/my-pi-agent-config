@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
+import { factsFromReport } from "../../lib/preshell.ts";
 import {
 	buildReviewPrompt,
 	createReviewCache,
@@ -125,6 +126,40 @@ describe("buildReviewPrompt", () => {
 		const { user } = buildReviewPrompt(SYSTEM, "x".repeat(5000), []);
 		assert.ok(user.includes("已截断"));
 		assert.ok(user.length < 4600);
+	});
+	it("事实层跟着命令一起给：解释器载荷原文、截断信号、工具自报的问题", () => {
+		// 审核模型看不到命令行上那段 python 代码时，只能看见「跑了 python3」，等于没审
+		const facts = factsFromReport(
+			{
+				status: "Complete",
+				impact: {
+					effects: [
+						{
+							kind: "Exec",
+							target: "python3",
+							modeled: false,
+							line: 1,
+							payload: { source: "flag", flag: "-c", text: 'import os; os.remove("/tmp/x")', bytes: 30, truncated: false },
+						},
+					],
+					write_roots: [],
+					uncertain: true,
+					effects_dropped: 2,
+					vars: [],
+					cwd: "/tmp",
+				},
+				issues: [{ kind: "Syntax", message: "unterminated ${", line: 1 }],
+				issues_dropped: 0,
+			},
+			{ cwd: "/tmp" },
+		);
+		const { user } = buildReviewPrompt(SYSTEM, 'python3 -c \'import os; os.remove("/tmp/x")\'', [], facts);
+		assert.ok(user.includes("命令影响面（静态分析事实，不是裁决）"));
+		assert.ok(user.includes("解释器载荷"), "载荷那一段要在 prompt 里");
+		assert.ok(user.includes('import os; os.remove("/tmp/x")'), "载荷原文要在 prompt 里");
+		assert.ok(user.includes("清单不完整"), "截断信号要在 prompt 里");
+		assert.ok(user.includes("effects 还有 2 条未列出"));
+		assert.ok(user.includes("unterminated ${"), "工具自报的 issues 要在 prompt 里");
 	});
 });
 

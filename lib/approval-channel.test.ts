@@ -140,6 +140,53 @@ describe("createGuiTuiApprovalChannel", () => {
 		assert.equal(denied.action, "deny");
 	});
 
+	it("TUI 标题里带上影响面事实（审核模型看到的那份，人也有一份）", async () => {
+		const factsText = "- 程序：python3\n- 解释器载荷（程序读到的源码原文，未求值）：\n  python3 -c（30 字节）：\n    import os; os.remove(\"/tmp/x\")";
+		let seen = "";
+		const channel = createGuiTuiApprovalChannel({
+			diagnosis: diag(),
+			runGui: async () => ({ ok: false, reason: "unavailable" }),
+			selectApproval: async (title) => {
+				seen = title;
+				return "❌ 拒绝";
+			},
+		});
+		await channel({ ...auditRequest, factsText } as ApprovalRequest, ctx({ ui: true }));
+		assert.match(seen, /命令影响面（静态分析事实，不是裁决）/);
+		assert.match(seen, /import os; os\.remove\("\/tmp\/x"\)/, "载荷原文要出现在人看的那份里");
+	});
+
+	it("sandbox-allow 的 TUI 标题同样带上影响面；factsText 也进 GUI payload", async () => {
+		let seen = "";
+		const channel = createGuiTuiApprovalChannel({
+			diagnosis: diag(),
+			runGui: async () => ({ ok: false, reason: "unavailable" }),
+			selectApproval: async (title) => {
+				seen = title;
+				return "❌ 拒绝";
+			},
+		});
+		const request: ApprovalRequest = {
+			kind: "sandbox-allow",
+			command: "python3 -c 'import os'",
+			permission: "write-paths",
+			writePaths: ["/opt"],
+			justification: "写缓存",
+			candidatePaths: ["/opt"],
+			persistentRoots: [],
+			sessionWriteRoots: [],
+			sessionTrustedRoots: [],
+			builtinRoots: [],
+			workspaceRoot: "/work",
+			factsText: "- 程序：python3",
+		};
+		await channel(request, ctx({ hasUI: true }));
+		assert.match(seen, /命令影响面（静态分析事实，不是裁决）：\n- 程序：python3/);
+		assert.equal(toGuiPayload(request).factsText, "- 程序：python3");
+		// 没有事实时不多出一块空标题
+		assert.equal(toGuiPayload({ ...request, factsText: undefined }).factsText, undefined);
+	});
+
 	it("GUI 不可用时 capability 只看 hasUI，TUI 二选一没有附言", async () => {
 		const channel = createGuiTuiApprovalChannel({
 			diagnosis: diag(),

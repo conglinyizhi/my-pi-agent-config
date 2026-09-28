@@ -20,6 +20,7 @@ import {
   compatVersion,
   describeUnavailable,
   EXPECTED_VERSION,
+  factsFromReport,
   formatFacts,
   INSTALL_HINT,
   KNOWN_VERSION,
@@ -40,6 +41,8 @@ import {
   resolvePreshellBin,
   substituteVariables,
   type PreshellConfig,
+  type PreshellEffect,
+  type PreshellReport,
 } from "./preshell.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "preshell-stub-"));
@@ -913,6 +916,245 @@ describe("formatFacts", () => {
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
     assert.doesNotMatch(formatFacts(outcome.facts), /- 变量：/);
+  });
+});
+
+// 解释器载荷 / 截断信号 / 工具自报的 issues：这三样以前解析了却不展示，
+// 审核方只看得到「跑了 python3」而看不到那段 python 代码。这一组都是纯函数，
+// 直接拿报告造 facts（不起子进程）——展示规则的边界在这里定。
+// 「--payload 到底有没有带」由下面那两条替身脚本的用例管。
+describe("formatFacts：解释器载荷", () => {
+  const report = (effects: PreshellEffect[], extra: Partial<NonNullable<PreshellReport["impact"]>> = {}): PreshellReport => ({
+    status: "Complete",
+    impact: { effects, write_roots: [], uncertain: false, effects_dropped: 0, vars: [], cwd: "/tmp", ...extra },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("flag 来源：`python3 -c '<code>'` 的原文照搬出来", () => {
+    const facts = factsFromReport(
+      report([
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "flag", flag: "-c", text: 'import os; os.remove("/tmp/x")', bytes: 30, truncated: false },
+        },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /- 解释器载荷（程序读到的源码原文，未求值）：/);
+    assert.match(text, /python3 -c（30 字节）：/);
+    assert.match(text, /import os; os\.remove\("\/tmp\/x"\)/);
+  });
+
+  it("operand 来源：awk 的程序当参数（v0.6.0 起也算载荷）", () => {
+    const facts = factsFromReport(
+      report([
+        { kind: "Exec", target: "awk", modeled: true, line: 1, payload: { source: "operand", text: "{print $1}", bytes: 10, truncated: false } },
+        { kind: "Read", target: "/tmp/f", modeled: true, line: 1 },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /awk 程序参数（10 字节）：/);
+    assert.match(text, /\{print \$1\}/);
+  });
+
+  it("heredoc 来源：带上结束词，多行原文按行给", () => {
+    const heredoc = 'import os\nos.remove("/tmp/x")\n';
+    const facts = factsFromReport(
+      report([
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "heredoc", delimiter: "PY", text: heredoc, bytes: 30, truncated: false },
+        },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /python3 <<PY（共 2 行 \/ 30 字节）：/);
+    assert.match(text, /\n    import os\n    os\.remove\("\/tmp\/x"\)/);
+  });
+
+  it("preshell 自己截过（truncated）：明说全文多大、只拿到了前多少", () => {
+    const facts = factsFromReport(
+      report([
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "flag", flag: "-c", text: "print(1)\nprint(2)\n", bytes: 9000, truncated: true },
+        },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /python3 -c（全文 9000 字节，preshell 只给了前 \d+ 字节（2 行））：/);
+  });
+
+  it("长脚本按行截断：只给前 12 行，并标出总量", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `print(${i + 1})`);
+    const facts = factsFromReport(
+      report([
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "flag", flag: "-c", text: lines.join("\n"), bytes: lines.join("\n").length, truncated: false },
+        },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /python3 -c（共 30 行 \/ 290 字节）：/);
+    assert.match(text, /\n    print\(12\)\n    …（此处只列前 12 行 \/ \d+ 字节）/);
+    assert.doesNotMatch(text, /print\(13\)/);
+  });
+
+  it("超长单行按字节截断，切口落在字符边界上（不出半个字）", () => {
+    const longLine = "删".repeat(600); // 每个汉字 3 字节，远超 800
+    const facts = factsFromReport(
+      report([
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "flag", flag: "-c", text: longLine, bytes: longLine.length * 3, truncated: false },
+        },
+      ]),
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /…（此处只列前 1 行 \/ \d+ 字节）/);
+    assert.ok(!text.includes("\uFFFD"), "不能切出半个字符");
+    // 切口往上对齐到 3 的倍数：不超 800，且只少一点点
+    const shown = Number(text.match(/此处只列前 1 行 \/ (\d+) 字节/)?.[1]);
+    assert.ok(shown > 790 && shown <= 800, `截断字节数应在 790～800 之间，实际 ${shown}`);
+  });
+
+  it("没有 payload 的旧报告照旧：不出这一段", () => {
+    const facts = factsFromReport(report([{ kind: "Exec", target: "cat", modeled: true, line: 1 }]), { cwd: "/tmp" });
+    assert.doesNotMatch(formatFacts(facts), /解释器载荷/);
+  });
+});
+
+describe("formatFacts：清单完整性与工具自报的问题", () => {
+  const base = {
+    status: "Complete",
+    impact: { effects: [{ kind: "Read", target: "/tmp/a", modeled: true, line: 1 }], write_roots: [], uncertain: false, vars: [], cwd: "/tmp" },
+    issues: [],
+    issues_dropped: 0,
+  };
+
+  it("effects_dropped > 0：清单不完整、还有 N 条未列出", () => {
+    const facts = factsFromReport({ ...base, impact: { ...base.impact, effects_dropped: 3 } }, { cwd: "/tmp" });
+    const text = formatFacts(facts);
+    assert.match(text, /^- ⚠ 清单不完整：effects 还有 3 条未列出（被事实层上限截断，未列出的部分未知）$/m);
+  });
+
+  it("issues_dropped > 0：对 issues 说同样的话", () => {
+    const facts = factsFromReport({ ...base, issues_dropped: 2 }, { cwd: "/tmp" });
+    assert.match(formatFacts(facts), /^- ⚠ 清单不完整：issues 还有 2 条未列出/m);
+  });
+
+  it("工具自报的 issues 原样展示（kind / message / 行号）", () => {
+    const facts = factsFromReport(
+      {
+        ...base,
+        issues: [
+          { kind: "Syntax", message: "unterminated ${", line: 1 },
+          { kind: "Note", message: "probe: read as bash, but zsh also parses this\ninput", line: 0 },
+          "形状不认识的条目",
+        ],
+      },
+      { cwd: "/tmp" },
+    );
+    const text = formatFacts(facts);
+    assert.match(text, /- 事实层问题：/);
+    assert.match(text, /Syntax: unterminated \$\{（行 1）/);
+    // line 0 = 不指向某一行，不写「行 0」；换行折平，免得撑破一行
+    assert.match(text, /Note: probe: read as bash, but zsh also parses this input/);
+    assert.doesNotMatch(text, /（行 0）/);
+    // 形状不认识的也留着（「有问题但说不清形状」比「看起来没问题」更该看见）
+    assert.match(text, /\?: 形状不认识的条目/);
+  });
+
+  it("issues 为空时不出这一段", () => {
+    const facts = factsFromReport(base, { cwd: "/tmp" });
+    assert.doesNotMatch(formatFacts(facts), /事实层问题/);
+  });
+
+  it("limit 截断不再静默：说清一共几条、这里列了几条", () => {
+    const effects = [1, 2, 3, 4].map((i) => ({ kind: "Read", target: `/tmp/f${i}`, modeled: true, line: 1 }));
+    const facts = factsFromReport({ ...base, impact: { ...base.impact, effects } }, { cwd: "/tmp" });
+    assert.match(formatFacts(facts, 2), /\/tmp\/f1 \/tmp\/f2（共 4 条，此处列 2 条）/);
+    // 没超 limit 时不加这句（别让正常输出变吵）
+    assert.doesNotMatch(formatFacts(facts, 4), /此处列/);
+  });
+});
+
+// --payload 是 opt-in：能力清单里有这一项才带。带了才拿得到载荷，
+// 不带（老二进制认不得这个开关 → 用法错误、退出码 2）就得照旧退回旧匹配，
+// 所以这里既验「带上了」，也验「缺这一项时一个字节都不多塞」。
+describe("analyzeCommand：解释器载荷开关", () => {
+  const PAYLOAD_REPORT = JSON.stringify({
+    version: 1,
+    status: "Complete",
+    impact: {
+      effects: [
+        {
+          kind: "Exec",
+          target: "python3",
+          modeled: false,
+          line: 1,
+          payload: { source: "flag", flag: "-c", text: "import os", bytes: 9, truncated: false },
+        },
+      ],
+      write_roots: [],
+      uncertain: true,
+      effects_dropped: 0,
+      vars: [],
+      cwd: "/tmp",
+    },
+    issues: [],
+    issues_dropped: 0,
+  });
+
+  it("能力齐（含 paths.payload）→ 起子进程带 --payload，载荷进展示", () => {
+    const log = join(dir, "payload-args.log");
+    const bin = stub(
+      "payload-args.sh",
+      `${SPEC_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${PAYLOAD_REPORT}'`,
+    );
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const outcome = analyzeCommand("python3 -c 'import os'", { config: configFor(bin), cwd: "/tmp" });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.match(readFileSync(log, "utf8"), /--payload/);
+    assert.match(formatFacts(outcome.facts), /python3 -c（9 字节）：\n    import os/);
+  });
+
+  it("缺提示级的 paths.payload（v0.4.1 那种）→ 不带这个开关，事实照旧可用", () => {
+    const log = join(dir, "nopayload-args.log");
+    const bin = stub(
+      "nopayload-args.sh",
+      `${specCase("0.4.1", ["paths.payload"])}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`,
+    );
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin), cwd: "/work" });
+    assert.equal(outcome.ok, true, "提示级缺口不影响可用性");
+    assert.ok(!/--payload/.test(readFileSync(log, "utf8")), "认不得这个开关的二进制不能被塞它");
   });
 });
 

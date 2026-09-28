@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SandboxCheckResult, TokenRule } from "./sandbox-check.ts";
+import { formatFacts } from "./preshell.ts";
 import {
 	createReviewCache,
 	loadLlmReviewConfig,
@@ -88,6 +89,7 @@ async function humanConfirm(
 	taskId: string | undefined,
 	signal: AbortSignal | undefined,
 	deps: BashApprovalDependencies,
+	factsText?: string,
 ): Promise<{ approved: boolean; comment?: string }> {
 	const decision = await resolveApprovalChannel(deps)({
 		kind: "audit",
@@ -96,6 +98,8 @@ async function humanConfirm(
 		rules,
 		review,
 		reason,
+		// 影响面也给人看一份：审核模型拿到的是同一段事实（含解释器载荷原文）
+		...(factsText ? { factsText } : {}),
 		signal,
 	}, ctx);
 	return { approved: decision.action === "allow", comment: decision.comment };
@@ -143,6 +147,8 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 		taskId,
 		signal,
 		deps,
+		// 事实层的展示文本：与送审的那份同一口径（formatFacts），人看到的和模型看到的一样
+		verdict.facts ? formatFacts(verdict.facts) : undefined,
 	);
 	const entry = auditEntry(command, verdict, review, decision.comment, origin);
 	pi.appendEntry("bash-audit", { ...entry, outcome: decision.approved ? "approved" : "denied" });

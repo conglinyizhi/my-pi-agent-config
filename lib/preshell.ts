@@ -65,7 +65,12 @@ import { processSingleton } from "./process-singleton.ts";
  * 它只说「这段文本被交给了这个程序」，不说文本会做什么。
  */
 export interface PreshellPayload {
-  /** flag = 来自选项的值；heredoc = 来自 here-document 正文 */
+  /**
+   * 这段文本是从命令行上哪一处拿到的：
+   *   flag    = 选项的值（`python3 -c …` / `node -e …` / `sh -c …`）
+   *   operand = 本来放文件名的那个位置（awk / sed 的程序本身就是参数）
+   *   heredoc = here-document 正文
+   */
   source: string;
   /** source 为 flag 时是那个选项（`-c` / `-e`） */
   flag?: string;
@@ -116,11 +121,11 @@ export interface PreshellEffect {
    *
    * 归属已经算对了：循环体里、wrapper 后（`env python3 -c …`）、runner 后
    * （`uv run --with X python3 -c …`）、容器后（`docker run --rm node -e …`）都算在这个程序名下。
-   * 只给「参数就是自己源码」的那几个程序（awk / sed 不在表里）。
+   * v0.6.0 起 awk / sed 的程序参数也算载荷（source=operand）。
    *
-   * **本侧目前只解析、还没接线**：拿到手后可以扫黑名单、可以送预审。
-   * 现有那个 interpreter 层（lib/sandbox-check.ts）今天是从命令文本里自己抠的，
-   * 等上游版本稳定再换成用这个字段
+   * **本侧现在把它接进展展示了**（formatFacts 的「解释器载荷」一段，审核模型与看审批的人
+   * 都能看到这段原文）；判定层（lib/sandbox-check.ts 的 interpreter 那一层）仍旧从命令
+   * 文本里自己抠，没换成这个字段——事实是事实，裁决还是本仓的事
    */
   payload?: PreshellPayload;
   /** false = 程序跑了，但它碰什么由它自己决定（git/node/python/docker 这类） */
@@ -146,6 +151,56 @@ export interface PreshellReport {
   issues_dropped?: number;
 }
 
+/**
+ * 工具自报的一条问题（报告 issues[] 的一格）。
+ *   kind: Gap（解析器的缺口，bash 未必拒）/ Syntax（有证据 shell 也会拒）/
+ *         Note（解析成功了，但这份报告不该被当成干净账单）
+ *   message: 散文，文案会改，别按整句匹配
+ *   line: 行号；0 = 不指向某一行
+ * 这些是「它自己发现的问题」，不是裁决：展示出来，不外推成安全/危险
+ */
+export interface PreshellIssue {
+  kind: string;
+  message: string;
+  line?: number;
+}
+
+/**
+ * 把报告里 issues[] 的原始形状规整成可展示的形式。
+ * 形状实测是 `{kind, message, line}`；对不认识的形状（字符串、缺字段的对象）
+ * 保留原文而不是丢掉——「有问题但说不清形状」比「看起来没问题」更该让人看见
+ */
+export function parseIssues(raw: unknown): PreshellIssue[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PreshellIssue[] = [];
+  for (const item of raw) {
+    if (typeof item === "string") {
+      out.push({ kind: "?", message: item });
+      continue;
+    }
+    if (typeof item === "object" && item !== null) {
+      const shaped = item as { kind?: unknown; message?: unknown; line?: unknown };
+      let message: string;
+      if (typeof shaped.message === "string") message = shaped.message;
+      else {
+        try {
+          message = JSON.stringify(item);
+        } catch {
+          message = String(item);
+        }
+      }
+      out.push({
+        kind: typeof shaped.kind === "string" ? shaped.kind : "?",
+        message,
+        ...(typeof shaped.line === "number" ? { line: shaped.line } : {}),
+      });
+      continue;
+    }
+    out.push({ kind: "?", message: String(item) });
+  }
+  return out;
+}
+
 /** 从报告里挑出决策用得上的那几样 */
 export interface PreshellFacts {
   status: string;
@@ -158,6 +213,11 @@ export interface PreshellFacts {
    */
   effectsDropped: number;
   issuesDropped: number;
+  /**
+   * 工具自己发现的问题（Gap / Syntax / Note），原样带出来给审核方看。
+   * 它不影响本侧判定（判定只按 effects / status），展示用；空数组是常态
+   */
+  issues: PreshellIssue[];
   /** 命令内部 cd 过的目录：报告里的相对路径以它为基准 */
   cwd?: string;
   /**
@@ -513,6 +573,7 @@ export function factsFromReport(report: PreshellReport, opts: FactsOptions = {})
     uncertain: impact.uncertain === true || settledPaths.some((item) => !item.known),
     effectsDropped: impact.effects_dropped ?? 0,
     issuesDropped: report.issues_dropped ?? 0,
+    issues: parseIssues(report.issues),
     ...(impact.cwd ? { cwd: impact.cwd } : {}),
     ...(opts.command ? { command: opts.command } : {}),
     effects,
@@ -688,7 +749,7 @@ export const ADVISORY_CAPABILITIES: readonly PreshellCapability[] = [
     id: "paths.payload",
     level: "advisory",
     check: (s) => has(s.paths, "payload"),
-    why: "PreshellEffect.payload——本侧只解析、还没接线（interpreter 层仍从命令文本里自己抠），缺了照旧能跑（v0.4.1 就没有这条）",
+    why: "PreshellEffect.payload——本侧起子进程时按这一项决定带不带 --payload（缺了就不带，照旧能跑；v0.4.1 就没有这条）",
   },
 ];
 
@@ -947,8 +1008,12 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
       return { ok: false, reason: "capability", detail: `${probe.detail}；推荐版本 ${recommended}` };
     }
     const version = probe.version;
+    // 解释器载荷是提示级能力（v0.5.0 起）：有这一项才带 --payload。老二进制认不得这个开关，
+    // 塞下去就是用法错误（退出码 2）→ 整条退回旧匹配，所以先看清单再决定
+    const payloadSupported = !checkCapabilities(probe.spec).missingAdvisory.includes("paths.payload");
     try {
-      const proc = spawnSync(bin, ["--shell=probe", ...(cwd ? [`--cwd=${cwd}`] : [])], {
+      const args = ["--shell=probe", ...(cwd ? [`--cwd=${cwd}`] : []), ...(payloadSupported ? ["--payload"] : [])];
+      const proc = spawnSync(bin, args, {
         input: command,
         encoding: "utf8",
         timeout: config.timeoutMs,
@@ -1080,6 +1145,97 @@ export function resetFactLayerNotices(): void {
   shared.statusShown = false;
 }
 
+// ── 展示：事实 → 紧凑文本 ──
+//
+// 这一段只管「把事实摆给人/模型看」，不做任何裁决。三样东西以前没摆出来：
+//   1. 解释器载荷（payload）：`python3 -c '<code>'` 里的那段源码。程序碰什么由它自己
+//      决定，命令行上唯一看得见的就是这段原文——不摆出来，审核方只能看见「python3」两个字
+//   2. 截断信号（effects_dropped / issues_dropped，以及本函数自己的 limit）：
+//      清单不完整时必须说「不完整」，否则「只列了 12 条」会被读成「一共就这些」
+//   3. 工具自报的 issues：它自己发现的问题（解析缺口、语法错、方言是猜的）
+
+/** 单条载荷最多给多少行；超出的只给开头（首几行），并标注全文规模 */
+export const PAYLOAD_PREVIEW_LINES = 12;
+/** 单条载荷最多给多少字节；先按行截、再按字节截，切口落在字符边界上 */
+export const PAYLOAD_PREVIEW_BYTES = 800;
+/** 单条 issue 文案的展示上限：文案是散文，太长的那截多半是重复 */
+export const ISSUE_MESSAGE_MAX = 240;
+
+/** UTF-8 字节数（载荷的 bytes 字段按字节计，展示口径跟它对齐） */
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/** 按 UTF-8 字节取前缀：切口落在字符边界上（宁可少一个字符，不切出半个） */
+function utf8Prefix(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let end = maxBytes; end > 0; end--) {
+    try {
+      return decoder.decode(buf.subarray(0, end));
+    } catch {
+      // 切在多字节字符中间：少一个字节再试（最多三次）
+    }
+  }
+  return "";
+}
+
+/** 载荷原文的行数：末尾那个换行不算多一行（`a\nb\n` 是两行） */
+function payloadLineCount(text: string): number {
+  const raw = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return Math.max(raw.split("\n").length, 1);
+}
+
+interface PayloadPreview {
+  /** 给出去的那段文本（可能是前缀） */
+  body: string;
+  shownLines: number;
+  shownBytes: number;
+  /** body 只是前缀（按行或按字节截过） */
+  cut: boolean;
+}
+
+/** 载荷的展示前缀：先按行封顶，再按字节封顶 */
+function previewPayload(text: string): PayloadPreview {
+  const raw = text.endsWith("\n") ? text.slice(0, -1) : text;
+  const all = raw.split("\n");
+  let body = all.slice(0, PAYLOAD_PREVIEW_LINES).join("\n");
+  let cut = all.length > PAYLOAD_PREVIEW_LINES;
+  if (byteLength(body) > PAYLOAD_PREVIEW_BYTES) {
+    body = utf8Prefix(body, PAYLOAD_PREVIEW_BYTES);
+    cut = true;
+  }
+  return { body, shownLines: body.split("\n").length, shownBytes: byteLength(body), cut };
+}
+
+/** 载荷是从命令行哪儿拿到的：`-c` / `<<PY` / 程序参数 */
+function payloadOrigin(payload: PreshellPayload): string {
+  if (payload.source === "flag" && payload.flag) return payload.flag;
+  if (payload.source === "heredoc" && payload.delimiter) return `<<${payload.delimiter}`;
+  if (payload.source === "operand") return "程序参数";
+  return payload.source || "来源未知";
+}
+
+/** 载荷的大小标注：全文多少行/字节；被 preshell 自己截过就明说只拿到了前缀 */
+function describePayloadSize(payload: PreshellPayload): string {
+  const prefixBytes = byteLength(payload.text);
+  const fullBytes = typeof payload.bytes === "number" && Number.isFinite(payload.bytes) ? payload.bytes : prefixBytes;
+  const lines = payloadLineCount(payload.text);
+  if (payload.truncated) {
+    return `全文 ${fullBytes} 字节，preshell 只给了前 ${prefixBytes} 字节${lines > 1 ? `（${lines} 行）` : ""}`;
+  }
+  return lines > 1 ? `共 ${lines} 行 / ${fullBytes} 字节` : `${fullBytes} 字节`;
+}
+
+/** 一条 issue 的一行展示：`Note: …（行 3）`；文案折成一行，免得撑破标题 */
+function describeIssue(issue: PreshellIssue): string {
+  const flat = issue.message.replace(/\s+/g, " ").trim();
+  const body = flat.length > ISSUE_MESSAGE_MAX ? `${flat.slice(0, ISSUE_MESSAGE_MAX)}…` : flat;
+  const where = typeof issue.line === "number" && issue.line > 0 ? `（行 ${issue.line}）` : "";
+  return `${issue.kind}: ${body}${where}`;
+}
+
 /** 事实 → 给模型/人看的紧凑文本（LLM 预审与审计条目共用，措辞保持同一套） */
 export function formatFacts(facts: PreshellFacts, limit = 12): string {
   // 变量渲染：命令名位置上的 `$P` 单看判不出跑的是什么，模型看不到展开那一步。
@@ -1112,30 +1268,61 @@ export function formatFacts(facts: PreshellFacts, limit = 12): string {
     ].filter(Boolean);
     return `${shown}${notes.length > 0 ? `（${notes.join("；")}）` : ""}`;
   };
-  const byKind = (kinds: string[]) =>
-    facts.effects
-      .filter((e) => kinds.includes(e.kind))
-      .slice(0, limit)
-      .map(label);
+  const byKind = (kinds: string[]) => facts.effects.filter((e) => kinds.includes(e.kind)).map(label);
+  // 一组条目的展示：limit 截断不再静默。以前列够 12 条就把剩下的丢掉、什么都不说，
+  // 读的人会把「列出来的」当成「一共就这些」——那是误导
+  const group = (items: string[], sep = " "): string => {
+    const shown = items.slice(0, limit);
+    if (shown.length === 0) return "";
+    return items.length > shown.length
+      ? `${shown.join(sep)}（共 ${items.length} 条，此处列 ${shown.length} 条）`
+      : shown.join(sep);
+  };
   const lines: string[] = [];
+  // 清单完整性的信号放最前：effects/issues 被上限截过时，下面每一节都只是「列出来的那部分」，
+  // 拿它当完整账单就是误判
+  const incomplete: string[] = [];
+  if (facts.effectsDropped > 0) incomplete.push(`effects 还有 ${facts.effectsDropped} 条未列出`);
+  if (facts.issuesDropped > 0) incomplete.push(`issues 还有 ${facts.issuesDropped} 条未列出`);
+  if (incomplete.length > 0) {
+    lines.push(`- ⚠ 清单不完整：${incomplete.join("、")}（被事实层上限截断，未列出的部分未知）`);
+  }
   const read = byKind(["Read"]);
   const write = byKind(["Write", "Delete"]);
-  const exec = [...new Set(facts.effects.filter((e) => e.kind === "Exec" || e.kind === "Spawn").map((e) => e.target))].slice(0, limit).map(annotate);
-  if (exec.length > 0) lines.push(`- 程序：${exec.join(" ")}`);
-  if (read.length > 0) lines.push(`- 读：${read.join(" ")}`);
-  if (write.length > 0) lines.push(`- 写/删：${write.join(" ")}`);
-  if (facts.net.length > 0) lines.push(`- 网络：${facts.net.slice(0, limit).join(" ")}`);
-  if (facts.unmodeled.length > 0) lines.push(`- 未建模程序（它们碰什么不由命令行决定）：${facts.unmodeled.join(" ")}`);
+  const exec = [...new Set(facts.effects.filter((e) => e.kind === "Exec" || e.kind === "Spawn").map((e) => e.target))].map(annotate);
+  if (exec.length > 0) lines.push(`- 程序：${group(exec)}`);
+  // 解释器载荷：`python3 -c '<code>'` / `node -e '<code>'` / `awk '{…}'` / heredoc 正文。
+  // 只搬原文，不替它下结论（原文里写了什么就是什么，安全还是危险由审核方自己看）
+  const payloads = facts.effects.filter((e) => e.payload && typeof e.payload.text === "string" && e.payload.text.length > 0);
+  if (payloads.length > 0) {
+    lines.push("- 解释器载荷（程序读到的源码原文，未求值）：");
+    for (const effect of payloads.slice(0, limit)) {
+      const payload = effect.payload as PreshellPayload;
+      const preview = previewPayload(payload.text);
+      lines.push(`  ${effect.target} ${payloadOrigin(payload)}（${describePayloadSize(payload)}）：`);
+      for (const line of preview.body.split("\n")) lines.push(`    ${line}`);
+      if (preview.cut) lines.push(`    …（此处只列前 ${preview.shownLines} 行 / ${preview.shownBytes} 字节）`);
+    }
+    if (payloads.length > limit) lines.push(`  …（另有 ${payloads.length - limit} 条载荷未列）`);
+  }
+  if (read.length > 0) lines.push(`- 读：${group(read)}`);
+  if (write.length > 0) lines.push(`- 写/删：${group(write)}`);
+  if (facts.net.length > 0) lines.push(`- 网络：${group(facts.net)}`);
+  if (facts.unmodeled.length > 0) lines.push(`- 未建模程序（它们碰什么不由命令行决定）：${group(facts.unmodeled)}`);
   if (renders.length > 0) {
     // 变量表：命令里用到的变量各自渲成了什么（或为什么渲不出来），一条一行
-    const table = renders
-      .slice(0, limit)
-      .map((r) =>
-        r.known
-          ? `${r.name}=${r.value}（${r.source === "assignment" ? "本命令内赋值" : "环境变量"}）`
-          : `${r.name}（渲不出：${r.reason}）`,
-      );
-    lines.push(`- 变量：${table.join("；")}`);
+    const table = renders.map((r) =>
+      r.known
+        ? `${r.name}=${r.value}（${r.source === "assignment" ? "本命令内赋值" : "环境变量"}）`
+        : `${r.name}（渲不出：${r.reason}）`,
+    );
+    lines.push(`- 变量：${group(table, "；")}`);
+  }
+  // 工具自报的问题（Gap / Syntax / Note）：它说「这份报告哪里不该被当成干净账单」
+  if (facts.issues.length > 0) {
+    const shown = facts.issues.slice(0, limit).map(describeIssue);
+    const suffix = facts.issues.length > shown.length ? `（共 ${facts.issues.length} 条，此处列 ${shown.length} 条）` : "";
+    lines.push(`- 事实层问题：${shown.join("；")}${suffix}`);
   }
   lines.push(`- 解析：${facts.status}${facts.cwd ? ` · cwd=${facts.cwd}` : ""}${facts.uncertain ? " · uncertain（影响面不封闭，「没报写」不等于「不写」）" : ""}`);
   return lines.join("\n");

@@ -56,6 +56,13 @@ export interface AuditApprovalRequest extends ApprovalRequestBase {
 	taskId?: string;
 	rules?: unknown[];
 	review?: unknown;
+	/**
+	 * 事实层摘要（lib/preshell.ts 的 formatFacts 输出）：这条命令碰了哪些路径、
+	 * 跑了什么程序、解释器里那段源码是什么、清单完不完整。
+	 * 审核模型看的已经是这一段，看审批的人不该少看一份（TUI 标题里直接列出；
+	 * GUI / IM 走 payload 里的同名字段）。
+	 */
+	factsText?: string;
 	/** TUI 回退标题用；不进 GUI payload */
 	reason?: string;
 }
@@ -77,6 +84,11 @@ export interface SandboxAllowApprovalRequest extends ApprovalRequestBase {
 	/** GUI 用它挡家目录根；缺省由 toGuiPayload 填本机 homedir()。 */
 	homeDir?: string;
 	rules?: unknown[];
+	/**
+	 * 事实层摘要（同 AuditApprovalRequest.factsText）：升权审批时人最该先看清楚
+	 * 「这条命令到底要跑什么」，而不只是「申请了哪个目录」
+	 */
+	factsText?: string;
 	/**
 	 * 敏感路径黑名单命中项（.env 之类的“要人点头”而非“直接拒”）。
 	 * 与 rules 分开：rules 是「命令写法有风险」的语义，会连带影响目录长期授权；
@@ -211,6 +223,7 @@ function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {
 			taskId: request.taskId,
 			rules: request.rules,
 			review: request.review,
+			...(request.factsText ? { factsText: request.factsText } : {}),
 		};
 	}
 	if (request.kind === "sandbox-allow") {
@@ -227,6 +240,7 @@ function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {
 			sessionTrustedRoots: request.sessionTrustedRoots,
 			builtinRoots: request.builtinRoots,
 			workspaceRoot: request.workspaceRoot,
+			...(request.factsText ? { factsText: request.factsText } : {}),
 			// 家目录根（GUI 护栅用）：请求没带就填本机值，payload 里始终是 string
 			homeDir: request.homeDir ?? homedir(),
 			// 敏感路径合成一条规则条目：审批窗已经有「命中 N 项 + 高亮命中片段」的渲染，
@@ -326,8 +340,11 @@ function tuiTitle(request: ApprovalRequest, hint = ""): string {
 	const head = hint ? `${hint}\n\n` : "";
 	// 紧跟标题行时用单换行：中间空一行会把「为什么在终端里问」和事件本身分开
 	const under = hint ? `\n${hint}` : "";
+	// 事实层摘要：审核模型看到的那份影响面（含解释器载荷原文），人也照看一份。
+	// 放在裁决前面：先说事实，再说机器/规则的判断。capability 那档没有这个字段
+	const facts = factsBlock(request.kind === "capability" ? undefined : request.factsText);
 	if (request.kind === "audit") {
-		return `⚠️ 命令需确认：${under}\n\n  ${request.reason ?? "命中风险规则"}${reviewNote(request.review)}\n\n是否允许执行？`;
+		return `⚠️ 命令需确认：${under}\n\n  ${request.reason ?? "命中风险规则"}${facts}${reviewNote(request.review)}\n\n是否允许执行？`;
 	}
 	if (request.kind === "sandbox-allow") {
 		const sensitiveNote = request.sensitive?.length
@@ -340,9 +357,14 @@ function tuiTitle(request: ApprovalRequest, hint = ""): string {
 			request.justification,
 			request.timeout,
 			request.memoryMb,
-		)}${sensitiveNote}`;
+		)}${facts}${sensitiveNote}`;
 	}
 	return `⚠️ subagent 请求额外能力：${request.capability}${under}\n\n${request.scope ?? ""}\n${request.requestReason}${reviewNote(request.review)}\n\n命令：${request.command}`;
+}
+
+/** 事实层摘要块（空就不出）：措辞与 llm-review.ts 里那段保持一致 */
+function factsBlock(text: string | undefined): string {
+	return text ? `\n\n命令影响面（静态分析事实，不是裁决）：\n${text}` : "";
 }
 
 function reviewNote(review: unknown): string {

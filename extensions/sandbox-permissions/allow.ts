@@ -43,7 +43,7 @@ import {
 	type ApprovalSelect,
 } from "../../lib/approval-channel.ts";
 import { checkCommand, type SandboxCheckResult } from "../../lib/sandbox-check.ts";
-import { reportFactLayerState } from "../../lib/preshell.ts";
+import { reportFactLayerState, formatFacts } from "../../lib/preshell.ts";
 import { addAllowDir, addBlockDir, isDirInside, loadSandboxPaths, removeAllowDir } from "./paths.ts";
 import {
 	addSessionTrustedDirs,
@@ -383,6 +383,8 @@ export default function (pi: ExtensionAPI, options: { approvalDependencies?: San
 					homeDir: homedir(),
 					rules: audit?.rules ?? [],
 					sensitive,
+					// 影响面摘要（含解释器载荷原文）：升权审批时人要先看清楚这条命令会跑什么代码
+					...(audit?.facts ? { factsText: formatFacts(audit.facts) } : {}),
 					signal,
 				}, ctx);
 				// 目录草稿与「编辑后的执行范围」都在后端重新过一遍护栅：GUI 拦过不算数。
