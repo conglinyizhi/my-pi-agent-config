@@ -116,8 +116,26 @@ export function loadSandboxPaths(): SandboxPaths {
 	}
 }
 
+/**
+ * 写回 allowDirs / blockDirs。
+ *
+ * 只覆盖这两个键，文件里其它顶层字段（trustedProgramDirs，以及将来新增的）**原样保留**：
+ * 之前这里是整份重建，于是「加一条长期信任」会把 trustedProgramDirs 一起抹掉。
+ * trustedProgramDirs 的写入点在 trusted.ts（那边同样只改自己那个键）。
+ */
 export function saveSandboxPaths(paths: SandboxPaths): void {
-	const out = { allowDirs: [...new Set(paths.allowDirs)], blockDirs: [...new Set(paths.blockDirs)] };
+	let base: Record<string, unknown> = {};
+	try {
+		const raw: unknown = JSON.parse(readFileSync(pathsFile, "utf8"));
+		if (raw && typeof raw === "object" && !Array.isArray(raw)) base = { ...(raw as Record<string, unknown>) };
+	} catch {
+		// 坏 JSON / 文件不存在：整份重建
+	}
+	const out = {
+		...base,
+		allowDirs: [...new Set(paths.allowDirs)],
+		blockDirs: [...new Set(paths.blockDirs)],
+	};
 	writeFileSync(pathsFile, JSON.stringify(out, null, 2) + "\n", "utf8");
 }
 

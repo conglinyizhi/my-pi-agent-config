@@ -16,16 +16,40 @@
 //
 // 这一层单独成模块的理由：rule-engine.ts 是最底层，paths.ts 反过来依赖它，
 // 所以配置读取不能放进任何一边 —— 放这里，两个方向都能用，不成环。
+//
+// 写入点分两处、口径一致：本模块的 add/removeTrustedProgramDir（/sandbox:paths 走这里）
+// 与 paths.ts 的 saveSandboxPaths（改 allowDirs/blockDirs）。**两边都只改自己那几个键**，
+// 其它顶层字段原样保留 —— 否则「加一条 allowDirs」会把 trustedProgramDirs 抹掉。
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 let pathsFile = join(getAgentDir(), "extensions", "sandbox-permissions", "sandbox-paths.json");
 
-/** 规范化后缓存；读不到文件时等于空名单（保守方向：不认得就照旧报） */
-let cache: string[] | undefined;
+/**
+ * 缓存按**文件 mtime + size**失效（口径对齐 extensions/repo-prompts/content.ts 的 readTextCached）。
+ *
+ * 早先的实现是「读过一次就永远用内存那份」：改完名单得 /reload 才认。可这份名单的写入点
+ * （/sandbox:paths 命令、手改文件）就发生在本进程里，读一次锁死等于写入不生效。
+ * 现在每次 stat 一次：mtimeMs 与 size 都没变才用缓存；变了（哪怕字节数一样）就重读。
+ * 文件读不到 = 空名单（保守方向：不认得就照旧报），并且不保留旧缓存。
+ *
+ * 代价是每次判定多一次 stat。isTrustedProgramPath 在审核链上会被调用若干次，
+ * statSync 很便宜（微秒级），比「读到过期名单」划算得多。
+ */
+interface CacheEntry {
+	mtimeMs: number;
+	size: number;
+	dirs: string[];
+}
+
+let cache: CacheEntry | undefined;
+
+/** 诊断/测试用计数器：真实读盘次数与缓存命中次数 */
+let readCount = 0;
+let hitCount = 0;
 
 /**
  * 目录规范化：与 paths.ts 的 normalizeDir 同口径（trim、展开 ~、消 ..、去尾斜杠）。
@@ -42,21 +66,50 @@ function normalizeDir(dir: string): string {
 	return d;
 }
 
-/** 读配置里的可信程序目录（缺字段、坏 JSON、文件不存在一律当空） */
-export function loadTrustedProgramDirs(): string[] {
-	if (cache) return cache;
+/** 解析配置文本里的 trustedProgramDirs（缺字段 / 坏 JSON 一律当空） */
+function parseTrusted(text: string): string[] {
 	let raw: unknown;
 	try {
-		raw = JSON.parse(readFileSync(pathsFile, "utf8"));
+		raw = JSON.parse(text);
 	} catch {
-		cache = [];
-		return cache;
+		return [];
 	}
 	const list = (raw as { trustedProgramDirs?: unknown })?.trustedProgramDirs;
-	cache = Array.isArray(list)
+	return Array.isArray(list)
 		? list.filter((d): d is string => typeof d === "string").map(normalizeDir).filter(Boolean)
 		: [];
-	return cache;
+}
+
+/** 读配置里的可信程序目录（缺字段、坏 JSON、文件不存在一律当空） */
+export function loadTrustedProgramDirs(): string[] {
+	let stat: ReturnType<typeof statSync>;
+	try {
+		stat = statSync(pathsFile);
+	} catch {
+		cache = undefined;
+		return [];
+	}
+	if (!stat.isFile()) {
+		cache = undefined;
+		return [];
+	}
+
+	if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
+		hitCount++;
+		return cache.dirs;
+	}
+
+	readCount++;
+	let dirs: string[];
+	try {
+		dirs = parseTrusted(readFileSync(pathsFile, "utf8"));
+	} catch {
+		// stat 过了但读失败（权限/竞态）：不缓存半成品，按空处理
+		cache = undefined;
+		return [];
+	}
+	cache = { mtimeMs: stat.mtimeMs, size: stat.size, dirs };
+	return dirs;
 }
 
 /**
@@ -74,13 +127,66 @@ export function isTrustedProgramPath(value: string): boolean {
 	return false;
 }
 
+// ═══════════════════════════════════════════════════
+// 写入（人类权限：只由人类的动作驱动，见文件头）
+// ═══════════════════════════════════════════════════
+
+/** 读整个配置文件（保留 allowDirs/blockDirs 等其它字段）；坏 JSON / 不存在 → {} */
+function readDoc(): Record<string, unknown> {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(pathsFile, "utf8"));
+		if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+			return { ...(raw as Record<string, unknown>) };
+		}
+	} catch {
+		// 坏 JSON：整份当空重建，不猜内容
+	}
+	return {};
+}
+
+function writeTrustedDirs(dirs: string[]): void {
+	const doc = readDoc();
+	doc.trustedProgramDirs = dirs;
+	writeFileSync(pathsFile, JSON.stringify(doc, null, 2) + "\n", "utf8");
+	// 落盘后下一次读取必须重新 stat：清掉旧条目，避免 mtime 粒度导致的假命中
+	cache = undefined;
+}
+
+/** 追加一个可信程序目录（规范化、去重）；返回是否真的新增 */
+export function addTrustedProgramDir(dir: string): boolean {
+	const d = normalizeDir(dir);
+	if (!d || d === "/") return false;
+	const dirs = loadTrustedProgramDirs();
+	if (dirs.includes(d)) return false;
+	writeTrustedDirs([...dirs, d]);
+	return true;
+}
+
+/** 移除一个可信程序目录；不存在返回 false */
+export function removeTrustedProgramDir(dir: string): boolean {
+	const d = normalizeDir(dir);
+	if (!d || d === "/") return false;
+	const dirs = loadTrustedProgramDirs();
+	const next = dirs.filter((x) => x !== d);
+	if (next.length === dirs.length) return false;
+	writeTrustedDirs(next);
+	return true;
+}
+
 /** 仅供测试：换配置文件并清缓存 */
 export function setTrustedProgramsFile(file: string): void {
 	pathsFile = file;
 	cache = undefined;
 }
 
-/** 仅供测试：清缓存（清内容不换引用） */
+/** 仅供测试：清缓存（并复位计数器） */
 export function resetTrustedCache(): void {
 	cache = undefined;
+	readCount = 0;
+	hitCount = 0;
+}
+
+/** 诊断/测试：真实读盘次数、缓存命中次数、当前是否有缓存条目 */
+export function trustedCacheStats(): { reads: number; hits: number; cached: boolean } {
+	return { reads: readCount, hits: hitCount, cached: cache !== undefined };
 }

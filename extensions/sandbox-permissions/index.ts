@@ -15,6 +15,7 @@ import gate from "./gate";
 import allow from "./allow";
 import { poolAddHandler, poolRemoveHandler } from "./review-pool";
 import { workspaceArgumentCompletions, workspaceCommandHandler } from "./workspace-command.ts";
+import { pathsArgumentCompletions, pathsCommandHandler } from "./paths-command.ts";
 import { beginSandboxSession } from "./session-access.ts";
 import {
 	YOLO_STATUS_KEY,
@@ -74,6 +75,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	pi.registerCommand("provider:fast-pop", {
 		description: "从审核池移除一个模型：/provider:fast-pop [provider/model 或模型名]",
 		handler: (args, ctx) => poolRemoveHandler(args, ctx),
+	});
+
+	// 三类沙箱路径配置（trustedProgramDirs / allowDirs / blockDirs）：/sandbox:paths
+	// 有图形（yad + DISPLAY）时开窗口；否则回退 ctx.ui 逐项提问。
+	// /sandbox:trusted 是别名（这个名字先出现在文档里，留着免得手滑）。
+	// trustedProgramDirs 是人类的权限：命令只做确认后写入，不做任何预填。
+	const pathsDescription =
+		"管理三类沙箱路径配置（可信程序目录 / 副工作区 / 黑名单）：列出 | add <trusted|allow|block> <目录> | remove <类型> <目录|序号>";
+	pi.registerCommand("sandbox:paths", {
+		description: pathsDescription,
+		getArgumentCompletions: (prefix) => pathsArgumentCompletions(prefix),
+		handler: (args, ctx) => pathsCommandHandler(args, ctx),
+	});
+	pi.registerCommand("sandbox:trusted", {
+		description: pathsDescription,
+		getArgumentCompletions: (prefix) => pathsArgumentCompletions(prefix),
+		handler: (args, ctx) => pathsCommandHandler(args, ctx),
 	});
 
 	// 副工作区管理（持久 allowDirs）：/sandbox:workspaces 列出 / add / remove
