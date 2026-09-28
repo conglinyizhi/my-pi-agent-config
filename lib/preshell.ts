@@ -285,9 +285,13 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  * 单次调用上限（毫秒）。
  *
  * 定 100ms 的依据（本机实测）：分析本身 5µs/命令（它自己的 --bench：20000 条 112ms），
- * 起进程约 2ms，本机 4.7 万条真实命令里 p99.9 是 8KB、最大 22KB，对应几毫秒；
- * 病态输入也只是：1MB heredoc 18ms、5000 段串联 11ms。100ms 是它们的十几倍。
+ * 起进程约 2ms；5.4 万条真实命令里最大 19KB（约 800 段），2000 条抽样 p99 是 7.3ms。
  * 真正的收益在坏情况：二进制卡住时，每条命令的阻塞从 2s 降到 100ms。
+ *
+ * 余量没有当年估的宽（2026-09 按 v0.6.0 复测）：5000 段串联 107ms、1MB heredoc 34ms、
+ * 5MB heredoc 217ms；真实语料里最坏一条已经到 96.3ms。冷启动（二进制页首次读入）或换页
+ * 压力下越过 100ms 是现实的 —— 所以超时多半是「这一次环境慢」，不是「这条命令太怪」，
+ * 值得再试一次（见 queryPreshellSpec / analyzeCommand 的瞬时重试）。
  */
 export const DEFAULT_TIMEOUT_MS = 100;
 /**
@@ -870,9 +874,22 @@ export type PreshellSpecProbe =
 
 const specCache = new Map<string, PreshellSpecProbe>();
 
-export function queryPreshellSpec(bin: string, timeoutMs = DEFAULT_TIMEOUT_MS): PreshellSpecProbe {
-  const hit = specCache.get(bin);
-  if (hit) return hit;
+/**
+ * 瞬时失败：只认超时。缺件、用法错误、坏 JSON 说的是「这个二进制本身如何」，重试只是白等；
+ * 超时说的是「这一次环境慢」，换个时刻很可能就好。
+ *
+ * 两层各写一个：PreshellOutcome 与 PreshellSpecProbe 都是复合联合，`"error" in x` 跨两者的
+ * 窄化在 TS 里不可靠，分开写省得靠断言。
+ */
+function isTimeoutOutcome(result: PreshellOutcome): boolean {
+  return !result.ok && result.reason === "timeout";
+}
+
+function isTimeoutProbe(result: PreshellSpecProbe): boolean {
+  return "error" in result && result.error === "timeout";
+}
+
+function probePreshellSpecOnce(bin: string, timeoutMs: number): PreshellSpecProbe {
   let result: PreshellSpecProbe;
   try {
     const proc = spawnSync(bin, ["--spec"], { encoding: "utf8", timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
@@ -917,7 +934,22 @@ export function queryPreshellSpec(bin: string, timeoutMs = DEFAULT_TIMEOUT_MS): 
   } catch (err) {
     result = { error: "bad-json", detail: err instanceof Error ? err.message : String(err) };
   }
-  specCache.set(bin, result);
+  return result;
+}
+
+/**
+ * 探测能力清单；**超时算瞬时，再试一次**（依据见 DEFAULT_TIMEOUT_MS 的注释）。
+ *
+ * 结果缓存到进程结束，但**超时不进缓存**：缓存的是「这个二进制是什么」，而超时说的是
+ * 「这一次环境慢」。钉住它等于让一次抖动变成整个进程的永久降级（旧行为就是这样：
+ * 冷启动那一次超时一直留到 /reload）。
+ */
+export function queryPreshellSpec(bin: string, timeoutMs = DEFAULT_TIMEOUT_MS): PreshellSpecProbe {
+  const hit = specCache.get(bin);
+  if (hit) return hit;
+  let result = probePreshellSpecOnce(bin, timeoutMs);
+  if (isTimeoutProbe(result)) result = probePreshellSpecOnce(bin, timeoutMs);
+  if (!isTimeoutProbe(result)) specCache.set(bin, result);
   return result;
 }
 
@@ -998,15 +1030,10 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const outcome = ((): PreshellOutcome => {
-    // 能力探测（--spec）：字段在就能用，不再比主次版号。版本号只进提示与报告
-    const probe = queryPreshellSpec(bin, config.timeoutMs);
-    if ("error" in probe) {
-      if (probe.error !== "capability") return { ok: false, reason: probe.error, ...(probe.detail ? { detail: probe.detail } : {}) };
-      // 缺能力的 detail 里把「推荐版本」也带上：它是提示值，不参与判定
-      const recommended = recommendedVersionOf(config);
-      return { ok: false, reason: "capability", detail: `${probe.detail}；推荐版本 ${recommended}` };
-    }
+  /**
+   * 拿一份探测成功的清单分析一次。超时由调用方决定要不要再来一次。
+   */
+  const analyzeOnce = (probe: { version: string; spec: PreshellSpec }): PreshellOutcome => {
     const version = probe.version;
     // 解释器载荷是提示级能力（v0.5.0 起）：有这一项才带 --payload。老二进制认不得这个开关，
     // 塞下去就是用法错误（退出码 2）→ 整条退回旧匹配，所以先看清单再决定
@@ -1031,13 +1058,33 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
       const message = err instanceof Error ? err.message : String(err);
       return { ok: false, reason: /timed? ?out/i.test(message) ? "timeout" : "bad-json", detail: message };
     }
-  })();
+  };
+
+  // 能力探测（--spec）：字段在就能用，不再比主次版号。版本号只进提示与报告
+  const probe = queryPreshellSpec(bin, config.timeoutMs);
+  let outcome: PreshellOutcome;
+  if ("error" in probe) {
+    // 探测层自己已经重试过一轮，这里不再整轮重试 —— 两层各来一遍就是 4 次 spawn（实测每条 404ms），
+    // 而探测超时本来就意味着「这个环境现在起不动子进程」，再试只是把阻塞拖长
+    outcome =
+      probe.error === "capability"
+        ? // 缺能力的 detail 里把「推荐版本」也带上：它是提示值，不参与判定
+          { ok: false, reason: "capability", detail: `${probe.detail}；推荐版本 ${recommendedVersionOf(config)}` }
+        : { ok: false, reason: probe.error, ...(probe.detail ? { detail: probe.detail } : {}) };
+  } else {
+    // 分析这一步超时再试一次：冷启动或换页压力下越过 100ms 是环境状态，
+    // 不是这条命令的属性，一次抖动不该直接把它降级到旧匹配
+    outcome = analyzeOnce(probe);
+    if (isTimeoutOutcome(outcome)) outcome = analyzeOnce(probe);
+  }
 
   if (cache.size >= MAX_CACHE) {
     const oldest = cache.keys().next();
     if (!oldest.done) cache.delete(oldest.value);
   }
-  cache.set(key, outcome);
+  // 缓存的是「这条命令碰什么」，那是命令的属性；超时是环境状态，不进缓存，
+  // 否则同一条命令第二次出现时连试都不试（旧行为就是这样）
+  if (!isTimeoutOutcome(outcome)) cache.set(key, outcome);
 
   // 熔断计数：成功清零；确定性失败一次就断，瞬时失败要连续到阈值
   if (outcome.ok) {

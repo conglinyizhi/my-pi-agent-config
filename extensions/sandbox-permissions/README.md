@@ -519,7 +519,7 @@ GateView.vue 的「📁 目录授权」区块在点允许/拒绝前可对多个�
 | 动态目标的候选集（v0.4.0 起） | `if c; then x=/a; else x='凭据'; fi; cat $x`：`$x` 本身判不了，候选逐个当路径判 | `preshell` |
 | 未引号、像路径的 token | 存在性探测（`test -f x` 不产生 Read 效果） | `token` |
 | 解释器/脚本载荷退回旧子串 | `node <<EOF`、`python -c "…凭据路径…"`、`/tmp/x.sh '…'` | `interpreter` |
-| 事实层不可用（缺二进制/超时/坏 JSON/版本不符） | 整条退回旧匹配，不因缺工具变宽 | `legacy` |
+| 事实层不可用（缺二进制/超时/坏 JSON/版本不符） | 整条退回旧匹配，不因缺工具变宽；超时先各层重试一次（100ms 挡不住冷启动抖动），仍失败才降级 | `legacy` |
 
 `via` 会写进命中项，审计条目与审批窗能区分「哪一层报的」。解释器名单与退回规则见
 `lib/sandbox-check.ts` 的 `INTERPRETER_PROGRAMS`/`isInterpreterProgram`；事实层适配在 `lib/preshell.ts`，

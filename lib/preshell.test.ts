@@ -540,6 +540,46 @@ describe("analyzeCommand", () => {
     if (!outcome.ok) assert.ok(["timeout", "exit"].includes(outcome.reason), `实际 ${outcome.reason}`);
   });
 
+  it("分析超时算瞬时：再试一次就能拿到事实，不降级", () => {
+    const log = join(dir, "analyze-retry.log");
+    const bin = stub(
+      "analyze-retry.sh",
+      `${SPEC_OK}\ncat >/dev/null\nn=$(cat "${log}" 2>/dev/null || echo 0)\necho $((n + 1)) > "${log}"\nif [ "$n" = "0" ]; then sleep 5; fi\nprintf '%s' '${OK_REPORT}'`,
+    );
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin, { timeoutMs: 200 }) });
+    assert.equal(outcome.ok, true, "一次抖动不该让这条命令降到旧匹配");
+    assert.equal(readFileSync(log, "utf8").trim(), "2", "超时后只该再分析一次");
+  });
+
+  it("连续超时：试两次就收，且超时不进缓存（同一条命令下次还会再试）", () => {
+    const log = join(dir, "analyze-slow.log");
+    const bin = stub("analyze-slow.sh", `${SPEC_OK}\ncat >/dev/null\necho x >> "${log}"\nsleep 5`);
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    resetPreshellBreaker();
+    const config = configFor(bin, { timeoutMs: 200 });
+    const first = analyzeCommand("ls", { config });
+    assert.equal(first.ok, false);
+    if (!first.ok) assert.equal(first.reason, "timeout");
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 2, "一次调用最多起两次子进程");
+    resetPreshellBreaker();
+    analyzeCommand("ls", { config });
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 4, "超时不该进缓存：同一条命令下次还得再试");
+  });
+
+  it("确定性失败（退出码非 0）不重试：重试只是白等", () => {
+    const log = join(dir, "exit-once.log");
+    const bin = stub("exit-once.sh", `${SPEC_OK}\ncat >/dev/null\necho x >> "${log}"\nexit 3`);
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const outcome = analyzeCommand("ls", { config: configFor(bin, { timeoutMs: 200 }) });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason, "exit");
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1, "确定的失败只该起一次子进程");
+  });
+
   it("配置关闭 / 非有限值：enabled=false 直接返回 disabled", () => {
     clearPreshellCache();
     const outcome = analyzeCommand("ls", { config: configFor("preshell", { enabled: false }) });
@@ -694,6 +734,32 @@ describe("能力清单（--spec 探测的判据）", () => {
     assert.equal("error" in timedOut && timedOut.error, "timeout");
   });
 
+  it("--spec 超时算瞬时：再试一次就成功，不把整个进程钉成不可用", () => {
+    const log = join(dir, "spec-retry.log");
+    const bin = stub(
+      "spec-retry.sh",
+      `case "$1" in --spec)\n  n=$(cat "${log}" 2>/dev/null || echo 0)\n  echo $((n + 1)) > "${log}"\n  if [ "$n" = "0" ]; then sleep 5; fi\n  printf '%s' '${specJson("0.6.0")}'\n  exit 0 ;;\nesac`,
+    );
+    resetPreshellSpecCache();
+    const probe = queryPreshellSpec(bin, 200);
+    assert.equal("error" in probe, false, "第一次超时、第二次正常 → 应当探到能力");
+    if (!("error" in probe)) assert.equal(probe.version, "0.6.0");
+    assert.equal(readFileSync(log, "utf8").trim(), "2", "超时后只该再探一次");
+    queryPreshellSpec(bin, 200);
+    assert.equal(readFileSync(log, "utf8").trim(), "2", "探到的结果仍要缓存到进程结束");
+  });
+
+  it("--spec 连续超时：试两次就收，且不进缓存（下次调用还有机会恢复）", () => {
+    const log = join(dir, "spec-slow.log");
+    const bin = stub("spec-slow.sh", `echo x >> "${log}"\nsleep 5`);
+    resetPreshellSpecCache();
+    const first = queryPreshellSpec(bin, 200);
+    assert.equal("error" in first && first.error, "timeout");
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 2, "一次探测最多起两次子进程");
+    queryPreshellSpec(bin, 200);
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 4, "超时不该进缓存：下次调用还得再试");
+  });
+
   it("compatVersion 只用于提示（读不出版号也不抛）", () => {
     assert.equal(compatVersion("0.6.1"), "0.6");
     assert.equal(compatVersion("0.6"), "0.6");
@@ -810,7 +876,7 @@ describe("配置与二进制解析", () => {
     assert.equal(recommendedVersionOf({}), RECOMMENDED_VERSION);
   });
 
-  it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {
+  it("超时阈值：默认 100ms（病态输入会超，靠瞬时重试兜）", () => {
     assert.equal(loadPreshellConfig().timeoutMs, 100);
   });
 
