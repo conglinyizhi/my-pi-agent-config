@@ -11,19 +11,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 import {
+  ADVISORY_CAPABILITIES,
   analyzeCommand,
   BREAKER_TRANSIENT_THRESHOLD,
+  capabilityFailureDetail,
+  checkCapabilities,
   clearPreshellCache,
+  compatVersion,
   describeUnavailable,
+  EXPECTED_VERSION,
   formatFacts,
   INSTALL_HINT,
+  KNOWN_VERSION,
+  knownVersionOf,
   loadPreshellConfig,
   notifyFactLayerUnavailable,
   preshellBreakerState,
+  preshellSpecState,
+  queryPreshellSpec,
   reportFactLayerState,
+  REQUIRED_CAPABILITIES,
   resetFactLayerNotices,
   resetPreshellBreaker,
-  resetPreshellVersionCache,
+  resetPreshellSpecCache,
   resolvePath,
   resolvePreshellBin,
   substituteVariables,
@@ -31,10 +41,10 @@ import {
 } from "./preshell.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "preshell-stub-"));
-// 模块级状态（缓存/版本探测/熔断/提示去重）在用例之间必须清干净，否则互相带节奏
+// 模块级状态（缓存/能力探测/熔断/提示去重）在用例之间必须清干净，否则互相带节奏
 beforeEach(() => {
   clearPreshellCache();
-  resetPreshellVersionCache();
+  resetPreshellSpecCache();
   resetPreshellBreaker();
   resetFactLayerNotices();
   // 测试里不许真往桌面弹：默认路径也可能被走到（比如 checkCommand 的降级分支）
@@ -42,7 +52,7 @@ beforeEach(() => {
 });
 after(() => {
   clearPreshellCache();
-  resetPreshellVersionCache();
+  resetPreshellSpecCache();
   resetPreshellBreaker();
   resetFactLayerNotices();
 });
@@ -71,19 +81,72 @@ const OK_REPORT = JSON.stringify({
   },
 });
 
-const VERSION_OK = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.6.0"}'; exit 0 ;; esac`;
-// 同一契约版本的另一个修订号：0.6.x 互通，expectedVersion 仍是 "0.6"
-const VERSION_061 = `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.6.1"}'; exit 0 ;; esac`;
+/**
+ * --spec 替身（默认是 v0.6.0 那份能力齐全的清单）：
+ *   drop 里写要删掉的位置（顶层键 "tool"，或点号路径 "paths.candidates"），
+ *   "modes.stream" 特指把 stream 那条模式从 modes 里拿掉。
+ * 只答 --spec，不再答 --version：可用性判据已经是能力清单，不是版本号。
+ */
+function specJson(version = "0.6.0", drop: string[] = []): string {
+  const spec: Record<string, unknown> = {
+    tool: "preshell",
+    version,
+    doc: "https://example.invalid/integration.md",
+    one_line: "Reports what a shell command touches. Facts, not a verdict.",
+    modes: [
+      { name: "single", stdin: "one shell command", stdout: "exactly one JSON report" },
+      { name: "stream", flag: "--stream", stdin: "one request per line", stdout: "one answer per line" },
+    ],
+    exit_codes: { "0": "the answers were produced", "2": "usage error", other: "the tool itself failed", note: "…" },
+    refusal: { shape: '{"error":"...","line":N}', means: "the line was not a request", note: "…" },
+    client_obligations: ["serialize writes to stdin"],
+    paths: {
+      base: "pass --cwd=PATH (absolute)",
+      vars: "every effect carries vars",
+      required: "--cwd is required by this contract",
+      always_absolute: "paths are reported absolute",
+      cd_scope: "cd affects the rest of the same command line",
+      no_base: "after a cd whose destination cannot be modelled…",
+      origin: "an effect whose target came from a value the command line set…",
+      payload: "an Exec/Spawn may carry payload…",
+      candidates: "an effect may carry candidates…",
+    },
+  };
+  if (drop.includes("modes.stream")) {
+    spec.modes = (spec.modes as Array<{ name?: string }>).filter((mode) => mode.name !== "stream");
+  }
+  // refusal.error / refusal.line 是「shape 里写了这个字段」：模拟缺项要改写那句描述，
+  // 不是删一个叫 error 的键（真产物里 shape 是字符串）
+  const refusal = spec.refusal as { shape: string };
+  if (drop.includes("refusal.error")) refusal.shape = refusal.shape.replace('"error"', '"reason"');
+  if (drop.includes("refusal.line")) refusal.shape = refusal.shape.replace(',"line":N', "");
+  for (const path of drop) {
+    if (path === "modes.stream" || path.startsWith("refusal.")) continue;
+    const [head, tail] = path.split(".");
+    if (tail === undefined) delete spec[head];
+    else delete (spec[head] as Record<string, unknown>)[tail];
+  }
+  return JSON.stringify(spec);
+}
+
+/** 替身脚本里那段答 --spec 的 case 分支 */
+function specCase(version = "0.6.0", drop: string[] = []): string {
+  return `case "$1" in --spec) printf '%s' '${specJson(version, drop)}'; exit 0 ;; esac`;
+}
+
+const SPEC_OK = specCase();
+// 同一能力的另一个修订号：版本号不再影响判定，也不该影响
+const SPEC_061 = specCase("0.6.1");
 
 function configFor(bin: string, over: Partial<PreshellConfig> = {}): PreshellConfig {
-  return { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.6", ...over };
+  return { enabled: true, bin, timeoutMs: 2000, knownVersion: "0.6", ...over };
 }
 
 describe("analyzeCommand", () => {
   it("正常报告 → facts（效果/未建模/网络/cwd/uncertain）", () => {
-    const bin = stub("ok.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("ok.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
@@ -98,9 +161,9 @@ describe("analyzeCommand", () => {
 
   it("把调用方给的 cwd 传成 --cwd=<绝对路径>", () => {
     const log = join(dir, "args.log");
-    const bin = stub("args.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("args.sh", `${SPEC_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     analyzeCommand("cat providers.toml", { config: configFor(bin), cwd: "/work" });
     const lines = readFileSync(log, "utf8").trim().split("\n");
     assert.equal(lines.length, 1, "只应起一次子进程（--version 那次不走这条分支）");
@@ -110,18 +173,18 @@ describe("analyzeCommand", () => {
 
   it("没给 cwd 就不传 --cwd：工具会自己推演基准并置 uncertain（我们不替它编一个）", () => {
     const log = join(dir, "nocwd.log");
-    const bin = stub("nocwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("nocwd.sh", `${SPEC_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     analyzeCommand("ls", { config: configFor(bin) });
     assert.ok(!/--cwd/.test(readFileSync(log, "utf8")), "没给基准就不能替调用方编一个");
   });
 
   it("cwd 不是绝对路径：不塞给工具（那会直接是用法错误、退出码 2），原值记进 cwdRejected", () => {
     const log = join(dir, "relcwd.log");
-    const bin = stub("relcwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("relcwd.sh", `${SPEC_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin), cwd: "lib/sub" });
     assert.ok(!/--cwd/.test(readFileSync(log, "utf8")), "相对值不能塞给工具");
     assert.equal(outcome.ok, true);
@@ -130,9 +193,9 @@ describe("analyzeCommand", () => {
 
   it("缓存按 cwd 分辨：同一条命令在不同目录里跑要各问一次", () => {
     const log = join(dir, "bothcwd.log");
-    const bin = stub("bothcwd.sh", `${VERSION_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("bothcwd.sh", `${SPEC_OK}\nprintf '%s\\n' "$*" >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const config = configFor(bin);
     analyzeCommand("ls", { config, cwd: "/a" });
     analyzeCommand("ls", { config, cwd: "/b" });
@@ -157,9 +220,9 @@ describe("analyzeCommand", () => {
         cwd: "/work",
       },
     });
-    const bin = stub("settle.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("settle.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cat $HOME/.ssh/id_rsa providers.toml $1/x", {
       config: configFor(bin),
       cwd: "/work",
@@ -202,9 +265,9 @@ describe("analyzeCommand", () => {
         cwd: "/work",
       },
     });
-    const bin = stub("candidates.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("candidates.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("if c; then x=/a; else x=/b; fi; rm $x", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
@@ -217,12 +280,12 @@ describe("analyzeCommand", () => {
     );
 
     // 旧版二进制（≤0.3.0）不报 candidates：字段就是 undefined，不是空数组
-    const legacy = stub("candidates-legacy.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
+    const legacy = stub("candidates-legacy.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
       status: "Complete",
       impact: { effects: [{ kind: "Delete", target: "$x", vars: ["x"], dynamic: true, line: 1 }], write_roots: [], uncertain: true, vars: ["x"], cwd: "/work" },
     })}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const old = analyzeCommand("rm $x", { config: configFor(legacy) });
     assert.equal(old.ok, true);
     if (old.ok) assert.equal(old.facts.effects[0].candidates, undefined);
@@ -243,24 +306,24 @@ describe("analyzeCommand", () => {
         cwd: "/tmp",
       },
     });
-    const bin = stub("origin.sh", `${VERSION_061}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("origin.sh", `${SPEC_061}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("x=/usr/bin/jq; $x -n 1", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
-    assert.equal(outcome.version, "0.6.1", "0.6.x 互通：expectedVersion=\"0.6\" 要吃得下 0.6.1");
+    assert.equal(outcome.version, "0.6.1", "能力齐全就放行，实测的修订号原样带出来");
     assert.equal(outcome.facts.effects[0].origin, "$x", "引用原文要原样带过来（对命令文本是纯文本比较）");
     assert.equal(outcome.facts.effects[0].target, "/usr/bin/jq", "target 仍是解出来的值，不是引用");
     assert.equal(outcome.facts.effects[1].origin, undefined, "target 就是词面本身时没有这个字段");
 
     // 旧版二进制（≤v0.4.0）不报 origin：字段就是 undefined，收窄那一侧要能当「没这回事」处理
-    const legacy = stub("origin-legacy.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
+    const legacy = stub("origin-legacy.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${JSON.stringify({
       status: "Complete",
       impact: { effects: [{ kind: "Exec", target: "$x", vars: ["x"], candidates: [], dynamic: true, line: 1 }], write_roots: [], uncertain: true, vars: ["x"], cwd: "/tmp" },
     })}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const old = analyzeCommand("x=/usr/bin/jq; $x -n 1", { config: configFor(legacy) });
     assert.equal(old.ok, true);
     if (old.ok) assert.equal(old.facts.effects[0].origin, undefined);
@@ -283,9 +346,9 @@ describe("analyzeCommand", () => {
         effects_dropped: 0,
       },
     });
-    const bin = stub("pwd.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("pwd.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cd /cd-base && cat ~+/x $PWD/y", {
       config: configFor(bin),
       cwd: "/start",
@@ -311,9 +374,9 @@ describe("analyzeCommand", () => {
         effects_dropped: 0,
       },
     });
-    const bin = stub("nopwd.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("nopwd.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cd $DIR && cat $PWD/x", {
       config: configFor(bin),
       cwd: "/start",
@@ -331,9 +394,9 @@ describe("analyzeCommand", () => {
 
   it("同一条命令只起一次子进程（缓存）", () => {
     const log = join(dir, "calls.log");
-    const bin = stub("count.sh", `${VERSION_OK}\necho x >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("count.sh", `${SPEC_OK}\necho x >> "${log}"\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const config = configFor(bin);
     analyzeCommand("echo cached", { config });
     analyzeCommand("echo cached", { config });
@@ -341,80 +404,131 @@ describe("analyzeCommand", () => {
     assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1);
   });
 
-  it("契约版本不符 → version 不可用（不猜）；次版本号一致就继续，修订号不一致不管", () => {
-    const cases: Array<[string, boolean]> = [
-      ["0.6.0", true],
-      ["0.6.1", true],
-      ["0.5.0", false],
-    ];
-    for (const [version, compatible] of cases) {
+  // 本次改动的核心价值：能力在就能用，不再因为版本号没见过而拒（上游每次加法都会升次版本号）
+  it("能力清单齐全就放行，哪怕版本号从没见过（0.7.0 / 1.2.3 / 9.9.9）", () => {
+    for (const version of ["0.7.0", "1.2.3", "9.9.9"]) {
       clearPreshellCache();
-      resetPreshellVersionCache();
-      const bin = stub(
-        `version-${version}.sh`,
-        `case "$1" in --version) printf '%s' '${JSON.stringify({ tool: "preshell", version })}'; exit 0 ;; esac\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`,
-      );
+      resetPreshellSpecCache();
+      const bin = stub(`spec-${version}.sh`, `${specCase(version)}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
       const outcome = analyzeCommand("ls", { config: configFor(bin) });
-      assert.equal(outcome.ok, compatible, `${version} 期望 ok=${compatible}`);
+      assert.equal(outcome.ok, true, `${version} 能力齐全就该能用`);
+      if (outcome.ok) assert.equal(outcome.version, version, "实测版本原样带出来（只作展示）");
+    }
+  });
+
+  it("缺必需契约项 → capability 不可用，detail 点名缺了什么", () => {
+    const cases = [
+      "tool",
+      "version",
+      "modes.stream",
+      "exit_codes.0",
+      "exit_codes.2",
+      "refusal.error",
+      "refusal.line",
+      "paths.base",
+      "paths.required",
+      "paths.vars",
+      "paths.always_absolute",
+      "paths.cd_scope",
+      "paths.no_base",
+      "paths.origin",
+      "paths.candidates",
+    ];
+    for (const drop of cases) {
+      clearPreshellCache();
+      resetPreshellSpecCache();
+      resetPreshellBreaker(); // 缺能力是确定性失败，会立刻熔断：每轮先把熔断清掉
+      const bin = stub(`missing-${drop.replace(".", "-")}.sh`, `${specCase("0.6.0", [drop])}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+      const outcome = analyzeCommand("ls", { config: configFor(bin) });
+      assert.equal(outcome.ok, false, `缺 ${drop} 就该判不可用`);
       if (!outcome.ok) {
-        assert.equal(outcome.reason, "version");
-        assert.match(outcome.detail ?? "", /期望 0\.6\.x/);
+        assert.equal(outcome.reason, "capability");
+        assert.match(outcome.detail ?? "", new RegExp(drop.replace(".", "\\.")), `detail 要点名缺了 ${drop}`);
+        assert.match(outcome.detail ?? "", /已知版本 0\.6/, "同时要写明已知版本（只作提示）");
       }
     }
   });
 
-  it("旧契约的 --version（带 schema 字段）读得出来，但不兼容（0.3 ≠ 0.4）", () => {
-    // v0.3.0 的输出形状：多个 schema 字段。v0.4.0 删了它，所以解析不能拿 schema 当准入条件
-    const bin = stub("old-version.sh", `printf '%s' '{"tool":"preshell","version":"0.3.0","schema":1}'; exit 0`);
+  it("缺多项时一次说完，不挑一个报", () => {
+    const drop = ["paths.candidates", "exit_codes.2", "modes.stream"];
+    const bin = stub("missing-many.sh", `${specCase("0.6.0", drop)}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin) });
     assert.equal(outcome.ok, false);
     if (!outcome.ok) {
-      assert.equal(outcome.reason, "version");
-      assert.match(outcome.detail ?? "", /version=0\.3\.0/);
+      assert.equal(outcome.reason, "capability");
+      for (const id of drop) assert.match(outcome.detail ?? "", new RegExp(id.replace(".", "\\.")));
     }
   });
 
-  it("--version 里没有版本号（只有工具名）→ bad-json，不当成某个版本", () => {
-    const bin = stub("no-version.sh", `printf '%s' '{"tool":"preshell"}'; exit 0`);
+  it("只缺提示级的 paths.payload → 照旧可用，缺口在 preshellSpecState 里记一笔", () => {
+    const bin = stub("no-payload.sh", `${specCase("0.5.0", ["paths.payload"])}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
+    const config = configFor(bin);
+    const outcome = analyzeCommand("ls", { config });
+    assert.equal(outcome.ok, true, "payload 本侧只解析未接线，缺了不该判不可用");
+    const state = preshellSpecState(config);
+    assert.deepEqual([...state.advisoryGaps], ["paths.payload"]);
+    assert.equal(state.measuredVersion, "0.5.0");
+    assert.equal(state.knownVersion, "0.6");
+    assert.equal(state.compatibleWithKnown, false, "0.5 与已知 0.6 不同主次版号：只是提示，不影响可用性");
+  });
+
+  it("不认识 --spec 的旧二进制（用法错误、退出码 2）→ capability，不当成「没依赖」", () => {
+    const bin = stub("no-spec.sh", `printf 'unknown option: --spec\\n' >&2\nexit 2`);
+    clearPreshellCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin) });
     assert.equal(outcome.ok, false);
-    if (!outcome.ok) assert.equal(outcome.reason, "bad-json");
+    if (!outcome.ok) {
+      assert.equal(outcome.reason, "capability");
+      assert.match(outcome.detail ?? "", /不认识 --spec/);
+    }
+  });
+
+  it("--spec 输出不是 JSON 对象 → bad-json（探测失败一律归保守兜底）", () => {
+    for (const body of [`printf '这不是 JSON'; exit 0`, `printf '[1,2]'; exit 0`]) {
+      const bin = stub(`bad-spec-${body.includes("[") ? "array" : "text"}.sh`, body);
+      clearPreshellCache();
+      resetPreshellSpecCache();
+      const outcome = analyzeCommand("ls", { config: configFor(bin) });
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) assert.equal(outcome.reason, "bad-json");
+    }
   });
 
   it("缺二进制 → missing（调用方据此走保守兜底）", () => {
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(join(dir, "没有这个文件")) });
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason, "missing");
   });
 
   it("stdout 不是 JSON → bad-json", () => {
-    const bin = stub("badjson.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '这不是 JSON'`);
+    const bin = stub("badjson.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '这不是 JSON'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin) });
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason, "bad-json");
   });
 
   it("退出码非 0 → exit", () => {
-    const bin = stub("exit.sh", `${VERSION_OK}\ncat >/dev/null\nexit 3`);
+    const bin = stub("exit.sh", `${SPEC_OK}\ncat >/dev/null\nexit 3`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin) });
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason, "exit");
   });
 
   it("卡住的子进程被超时切断，不当成放行", () => {
-    const bin = stub("slow.sh", `${VERSION_OK}\ncat >/dev/null\nsleep 5\nprintf '{}'`);
+    const bin = stub("slow.sh", `${SPEC_OK}\ncat >/dev/null\nsleep 5\nprintf '{}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("ls", { config: configFor(bin, { timeoutMs: 200 }) });
     assert.equal(outcome.ok, false, "超时必须算不可用");
     if (!outcome.ok) assert.ok(["timeout", "exit"].includes(outcome.reason), `实际 ${outcome.reason}`);
@@ -430,9 +544,9 @@ describe("analyzeCommand", () => {
 describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超时", () => {
   it("瞬时失败（非零退出）要连续到阈值才断，原因保留首次的", () => {
     const log = join(dir, "breaker.log");
-    const bin = stub("breaker.sh", `${VERSION_OK}\necho x >> "${log}"\ncat >/dev/null\nexit 1`);
+    const bin = stub("breaker.sh", `${SPEC_OK}\necho x >> "${log}"\ncat >/dev/null\nexit 1`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     resetPreshellBreaker();
     const config = configFor(bin);
 
@@ -464,9 +578,9 @@ describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超�
     resetPreshellBreaker();
   });
 
-  it("确定性失败（缺件/schema）一次就断，不再白白 spawn", () => {
+  it("确定性失败（缺件/缺能力）一次就断，不再白白 spawn", () => {
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     resetPreshellBreaker();
     const config = configFor(join(dir, "根本没有这个文件"));
     const first = analyzeCommand("echo a", { config });
@@ -476,12 +590,23 @@ describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超�
     const second = analyzeCommand("echo b", { config });
     if (!second.ok) assert.match(second.detail ?? "", /熔断/);
     resetPreshellBreaker();
+
+    // 缺能力也是确定性失败：一次就断
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const bin = stub("missing-cap.sh", `${specCase("0.6.0", ["paths.candidates"])}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const third = analyzeCommand("echo c", { config: configFor(bin) });
+    assert.equal(third.ok, false);
+    if (!third.ok) assert.equal(third.reason, "capability");
+    assert.equal(preshellBreakerState().broken, "capability");
+    resetPreshellBreaker();
+    resetPreshellSpecCache();
   });
 
   it("成功一次就把失败计数清零（偶发超时不该熔断）", () => {
-    const bin = stub("flaky.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("flaky.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     resetPreshellBreaker();
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
@@ -489,22 +614,110 @@ describe("熔断：卡住或崩掉的二进制不能把每次审计都拖成超�
   });
 });
 
+describe("能力清单（--spec 探测的判据）", () => {
+  it("清单本身自洽：id 唯一、每项都写了 why、能对齐全项 spec", () => {
+    const all = [...REQUIRED_CAPABILITIES, ...ADVISORY_CAPABILITIES];
+    const ids = all.map((item) => item.id);
+    assert.deepEqual(ids, [...new Set(ids)], "id 要唯一（detail 里靠它点名）");
+    assert.ok(REQUIRED_CAPABILITIES.length > 0 && REQUIRED_CAPABILITIES.every((item) => item.level === "required"));
+    assert.ok(ADVISORY_CAPABILITIES.every((item) => item.level === "advisory"));
+    const full = JSON.parse(specJson("0.6.0")) as Parameters<typeof checkCapabilities>[0];
+    for (const item of all) {
+      assert.ok(item.why.length > 8, `${item.id} 要注明对应 pi 侧哪处依赖`);
+      assert.equal(item.check(full), true, `${item.id} 应能从齐全的 spec 里读到`);
+    }
+  });
+
+  it("v0.6.0 那种齐全的 --spec：必需项与提示项一个不缺", () => {
+    const check = checkCapabilities(JSON.parse(specJson("0.6.0")));
+    assert.equal(check.ok, true);
+    assert.deepEqual(check.missing, []);
+    assert.deepEqual(check.missingAdvisory, []);
+  });
+
+  it("v0.4.1 那种没有 paths.payload 的 spec：必需项仍齐，提示级缺一项", () => {
+    const check = checkCapabilities(JSON.parse(specJson("0.4.1", ["paths.payload"])));
+    assert.equal(check.ok, true, "payload 本侧还没接线，缺了不影响可用性");
+    assert.deepEqual(check.missingAdvisory, ["paths.payload"]);
+  });
+
+  it("check 抛异常算缺项（宁可保守，不放过）", () => {
+    const hostile = {
+      tool: "preshell",
+      get version(): never {
+        throw new Error("boom");
+      },
+    };
+    const check = checkCapabilities(hostile);
+    assert.equal(check.ok, false);
+    assert.ok(check.missing.includes("version"));
+  });
+
+  it("queryPreshellSpec：一次 --spec 拿到身份 + 版本 + 能力，缓存到进程结束", () => {
+    const log = join(dir, "spec-calls.log");
+    const bin = stub("spec-once.sh", `echo x >> "${log}"\n${SPEC_OK}`);
+    resetPreshellSpecCache();
+    const first = queryPreshellSpec(bin);
+    assert.equal("error" in first, false);
+    if (!("error" in first)) {
+      assert.equal(first.version, "0.6.0");
+      assert.equal(first.spec.tool, "preshell");
+      assert.deepEqual(checkCapabilities(first.spec).missing, []);
+    }
+    queryPreshellSpec(bin);
+    queryPreshellSpec(bin);
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1, "--spec 只该起一次");
+  });
+
+  it("capabilityFailureDetail：点名缺项，并带上实测版本（已知版本由调用方补）", () => {
+    const check = checkCapabilities(JSON.parse(specJson("9.9.9", ["paths.candidates", "exit_codes.2"])));
+    const detail = capabilityFailureDetail(check, "9.9.9");
+    assert.match(detail, /缺必需契约项 exit_codes\.2、paths\.candidates/);
+    assert.match(detail, /实测 version=9\.9\.9/);
+    assert.doesNotMatch(detail, /已知版本/, "探测层不知道配置里的已知版本，由调用方补上");
+    assert.match(capabilityFailureDetail(check, undefined), /实测 version=读不出/);
+  });
+
+  it("queryPreshellSpec：缺二进制 / 卡住 → missing / timeout（都走保守兜底）", () => {
+    resetPreshellSpecCache();
+    const missing = queryPreshellSpec(join(dir, "没有这个文件-spec"), 200);
+    assert.equal("error" in missing && missing.error, "missing");
+    resetPreshellSpecCache();
+    const slow = stub("slow-spec.sh", `case "$1" in --spec) sleep 5 ;; esac`);
+    const timedOut = queryPreshellSpec(slow, 200);
+    assert.equal("error" in timedOut && timedOut.error, "timeout");
+  });
+
+  it("compatVersion 只用于提示（读不出版号也不抛）", () => {
+    assert.equal(compatVersion("0.6.1"), "0.6");
+    assert.equal(compatVersion("0.6"), "0.6");
+    assert.equal(compatVersion("v1.2.3"), undefined);
+    assert.equal(compatVersion(""), undefined);
+  });
+});
+
 describe("缺件提示（人看的）", () => {
   it("describeUnavailable 说清是什么毛病", () => {
     assert.match(describeUnavailable("missing"), /未安装或路径不对/);
-    assert.match(describeUnavailable("version", "工具报 version=0.5.0"), /契约版本不符（工具报 version=0\.5\.0）/);
+    assert.match(
+      describeUnavailable("capability", "缺必需契约项 paths.candidates；实测 version=9.9.9，已知版本 0.6"),
+      /契约能力不足（缺必需契约项 paths\.candidates/,
+    );
     assert.match(describeUnavailable("disabled"), /enabled=false/);
   });
 
   it("INSTALL_HINT 给出可粘贴的安装命令，并写明没装也能用", () => {
     // 版本号写死在提示里，所以升级的时候这里会红：这是故意的，提示里那串命令必须是真的
-    assert.match(INSTALL_HINT, /gh release download v0\.5\.0 -R conglinyizhi\/preshell/);
-    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.5\.0-x86_64-linux/);
+    assert.match(INSTALL_HINT, /gh release download v0\.6\.0 -R conglinyizhi\/preshell/);
+    assert.match(INSTALL_HINT, /install -Dm755 \/tmp\/p\/preshell-v0\.6\.0-x86_64-linux/);
     assert.match(INSTALL_HINT, /moon build --release --target native/);
     assert.match(INSTALL_HINT, /退回旧的匹配规则/);
-    // v0.4.1 的两条新事实要写在提示里：origin 与「候选集只在穷尽时给」
+    // v0.4.1 起的两条事实要写在提示里：origin 与「候选集只在穷尽时给」
     assert.match(INSTALL_HINT, /origin/);
     assert.match(INSTALL_HINT, /候选集只在穷尽时才给/);
+    // 判据也变了：能力探测取代版本号门禁，提示里要说清
+    assert.match(INSTALL_HINT, /看能力不看版本号/);
+    assert.match(INSTALL_HINT, /--spec/);
   });
 
   it("同一个原因只弹一次，但状态标一直挂着；恢复后收掉", () => {
@@ -561,17 +774,32 @@ describe("配置与二进制解析", () => {
     const cfg = loadPreshellConfig("/nonexistent/extensions.toml");
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.bin, "~/.pi/runtime/preshell");
-    assert.equal(cfg.expectedVersion, "0.6");
+    assert.equal(cfg.knownVersion, "0.6");
   });
 
-  it("配置读 `version` 键；老的 `schema = 1` 不再参与判定（缺省是 0.6）", () => {
+  it("配置读 `version` 键（现在含义是「已知版本」）；老的 `schema = 1` 不再读", () => {
     const path = join(dir, "config-version.toml");
     writeFileSync(path, `[preshell]\nenabled = true\nschema = 1\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.6", "老键不该被当成版本号");
+    assert.equal(loadPreshellConfig(path).knownVersion, "0.6", "老键不该被当成版本号");
     writeFileSync(path, `[preshell]\nversion = "0.6"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.6");
+    assert.equal(loadPreshellConfig(path).knownVersion, "0.6");
     writeFileSync(path, `[preshell]\nversion = "0.7"\n`, "utf8");
-    assert.equal(loadPreshellConfig(path).expectedVersion, "0.7", "配置要能钉一个不同的期望版本");
+    assert.equal(loadPreshellConfig(path).knownVersion, "0.7", "配置只改「已知版本」，不影响可用性判定");
+  });
+
+  // 老调用方（与外面的脚本）还按 expectedVersion 传配置：名称换过，但要仍然能读
+  it("老字段名 expectedVersion 仍然认，它只是 knownVersion 的别名", () => {
+    assert.equal(loadPreshellConfig("/nonexistent/extensions.toml").knownVersion, KNOWN_VERSION);
+    assert.equal(KNOWN_VERSION, EXPECTED_VERSION, "KNOWN_VERSION 就是 EXPECTED_VERSION 的语义名");
+    const bin = stub("alias-config.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    clearPreshellCache();
+    resetPreshellSpecCache();
+    const outcome = analyzeCommand("ls", {
+      config: { enabled: true, bin, timeoutMs: 2000, expectedVersion: "0.6" } as PreshellConfig,
+    });
+    assert.equal(outcome.ok, true, "老字段名不该让可用性判定挂掉");
+    assert.equal(knownVersionOf({ expectedVersion: "0.6" }), "0.6", "别名要认得出来");
+    assert.equal(knownVersionOf({}), EXPECTED_VERSION, "都没有就回退到已知版本的缺省值");
   });
 
   it("超时阈值：默认 100ms，够跑完病态输入（实测 1MB heredoc 18ms）", () => {
@@ -599,9 +827,9 @@ describe("配置与二进制解析", () => {
 
 describe("formatFacts", () => {
   it("把事实压成短文本：程序/读/写/网络/未建模/解析状态", () => {
-    const bin = stub("facts.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("facts.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
@@ -632,9 +860,9 @@ describe("formatFacts", () => {
       issues: [],
       issues_dropped: 0,
     });
-    const bin = stub("facts-var.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("facts-var.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const command = "cd /tmp && P=/usr/bin/jq && $P --version";
     const outcome = analyzeCommand(command, { config: configFor(bin) });
     assert.equal(outcome.ok, true);
@@ -661,9 +889,9 @@ describe("formatFacts", () => {
       issues: [],
       issues_dropped: 0,
     });
-    const bin = stub("facts-var-unknown.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
+    const bin = stub("facts-var-unknown.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${report}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("P=$(which jq) && $P --version", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
@@ -673,9 +901,9 @@ describe("formatFacts", () => {
   });
 
   it("命令里没有变量引用时不出变量表（旧输出的其余部分不变）", () => {
-    const bin = stub("facts-novar.sh", `${VERSION_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
+    const bin = stub("facts-novar.sh", `${SPEC_OK}\ncat >/dev/null\nprintf '%s' '${OK_REPORT}'`);
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     const outcome = analyzeCommand("cat providers.toml", { config: configFor(bin) });
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;

@@ -11,7 +11,8 @@
 //   stdout 每行一份报告；带 id 的请求拿信封 {"id":…,"report":{…}}，坏行拿 {"error":…,"line":N}
 //   一行进一行出，严格对应；报告随算随出，不等 EOF；另有退出码 0 与 stderr 汇总
 //   只认 id 与 command 两个键，多写一个键会被整行拒掉
-//   兼容性只看 --version 的版本号：次版本号变即不兼容（v0.4.0 起没有 schema 号了）
+//   兼容性看能力不看版本号：起一次 --spec 查必需契约项（含 modes 里的 --stream）；
+//   缺项、或二进制不认识 --spec 都判不可用（reason=capability），退回单条模式/旧匹配
 //
 // v0.3.0 的 --cwd 也是**进程级**参数，而且事实上必填（必须绝对路径，给相对值算用法错误）——v0.4.0 没变：
 // 批量模式不认逐条 cwd（实测 `{"command":…,"cwd":…}` 会被整行拒掉，退出码仍是 0，
@@ -33,10 +34,9 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
-	EXPECTED_VERSION,
 	DEFAULT_TIMEOUT_MS,
-	queryPreshellVersion,
-	versionsCompatible,
+	KNOWN_VERSION,
+	queryPreshellSpec,
 	type PreshellReport,
 	type PreshellUnavailableReason,
 } from "./preshell.ts";
@@ -51,8 +51,8 @@ export interface PreshellStreamOptions {
 	timeoutMs?: number;
 	/** 空闲多久就收工（毫秒）；0 = 不收工，活到调用方进程结束 */
 	idleMs?: number;
-	/** 期望的契约版本（主次版号，如 "0.5"）；不一致按「事实层不可用」处理 */
-	expectedVersion?: string;
+	/** 已知版本（extensions.toml 的 version）；**不参与门禁**，只在缺能力的 detail 里提一句 */
+	knownVersion?: string;
 	/** 交给子进程的参数（默认 --shell=probe；方言与 --cwd 都是进程级设置，切换要重开） */
 	args?: string[];
 	/** stderr 逐行回调：工具自己的诊断汇总走这里，不混进报告 */
@@ -88,6 +88,11 @@ export const DEFAULT_STREAM_IDLE_MS = 60_000;
 const CLOSE_GRACE_MS = 500;
 
 // ── 能力探测：老二进制（v0.1）不认识 --stream，得先问清楚 ──
+//
+// 客户端自己走 --spec 的能力清单（modes.stream 那条，见 lib/preshell.ts 的
+// REQUIRED_CAPABILITIES）：一个子进程就把身份、版本、能力全拿回来。
+// streamSupported 留着给「起进程之前先看一眼」的调用方（scripts/preshell-shadow.ts），
+// 它拿 --help 的文本探，代价是多一次 spawn。
 
 const streamSupportCache = new Map<string, boolean>();
 
@@ -150,7 +155,7 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 	const bin = options.bin;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
 	const idleMs = options.idleMs ?? DEFAULT_STREAM_IDLE_MS;
-	const expectedVersion = options.expectedVersion ?? EXPECTED_VERSION;
+	const knownVersion = options.knownVersion ?? KNOWN_VERSION;
 	const args = options.args ?? ["--shell=probe"];
 
 	let child: ChildProcess | undefined;
@@ -272,13 +277,11 @@ export function openPreshellStream(options: PreshellStreamOptions): PreshellStre
 		if (child && child.exitCode === null && !child.killed) return { ok: true };
 		if (dead) return dead;
 
-		const version = queryPreshellVersion(bin, Math.max(timeoutMs, DEFAULT_TIMEOUT_MS));
-		if ("error" in version) return markDead(version.error);
-		if (!versionsCompatible(version.version, expectedVersion)) {
-			return markDead("version", `工具报 version=${version.version}，期望 ${expectedVersion}.x`);
-		}
-		if (!streamSupported(bin, Math.max(timeoutMs, DEFAULT_TIMEOUT_MS))) {
-			return markDead("exit", "这个二进制不认识 --stream（v0.1？）：批量场景请升级到 v0.2，或改走单条模式");
+		const probe = queryPreshellSpec(bin, Math.max(timeoutMs, DEFAULT_TIMEOUT_MS));
+		if ("error" in probe) {
+			return probe.error === "capability"
+				? markDead("capability", `${probe.detail}；已知版本 ${knownVersion}`)
+				: markDead(probe.error, probe.detail);
 		}
 
 		let spawned: ChildProcess;

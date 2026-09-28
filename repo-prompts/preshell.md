@@ -7,5 +7,6 @@
 - 回滚/切换：`... use <版本>`；看现状：`... status`
 - 二进制在 `~/.pi/runtime/`：按版本存文件，软链 `preshell` 指向当前版
 
-改 pi 侧适配时：`lib/preshell.ts` 的 `EXPECTED_VERSION` 与二进制的主次版号要对得上；
-门禁清单在 `scripts/preshell-install.mjs` 的 `GATE`，代码依赖变了要跟着改。
+改 pi 侧适配时：兼容性看**能力**不看版本号 —— `lib/preshell.ts` 的 `REQUIRED_CAPABILITIES`
+列的是 pi 依赖的契约面（每项注释了对应哪处代码），靠 `--spec` 逐项查；
+安装侧的门禁在 `scripts/preshell-install.mjs` 的 `GATE`（两份同源，代码依赖变了要跟着改）。

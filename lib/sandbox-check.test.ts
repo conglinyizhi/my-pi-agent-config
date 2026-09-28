@@ -24,15 +24,32 @@ import {
   unquotedPathTokens,
 } from "./sandbox-check.ts";
 import { loadBlacklist, pathBlocked } from "../extensions/sandbox-permissions/guard.ts";
-import { clearPreshellCache, resetPreshellBreaker, resetPreshellVersionCache } from "./preshell.ts";
+import { clearPreshellCache, resetPreshellBreaker, resetPreshellSpecCache } from "./preshell.ts";
 
-/** 起一个假 preshell：回答 --version，正文报告由调用方给 */
+/**
+ * 齐全的 --spec 替身（能力清单）：判据是能力探测，判定的输入（报告）由调用方给。
+ * 这里不再答 --version——可用性不看版本号，见 lib/preshell.ts 的 REQUIRED_CAPABILITIES。
+ */
+const STUB_SPEC = JSON.stringify({
+  tool: "preshell",
+  version: "0.6.0",
+  modes: [{ name: "single" }, { name: "stream", flag: "--stream" }],
+  exit_codes: { "0": "answers produced", "2": "usage error", other: "tool failed" },
+  refusal: { shape: '{"error":"...","line":N}' },
+  client_obligations: ["serialize writes to stdin"],
+  paths: {
+    base: "…", vars: "…", required: "…", always_absolute: "…", cd_scope: "…",
+    no_base: "…", origin: "…", payload: "…", candidates: "…",
+  },
+});
+
+/** 起一个假 preshell：回答 --spec，正文报告由调用方给 */
 function stubPreshell(report: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "preshell-stub-"));
   const path = join(dir, "preshell");
   const body = [
     "#!/bin/sh",
-    `case "$1" in --version) printf '%s' '{"tool":"preshell","version":"0.6.0"}'; exit 0 ;; esac`,
+    `case "$1" in --spec) printf '%s' '${STUB_SPEC}'; exit 0 ;; esac`,
     "cat >/dev/null",
     `printf '%s' '${JSON.stringify(report)}'`,
   ].join("\n");
@@ -45,7 +62,7 @@ function withStubPreshell<T>(bin: string, run: () => T): T {
   const saved = process.env.PRESHELL_BIN;
   process.env.PRESHELL_BIN = bin;
   clearPreshellCache();
-  resetPreshellVersionCache();
+  resetPreshellSpecCache();
   resetPreshellBreaker();
   try {
     return run();
@@ -53,7 +70,7 @@ function withStubPreshell<T>(bin: string, run: () => T): T {
     if (saved === undefined) delete process.env.PRESHELL_BIN;
     else process.env.PRESHELL_BIN = saved;
     clearPreshellCache();
-    resetPreshellVersionCache();
+    resetPreshellSpecCache();
     resetPreshellBreaker();
   }
 }

@@ -83,7 +83,7 @@ const GATE = [
     at: "--spec 顶层 version",
     level: "required",
     check: (s) => typeof s.version === "string" && VERSION_RE.test(s.version.trim()),
-    why: "lib/preshell.ts:213 EXPECTED_VERSION 与 :229 versionsCompatible 只按前两段版号判兼容；版本号读不出 = 事实层不可用",
+    why: "lib/preshell.ts 只在报告里拿 version 当「实测版本」用（已不参与兼容性判定，pi 侧改看能力探测）；但版本号读不出 = 这个产物不正常",
   },
   {
     id: "modes.stream",
@@ -300,9 +300,12 @@ function printVersionCompat(version) {
   const tool = compatOf(version);
   const want = compatOf(expected);
   if (tool && want && tool === want) {
-    log(`  · 版本对照：${version} 与 lib/preshell.ts 的 EXPECTED_VERSION=${expected} 同主次版号 → 兼容`);
+    log(`  · 版本对照：实测 ${version}，lib/preshell.ts 记的已知版本是 ${expected}（只作提示）`);
   } else {
-    log(`  · 版本对照：${version} 与 EXPECTED_VERSION=${expected} 不同主次版号 → pi 侧会按「事实层不可用」兜底，判定退回旧匹配（误报变多，不会放行）`);
+    log(
+      `  · 版本对照：实测 ${version}，已知版本 ${expected} —— 不同不重要：pi 侧改看能力探测，` +
+        `上面那份门禁清单通过就能用（版本号只影响提示与报告）`,
+    );
   }
 }
 

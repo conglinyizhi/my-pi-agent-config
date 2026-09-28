@@ -10,15 +10,23 @@
 //
 // 契约（preshell 仓库 docs/integration.md）：
 //   命令走 stdin，stdout 恰好一个 JSON；退出码 0 = 有报告，2 = 用法错误，其它 = 工具没跑起来
-//   --version → {"tool":"preshell","version":"0.5.0"}：**兼容性只跟版本号走**
-//   拿不到报告（缺二进制/超时/坏 JSON/版本不符）时默认动作是保守兜底，绝不因此放行
+//   --spec → 机读的能力清单（tool / version / modes / exit_codes / refusal / paths 各一句描述）
+//   拿不到报告（缺二进制/超时/坏 JSON/缺契约项）时默认动作是保守兜底，绝不因此放行
 //
-// 本文件按 v0.5.0 适配。v0.5.0 是次要版本变更（0.4 → 0.5，按约定不兼容），但也只是加法：
-// 新增 opt-in 的 effect.payload（第 5 条），并修了 wrapper（uv / docker run / conda run 这类）
-// 的 Spawn 目标解析。前面几条自 v0.4.0 起就成立：
-//   0 破坏性：schema 号删掉了。判定「这次升级会不会打挂我」只看版本号——次版本号变即
-//     不兼容（0.6 起要重新适配），修订号变是兼容的（0.6.x 互通）。旧版（≤0.3.0）的
-//     --version 还带 schema 字段，读的时候要能两种都吃（见 queryPreshellVersion）
+// **兼容性看能力，不看版本号**：起一次 --spec（见 queryPreshellSpec），只检查本侧代码实际依赖
+// 的契约项在不在（REQUIRED_CAPABILITIES 那份清单）。字段在就能用，哪怕版本号从没见过；
+// 缺必需项，或者二进制根本不认识 --spec（v0.4.0 之前的旧版），一律判不可用、退回旧匹配。
+// 版本号（--spec 自报的 version 与 EXPECTED_VERSION）降级为「已知版本」，只进提示与报告。
+//
+// 为什么不再比版本号：上游的约定是「次版本号变即不兼容」，而它加功能也升次版本号
+// （v0.5.0 加 payload、v0.6.0 把 payload 的归属扩到 awk/sed）——每次加法都逼调用方改一行
+// EXPECTED_VERSION、跑一轮 A/B。硬门禁的方向反了，改成能力探测。
+//
+// 本文件按 v0.6.0 的能力面适配（下面是历次契约变化的记录，判据都在能力清单里）：
+//   0 契约形状：v0.2.1 起有 --spec；v0.4.0 删掉报告里的 schema 号；v0.4.1 加 effect.origin
+//     与「候选集只在穷尽时给」；v0.5.0 加 opt-in 的 payload 并修了 wrapper（uv / docker run /
+//     conda run 这类）的 Spawn 目标解析；v0.6.0 把 payload 的归属扩到 awk/sed。
+//     每一次都是加法，能力探测吃得下：改清单只在**本侧真的开始读新字段**时才做
 //   1 路径一律输出绝对路径。`--cwd=<绝对路径>` 事实上必填：它是「这条命令会在哪个目录里
 //     跑」的断言，不是 cd（命令内部的 cd 优先）。不给时工具拿自己进程的当前目录推演，
 //     报告附一条 Note 并置 uncertain: true
@@ -38,6 +46,7 @@
 //
 // 本文件走的是「一条命令一个子进程」的单条模式：实时路径一次只问一条，起进程那 2ms 无所谓。
 // 批量场景用 lib/preshell-stream.ts 的长驻子进程（--stream），那边省下的才是真开销。
+// 两处共用同一份能力清单与同一个探测缓存（--spec 每个二进制只问一次）。
 //
 // 缺省二进制：~/.pi/runtime/preshell，可用 extensions.toml 的 [preshell] 覆盖。
 
@@ -174,7 +183,18 @@ export interface PreshellFacts {
   writeRoots: string[];
 }
 
-export type PreshellUnavailableReason = "disabled" | "missing" | "timeout" | "exit" | "bad-json" | "version";
+export type PreshellUnavailableReason =
+  | "disabled"
+  | "missing"
+  | "timeout"
+  | "exit"
+  | "bad-json"
+  /**
+   * 契约能力不足：--spec 读出来了，但本侧代码实际依赖的必需项缺了几样（detail 里点名）。
+   * 旧版二进制不认识 --spec（用法错误）也归这类——能力清单都拿不到，就是能力不足。
+   * 以前这里是 "version"（主次版号不相等）；版本号现在不参与判定，见文件头。
+   */
+  | "capability";
 
 export type PreshellOutcome =
   | { ok: true; facts: PreshellFacts; version: string }
@@ -185,13 +205,18 @@ export interface PreshellConfig {
   bin: string;
   timeoutMs: number;
   /**
-   * 期望的契约版本（主次版号，如 "0.4"）；次版本号不一致就按「事实层不可用」处理。
+   * 已知版本（extensions.toml 的 [preshell] version 键）。**不参与门禁**：能不能用看
+   * --spec 的能力探测（REQUIRED_CAPABILITIES），这个值只进提示与报告（实测报的是哪个、
+   * 已知的是哪个）。读不到就用 EXPECTED_VERSION 的缺省值。
    *
-   * v0.4.0 起 preshell 删掉了 schema 号，兼容性只跟版本号走（见文件头）。扩展配置里的
-   * 新键名是 `version`（extensions.toml 的 [preshell] 段）；旧配置里那个 `schema = 1`
-   * 已经没意义，读了也不参与判定（它只是留在文件里，不报错）。
+   * 旧配置里那个 `schema = 1` 已经没意义，读了也不参与任何判定（只是留在文件里，不报错）。
    */
-  expectedVersion: string;
+  knownVersion?: string;
+  /**
+   * @deprecated 旧字段名，当时它是硬门禁（主次版号相等才可用）。老调用方还在传，
+   * 读到就当 knownVersion 用（见 knownVersionOf）。新代码用 knownVersion。
+   */
+  expectedVersion?: string;
 }
 
 /** 缺省二进制位置：重启不丢（/tmp 是内存盘） */
@@ -206,15 +231,23 @@ export const DEFAULT_PRESHELL_BIN = "~/.pi/runtime/preshell";
  */
 export const DEFAULT_TIMEOUT_MS = 100;
 /**
- * 我们适配过的契约版本（主次版号）。比较只看这两个数：次版本号变了就是不兼容，
- * 修订号变了是兼容的（0.5.x 互通；0.4.x 及更早的旧二进制一律走保守兜底）。
- * 当前是 0.5.0（payload 字段已解析但尚未接线使用，见 PreshellEffect.payload）。
+ * 已知版本（原 EXPECTED_VERSION）：我们适配过的那一版，**不再参与门禁**。
+ *
+ * 能不能用看 --spec 的能力探测（REQUIRED_CAPABILITIES）：字段在就能用，哪怕版本号没见过。
+ * 这个名字与这行字面量保留有两个原因：
+ *   1 scripts/preshell-install.mjs 拿一条正则从本文件里读它的值，用于装/status 时的
+ *      「实测 vs 已知」对照（那条对照现在只是提示）
+ *   2 外部（文档、脚本）还在按这个名字读
+ * 提示/报告里更愿意用语义准的 KNOWN_VERSION。
  */
 export const EXPECTED_VERSION = "0.6";
+/** 已知版本的语义名（= EXPECTED_VERSION）：提示与报告里用它 */
+export const KNOWN_VERSION = EXPECTED_VERSION;
 
 /**
- * 版本号 → 主次版号（"0.4.1" → "0.4"）；读不出版号时 undefined。
- * 多出来的东西（预发布后缀之类）不管：兼容性只看前两段。
+ * 版本号 → 主次版号（"0.6.1" → "0.6"）；读不出版号时 undefined。
+ *
+ * 现在只剩提示用途：实测版本与已知版本同不同主次版号，写进报告，但不决定可用性。
  */
 export function compatVersion(version: string): string | undefined {
   const m = /^(\d+)\.(\d+)/.exec(String(version).trim());
@@ -222,14 +255,12 @@ export function compatVersion(version: string): string | undefined {
 }
 
 /**
- * 契约是否兼容：主次版号一致。
- *
- * 任何一个读不出来（工具没报版本号、配置写坏）都算不兼容——保守兜底，不猜。
+ * 已知版本：名称换过（expectedVersion → knownVersion），老配置对象两个都认。
+ * 都读不到时回退到 EXPECTED_VERSION —— 它只进提示，读不出也不影响可用性。
  */
-export function versionsCompatible(toolVersion: string, expectedVersion: string): boolean {
-  const tool = compatVersion(toolVersion);
-  const expected = compatVersion(expectedVersion);
-  return tool !== undefined && expected !== undefined && tool === expected;
+export function knownVersionOf(config: { knownVersion?: string; expectedVersion?: string }): string {
+  const value = config.knownVersion ?? config.expectedVersion;
+  return typeof value === "string" && value.trim() ? value.trim() : EXPECTED_VERSION;
 }
 
 /**
@@ -238,13 +269,14 @@ export function versionsCompatible(toolVersion: string, expectedVersion: string)
  */
 export const INSTALL_HINT = [
   "preshell 是命令审核的事实层（独立子进程，GPL-3.0-or-later，仓库 conglinyizhi/preshell）",
-  "装它：gh release download v0.5.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
-  "      install -Dm755 /tmp/p/preshell-v0.5.0-x86_64-linux ~/.pi/runtime/preshell",
+  "装它：gh release download v0.6.0 -R conglinyizhi/preshell -D /tmp/p && sha256sum -c /tmp/p/SHA256SUMS",
+  "      install -Dm755 /tmp/p/preshell-v0.6.0-x86_64-linux ~/.pi/runtime/preshell",
   "v0.2 起支持 --stream：批量场景一个子进程跑多条命令，见 lib/preshell-stream.ts",
   "v0.3 起 --cwd 事实上必填（单条与流式都是进程级参数）；词首带变量/~/~+ 的路径由调用方收尾",
-  "v0.4 起兼容性只看版本号（次版本号变即不兼容）；条件分支的候选值走 effect.candidates",
-  "v0.4.1 起：赋值解出来的目标带 origin（它原来写的那处引用），候选集只在穷尽时才给",
+  "v0.4 起条件分支的候选值走 effect.candidates：候选集只在穷尽时才给（要么完整、要么不出现）",
+  "v0.4.1 起：赋值解出来的目标带 origin（它原来写的那处引用）",
   "v0.5.0 起：--payload（opt-in）在 Exec/Spawn 上带载荷原文；wrapper 的 Spawn 目标修正",
+  "兼容性看能力不看版本号：起一次 --spec 查必需契约项在不在，缺项才退回旧匹配",
   "或自己编：moon build --release --target native（再 install 到同一路径）",
   "没装也能用：路径判定退回旧的匹配规则（更严、误报更多），不会放行也不会崩",
 ].join("\n");
@@ -263,8 +295,8 @@ export function describeUnavailable(reason: PreshellUnavailableReason, detail?: 
       return `工具没跑起来${suffix}`;
     case "bad-json":
       return `输出不是合法的报告${suffix}`;
-    case "version":
-      return `契约版本不符${suffix}`;
+    case "capability":
+      return `契约能力不足${suffix}`;
   }
 }
 
@@ -280,7 +312,7 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
     enabled: true,
     bin: DEFAULT_PRESHELL_BIN,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    expectedVersion: EXPECTED_VERSION,
+    knownVersion: EXPECTED_VERSION,
   };
   try {
     const doc = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -291,9 +323,12 @@ export function loadPreshellConfig(path = join(getAgentDir(), "extensions.toml")
       enabled: section.enabled === undefined ? fallback.enabled : section.enabled === true,
       bin: typeof section.bin === "string" && section.bin.trim() ? section.bin.trim() : fallback.bin,
       timeoutMs: num(section.timeoutMs, fallback.timeoutMs),
-      // 老配置里的 `schema = 1` 到此为止：v0.4.0 起它没有对照物了，读也不读，免得把
-      // 「一个数字」误当成版本号。要钉版本写 `version = "0.4"`（缺省就是它）
-      expectedVersion: typeof section.version === "string" && section.version.trim() ? section.version.trim() : fallback.expectedVersion,
+      // 老配置里的 `schema = 1` 到此为止：它没有对照物了，读也不读。`version` 仍然认，
+      // 但含义已经换成「已知版本」（只进提示/报告，不参与门禁）——键名不改，免得到处改配置
+      knownVersion:
+        typeof section.version === "string" && section.version.trim()
+          ? section.version.trim()
+          : fallback.knownVersion,
     };
   } catch {
     return fallback;
@@ -488,6 +523,203 @@ export function factsFromReport(report: PreshellReport, opts: FactsOptions = {})
   };
 }
 
+// ── 能力清单：本侧实际依赖的契约面（取代原来的版本号硬门禁）──
+//
+// 判据是「字段在不在」，不是版本号。清单里的每一项都注明 pi 侧哪一处代码在读它；只有本侧
+// 真的开始依赖一个新字段时，才会往 required 里加一项（上游加功能、只是多给几个字段的加法，
+// 在这里不需要改任何东西就吃得下）。
+//
+// 这份清单与 scripts/preshell-install.mjs 里的 GATE（安装时的门禁）同源但独立：
+// 那边多一条 client_obligations（安装时看契约文本用，运行时不读），本侧不列；
+// 两边都要的东西（tool / version / modes.stream / exit_codes / refusal / paths.*）保持一致。
+//
+// 只做存在性判断，不验语义（描述文案写成什么、行为对不对，这里看不出来），也拦不住
+// 恶意二进制（它自己就能编一份漂亮的 --spec）。真正的防线是 sha256 + 影子对比 + 一条命令回滚。
+
+/** --spec 的机读契约。每一项都是字符串描述，这里只看在不在，不解释内容 */
+export interface PreshellSpec {
+  tool?: unknown;
+  version?: unknown;
+  doc?: unknown;
+  one_line?: unknown;
+  modes?: unknown;
+  exit_codes?: unknown;
+  refusal?: unknown;
+  client_obligations?: unknown;
+  paths?: unknown;
+  [key: string]: unknown;
+}
+
+export interface PreshellCapability {
+  /** --spec 里的位置，也是 detail 里点名用的 id */
+  id: string;
+  /** required = 缺了判不可用；advisory = 缺了照旧跑，只记一笔 */
+  level: "required" | "advisory";
+  check: (spec: PreshellSpec) => boolean;
+  /** pi 侧哪一处代码依赖它（改那处代码时这条要跟着改） */
+  why: string;
+}
+
+function has(obj: unknown, key: string): boolean {
+  return typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/** refusal.shape：描述拒绝回包形状的那句文本（如 `{"error":"...","line":N}`） */
+function refusalShape(spec: PreshellSpec): string | undefined {
+  const shape = (spec.refusal as { shape?: unknown } | undefined)?.shape;
+  return typeof shape === "string" ? shape : undefined;
+}
+
+/**
+ * 必需项：缺任何一条就按「事实层不可用」处理（退回旧匹配，不猜）。
+ *
+ * 这些是 lib/preshell.ts、lib/preshell-stream.ts、lib/sandbox-check.ts 真实读写的字段。
+ */
+export const REQUIRED_CAPABILITIES: readonly PreshellCapability[] = [
+  {
+    id: "tool",
+    level: "required",
+    check: (s) => s.tool === "preshell",
+    why: "身份：queryPreshellSpec 只认它自报的名字。装错东西（别的工具也认 --spec）时立刻归到保守兜底",
+  },
+  {
+    id: "version",
+    level: "required",
+    check: (s) => typeof s.version === "string" && s.version.trim() !== "",
+    why: "PreshellOutcome.version / 提示与报告里的「实测版本」。注意：它不参与门禁（以前拿它比主次版号，见文件头）",
+  },
+  {
+    id: "modes.stream",
+    level: "required",
+    check: (s) =>
+      (Array.isArray(s.modes) ? s.modes : []).some((m) => {
+        if (typeof m !== "object" || m === null) return false;
+        const mode = m as { flag?: unknown; name?: unknown };
+        return mode.flag === "--stream" || mode.name === "stream";
+      }),
+    why: "lib/preshell-stream.ts 的 ensureChild 起 `--stream` 长驻子进程；清单里没这一模式说明这个二进制没有它",
+  },
+  {
+    id: "exit_codes.0",
+    level: "required",
+    check: (s) => has(s.exit_codes, "0"),
+    why: "lib/preshell.ts analyzeCommand 只在退出码 0 时读 stdout 那份报告",
+  },
+  {
+    id: "exit_codes.2",
+    level: "required",
+    check: (s) => has(s.exit_codes, "2"),
+    why: "analyzeCommand 在 cwd 不是绝对路径时不给 --cwd——这条就是那个取舍的依据（给了就是用法错误，退出码 2）",
+  },
+  {
+    id: "refusal.error",
+    level: "required",
+    check: (s) => refusalShape(s)?.includes('"error"') === true,
+    why: "lib/preshell-stream.ts 的 handleLine 把应答里的 error 字段翻成 bad-json 失败；形状变了会被当成坏行",
+  },
+  {
+    id: "refusal.line",
+    level: "required",
+    check: (s) => refusalShape(s)?.includes('"line"') === true,
+    why: "同上：坏行要能定位到第几行（handleLine 那个分支就是冲着这个形状写的）",
+  },
+  {
+    id: "paths.base",
+    level: "required",
+    check: (s) => has(s.paths, "base"),
+    why: "analyzeCommand 传 --cwd=<绝对路径>；lib/sandbox-check.ts 的相对路径解析基准就是它",
+  },
+  {
+    id: "paths.required",
+    level: "required",
+    check: (s) => has(s.paths, "required"),
+    why: "analyzeCommand 的 cwdRejected：--cwd 缺失/非绝对路径时不给工具值，改由它自己推演——这条说清了不给的后果",
+  },
+  {
+    id: "paths.vars",
+    level: "required",
+    check: (s) => has(s.paths, "vars"),
+    why: "substituteVariables / resolvePath / facts.vars：洞里的变量名由本侧替换（环境在本侧手上）",
+  },
+  {
+    id: "paths.always_absolute",
+    level: "required",
+    check: (s) => has(s.paths, "always_absolute"),
+    why: "settlePaths 出来的路径直接拿去比黑名单（lib/sandbox-check.ts）；说好绝对路径才能这么用",
+  },
+  {
+    id: "paths.cd_scope",
+    level: "required",
+    check: (s) => has(s.paths, "cd_scope"),
+    why: "factsFromReport 的收尾基准优先用报告回的 impact.cwd（命令内部 cd 过就是 cd 之后那个）",
+  },
+  {
+    id: "paths.no_base",
+    level: "required",
+    check: (s) => has(s.paths, "no_base"),
+    why: "facts.uncertain；lib/sandbox-check.ts 一旦 incomplete 就不拿「没报写」当「不写」",
+  },
+  {
+    id: "paths.origin",
+    level: "required",
+    check: (s) => has(s.paths, "origin"),
+    why: "PreshellEffect.origin；lib/sandbox-check.ts 的 preshellProgramValues 拿它把效果对回命令行。v0.4.0 没有这条",
+  },
+  {
+    id: "paths.candidates",
+    level: "required",
+    check: (s) => has(s.paths, "candidates"),
+    why: "PreshellEffect.candidates；lib/sandbox-check.ts 候选逐个判（命中即拦）。没有它那档收紧收不到",
+  },
+];
+
+/**
+ * 提示级：缺了照旧跑，只记一笔（preshellSpecState().advisoryGaps）。
+ */
+export const ADVISORY_CAPABILITIES: readonly PreshellCapability[] = [
+  {
+    id: "paths.payload",
+    level: "advisory",
+    check: (s) => has(s.paths, "payload"),
+    why: "PreshellEffect.payload——本侧只解析、还没接线（interpreter 层仍从命令文本里自己抠），缺了照旧能跑（v0.4.1 就没有这条）",
+  },
+];
+
+/** 全部能力项（必需 + 提示级），按清单顺序 */
+export const PRESHELL_CAPABILITIES: readonly PreshellCapability[] = [...REQUIRED_CAPABILITIES, ...ADVISORY_CAPABILITIES];
+
+export interface CapabilityCheck {
+  /** 必需项齐不齐（只有它能决定可用性） */
+  ok: boolean;
+  /** 缺的必需项 id（ok=false 时非空） */
+  missing: string[];
+  /** 缺的提示项 id（不影响 ok） */
+  missingAdvisory: string[];
+}
+
+/** 跑一遍能力清单。check 抛异常算缺项（宁可保守，不放过） */
+export function checkCapabilities(spec: PreshellSpec): CapabilityCheck {
+  const run = (item: PreshellCapability): boolean => {
+    try {
+      return item.check(spec) === true;
+    } catch {
+      return false;
+    }
+  };
+  const missing = REQUIRED_CAPABILITIES.filter((item) => !run(item)).map((item) => item.id);
+  const missingAdvisory = ADVISORY_CAPABILITIES.filter((item) => !run(item)).map((item) => item.id);
+  return { ok: missing.length === 0, missing, missingAdvisory };
+}
+
+/**
+ * 「缺能力」的 detail 文案（两处调用点共用一套措辞）：点名缺了什么，带上实测版本。
+ * 错误文案说的是能力，不是版本——版本号已经只是提示了。
+ * 已知版本由调用方补（只有它知道配置里写的是什么）：`${detail}；已知版本 ${known}`。
+ */
+export function capabilityFailureDetail(check: CapabilityCheck, measuredVersion: string | undefined): string {
+  return `缺必需契约项 ${check.missing.join("、")}；实测 version=${measuredVersion ?? "读不出"}`;
+}
+
 // ── 调用与缓存 ──
 
 /** 有界缓存：同一条命令在一次会话里会被问好几遍（bash、审计、升权、重试） */
@@ -498,13 +730,13 @@ const cache = new Map<string, PreshellOutcome>();
  * 熔断：失败到阈值就不再试。
  *
  * 分两类，因为两类失败的代价不一样：
- *   - 确定性失败（缺件、契约版本不符）：不会自愈，一次就断（但每进程只试一次）
+ *   - 确定性失败（缺件、契约能力不足）：不会自愈，一次就断（但每进程只试一次）
  *   - 瞬时失败（超时、坏 JSON、非零退出）：可能只是机器忙了一下。
  *     超时 100ms 之后这类更容易碰上，而误熔断的代价是整个会话退回旧匹配（误报全回来），
  *     所以要求连续 5 次。真卡死的二进制最多担误 5 × 100ms。
  * `/reload` 或重启后重试。
  */
-export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "version"]);
+export const BREAKER_IMMEDIATE: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "capability"]);
 export const BREAKER_TRANSIENT_THRESHOLD = 5;
 
 /**
@@ -513,7 +745,7 @@ export const BREAKER_TRANSIENT_THRESHOLD = 5;
  * 当成模块级状态就是每扩展一份 —— 一个扩展试出「缺二进制」而熔断，另几个扩展照样
  * 每次审计都去 spawn 一个不存在的进程、各弹一次同样的通知。
  *
- * 缓存的 cache / versionCache 不在共享范围内：那只是同一份事实的重复查询，各存一份不影响正确性。
+ * 缓存的 cache / specCache 不在共享范围内：那只是同一份事实的重复查询，各存一份不影响正确性。
  */
 interface PreshellSharedState {
   consecutiveFailures: number;
@@ -522,6 +754,10 @@ interface PreshellSharedState {
   announced: Set<PreshellUnavailableReason>;
   /** 状态栏的「事实层不可用」目前是否已设上 */
   statusShown: boolean;
+  /** 实测 --spec 自报的版本（探测过才有）；只给报告/诊断看 */
+  specMeasuredVersion: string | undefined;
+  /** 提示级能力缺口（实测缺了哪些）：不影响判定，只记一笔 */
+  capabilityGaps: string[];
 }
 
 const shared = processSingleton<PreshellSharedState>("preshell", () => ({
@@ -529,6 +765,8 @@ const shared = processSingleton<PreshellSharedState>("preshell", () => ({
   breakerReason: undefined,
   announced: new Set<PreshellUnavailableReason>(),
   statusShown: false,
+  specMeasuredVersion: undefined,
+  capabilityGaps: [],
 }));
 
 export function preshellBreakerState(): { broken: PreshellUnavailableReason | undefined; failures: number } {
@@ -546,41 +784,113 @@ export function clearPreshellCache(): void {
 }
 
 /**
- * 每次进程只问一次 --version（版本是产物属性，不随命令变）；流式客户端也用这份缓存。
+ * 每次进程只探测一次 --spec（能力是产物属性，不随命令变）；流式客户端也用这份缓存。
  *
- * 两个版都要能读：v0.4.0 是 `{"tool":"preshell","version":"0.4.0"}`（没有 schema 了），
- * 旧版（≤0.3.0）多一个 `schema` 字段。多出来的字段一律忽略——**版本号才是兼容性依据**；
- * 读不出 `version` 字符串（字符串以外的类型也算）就当坏 JSON。
+ * 只起这一个探测子进程：不再问 --version（--spec 里自带 version），也不去拿 --help 探
+ * --stream（能力清单里的 modes.stream 就是干这个的）。
+ *
+ * 失败一律归到保守兜底：
+ *   - 起不来 → missing / exit；跑超时 → timeout
+ *   - 退出码 2（用法错误）→ capability：唯一的可能是它不认识 --spec（v0.4.0 之前没这个开关）。
+ *     拿不到能力清单就是能力不足，不是「没依赖」也绝不能放行
+ *   - 输出不是 JSON 对象 → bad-json
+ *   - 是 JSON 对象但缺必需项 → capability（detail 点名缺了哪几项）
  */
-const versionCache = new Map<string, { version: string } | { error: PreshellUnavailableReason }>();
+export type PreshellSpecProbe =
+  | { version: string; spec: PreshellSpec }
+  | { error: PreshellUnavailableReason; detail?: string; measuredVersion?: string };
 
-export function queryPreshellVersion(
-  bin: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): { version: string } | { error: PreshellUnavailableReason } {
-  const hit = versionCache.get(bin);
+const specCache = new Map<string, PreshellSpecProbe>();
+
+export function queryPreshellSpec(bin: string, timeoutMs = DEFAULT_TIMEOUT_MS): PreshellSpecProbe {
+  const hit = specCache.get(bin);
   if (hit) return hit;
-  let result: { version: string } | { error: PreshellUnavailableReason };
+  let result: PreshellSpecProbe;
   try {
-    const proc = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: timeoutMs });
+    const proc = spawnSync(bin, ["--spec"], { encoding: "utf8", timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     if (proc.error) {
-      result = { error: (proc.error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "exit" };
+      const code = (proc.error as NodeJS.ErrnoException).code;
+      result =
+        code === "ENOENT"
+          ? { error: "missing" }
+          : code === "ETIMEDOUT"
+            ? { error: "timeout", detail: `--spec 超过 ${timeoutMs}ms 没回` }
+            : { error: "exit", detail: `--spec 没跑起来：${proc.error.message}` };
+    } else if (proc.status === 2) {
+      // 按契约，退出码 2 是用法错误：探测里唯一能触发它的就是不认识 --spec
+      result = {
+        error: "capability",
+        detail: "这个二进制不认识 --spec（用法错误，退出码 2）：v0.4.0 之前没有能力清单，判不可用并退回旧匹配",
+      };
     } else if (proc.status !== 0) {
-      result = { error: "exit" };
+      result = { error: "exit", detail: `--spec 退出码 ${proc.status}` };
     } else {
-      const parsed = JSON.parse(proc.stdout) as { version?: unknown; schema?: unknown };
-      result = typeof parsed.version === "string" ? { version: parsed.version } : { error: "bad-json" };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(proc.stdout);
+      } catch {
+        parsed = undefined;
+      }
+      const spec =
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as PreshellSpec) : undefined;
+      if (!spec) {
+        result = { error: "bad-json", detail: "--spec 的输出不是一份 JSON 对象" };
+      } else {
+        const check = checkCapabilities(spec);
+        const measured = typeof spec.version === "string" ? spec.version.trim() : undefined;
+        // 提示级缺口记一笔（只影响报告与诊断，不影响可用性）
+        shared.capabilityGaps = [...check.missingAdvisory];
+        shared.specMeasuredVersion = measured;
+        result = check.ok
+          ? { version: measured ?? "", spec }
+          : { error: "capability", detail: capabilityFailureDetail(check, measured), ...(measured ? { measuredVersion: measured } : {}) };
+      }
     }
-  } catch {
-    result = { error: "bad-json" };
+  } catch (err) {
+    result = { error: "bad-json", detail: err instanceof Error ? err.message : String(err) };
   }
-  versionCache.set(bin, result);
+  specCache.set(bin, result);
   return result;
 }
 
-/** 测试用：清掉版本探测缓存 */
+/** 测试用：清掉能力探测缓存（连带它记下的能力缺口与实测版本） */
+export function resetPreshellSpecCache(): void {
+  specCache.clear();
+  shared.capabilityGaps = [];
+  shared.specMeasuredVersion = undefined;
+}
+
+/** 旧名（= resetPreshellSpecCache）：调用点还多，先留着 */
 export function resetPreshellVersionCache(): void {
-  versionCache.clear();
+  resetPreshellSpecCache();
+}
+
+/**
+ * 探测结果的展示层：实测版本、已知版本、两者是否同主次版号、提示级缺口。
+ * 版本号不决定可用性，这里只是把「实测 vs 已知」摆出来（提示、报告、排障用）。
+ */
+export interface PreshellSpecState {
+  /** 实测 --spec 自报的版本；没探测过就是 undefined */
+  measuredVersion?: string;
+  /** 已知版本（extensions.toml 的 version / EXPECTED_VERSION）：只作提示 */
+  knownVersion: string;
+  /** 实测与已知同主次版号；探测过才有。false 不代表不可用 */
+  compatibleWithKnown?: boolean;
+  /** 提示级能力缺口（实测缺了哪些） */
+  advisoryGaps: readonly string[];
+}
+
+export function preshellSpecState(config: PreshellConfig = loadPreshellConfig()): PreshellSpecState {
+  const known = knownVersionOf(config);
+  const measured = shared.specMeasuredVersion;
+  const tool = measured ? compatVersion(measured) : undefined;
+  const want = compatVersion(known);
+  return {
+    ...(measured ? { measuredVersion: measured } : {}),
+    knownVersion: known,
+    ...(tool && want ? { compatibleWithKnown: tool === want } : {}),
+    advisoryGaps: [...shared.capabilityGaps],
+  };
 }
 
 /**
@@ -601,6 +911,10 @@ export interface AnalyzeOptions {
 
 /**
  * 分析一条命令。任何异常都翻成 ok:false + reason，不抛：调用方据此走保守兜底。
+ *
+ * 可用性先过一遍能力探测（queryPreshellSpec，每个二进制只探一次）：缺必需契约项就
+ * 返回 reason=capability（detail 点名缺了哪几项），调用方照旧退回旧匹配，绝不因探测失败而放行。
+ * 版本号不参与判定；ok:true 时的 version 是 --spec 实测报的那个，只供展示。
  */
 export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): PreshellOutcome {
   const config = opts.config ?? loadPreshellConfig();
@@ -617,15 +931,15 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
   if (cached) return cached;
 
   const outcome = ((): PreshellOutcome => {
-    const version = queryPreshellVersion(bin, config.timeoutMs);
-    if ("error" in version) return { ok: false, reason: version.error };
-    if (!versionsCompatible(version.version, config.expectedVersion)) {
-      return {
-        ok: false,
-        reason: "version",
-        detail: `工具报 version=${version.version}，期望 ${config.expectedVersion}.x`,
-      };
+    // 能力探测（--spec）：字段在就能用，不再比主次版号。版本号只进提示与报告
+    const probe = queryPreshellSpec(bin, config.timeoutMs);
+    if ("error" in probe) {
+      if (probe.error !== "capability") return { ok: false, reason: probe.error, ...(probe.detail ? { detail: probe.detail } : {}) };
+      // 缺能力的 detail 里把「已知版本」也带上：它是提示值，不参与判定
+      const known = knownVersionOf(config);
+      return { ok: false, reason: "capability", detail: `${probe.detail}；已知版本 ${known}` };
     }
+    const version = probe.version;
     try {
       const proc = spawnSync(bin, ["--shell=probe", ...(cwd ? [`--cwd=${cwd}`] : [])], {
         input: command,
@@ -640,7 +954,7 @@ export function analyzeCommand(command: string, opts: AnalyzeOptions = {}): Pres
       if (proc.status !== 0) return { ok: false, reason: "exit", detail: `退出码 ${proc.status}` };
       const report = JSON.parse(proc.stdout) as PreshellReport;
       const facts = factsFromReport(report, { cwd, env: opts.env, command });
-      return { ok: true, facts: cwdRejected ? { ...facts, cwdRejected } : facts, version: version.version };
+      return { ok: true, facts: cwdRejected ? { ...facts, cwdRejected } : facts, version };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { ok: false, reason: /timed? ?out/i.test(message) ? "timeout" : "bad-json", detail: message };
@@ -679,7 +993,7 @@ const STATUS_KEY = "preshell";
  * 会往桌面弹通知的原因：能动手解决的那些。
  * 瞬时的超时/坏 JSON 不打扰，否则一次网络抖就弹一次。
  */
-const DESKTOP_REASONS: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "version", "disabled"]);
+const DESKTOP_REASONS: ReadonlySet<PreshellUnavailableReason> = new Set(["missing", "capability", "disabled"]);
 
 export interface FactLayerNotifyDeps {
   /** 测试注入；缺省走 lib/notify-send（失败静默，不影响判定） */

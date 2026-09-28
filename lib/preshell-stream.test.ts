@@ -18,7 +18,7 @@ import {
 	type PreshellStream,
 	type PreshellStreamOptions,
 } from "./preshell-stream.ts";
-import { resetPreshellVersionCache, type PreshellReport } from "./preshell.ts";
+import { resetPreshellSpecCache, type PreshellReport } from "./preshell.ts";
 
 /** 替身把命令原样回显在 echo 里，真实报告没有这个字段：只用于把应答对上请求 */
 function echoOf(report: PreshellReport): string | undefined {
@@ -26,28 +26,60 @@ function echoOf(report: PreshellReport): string | undefined {
 }
 
 /**
- * 替身：说 preshell v0.2 的流式协议（v0.2.1 未改）。
+ * 替身：说 preshell v0.6.0 的流式协议，并答 --spec（能力清单）。
  *
- * 模式写在同目录的 mode 文件里（而不是环境变量）：能力探测那条路径是
- * `spawnSync(bin, ["--help"])`，带不上调用方的 env，模式落在文件里两条路径都能读。
+ * 模式写在同目录的 mode 文件里（而不是环境变量）：能力探测那条路径也是 spawnSync，
+ * 带不上调用方的 env，模式落在文件里两条路径都能读。
  * 顺带断言调用方真的传了 --stream 与 --shell=probe：传错就退出码 3。
+ *
+ * 模式 ↔ 它模拟的产物：
+ *   ok / diagnostic / bad-json / echo-id / silent / reject / orphan / crash-after-first
+ *                     → 能力齐全的 0.6.0
+ *   new-patch         → 能力齐全的 0.6.1（版本号不同不再是问题）
+ *   future-version    → 能力齐全的 9.9.9（本侧没见过的版本）
+ *   no-candidates     → 缺 paths.candidates（必需项）
+ *   no-stream         → modes 里没有 --stream
+ *   old-version       → 不认识 --spec（用法错误，退出码 2），旧契约（带 schema 的 0.3.0）那种
  */
 const STUB_SOURCE = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const mode = fs.readFileSync(path.join(__dirname, "mode"), "utf8").trim();
 const argv = process.argv.slice(2);
+const spec = () => {
+  const version = mode === "new-patch" ? "0.6.1" : mode === "future-version" ? "9.9.9" : "0.6.0";
+  const base = {
+    tool: "preshell",
+    version,
+    doc: "https://example.invalid/integration.md",
+    one_line: "Reports what a shell command touches. Facts, not a verdict.",
+    modes: [
+      { name: "single", stdin: "one command", stdout: "one report" },
+      { name: "stream", flag: "--stream", stdin: "one request per line", stdout: "one answer per line" },
+    ],
+    exit_codes: { "0": "answers produced", "2": "usage error", other: "tool failed", note: "…" },
+    refusal: { shape: '{"error":"...","line":N}', means: "not a request", note: "…" },
+    client_obligations: ["serialize writes to stdin"],
+    paths: {
+      base: "b", vars: "v", required: "r", always_absolute: "a", cd_scope: "c",
+      no_base: "n", origin: "o", payload: "p", candidates: "cd",
+    },
+  };
+  if (mode === "no-stream") base.modes = base.modes.filter((m) => m.name !== "stream");
+  if (mode === "no-candidates") delete base.paths.candidates;
+  return base;
+};
 if (argv.includes("--help")) {
   process.stdout.write(mode === "no-stream" ? "options:\\n  --pretty\\n" : "options:\\n  --stream   many commands\\n");
   process.exit(0);
 }
-if (argv.includes("--version")) {
-  // old-version 模式：旧契约的输出形状（带 schema），也是「次版本号不再匹配」的例子
-  const version =
-    mode === "old-version"
-      ? { tool: "preshell", version: "0.3.0", schema: 1 }
-      : { tool: "preshell", version: mode === "new-patch" ? "0.6.1" : "0.6.0" };
-  process.stdout.write(JSON.stringify(version) + "\\n");
+if (argv.includes("--spec")) {
+  // 旧契约（0.3 那种）根本不认识 --spec：用法错误 + 退出码 2
+  if (mode === "old-version") {
+    process.stderr.write("unknown option: --spec\\n");
+    process.exit(2);
+  }
+  process.stdout.write(JSON.stringify(spec()) + "\\n");
   process.exit(0);
 }
 if (!argv.includes("--stream") || !argv.includes("--shell=probe")) process.exit(3);
@@ -110,7 +142,7 @@ async function waitFor(cond: () => boolean, ms = 2_000): Promise<void> {
 
 after(() => {
 	resetStreamSupportCache();
-	resetPreshellVersionCache();
+	resetPreshellSpecCache();
 });
 
 describe("preshell-stream：正常路径", () => {
@@ -289,39 +321,54 @@ describe("preshell-stream：生命周期", () => {
 });
 
 describe("preshell-stream：能力与契约探测", () => {
-	it("v0.1 那种不认 --stream 的二进制：不起进程，报明白原因", async () => {
+	it("modes 里没有 --stream 的产物：不起进程，报明白缺的是哪一项", async () => {
 		const bin = stub("no-stream");
 		resetStreamSupportCache();
+		// streamSupported（--help 文本探）留着给调用方自己先用一眼，结论要与能力探测一致
 		assert.equal(streamSupported(bin), false);
 		const client = open(bin);
 		const result = await client.analyze("ls");
 		assert.equal(result.ok, false);
 		if (!result.ok) {
-			assert.equal(result.reason, "exit");
-			assert.match(result.detail ?? "", /--stream/);
+			assert.equal(result.reason, "capability");
+			assert.match(result.detail ?? "", /modes\.stream/);
 		}
 		assert.equal(client.stats().spawns, 0);
 		await client.close();
 	});
 
-	it("契约版本不符按事实层不可用处理：旧契约（带 schema 的 0.3.0）不放过", async () => {
+	it("缺必需契约项（paths.candidates）：不起进程，reason=capability 且点名", async () => {
+		const client = open(stub("no-candidates"));
+		const result = await client.analyze("ls");
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.reason, "capability");
+			assert.match(result.detail ?? "", /paths\.candidates/);
+		}
+		assert.equal(client.stats().spawns, 0);
+		await client.close();
+	});
+
+	it("不认识 --spec 的旧产物（0.3 那种）：capability，不当成「没依赖」放行", async () => {
 		const client = open(stub("old-version"));
 		const result = await client.analyze("ls");
 		assert.equal(result.ok, false);
 		if (!result.ok) {
-			assert.equal(result.reason, "version");
-			assert.match(result.detail ?? "", /version=0\.3\.0/);
+			assert.equal(result.reason, "capability");
+			assert.match(result.detail ?? "", /不认识 --spec/);
 		}
 		assert.equal(client.stats().spawns, 0);
 		await client.close();
 	});
 
-	it("修订号不同是兼容的：0.5.1 照用", async () => {
-		const client = open(stub("new-patch"));
-		const result = await client.analyze("ls");
-		assert.equal(result.ok, true);
-		assert.equal(client.stats().spawns, 1);
-		await client.close();
+	it("版本号没见过但能力齐全：照用（0.6.1 / 9.9.9 各一个进程）", async () => {
+		for (const mode of ["new-patch", "future-version"]) {
+			const client = open(stub(mode));
+			const result = await client.analyze("ls");
+			assert.equal(result.ok, true, `${mode} 能力齐全就该能用`);
+			assert.equal(client.stats().spawns, 1);
+			await client.close();
+		}
 	});
 
 	it("二进制不在：报缺件，不反复重试", async () => {
