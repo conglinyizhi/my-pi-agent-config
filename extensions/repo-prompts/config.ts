@@ -46,8 +46,8 @@ export interface Rule {
 	rawFile?: string;
 	/** 内联文本；file 规则为 undefined */
 	text?: string;
-	/** 定义这条规则的 toml（绝对路径；/repo-prompts 展示用） */
-	source?: string;
+	/** 定义这条规则的 toml（绝对路径；/repo-prompts 展示用）。构建规则时总会被设上 */
+	source: string;
 }
 
 export interface LoadedRules {

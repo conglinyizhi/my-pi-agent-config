@@ -17,6 +17,7 @@ import { DEFAULT_ORDER, type Rule, loadRules, loadSettings } from "./config.ts";
 import { clearContentCache, readTextCached } from "./content.ts";
 import { expandHome, isUnder, matchingRules, normalizePath } from "./match.ts";
 import { buildReport } from "./report.ts";
+import { buildWidgetLines } from "./widget.ts";
 import { injectedRules, registerRuleSections, resetWarned, ruleSectionName, ruleText } from "./sections.ts";
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,7 @@ describe("前缀匹配", () => {
 			order: DEFAULT_ORDER,
 			paths: [normalizePath("~/disk/ai_workspace/preshell")],
 			rawPaths: ["~/disk/ai_workspace/preshell"],
+			source: "/tmp/rules.toml",
 		};
 		assert.deepEqual(matchingRules([rule], join(homedir(), "disk/ai_workspace/preshell")).map((r) => r.name), ["t"]);
 		assert.deepEqual(matchingRules([rule], join(homedir(), "disk/ai_workspace/preshell/cmd")).map((r) => r.name), ["t"]);
@@ -370,6 +372,7 @@ describe("段注册与装配", () => {
 			rawPaths: [dir],
 			file: join(dir, "r.md"),
 			rawFile: "r.md",
+			source: join(dir, "index.toml"),
 		};
 		assert.deepEqual(rules, []);
 		const reg = registerForTest([rule]);
@@ -384,7 +387,7 @@ describe("段注册与装配", () => {
 	});
 
 	it("不命中 → 空段被丢掉，其它段不受影响", async () => {
-		const rule: Rule = { name: "nope", order: DEFAULT_ORDER, paths: ["/somewhere/else"], rawPaths: ["/somewhere/else"], text: "不该出现" };
+		const rule: Rule = { name: "nope", order: DEFAULT_ORDER, paths: ["/somewhere/else"], rawPaths: ["/somewhere/else"], source: "/tmp/rules.toml", text: "不该出现" };
 		const reg = registerForTest([rule]);
 		try {
 			const assembly = await assemble(ctxFor("/tmp/other"));
@@ -397,18 +400,18 @@ describe("段注册与装配", () => {
 
 	it("多条命中按 order 升序拼接", async () => {
 		const rules: Rule[] = [
-			{ name: "late", order: 300, paths: ["/ws"], rawPaths: ["/ws"], text: "LATE" },
-			{ name: "early", order: 100, paths: ["/ws"], rawPaths: ["/ws"], text: "EARLY" },
-			{ name: "mid", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "MID" },
+			{ name: "late", order: 300, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "LATE" },
+			{ name: "early", order: 100, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "EARLY" },
+			{ name: "mid", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "MID" },
 		];
 		assert.deepEqual(await sectionNamesFor(rules, "/ws/sub"), ["pi:default", "repo:early", "repo:mid", "repo:late"]);
 	});
 
 	it("同 order 保持配置顺序（稳定排序）", async () => {
 		const rules: Rule[] = [
-			{ name: "one", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "1" },
-			{ name: "two", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "2" },
-			{ name: "three", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "3" },
+			{ name: "one", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "1" },
+			{ name: "two", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "2" },
+			{ name: "three", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "3" },
 		];
 		assert.deepEqual(await sectionNamesFor(rules, "/ws"), ["pi:default", "repo:one", "repo:two", "repo:three"]);
 	});
@@ -416,8 +419,8 @@ describe("段注册与装配", () => {
 	it("一条规则的 md 读不到 → 该段空，其它规则照常注入", async () => {
 		const dir = makeTree({ "ok.md": "OK RULE" });
 		const rules: Rule[] = [
-			{ name: "broken", order: 200, paths: [dir], rawPaths: [dir], file: join(dir, "missing.md"), rawFile: "missing.md" },
-			{ name: "ok", order: 201, paths: [dir], rawPaths: [dir], file: join(dir, "ok.md"), rawFile: "ok.md" },
+			{ name: "broken", order: 200, paths: [dir], rawPaths: [dir], source: "/tmp/rules.toml", file: join(dir, "missing.md"), rawFile: "missing.md" },
+			{ name: "ok", order: 201, paths: [dir], rawPaths: [dir], source: "/tmp/rules.toml", file: join(dir, "ok.md"), rawFile: "ok.md" },
 		];
 		const reg = registerForTest(rules);
 		try {
@@ -445,8 +448,8 @@ describe("段注册与装配", () => {
 	it("同一目录重复装配结果稳定（KV 前缀不抖）", async () => {
 		const dir = makeTree({ "index.toml": "", "a.md": "AAA" });
 		const rules: Rule[] = [
-			{ name: "a", order: 200, paths: [dir], rawPaths: [dir], file: join(dir, "a.md"), rawFile: "a.md" },
-			{ name: "b", order: 200, paths: [dir], rawPaths: [dir], text: "BBB" },
+			{ name: "a", order: 200, paths: [dir], rawPaths: [dir], source: "/tmp/rules.toml", file: join(dir, "a.md"), rawFile: "a.md" },
+			{ name: "b", order: 200, paths: [dir], rawPaths: [dir], source: "/tmp/rules.toml", text: "BBB" },
 		];
 		const reg = registerForTest(rules);
 		try {
@@ -464,8 +467,8 @@ describe("段注册与装配", () => {
 	it("重新注册（/reload 语义）会清掉上一轮的段，包括已从配置删掉的规则", async () => {
 		resetRegistry();
 		resetWarned();
-		const a: Rule = { name: "r-a", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "A" };
-		const b: Rule = { name: "r-b", order: 201, paths: ["/ws"], rawPaths: ["/ws"], text: "B" };
+		const a: Rule = { name: "r-a", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "A" };
+		const b: Rule = { name: "r-b", order: 201, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "B" };
 
 		registerRuleSections([a, b]);
 		assert.deepEqual(
@@ -484,7 +487,7 @@ describe("段注册与装配", () => {
 	});
 
 	it("ruleText 直接调用：不命中为空串，内联不碰 fs", () => {
-		const inline: Rule = { name: "i", order: 200, paths: ["/ws"], rawPaths: ["/ws"], text: "INLINE" };
+		const inline: Rule = { name: "i", order: 200, paths: ["/ws"], rawPaths: ["/ws"], source: "/tmp/rules.toml", text: "INLINE" };
 		assert.equal(ruleText(inline, "/ws"), "INLINE");
 		assert.equal(ruleText(inline, "/ws/deeper"), "INLINE");
 		assert.equal(ruleText(inline, "/elsewhere"), "");
@@ -654,5 +657,62 @@ describe("注入告知：本目录真的注入了什么", () => {
 		assert.equal(hits.length, 1);
 		assert.equal(hits[0].name, "y");
 		assert.match(hits[0].from, /rules\.toml（内联）$/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 常驻提示（编辑器上方的 widget）
+//
+// notify 是 toast，闪一下就没了；注入这条事实整个会话都成立，所以要有一个不会自己消失的
+// 落点。这里测的是「给哪几行」这个纯函数：没有内容可说时必须给空数组（调用方据此不设
+// widget，让没命中规则的目录保持零打扰）。
+// ---------------------------------------------------------------------------
+
+describe("常驻提示的内容", () => {
+	it("没命中也没告警 → 空数组（不设 widget）", () => {
+		assert.deepEqual(buildWidgetLines({ warnings: [], injected: [] }), []);
+	});
+
+	it("命中规则：标题 + 每条一行，带来源", () => {
+		const lines = buildWidgetLines({
+			warnings: [],
+			injected: [
+				{ name: "preshell", from: "preshell.md" },
+				{ name: "pi-agent", from: "pi-agent.local.md" },
+			],
+		});
+		assert.equal(lines[0], "[repo-prompts] 本目录注入 2 条规则：");
+		assert.equal(lines[1], "· preshell ← preshell.md");
+		assert.equal(lines[2], "· pi-agent ← pi-agent.local.md");
+	});
+
+	it("只有告警也照样给行（配置坏了要有人看见）", () => {
+		const lines = buildWidgetLines({ warnings: ["rules.toml 第 3 行解析失败"], injected: [] });
+		assert.equal(lines.length, 1);
+		assert.match(lines[0], /配置告警/);
+		assert.match(lines[0], /rules\.toml 第 3 行解析失败/);
+	});
+
+	it("多条告警：给出条数与第一条，并指向 /repo-prompts", () => {
+		const lines = buildWidgetLines({
+			warnings: ["第一条", "第二条", "第三条"],
+			injected: [],
+		});
+		assert.match(lines[0], /共 3 条/);
+		assert.match(lines[0], /第一条/);
+		assert.match(lines[1], /\/repo-prompts/);
+	});
+
+	it("超出上限时折叠，折叠行说清藏了几行", () => {
+		const injected = Array.from({ length: 10 }, (_, i) => ({ name: `r${i}`, from: `r${i}.md` }));
+		const lines = buildWidgetLines({ warnings: [], injected, maxLines: 4 });
+		assert.equal(lines.length, 4);
+		assert.match(lines[3], /还有 8 行/);
+		assert.match(lines[3], /\/repo-prompts/);
+	});
+
+	it("maxLines 为 0 时不折叠（交给调用方自己管）", () => {
+		const injected = Array.from({ length: 10 }, (_, i) => ({ name: `r${i}`, from: `r${i}.md` }));
+		assert.equal(buildWidgetLines({ warnings: [], injected, maxLines: 0 }).length, 11);
 	});
 });

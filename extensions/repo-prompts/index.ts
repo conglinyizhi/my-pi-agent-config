@@ -20,6 +20,8 @@
 // 配置：extensions.toml 的 [repo-prompts]（enabled / dir），缺省开启 + 默认目录。
 //   规则表改动要 /reload 才重注册段；md 正文改动下一轮装配即生效（mtime 缓存）。
 // 命令：/repo-prompts 列出规则（含来自哪个 toml）、路径、当前 cwd 命中、文件可读性与已注册段。
+// 告知：会话开始时会说一声注入了什么 —— notify 一次（醒目）+ 编辑器上方 widget 常驻（不会
+//   像 toast 那样闪一下就没，见 widget.ts）。没命中规则时把 widget 清掉，保持零打扰。
 //
 // 与 pi 原生 AGENTS.md 的关系：共存，不替代。AGENTS.md 是仓库自带、面向任意 agent 的说明；
 // 本扩展是提督侧的、面向 pi 的集中规则，两者会同时进上下文。
@@ -30,6 +32,7 @@ import { loadRules, loadSettings } from "./config.ts";
 import { buildReport } from "./report.ts";
 import { injectedRules, registerRuleSections } from "./sections.ts";
 import { noteWarning, takeWarnings } from "./warnings.ts";
+import { buildWidgetLines, WIDGET_ID } from "./widget.ts";
 
 const EXTENSIONS_TOML = join(getAgentDir(), "extensions.toml");
 
@@ -51,10 +54,11 @@ export default function (pi: ExtensionAPI) {
 	// 无条件注册（prompt-sections 关闭时装配不跑，注册本身无害）
 	const { sections } = registerRuleSections(loaded.rules);
 
-	// factory 期没有 ctx：告警先攒着，会话起来再交给 ui.notify
+	// factory 期没有 ctx：告警先攒着，会话起来再交给 ui 发
 	// （不要在扩展里用 console：pi 的 TUI 下 stderr 是它的地皮，用户也看不见）
 	pi.on("session_start", (_event, ctx) => {
-		for (const message of takeWarnings()) {
+		const warnings = takeWarnings();
+		for (const message of warnings) {
 			try {
 				ctx.ui.notify(`[repo-prompts] ${message}`, "warning");
 			} catch {
@@ -64,12 +68,21 @@ export default function (pi: ExtensionAPI) {
 
 		// 本目录的规则被注入了就说一声：让人知道上下文里多了什么、来自哪个文件
 		const injected = injectedRules(loaded.rules, settings.dir, ctx.cwd);
-		if (injected.length === 0) return;
-		const lines = injected.map((rule) => `· ${rule.name} ← ${rule.from}`);
+		if (injected.length > 0) {
+			try {
+				ctx.ui.notify(`[repo-prompts] 本目录注入了 ${injected.length} 条规则`, "info");
+			} catch {
+				// 没有可用 UI：/repo-prompts 里仍能看到命中情况
+			}
+		}
+
+		// notify 是 toast，几秒就没了（没看到就错过）。同样的话在编辑器上方常驻一份，
+		// 想回看随时能看。没内容可说时传 undefined，不占地方。
+		const lines = buildWidgetLines({ warnings, injected });
 		try {
-			ctx.ui.notify(`[repo-prompts] 本目录注入了 ${injected.length} 条规则：\n${lines.join("\n")}`, "info");
+			ctx.ui.setWidget(WIDGET_ID, lines.length > 0 ? lines : undefined);
 		} catch {
-			// 没有可用 UI：/repo-prompts 里仍能看到命中情况
+			// 没有可用 UI（json / print 模式）：跳过，报告仍在 /repo-prompts
 		}
 	});
 
