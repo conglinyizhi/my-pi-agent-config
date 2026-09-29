@@ -37,6 +37,8 @@ export interface NetworkModeMeta {
 	label: string;
 	/** 一句话说明 */
 	summary: string;
+	/** 选择列表里用的一行版（比 summary 短，免得小窗里被截断） */
+	short: string;
 	/** 展开的要点（确认框正文） */
 	points: string[];
 }
@@ -46,6 +48,7 @@ export const NETWORK_MODES: NetworkModeMeta[] = [
 		mode: "off",
 		label: "off",
 		summary: "关闭网络审核：出网等同普通操作，不发请求、不留痕",
+		short: "关闭：出网等同普通操作",
 		points: [
 			"worker 不再为出网发 capability 请求（快路直接放行）",
 			"网络这一维不留审计记录",
@@ -56,6 +59,7 @@ export const NETWORK_MODES: NetworkModeMeta[] = [
 		mode: "whitelist",
 		label: "whitelist",
 		summary: "现状：只免审可枚举的开发期拉取，其余出网交审核链",
+		short: "只免审开发期拉取（现状）",
 		points: [
 			"免审集合（连请求都不发）：包管理器 install/add/update/remove/ci、git clone/fetch/pull、不带落盘与提交参数的 curl/wget",
 			"集合外的出网命令先过 LLM 预审，判 safe 自动放行，否则问人",
@@ -66,6 +70,7 @@ export const NETWORK_MODES: NetworkModeMeta[] = [
 		mode: "loose",
 		label: "loose",
 		summary: "宽松：只拦往外送数据、拿回来就执行、动态构造这三类",
+		short: "只拦往外送数据与拿回来就执行",
 		points: [
 			"仍要人点头：上传/提交数据（-d/-F/-T、非 GET）、下载后执行（管道进解释器、落盘后跑脚本）",
 			"仍要人点头：出网段含变量或命令替换，静态判不出来时不放过",

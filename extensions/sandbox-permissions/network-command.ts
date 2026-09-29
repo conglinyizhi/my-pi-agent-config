@@ -33,6 +33,14 @@ export interface NetworkCommandContext {
 
 export type NetworkCommandDeps = YadSessionDeps;
 
+/**
+ * 这些窗就三五行字，尺寸按内容给：不给就会用默认那对（920x640，是给路径表格用的），
+ * 人眼看着大窗里三行字纯属浪费屏幕。
+ */
+const PICK_WINDOW = { width: 560, height: 240 };
+const TEXT_WINDOW = { width: 700, height: 420 };
+const INFO_WINDOW = { width: 660, height: 300 };
+
 export const NETWORK_USAGE = [
 	"用法：",
 	"  /sandbox:network                查看当前档位；有图形时开窗口改（无参数也会问一次）",
@@ -192,9 +200,10 @@ type PickResult = { kind: "ok"; mode: NetworkMode } | { kind: "cancel" } | { kin
 
 async function pickViaYad(session: YadSession, unknown?: string): Promise<PickResult> {
 	const current = loadNetworkMode();
-	const rows = NETWORK_MODES.map((meta) => [meta.label, meta.summary]);
+	const rows = NETWORK_MODES.map((meta) => [meta.label, meta.short]);
 	const picked = await yadPickRow(session, {
 		title: "network 审核强度 · pi",
+		...PICK_WINDOW,
 		text: [
 			`当前：${current}`,
 			unknown ? `认不出的词：「${unknown}」` : "",
@@ -268,7 +277,7 @@ async function confirmRelax(
 	const title = confirmTitle(mode);
 	const body = confirmBody(mode, file, current);
 	if (session) {
-		const shown = await yadText(session, { title, text: body, okLabel: "保存", cancelLabel: "取消" });
+		const shown = await yadText(session, { title, text: body, okLabel: "保存", cancelLabel: "取消", ...TEXT_WINDOW });
 		if (shown.kind === "ok") return true;
 		if (shown.kind === "cancel") return false;
 		ctx.ui.notify(`yad 窗口拉不起来（${shown.detail}），改用逐项提问`, "warning");
@@ -279,5 +288,5 @@ async function confirmRelax(
 
 /** 窗口里也说一句（跑 yad 的路子上人未必看 TUI 通知） */
 async function infoWindow(session: YadSession, text: string): Promise<void> {
-	await yadText(session, { title: "network 审核强度 · pi", text, okLabel: "知道了" });
+	await yadText(session, { title: "network 审核强度 · pi", text, okLabel: "知道了", ...INFO_WINDOW });
 }

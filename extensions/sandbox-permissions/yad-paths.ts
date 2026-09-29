@@ -170,10 +170,24 @@ export function splitFields(stdout: string): string[] {
 	return parts;
 }
 
-/** 窗口尺寸与位置：三类配置的概览文字很长，不给定尺寸会挤成一条 */
-const WINDOW_ARGS = ["--width=920", "--height=640", "--center"];
+/**
+ * 窗口尺寸：默认给得大一些（三类路径配置的概览文字很长，不给定尺寸会挤成一条）。
+ * 内容少的对话框自己传小的 —— 三行字的单选窗占 920x640 是浪费屏幕（人眼就看着大窗里那几行）。
+ */
+const DEFAULT_WINDOW_WIDTH = 920;
+const DEFAULT_WINDOW_HEIGHT = 640;
 
-export interface YadListSpec {
+function windowArgs(width?: number, height?: number): string[] {
+	return [`--width=${width ?? DEFAULT_WINDOW_WIDTH}`, `--height=${height ?? DEFAULT_WINDOW_HEIGHT}`, "--center"];
+}
+
+/** 窗口尺寸覆盖（不给就用默认那对） */
+export interface YadWindowSize {
+	width?: number;
+	height?: number;
+}
+
+export interface YadListSpec extends YadWindowSize {
 	title: string;
 	text: string;
 	/** 表头（也是列的声明） */
@@ -192,7 +206,7 @@ export async function yadPickRow(
 	const args = [
 		`--title=${spec.title}`,
 		`--text=${spec.text}`,
-		...WINDOW_ARGS,
+		...windowArgs(spec.width, spec.height),
 		"--list",
 		`--button=${spec.okLabel}:0`,
 		`--button=${spec.cancelLabel ?? "取消"}:1`,
@@ -228,12 +242,12 @@ export function matchRowIndex(stdout: string, rows: string[][]): number {
 /** 表单取一个值（目录输入） */
 export async function yadInputValue(
 	session: YadSession,
-	spec: { title: string; text: string; label: string; value?: string; okLabel: string },
+	spec: YadWindowSize & { title: string; text: string; label: string; value?: string; okLabel: string },
 ): Promise<{ kind: "ok"; value: string } | { kind: "cancel" } | { kind: "unavailable"; detail: string }> {
 	const args = [
 		`--title=${spec.title}`,
 		`--text=${spec.text}`,
-		...WINDOW_ARGS,
+		...windowArgs(spec.width, spec.height),
 		"--form",
 		`--field=${spec.label}:CE`,
 		spec.value ?? "",
@@ -248,9 +262,9 @@ export async function yadInputValue(
 /** 文本对话框：确认（两个按钮）或纯展示（一个按钮） */
 export async function yadText(
 	session: YadSession,
-	spec: { title: string; text: string; okLabel: string; cancelLabel?: string },
+	spec: YadWindowSize & { title: string; text: string; okLabel: string; cancelLabel?: string },
 ): Promise<{ kind: "ok" } | { kind: "cancel" } | { kind: "unavailable"; detail: string }> {
-	const args = [`--title=${spec.title}`, `--text=${spec.text}`, ...WINDOW_ARGS, `--button=${spec.okLabel}:0`];
+	const args = [`--title=${spec.title}`, `--text=${spec.text}`, ...windowArgs(spec.width, spec.height), `--button=${spec.okLabel}:0`];
 	if (spec.cancelLabel) args.push(`--button=${spec.cancelLabel}:1`);
 	const out = await yadRun(session, args);
 	return out.kind === "ok" ? { kind: "ok" } : out;

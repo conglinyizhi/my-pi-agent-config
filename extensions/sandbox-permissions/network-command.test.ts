@@ -211,6 +211,27 @@ describe("yad 通道（假 runner）", () => {
 		assert.match(noticeText(notices), /已设为 loose/);
 	});
 
+	it("窗口按内容给尺寸：三行字的小窗不给 920x640", async () => {
+		const { runner, calls } = fakeYad([OK("loose|宽松"), OK()]);
+		const { ctx } = fakeCtx({ agree: true });
+		await networkCommandHandler("", ctx, guiDeps(runner));
+		const pick = calls[0]?.join(" ") ?? "";
+		assert.match(pick, /--width=560/, "选择窗要小");
+		assert.match(pick, /--height=240/);
+		assert.doesNotMatch(pick, /--width=920/);
+		// 确认窗字多一些，但也不该是路径表格那个尺寸
+		const confirm = calls[1]?.join(" ") ?? "";
+		assert.match(confirm, /--width=700/);
+		assert.match(confirm, /--height=420/);
+	});
+
+	it("status 的小窗同样不占满屏", async () => {
+		const { runner, calls } = fakeYad([OK()]);
+		const { ctx } = fakeCtx();
+		await networkCommandHandler("status", ctx, guiDeps(runner));
+		assert.match(calls[0]?.join(" ") ?? "", /--width=660/);
+	});
+
 	it("窗口里关掉 → 不写盘", async () => {
 		const { runner } = fakeYad([CANCEL]);
 		const { ctx, notices } = fakeCtx();
