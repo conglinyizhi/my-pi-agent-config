@@ -183,6 +183,20 @@ describe("status coalesced writes (I-2 热路径 I/O)", () => {
     assert.strictEqual(io.lastJson().workers[0].status, "starting");
   });
 
+  it("崩溃（crashed）立即落盘：看门狗判定那一刻 GUI 就该看见，不等进程收尾", () => {
+    const io = setupInjected();
+    const before = io.writes.length;
+    updateWorker("w1", { stderr: "x" }); // 合并，未落盘
+    assert.strictEqual(io.writes.length, before);
+
+    updateWorker("w1", { status: "crashed", output: "静默 31 秒没有任何事件，判定为崩溃并中止" });
+    assert.strictEqual(io.writes.length, before + 1);
+    assert.strictEqual(io.pendingCount(), 0);
+    const snap = io.lastJson();
+    assert.strictEqual(snap.workers[0].status, "crashed");
+    assert.match(snap.workers[0].output, /静默 31 秒/);
+  });
+
   it("flushStatusFile 显式落盘挂起合并写", () => {
     const io = setupInjected();
     const before = io.writes.length;

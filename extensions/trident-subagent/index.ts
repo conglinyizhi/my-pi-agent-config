@@ -647,7 +647,7 @@ export default function (pi: ExtensionAPI) {
         return `${head}${meta}${err}${capability}${stderr}${inv}${tr}\n  ${formatWorkerOutput(r.output, budget)}`;
       });
 
-      const failedCount = results.filter((r) => r.status === "failed" || r.status === "aborted" || r.status === "timeout").length;
+      const failedCount = results.filter((r) => r.status === "failed" || r.status === "aborted" || r.status === "timeout" || r.status === "crashed").length;
       const approvalCount = results.filter((r) => r.status === "needs_approval").length;
       onUpdate?.({
         content: [{

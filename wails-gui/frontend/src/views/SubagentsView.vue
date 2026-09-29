@@ -472,10 +472,10 @@ function backToAgents() {
 
 // ── 展示辅助 ──
 function statusIcon(s) {
-  return { queued: "⏳", starting: "…", running: "▶", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱" }[s] || "○";
+  return { queued: "⏳", starting: "…", running: "▶", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", crashed: "💥" }[s] || "○";
 }
 function statusLabel(s) {
-  return { queued: "排队中", starting: "启动中", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时" }[s] || s;
+  return { queued: "排队中", starting: "启动中", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时", crashed: "崩溃" }[s] || s;
 }
 function fmt(iso) {
   if (!iso) return "-";
@@ -499,7 +499,7 @@ function usageText(u) {
 }
 
 function lifecycleLabel(s) {
-  return { starting: "启动", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时", truncated: "历史截断" }[s] || s;
+  return { starting: "启动", running: "执行中", needs_approval: "等待权限", success: "成功", failed: "失败", aborted: "中止", timeout: "超时", crashed: "崩溃", truncated: "历史截断" }[s] || s;
 }
 function eventIcon(ev) {
   if (ev.type === "assistant") return ev.final ? "💬" : "…";
@@ -510,7 +510,7 @@ function eventIcon(ev) {
   }
   if (ev.type === "terminal") return ev.stream === "stderr" ? "✗" : "▸";
   if (ev.type === "supplement") return "✉";
-  const m = { starting: "●", running: "●", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", truncated: "…" };
+  const m = { starting: "●", running: "●", needs_approval: "🔐", success: "✓", failed: "✗", aborted: "■", timeout: "⏱", crashed: "💥", truncated: "…" };
   return m[ev.state] || "●";
 }
 function eventColor(ev) {

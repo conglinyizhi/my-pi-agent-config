@@ -34,6 +34,8 @@ export type WorkerStatus =
   | "failed"
   | "aborted"
   | "timeout"
+  /** 静默超时判定的崩溃（见 silence.ts）：状态由看门狗写入，中止只是手段 */
+  | "crashed"
   | "needs_approval"
   /** 暂存中：预算见底（或 worker 主动请求），停下等主侧决定继续/补充/收工 */
   | "holding";
@@ -78,6 +80,8 @@ const IMMEDIATE_STATUSES: ReadonlySet<WorkerStatus> = new Set([
   "success",
   "needs_approval",
   "failed",
+  // 崩溃要立刻可见：看门狗判定那一刻写盘，不等进程收尾
+  "crashed",
   "aborted",
   "timeout",
 ]);

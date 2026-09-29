@@ -17,6 +17,7 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { StreamStats, TimelineEvent } from "../../lib/subagent-run.ts";
 import type { WorkerRun, WorkerStatus } from "./status.ts";
+import { hasToolInFlight, lastNonLifecycle, silentMsOf } from "./silence.ts";
 
 /** 自校准缺省值：中英混排 + 代码的粗略每 token 字符数 */
 export const DEFAULT_CHARS_PER_TOKEN = 3.2;
@@ -209,13 +210,6 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-function lastNonLifecycle(events: TimelineEvent[]): TimelineEvent | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type !== "lifecycle") return events[i];
-  }
-  return undefined;
-}
-
 function countRetries(events: TimelineEvent[]): number {
   let max = 0;
   for (const e of events) {
@@ -244,6 +238,9 @@ function deriveActivity(
   silentMs: number,
   finished: boolean,
 ): FleetActivity {
+  // 崩溃排在最前：看门狗是先标状态、再中止，标上的那一刻 finishedAt 还没写，
+  // 等终态分支会把「崩溃」读成还在跑的「静默」
+  if (w.status === "crashed") return { kind: "failed", label: "崩溃（静默超时）" };
   if (finished) {
     if (w.status === "success") return { kind: "done", label: "已完成" };
     return { kind: "failed", label: w.status === "timeout" ? "超时" : w.status === "aborted" ? "已中止" : "失败" };
@@ -261,10 +258,11 @@ function deriveActivity(
   if (w.status === "starting" && stream.deltas === 0) {
     return { kind: "starting", label: "启动中" };
   }
-  const tail = lastNonLifecycle(w.timeline ?? []);
-  if (tail?.type === "tool" && tail.ok === undefined) {
-    const args = tail.args ? formatToolArgs(tail.args, 70) : "";
-    return { kind: "tool", label: `${tail.tool ?? "tool"} ${args}`.trim() };
+  // 与 silence.ts 的看门狗共用同一判定：界面读成「工具在跑」，看门狗就不把它当静默
+  if (hasToolInFlight(w)) {
+    const tail = lastNonLifecycle(w.timeline ?? []);
+    const args = tail?.args ? formatToolArgs(tail.args, 70) : "";
+    return { kind: "tool", label: `${tail?.tool ?? "tool"} ${args}`.trim() };
   }
   // 静默优先于「上次在做什么」：如实显示停顿时长，而不是拿旧状态冒充当前
   if (silentMs >= IDLE_AFTER_MS) {
@@ -283,8 +281,7 @@ export function projectWorker(w: WorkerRun, index: number, nowMs: number): Fleet
   const finished = w.finishedAt !== undefined;
   const endMs = finished ? Date.parse(w.finishedAt as string) : nowMs;
   const elapsedMs = Number.isFinite(startedMs) ? Math.max(0, endMs - startedMs) : 0;
-  const lastActivityMs = w.lastActivityAt ? Date.parse(w.lastActivityAt) : startedMs;
-  const silentMs = finished || !Number.isFinite(lastActivityMs) ? 0 : Math.max(0, nowMs - lastActivityMs);
+  const silentMs = silentMsOf(w, nowMs);
 
   const stream: StreamStats = w.stream ?? ZERO_STREAM;
   const usage = w.usage;
@@ -369,6 +366,7 @@ export const STATUS_LABEL: Record<WorkerStatus, string> = {
   failed: "失败",
   aborted: "中止",
   timeout: "超时",
+  crashed: "崩溃",
 };
 
 const STATUS_COLOR: Record<WorkerStatus, string> = {
@@ -381,6 +379,7 @@ const STATUS_COLOR: Record<WorkerStatus, string> = {
   failed: "error",
   aborted: "warning",
   timeout: "warning",
+  crashed: "error",
 };
 
 const ACTIVITY_MARK: Record<FleetActivityKind, string> = {

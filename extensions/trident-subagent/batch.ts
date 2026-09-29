@@ -19,10 +19,11 @@ import type { CapabilityApproval, CapabilityRequest, CapabilityReview } from "..
 import { buildHoldDecision, type HoldDecision, type HoldDeferHandle, type HoldRequest } from "../../lib/subagent-hold.ts";
 import { createInbox, isValidInboxId } from "../../lib/subagent-supplement.ts";
 import { diagnosticsRoot } from "./diagnostics.ts";
-import { updateWorker } from "./status.ts";
+import { getSnapshot, updateWorker } from "./status.ts";
 import { registerWorkerAbort, unregisterWorkerAbort, type WorkerKey } from "./active-workers.ts";
+import { applyCrashMark, startSilenceWatch, type SilentCrash } from "./silence.ts";
 
-export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval";
+export type BatchItemStatus = "success" | "failed" | "aborted" | "timeout" | "needs_approval" | "crashed";
 
 /**
  * 单批同时运行的 worker 数安全阀（不是节流额度）。
@@ -165,6 +166,11 @@ export interface RunBatchOptions {
   /** 同时运行的 worker 数上限；缺省 MAX_PARALLEL_WORKERS_SAFETY_CAP */
   maxParallel?: number;
   /**
+   * 静默看门狗参数（阈值/间隔/时钟）。静默超过阈值（缺省 SILENT_CRASH_MS）且不在
+   * 豁免里 → 标 crashed + 中止；传 false 关掉（特殊场景与测试用）。
+   */
+  silenceWatch?: SilenceWatchTuning | false;
+  /**
    * worker 交出暂存控制权（onHold 返回 defer）时按 worker 回调。
    * 拿到句柄的一方负责写回决定，否则 worker 会一直守着检查点。
    */
@@ -251,11 +257,23 @@ export async function runBatch(tasks: string[], opts: RunBatchOptions): Promise<
     controllers.set(id, controller);
     if (opts.taskId) registerWorkerAbort({ batchId: opts.taskId, workerId: id }, controller);
   }
+  // 静默看门狗：在飞列表定下来就能起（排队中的 worker 也在 ids 里，但它们处于豁免状态不被判）
+  const crashMarks = new Map<string, SilentCrash>();
+  // 按本批的 inboxId 认领快照里的 worker：挂起批次与新批次的 worker id 会撞名
+  const batchInboxIds = new Set(opts.workerInboxIds);
+  const stopWatch = opts.silenceWatch === false ? undefined : startSilenceWatch({
+    controllers,
+    marks: crashMarks,
+    runs: () => getSnapshot().filter((w) => batchInboxIds.has(w.inboxId)),
+    markStatus: (run, crash) => updateWorker(run.id, { status: "crashed", output: crash.reason }),
+    ...(opts.silenceWatch ?? {}),
+  });
   try {
     return await runWithConcurrency(tasks, limit, (task, index) =>
-      runWorker(task, index, opts, controllers.get(`w${index + 1}`)!),
+      runWorker(task, index, opts, controllers.get(`w${index + 1}`)!, crashMarks),
     );
   } finally {
+    stopWatch?.();
     if (opts.taskId) {
       for (const id of controllers.keys()) {
         unregisterWorkerAbort({ batchId: opts.taskId, workerId: id });
@@ -387,12 +405,20 @@ async function withWorkerAbort<T>(
   }
 }
 
+/** 看门狗调优参数（生产用缺省值；测试注入短阈值/假时钟） */
+export interface SilenceWatchTuning {
+  thresholdMs?: number;
+  intervalMs?: number;
+  now?: () => number;
+}
+
 /** 单个 worker 的完整生命周期（原 runBatch 的 per-task 主体，拆出以便并发池复用） */
 async function runWorker(
   task: string,
   index: number,
   opts: RunBatchOptions,
   controller: AbortController,
+  crashMarks: ReadonlyMap<string, SilentCrash>,
 ): Promise<BatchItemResult> {
   const id = `w${index + 1}`;
   const inboxId = opts.workerInboxIds[index];
@@ -404,8 +430,9 @@ async function runWorker(
     // 同样是用户下的令：说清「一步都没跑」，别让主 agent 去猜有没有留下现场
     const reason = externalStopReason(controller.signal);
     const note = `用户强停（/subagent:stop）于启动前：${reason ?? "未写理由"}。这个 worker 一步都没跑，没有现场可回溯，也不用重派。`;
-    updateWorker(id, { status: "aborted", finishedAt, output: note });
-    return { index, status: "aborted", output: note, stderr: note };
+    const earlyPatch = applyCrashMark({ status: "aborted" as const, finishedAt, output: note }, crashMarks.get(id));
+    updateWorker(id, earlyPatch);
+    return { index, status: earlyPatch.status ?? "aborted", output: earlyPatch.output ?? note, stderr: note };
   }
 
   // 真启动才计耗时：创建批次时写入的 startedAt 是批次起点，排队中的 worker 一直沿用它，
@@ -490,7 +517,9 @@ async function runWorker(
     const status: BatchItemStatus = result.capabilityRequest
       ? result.capabilityDenied ? "failed" : "needs_approval"
       : failed ? "failed" : "success";
-    updateWorker(id, {
+    // 被看门狗判过崩溃的：终态以崩溃为准（中止只是手段，aborted 不是结论）
+    const crash = crashMarks.get(id);
+    updateWorker(id, applyCrashMark({
       status,
       finishedAt: new Date().toISOString(),
       usage: result.usage,
@@ -507,10 +536,10 @@ async function runWorker(
       visibleConversation: [...result.visibleConversation],
       archiveTimeline: [...result.archiveTimeline],
       capabilityRequest: result.capabilityRequest,
-    });
+    }, crash));
     return {
       index,
-      status,
+      status: crash ? "crashed" : status,
       exitCode: result.exitCode,
       output: result.capabilityRequest
         ? result.capabilityDenied
@@ -527,9 +556,11 @@ async function runWorker(
       capabilityReview: result.capabilityReview,
     };
   } catch (err) {
-    // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判
-    const patch = buildTerminalPatch(err, new Date().toISOString());
-    updateWorker(id, patch);
+    // 结构化终态：timeout/aborted 由 SubagentError.status 决定，不再用 /超时/ 正则误判。
+    // 崩溃标记在这里最后写一遍：看门狗是拿中止把 worker 拽下来的，别让 aborted 盖掉结论
+    const crashMark = crashMarks.get(id);
+    const patch = applyCrashMark(buildTerminalPatch(err, new Date().toISOString()), crashMark);
+    updateWorker(id, crashMark ? { ...patch, output: crashMark.reason } : patch);
     const investigationPath = err instanceof SubagentError ? err.investigationPath : undefined;
     const transcriptPath = err instanceof SubagentError ? err.transcriptPath : undefined;
     // 批次诊断档案（磁盘，按 batchId）：与内存盘全量档互补，带上任务输入与全 worker 轨迹
@@ -537,7 +568,7 @@ async function runWorker(
     return {
       index,
       status: patch.status,
-      output: formatCatchOutput(err, patch.status, { archivePath }) || String(err),
+      output: crashMark ? crashMark.reason : formatCatchOutput(err, patch.status, { archivePath }) || String(err),
       stderr: String(err),
       investigationPath,
       transcriptPath,
