@@ -32,15 +32,32 @@
 - **单问题**：直接展示选项列表
 - **多问题**：标签页导航（Tab 切换），右下角显示进度
 - **键盘导航**：↑↓ 选选项，Tab/Shift+Tab 切问题，Enter 确认
-- **自由输入**：选中「其他」后进入编辑器模式（支持多行）
+- **回看**：切回已经答过的问题时，高亮原来那一项（不是永远停在第一项）；答的是自定义文本就停在「Type something.」，并在它下面展示填过内容的前一段（按终端宽度截断）
+- **自由输入**：选中「其他」后进入编辑器模式（支持多行），编辑器会预填上一次填过的文本
+- **换掉自定义输入**：先出黄字提示，同一个选项再按一次 Enter 才真改；被换掉的文本进内存历史（每题最多 3 条），列在「Type something.」下面，选中会进编辑器并预填
+- **Esc**：有未确认的修改时先收掉提示，再按一次才取消整个提问
 - **外部通知**：通过 `notify-send` 发送桌面通知
 - **结果回显**：答案结果中带回完整 `question_text`，便于事后在对话流中回看
+
+## 测试
+
+```bash
+node --test extensions/ask-question/smoke.test.ts        # hub 那条路（假 hub 挂在真 socket 上）
+node --experimental-strip-types extensions/ask-question/selection.test.ts   # 回看/历史/二次确认的纯函数
+node --experimental-strip-types extensions/ask-question/component.test.ts   # 真建组件，按按键序列驱动
+```
+
+`selection.test.ts` 与 `component.test.ts` 的分工：判定抽在 `selection.ts`（纯函数，不碰 TUI）；
+组件测试用假 ctx.ui.custom 拿到组件对象后直接 `handleInput` 驱动，断言 `render()` 出来的行。
+两者都靠环境变量隔离（`PI_HUB_SOCKET` 指到不存在的 socket，不然真 hub 会把问题扇出去；
+`PI_NOTIFY_TEST=1` 弹通知那条静音）。
 
 ## 架构
 
 ### 关键设计
 
 - **组件化**：问题列表、选项选择器、自由输入编辑器
+- **判定与渲染分开**：回看高亮哪一行、历史怎么存、换选项要不要再问一次，都在 `selection.ts`（纯函数，单测）；组件只管画与按键路由
 - **主题感知**：响应暗色/亮色主题切换
 - **多行编辑器**：「其他」选项激活编辑器模式，Enter 发送，Alt+Enter 换行
 - **进度显示**：多问题时显示 `问题 X/N`

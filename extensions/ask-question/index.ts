@@ -7,6 +7,7 @@ import { type Static, Type } from "typebox";
 import { askHubQuestion, type HubAnswer, type HubQuestionOptions, type HubQuestionOutcome, type HubUnavailableCode } from "../../lib/hub-channel.ts";
 import { announceGuiFallback, type GuiFallbackReason } from "../../lib/gui-diagnosis.ts";
 import { notifyQuestion } from "../../lib/notify-send.ts";
+import { lastCustomText, previewOf, pushHistory, restoreOptionIndex, switchDecision } from "./selection.ts";
 
 interface QuestionOption {
   value: string;
@@ -14,7 +15,7 @@ interface QuestionOption {
   description?: string;
 }
 
-type RenderOption = QuestionOption & { isOther?: boolean };
+type RenderOption = QuestionOption & { isOther?: boolean; /** 历史输入的行（0 基，「Type something.」后面依次排） */ isHistory?: number };
 
 interface Question {
   id: string;
@@ -194,8 +195,12 @@ async function handleAskQuestion(
     let optionIndex = 0;
     let inputMode = false;
     let inputQuestionId: string | null = null;
+    /** 从自定义答案改选别的选项时，等第二次 Enter 的那一项 */
+    let pendingChange: { questionId: string; optionIndex: number } | undefined;
     let cachedLines: string[] | undefined;
     const answers = new Map<string, Answer>();
+    /** 每题被换掉的自定义输入（内存，最多 selection.ts 的 HISTORY_LIMIT 条） */
+    const history = new Map<string, string[]>();
 
     // 用于“输入自定义内容”选项的编辑器
     const editorTheme: EditorTheme = {
@@ -235,7 +240,51 @@ async function handleAskQuestion(
           isOther: true,
         });
       }
+      // 被换掉的自定义输入：列在「Type something.」下面，选中后进编辑器预填
+      for (const [i, text] of (history.get(q.id) ?? []).entries()) {
+        opts.push({
+          value: `__history_${i}__`,
+          label: `↺ 之前输入 ${i + 1}`,
+          isHistory: i,
+        });
+      }
       return opts;
+    }
+
+    /** 切到某个标签页：高亮回到「这题原来答过的那一项」 */
+    function setTab(index: number) {
+      currentTab = index;
+      optionIndex = restoreIndexForTab();
+      pendingChange = undefined;
+      refresh();
+    }
+
+    function restoreIndexForTab(): number {
+      const q = currentQuestion();
+      if (!q) return 0;
+      const answer = answers.get(q.id);
+      return restoreOptionIndex({
+        optionCount: q.options.length,
+        allowOther: q.allowOther,
+        historyCount: (history.get(q.id) ?? []).length,
+        answer: answer ? { wasCustom: answer.wasCustom, index: answer.index } : undefined,
+      });
+    }
+
+    /** 进编辑器（自定义输入）：预填上一次填过的文本，历史条目预填它自己 */
+    function openEditor(questionId: string, preset: string | undefined) {
+      inputMode = true;
+      inputQuestionId = questionId;
+      pendingChange = undefined;
+      editor.setText(preset ?? "");
+      refresh();
+    }
+
+    /** 历史里的一条又被选回来当答案：从历史里摘掉，免得和自己的答案重复 */
+    function dropFromHistory(questionId: string, text: string) {
+      const list = history.get(questionId);
+      if (!list) return;
+      history.set(questionId, list.filter((t) => t !== text));
     }
 
     function allAnswered(): boolean {
@@ -247,13 +296,8 @@ async function handleAskQuestion(
         submit(false);
         return;
       }
-      if (currentTab < questions.length - 1) {
-        currentTab++;
-      } else {
-        currentTab = questions.length; // 提交标签页
-      }
-      optionIndex = 0;
-      refresh();
+      // 下一题（未答过）高亮第一项；已答过的那题（切回来改）回到原答案
+      setTab(currentTab < questions.length - 1 ? currentTab + 1 : questions.length);
     }
 
     function saveAnswer(questionId: string, value: string, label: string, wasCustom: boolean, index?: number) {
@@ -269,8 +313,10 @@ async function handleAskQuestion(
     // 编辑器提交回调
     editor.onSubmit = (value) => {
       if (!inputQuestionId) return;
+      const questionId = inputQuestionId;
       const trimmed = value.trim() || "(no response)";
-      saveAnswer(inputQuestionId, trimmed, trimmed, true);
+      saveAnswer(questionId, trimmed, trimmed, true);
+      dropFromHistory(questionId, trimmed);
       inputMode = false;
       inputQuestionId = null;
       editor.setText("");
@@ -295,18 +341,14 @@ async function handleAskQuestion(
       const q = currentQuestion();
       const opts = currentOptions();
 
-      // 标签页导航（仅多问题模式）
+      // 标签页导航（仅多问题模式）：切回去时高亮原答案，不是永远停在第一项
       if (isMulti) {
         if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-          currentTab = (currentTab + 1) % totalTabs;
-          optionIndex = 0;
-          refresh();
+          setTab((currentTab + 1) % totalTabs);
           return;
         }
         if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-          currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-          optionIndex = 0;
-          refresh();
+          setTab((currentTab - 1 + totalTabs) % totalTabs);
           return;
         }
       }
@@ -321,14 +363,16 @@ async function handleAskQuestion(
         return;
       }
 
-      // 选项导航
+      // 选项导航（挪开一步就放弃刚才的二次确认）
       if (matchesKey(data, Key.up)) {
         optionIndex = Math.max(0, optionIndex - 1);
+        pendingChange = undefined;
         refresh();
         return;
       }
       if (matchesKey(data, Key.down)) {
         optionIndex = Math.min(opts.length - 1, optionIndex + 1);
+        pendingChange = undefined;
         refresh();
         return;
       }
@@ -336,15 +380,37 @@ async function handleAskQuestion(
       // 选择选项
       if (matchesKey(data, Key.enter) && q) {
         const opt = opts[optionIndex];
+        // 历史条目：过一下编辑器，预填那段文本（直接 Enter 就提交，也可以先改）
+        if (opt.isHistory !== undefined) {
+          openEditor(q.id, (history.get(q.id) ?? [])[opt.isHistory]);
+          return;
+        }
         if (opt.isOther) {
-          inputMode = true;
-          inputQuestionId = q.id;
-          editor.setText("");
+          openEditor(q.id, lastCustomText(answers.get(q.id), history.get(q.id) ?? []));
+          return;
+        }
+        // 原来是自定义输入：先提示一次，同一条再按一次才算真改，
+        // 改的时候把那条文本存进历史，不直接丢掉
+        const previous = answers.get(q.id);
+        const decision = switchDecision(previous, pendingChange, optionIndex);
+        if (decision === "confirm") {
+          pendingChange = { questionId: q.id, optionIndex };
           refresh();
           return;
         }
+        if (previous?.wasCustom) {
+          history.set(q.id, pushHistory(history.get(q.id) ?? [], previous.value));
+        }
+        pendingChange = undefined;
         saveAnswer(q.id, opt.value, opt.label, false, optionIndex + 1);
         advanceAfterAnswer();
+        return;
+      }
+
+      // 取消这次修改（还有别的取消路径：真正退出提问）
+      if (matchesKey(data, Key.escape) && pendingChange) {
+        pendingChange = undefined;
+        refresh();
         return;
       }
 
@@ -406,12 +472,20 @@ async function handleAskQuestion(
         lines.push("");
       }
 
+      // 已答的自定义文本（回看时把开头一段展示在「Type something.」下面）
+      function customAnswerText(): string | undefined {
+        const q = currentQuestion();
+        const answer = q ? answers.get(q.id) : undefined;
+        return answer?.wasCustom ? answer.value : undefined;
+      }
+
       // 渲染选项列表的辅助函数
       function renderOptions() {
         for (let i = 0; i < opts.length; i++) {
           const opt = opts[i];
           const selected = i === optionIndex;
           const isOther = opt.isOther === true;
+          const isHistory = opt.isHistory !== undefined;
           const prefix = selected ? theme.fg("accent", "> ") : "  ";
           const label = `${i + 1}. ${opt.label}${isOther && inputMode ? " ✎" : ""}`;
           const color = selected || (isOther && inputMode) ? "accent" : "text";
@@ -419,6 +493,20 @@ async function handleAskQuestion(
           addWrappedWithPrefix(prefix, theme.fg(color, label));
           if (opt.description) {
             addWrappedWithPrefix("     ", theme.fg("muted", opt.description));
+          }
+          // 已填的自定义文本、历史条目的内容：都只给看开头一段（终端宽度有限）。
+          // 这行不走 addWrappedWithPrefix：预览本来就已经按列宽切好了，交给折行器
+          // 会把它再拆成两行（CJK 断行会留一两个字的尾巴），看着更像坏了
+          const source = isOther
+            ? customAnswerText()
+            : isHistory
+              ? (history.get(currentQuestion()?.id ?? "") ?? [])[opt.isHistory as number]
+              : undefined;
+          if (source) {
+            const head = isOther ? "已填：" : "";
+            const indent = "     ";
+            const budget = Math.max(4, renderWidth - visibleWidth(indent) - visibleWidth(head));
+            lines.push(theme.fg("muted", truncateToWidth(`${indent}${head}${previewOf(source, budget)}`, renderWidth)));
           }
         }
       }
@@ -460,6 +548,14 @@ async function handleAskQuestion(
         }
       } else if (q) {
         addWrappedWithPrefix(" ", theme.fg("text", q.question_text));
+        // 换掉自定义输入要再按一次：提示就在题干下面（黄字）
+        if (pendingChange && pendingChange.questionId === q.id) {
+          const target = opts[pendingChange.optionIndex]?.label ?? "";
+          addWrappedWithPrefix(
+            " ",
+            theme.fg("warning", `⚠ 已有自定义输入，再按一次 Enter 确认改成「${target}」 • Esc 取消这次修改`),
+          );
+        }
         lines.push("");
         renderOptions();
       }
