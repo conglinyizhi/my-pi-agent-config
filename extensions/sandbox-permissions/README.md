@@ -14,6 +14,8 @@
 | `yolo.ts` | `/yolo` 会话级沙箱墙开关（全部降零，仅当前 session） | `pi.registerCommand("yolo")` |
 | `workspace-command.ts` | `/sandbox:workspaces` 副工作区（持久 `allowDirs`）列出/添加/移除 | `pi.registerCommand("sandbox:workspaces")` |
 | `paths-command.ts` + `paths-config.ts` + `yad-paths.ts` | `/sandbox:paths`：三类路径配置（trustedProgramDirs / allowDirs / blockDirs）列出/添加/移除，yad 窗口 + TUI 回退 | `pi.registerCommand("sandbox:paths")`（别名 `sandbox:trusted`） |
+| `network-policy.ts` | worker 出网审核强度：off / whitelist / loose 三档的判定与配置读写（人类的权限） | guard / approveCapability 内部调用 |
+| `network-command.ts` | `/sandbox:network`：三档的图形（yad）/ TUI 设置入口 | `pi.registerCommand("sandbox:network")` |
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 | `lib/approval-channel.ts` | 人工审批通道（优先连本机 hub，挂了回退 GUI→TUI） | bash / sandbox-allow / capability 共用 |
 
@@ -43,6 +45,10 @@ sandbox-permissions/
 ├── paths-config.test.ts
 ├── paths-command.ts     # /sandbox:paths：三类配置管理（yad 窗口 + TUI 回退）
 ├── paths-command.test.ts
+├── network-policy.ts    # worker 出网审核强度：off / whitelist / loose（network-policy.json）
+├── network-policy.test.ts
+├── network-command.ts   # /sandbox:network：三档设置入口（yad 窗口 + TUI 回退）
+├── network-command.test.ts
 ├── yad-paths.ts         # yad 对话框封装（可注入 runner；测试用假 runner）
 ├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
 ├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
@@ -79,6 +85,8 @@ node --experimental-strip-types extensions/sandbox-permissions/paths.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/workspace-command.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/paths-config.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/paths-command.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/network-policy.test.ts
+node --experimental-strip-types extensions/sandbox-permissions/network-command.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/session-access.test.ts
 node --experimental-strip-types extensions/sandbox-permissions/allow.test.ts
 node --experimental-strip-types lib/approval-channel.test.ts
@@ -359,6 +367,47 @@ max_cache = 200         # 内存缓存上限（同命令同规则不重复调 AP
 - 状态通过 status bar（key=`sandbox-yolo`）显示在 session 中：开启显示 `🚀 YOLO`，关闭清除
 - 仅主进程生效：subagent 子进程经 `--extension` 单独加载 guard.ts，yolo 默认关闭，子进程保持防护（包括 worker 的写入边界）
 
+## Subagent 出网审核强度（network-policy.ts + /sandbox:network）
+
+worker 是唯一被卡 network 的角色（主 agent 的 bash 从不卡）：它的风险命令会发 capability
+request，其中「出网」这一维的松紧由人类调的档位决定，存在 `network-policy.json`（本机配置，
+gitignore；**文件缺失 = whitelist**，也就是接入档位之前的行为）。
+
+| 档位 | 含义 |
+|------|------|
+| `off` | 网络不算能力：worker 不发请求、不留痕，出网等同普通操作 |
+| `whitelist` | 现状：仅「可枚举的开发期拉取且形态干净」免问，其余交审核链 |
+| `loose` | 只拦往外送数据、拿回来就执行、动态构造三类形态，其余直接批准（每次放行留审计） |
+
+命令维度不受档位影响：`checkCommand` 判出风险（`allow=false`）时永远走审核链（预审 + 按需
+问人）。`git push` / 包发布属 `publish` 类，不在 network 分类里，worker 直接拒收，与档位无关。
+
+判定只有一份实现（`network-policy.ts`），两处调用：
+
+- worker 侧（`subagent-bash-guard.ts`）：`off` 一律不发请求；`whitelist` 只对免审集合内的命令不发
+  （与接入档位前一致）；`loose` 一律发请求，交给父进程判定并留审计
+- 父进程（`approveCapability`）：档位放行**且命令维度干净**时直接发 grant（不过预审、不问人），
+  审计条目带 `via: network-policy:<档位>`；命令维度有风险时照旧走那条审核链
+
+两边都按文件 mtime + size 失效，改完即时生效（父进程侧的代码改动仍需 `/reload`）。
+
+`loose` 档仍要人看的形态（`riskyNetworkShape`）：
+
+- 上传/提交数据：`-d`/`--data*`/`-F`/`--form`/`-T`/`--upload-file`/`--post-data`，以及 `-X`/`--request`/`--method` 改成非 GET
+- 拿回来就执行：管道直接进解释器（`curl … | sh`），或「网络段落盘 + 命令里另有解释器/脚本段」
+- 静态判不出来的动态构造：出网段含变量，或整条命令含命令替换/反引号
+
+放行的部分：`-o` 落盘（写边界归 sandbox 管）、`cd x && pnpm install` 这类多段拼接、
+白名单之外的一切出网命令。whitelist 档恰恰卡在 `&&` 与 `$` 上，
+这是它最常见的误伤。
+
+设置入口：`/sandbox:network`（有 yad 且有 DISPLAY 开窗口三选一，否则 TUI 逐项问），
+也可直接 `/sandbox:network off|whitelist|loose|status|help`。**放宽方向写盘前确认一次**
+（措辞写明会放宽对 AI 命令的审核），收紧直接做。
+
+⚠️ 这份配置会放宽对 AI 命令的审核，所以它是**人类的权限**：只由人类用命令或手改文件来设，
+模型不得代填（与 `trustedProgramDirs` 同一条规矩）。
+
 ## 目录授权（paths.ts，GUI 动态维护）
 
 gate 审核弹窗（sandbox-allow 升权）展示的候选目录就是模型声明的 `paths`（规范化后的 writePaths），不从 command 拆路径。每个候选目录可选择长期或当前 session 的授权级别：
@@ -470,9 +519,17 @@ gate 审核弹窗（sandbox-allow 升权）展示的候选目录就是模型声�
 
 ### Subagent 自动审核
 
-worker 不弹自己的 UI。对明确、静态的开发期网络拉取命令，`subagent-bash-guard` 以本地规则自动批准并仅为该精确命令开启网络：包管理器的 `install/add/update/remove/ci`、`git clone/fetch/pull/submodule add|update`，以及不写文件、不上传、非管道执行的 `curl`/`wget`。这减少依赖安装和只读拉取的重复弹窗。
+worker 不弹自己的 UI。开发期网络拉取命令的免审集合依然在（`whitelist` 档下就是它）——
+包管理器的 `install/add/update/remove/ci`、`git clone/fetch/pull/submodule add|update`，
+以及不写文件、不上传、非管道执行的 `curl`/`wget`；判定的实现现在是 `network-policy.ts` 的
+`staticNetworkInvocation`（接入档位前是 `lib/subagent-capability.ts` 的
+`isWorkerNetworkAutoApproved`，已搬走，行为一致；顺带补上了 `--post-data` / `--data-binary`
+这些以前漏掉的提交参数）。
 
-以下情况**不会**自动批准，仍按 capability request 交给父会话人工审核或直接拒绝：`git push`、包发布、上传/POST、下载后执行（如 `curl | sh`）、重定向、命令替换/变量等动态 shell 构造，以及任何命中危险命令规则的操作。worker 自动审核不调用 LLM：子进程环境不携带审核模型凭据；未知网络命令 fail-closed 回退人工审核。
+以下情况在 `whitelist` 档不会自动批准，仍按 capability request 交给父会话审核或直接拒绝：
+`git push`、包发布、上传/POST、下载后执行（如 `curl | sh`）、重定向、命令替换/变量等动态 shell
+构造，以及任何命中危险命令规则的操作。worker 侧判定不调用 LLM：子进程环境不携带审核模型凭据，
+需要人看的那批一律 fail-closed 发请求给父进程（父进程的预审与审计见上一节）。
 
 当前 session 的目录授权只存在内存，不写入上述文件：
 

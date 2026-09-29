@@ -28,6 +28,7 @@ import { startBatch, MAX_PARALLEL_WORKERS_SAFETY_CAP, type BatchItemResult, type
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
 import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
 import { formatReviewNote } from "../sandbox-permissions/llm-review.ts";
+import { decideNetwork, loadNetworkMode } from "../sandbox-permissions/network-policy.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
 import { planMemoryGate, readAvailableMb, readMemoryGateConfig } from "./memory-gate.ts";
@@ -121,6 +122,8 @@ export function appendCapabilityApprovalAudit(
   action: "allow" | "deny",
   comment: string | undefined,
   review: CapabilityReview | undefined,
+  /** 判定来源（如 network-policy:loose）：档位放行的条目不填 review，但要说清是谁放的 */
+  via?: string,
 ): void {
   const payload: {
     capability: string;
@@ -128,6 +131,7 @@ export function appendCapabilityApprovalAudit(
     decision: "allow" | "deny";
     comment?: string;
     review?: { verdict: CapabilityReview["verdict"] };
+    via?: string;
   } = {
     capability: request.capability,
     command: request.command,
@@ -136,6 +140,7 @@ export function appendCapabilityApprovalAudit(
   const trimmed = comment?.trim();
   if (trimmed) payload.comment = trimmed;
   if (review) payload.review = { verdict: review.verdict };
+  if (via) payload.via = via;
   pi.appendEntry("subagent-capability-approval", payload);
 }
 
@@ -154,6 +159,17 @@ export async function approveCapability(
   // 其余回退人工。这里只换两处外形：问人时出 capability 卡片，审计写 capability 条目。
   // 不照抄一份的意义在于，主链往后加的豁免/收窄（临时目录清理、可信目录…）对 worker 同时生效。
   const verdict = checkCommand(validated.command, { cwd: validated.cwd });
+
+  // network 这一维先按档位判（network-policy.ts，由人类调/关）。
+  // 「仅仅是 network 请求」= 档位放行且命令维度也干净：直接发 grant，不过预审也不问人；
+  // 命令维度有风险（allow=false）时仍要走审核链，那是另一条路。
+  const networkMode = validated.capability === "network" ? loadNetworkMode() : undefined;
+  const via = networkMode ? `network-policy:${networkMode}` : undefined;
+  if (networkMode && decideNetwork(validated.command, networkMode).allow && verdict.allow) {
+    appendCapabilityApprovalAudit(pi, validated, "allow", undefined, undefined, via);
+    return { grant: { capability: validated.capability, commandDigest: commandDigest(validated.command) } };
+  }
+
   const decision = await approveBashCommand({
     pi,
     ctx,
@@ -179,6 +195,7 @@ export async function approveCapability(
       outcome === "approved" ? "allow" : "deny",
       record.comment,
       record.review,
+      via,
     ),
   });
 

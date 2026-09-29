@@ -34,8 +34,7 @@ import {
 import { resolveRemoveTarget } from "./workspace-command.ts";
 import {
 	findYadBinary,
-	hasDisplay,
-	realYadRunner,
+	resolveYadSession,
 	yadInputValue,
 	yadPickRow,
 	yadText,
@@ -189,7 +188,7 @@ export async function pathsCommandHandler(
 		return;
 	}
 
-	const session = resolveYad(ctx, deps);
+	const session = resolveYadSession(ctx, deps);
 	if (session) {
 		const result = await runYadFlow(action, ctx, session);
 		if (result.kind !== "unavailable") return;
@@ -205,15 +204,7 @@ export async function pathsCommandHandler(
 	await runTuiFlow(action, ctx);
 }
 
-/** 图形通道是否可用：有界面 + 找到 yad + 有 DISPLAY 才开窗 */
-function resolveYad(ctx: PathsCommandContext, deps: PathsCommandDeps): YadSession | null {
-	if (!ctx.hasUI) return null;
-	const env = deps.env ?? process.env;
-	const bin = (deps.findYad ?? findYadBinary)(env);
-	if (!bin) return null;
-	if (!(deps.hasDisplay ?? hasDisplay)(env)) return null;
-	return { bin, env, runner: deps.runner ?? realYadRunner, signal: ctx.signal };
-}
+/** 图形通道是否可用：扫 PATH 找 yad + 看 DISPLAY（共享实现见 yad-paths.ts 的 resolveYadSession） */
 
 // ── yad（图形）通道 ─────────────────────────────────
 

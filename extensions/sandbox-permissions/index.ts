@@ -4,6 +4,7 @@
 //   guard.ts  敏感路径黑名单拦截（pi.on("tool_call")：read/write/edit/bash）
 //   gate.ts   危险 bash 命令审批（pi.on("tool_call"/"tool_result"/"session_start"）
 //   allow.ts  一次性沙箱升权工具（pi.registerTool("sandbox-allow")）
+// 另带两个人类侧的配置命令：/sandbox:paths（三类路径）与 /sandbox:network（worker 出网档位）。
 //
 // 注册顺序固定：guard（硬拦截）先于 gate（审批）；allow 只注册工具，顺序无关。
 // 注意：subagent 子进程仍经 lib/subagent-run.ts 以 --extension 单独加载 guard.ts，
@@ -16,6 +17,7 @@ import allow from "./allow";
 import { poolAddHandler, poolRemoveHandler } from "./review-pool";
 import { workspaceArgumentCompletions, workspaceCommandHandler } from "./workspace-command.ts";
 import { pathsArgumentCompletions, pathsCommandHandler } from "./paths-command.ts";
+import { networkArgumentCompletions, networkCommandHandler } from "./network-command.ts";
 import { beginSandboxSession } from "./session-access.ts";
 import {
 	YOLO_STATUS_KEY,
@@ -92,6 +94,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		description: pathsDescription,
 		getArgumentCompletions: (prefix) => pathsArgumentCompletions(prefix),
 		handler: (args, ctx) => pathsCommandHandler(args, ctx),
+	});
+
+	// worker 出网审核强度（三档）：/sandbox:network
+	// 有图形（yad + DISPLAY）时开窗口三选一；否则回退逐项提问。放宽方向写盘前确认，
+	// 收紧直接做。命令行直接带档位词也支持（/sandbox:network loose）。
+	pi.registerCommand("sandbox:network", {
+		description: "worker 出网审核强度：off / whitelist / loose（缺省开窗口选择，可带档位词直接设）",
+		getArgumentCompletions: (prefix) => networkArgumentCompletions(prefix),
+		handler: (args, ctx) => networkCommandHandler(args, ctx),
 	});
 
 	// 副工作区管理（持久 allowDirs）：/sandbox:workspaces 列出 / add / remove

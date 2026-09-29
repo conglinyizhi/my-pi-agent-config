@@ -14,13 +14,13 @@ import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from
 import {
   commandDigest,
   isWorkerApprovalCapability,
-  isWorkerNetworkAutoApproved,
   makeCapabilityRequest,
   parseCapabilityGrants,
   requestedCapability,
   waitForCapabilityDecision,
   type CapabilityGrant,
 } from "../../lib/subagent-capability.ts";
+import { decideNetwork, loadNetworkMode } from "./network-policy.ts";
 import { rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
 
 const PROMPT_SNIPPET = "Execute a bash command in the isolated worker sandbox. Risky commands block until the parent agent approves or denies them.";
@@ -110,9 +110,15 @@ export default function (pi: ExtensionAPI): void {
         };
       }
 
-      // 网络自动放行集合之外的 network 命令，以及命中安全规则的命令，都要父进程审批。
-      // 同一条命令若同时命中两者，按 network 优先请求一次（父进程审的是整条命令）。
-      const networkRisk = requested?.capability === "network" && !isWorkerNetworkAutoApproved(command);
+      // network 这一维按档位判（network-policy.ts）：
+      //   off        一律不发请求（网络不算能力，不留痕）
+      //   whitelist  免审集合内的命令不发（与接入档位前一致），其余发
+      //   loose      一律发：由父进程做权威判定并留审计 —— 这正是 loose 与 off 的差别
+      const networkMode = requested?.capability === "network" ? loadNetworkMode() : undefined;
+      const networkDecision = networkMode ? decideNetwork(command, networkMode) : undefined;
+      const networkRisk = networkDecision
+        ? !(networkMode === "off" || (networkMode === "whitelist" && networkDecision.allow))
+        : false;
       const commandRisk = !verdict.allow;
       let approvalComment: string | undefined;
       if (networkRisk || commandRisk) {
@@ -129,7 +135,7 @@ export default function (pi: ExtensionAPI): void {
             capability,
             command,
             reason: networkRisk
-              ? `worker 命令需要额外能力：${requested?.scope ?? "访问网络或远程包源"}`
+              ? (networkDecision?.reason ?? `worker 命令需要额外能力：${requested?.scope ?? "访问网络或远程包源"}`)
               : (verdict.reason ?? "命令命中 worker 安全规则，需要主 agent 审批。"),
             cwd: ctx.cwd,
             taskId,

@@ -48,9 +48,33 @@ export function findYadBinary(env: NodeJS.ProcessEnv = process.env): string | nu
 	return null;
 }
 
-/** 有图形可显示（X11 或 Wayland）。这里只看环境变量，比起来再说便宜。 */
+/** 图形环境判定（默认看 DISPLAY / WAYLAND_DISPLAY） */
 export function hasDisplay(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
+
+/** 建 yad 会话要的外部依赖（各命令共用；测试一律注入假 runner） */
+export interface YadSessionDeps {
+	runner?: YadRunner;
+	findYad?: (env: NodeJS.ProcessEnv) => string | null;
+	hasDisplay?: (env: NodeJS.ProcessEnv) => boolean;
+	env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * 图形通道是否可用：有界面 + 找到 yad + 有 DISPLAY 才开窗。
+ * 三条任一不满足就返回 null，由调用方回退 TUI（/sandbox:paths 与 /sandbox:network 共用）。
+ */
+export function resolveYadSession(
+	target: { hasUI: boolean; signal?: AbortSignal },
+	deps: YadSessionDeps = {},
+): YadSession | null {
+	if (!target.hasUI) return null;
+	const env = deps.env ?? process.env;
+	const bin = (deps.findYad ?? findYadBinary)(env);
+	if (!bin) return null;
+	if (!(deps.hasDisplay ?? hasDisplay)(env)) return null;
+	return { bin, env, runner: deps.runner ?? realYadRunner, signal: target.signal };
 }
 
 /** stderr 里出现这些 = 不是用户取消，而是窗口根本起不来（无 display / 无 GTK 等） */
