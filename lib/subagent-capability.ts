@@ -284,19 +284,9 @@ export function isWorkerApprovalCapability(capability: CapabilityName): boolean 
   return capability === "network" || capability === "command";
 }
 
-/**
- * 是否需要人工弹窗确认。
- *
- * 与主会话 bash 审批链一致：审核判 safe 且配置为 auto 才自动放行；
- * 其余（risky/dangerous/error、无审核意见、strict 模式）一律人工确认——fail-closed，
- * 绝不因为审核缺失或异常而静默放行。
- */
-export function needsHumanApproval(
-  review: CapabilityReview | undefined,
-  mode: "auto" | "strict",
-): boolean {
-  return !(review?.verdict === "safe" && mode === "auto");
-}
+// 「safe + auto 才自动放行，其余一律人工」这条策略不在这里：它属于命令审核链，
+// 唯一实现是 lib/bash-approval.ts（worker 请求也走那条链）。曾在这里手抄过一份，
+// 两份策略并存正是「同一个决定在不同链路上不一致」的源头。
 
 export function parseCapabilityGrants(raw: string | undefined): CapabilityGrant[] {
   if (!raw) return [];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendCapabilityApprovalAudit } from "../extensions/trident-subagent/index.ts";
+import { appendCapabilityApprovalAudit, approveCapability } from "../extensions/trident-subagent/index.ts";
 import {
   buildCapabilityDecision,
   commandDigest,
@@ -8,7 +8,6 @@ import {
   isWorkerApprovalCapability,
   isWorkerNetworkAutoApproved,
   makeCapabilityRequest,
-  needsHumanApproval,
   requestedCapability,
   validateCapabilityDecision,
   validateCapabilityRequest,
@@ -77,16 +76,102 @@ test("request carries a verifiable digest", () => {
   assert.equal(validateCapabilityRequest({ ...request, capability: "command" })?.capability, "command");
 });
 
-test("needsHumanApproval: safe+auto 自动放行，其余一律人工确认", () => {
-  const safe = { verdict: "safe" as const, reason: "只读", suggestion: "" };
-  assert.equal(needsHumanApproval(safe, "auto"), false);
-  // strict 模式：即使 safe 也要人工看
-  assert.equal(needsHumanApproval(safe, "strict"), true);
-  for (const verdict of ["risky", "dangerous", "error"] as const) {
-    assert.equal(needsHumanApproval({ verdict, reason: "r", suggestion: "s" }, "auto"), true, verdict);
-  }
-  // 无审核意见（含审核不可用）：fail-closed，一律人工
-  assert.equal(needsHumanApproval(undefined, "auto"), true);
+// 「safe + auto 才自动放行，其余一律人工」这条策略的归属测试在 lib/bash-approval.test.ts：
+// worker 请求走的就是那条链，策略只有链上那一份实现。这里测的是 capability 外壳。
+
+function approvalDeps(overrides: {
+  review: (() => unknown) | undefined;
+  runGui: (kind: string, request: any) => Promise<unknown>;
+  mode?: "auto" | "strict";
+  enabled?: boolean;
+}): any {
+  return {
+    loadReviewConfig: () => ({ enabled: overrides.enabled ?? true, mode: overrides.mode ?? "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+    reviewCommand: async () => overrides.review?.() ?? { verdict: "error", reason: "无意见", suggestion: "" },
+    runGui: overrides.runGui,
+  };
+}
+
+function capabilityRequest(command: string) {
+  return makeCapabilityRequest({ capability: "command", command, reason: "worker 命令命中安全规则", cwd: "/tmp" });
+}
+
+test("approveCapability：预审 risky → 出 capability 卡片，批准后发精确 grant 并回传附言", async () => {
+  const request = capabilityRequest("rm -rf /tmp/lx-probe");
+  const entries: Array<{ type: string; data: any }> = [];
+  let seen: any;
+  const approval = await approveCapability(
+    { appendEntry: (type: string, data: unknown) => entries.push({ type, data }) } as any,
+    request,
+    { ui: undefined } as any,
+    undefined,
+    approvalDeps({
+      review: () => ({ verdict: "risky", reason: "目标含变量", suggestion: "写死路径" }),
+      runGui: async (_kind: string, req: any) => {
+        seen = req;
+        return { ok: true, data: { action: "allow", comment: "仅此一次" } };
+      },
+    }),
+  );
+  assert.equal(seen.kind, "capability", "worker 请求走主链，但卡片仍是 capability");
+  assert.equal(seen.capability, "command");
+  assert.equal(seen.scope, request.scope);
+  assert.match(seen.review.reason, /目标含变量/);
+  assert.equal(approval?.grant?.commandDigest, commandDigest(request.command));
+  assert.equal(approval?.comment, "仅此一次");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.type, "subagent-capability-approval");
+  assert.equal(entries[0]?.data.decision, "allow");
+  assert.equal(entries[0]?.data.comment, "仅此一次");
+});
+
+test("approveCapability：预审 safe + auto → 不弹窗，grant 照发（仍记 capability 审计）", async () => {
+  const entries: Array<{ type: string; data: any }> = [];
+  let guiCalls = 0;
+  const approval = await approveCapability(
+    { appendEntry: (type: string, data: unknown) => entries.push({ type, data }) } as any,
+    capabilityRequest("rm -rf /tmp/lx-probe"),
+    { ui: undefined } as any,
+    undefined,
+    approvalDeps({
+      review: () => ({ verdict: "safe", reason: "临时目录清理", suggestion: "" }),
+      runGui: async () => {
+        guiCalls++;
+        return { ok: true, data: { action: "deny" } };
+      },
+    }),
+  );
+  assert.equal(guiCalls, 0, "预审放行不该再问人");
+  assert.equal(approval?.grant?.capability, "command");
+  assert.equal(approval?.review?.verdict, "safe");
+  assert.equal(entries.length, 1, "worker 拿到过能力这件事要留痕，自动放行也记");
+  assert.equal(entries[0]?.data.decision, "allow");
+  assert.equal(entries[0]?.data.review.verdict, "safe");
+});
+
+test("approveCapability：拒绝不发 grant，附言随结果回传", async () => {
+  const entries: Array<{ type: string; data: any }> = [];
+  const approval = await approveCapability(
+    { appendEntry: (type: string, data: unknown) => entries.push({ type, data }) } as any,
+    capabilityRequest("rm -rf /tmp/lx-probe"),
+    { ui: undefined } as any,
+    undefined,
+    approvalDeps({
+      review: () => ({ verdict: "dangerous", reason: "目标不明", suggestion: "" }),
+      runGui: async () => ({ ok: true, data: { action: "deny", comment: "换个写法" } }),
+    }),
+  );
+  assert.equal(approval?.grant, undefined);
+  assert.equal(approval?.comment, "换个写法");
+  assert.equal(entries[0]?.data.decision, "deny");
+});
+
+test("approveCapability：非 worker 能力或篡改过的请求一律不进入审批", async () => {
+  const publish = makeCapabilityRequest({ capability: "network", command: "git push origin main", reason: "r", cwd: "/tmp" });
+  const pi = { appendEntry: () => {} } as any;
+  // git push 属 publish，不开放给 worker：即便报成 network 也不会被当成 network 受理
+  assert.equal(await approveCapability(pi, publish, { ui: undefined } as any, undefined), undefined);
+  assert.equal(await approveCapability(pi, { ...capabilityRequest("rm -rf /tmp/x"), commandDigest: "sha256:forged" }, { ui: undefined } as any, undefined), undefined);
 });
 
 test("capability 决策：allow 附言写入 decision，空附言不创建 comment 键", () => {

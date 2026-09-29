@@ -25,7 +25,7 @@
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
 注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。这套写入边界对 **bash 与写入类工具一起生效**：bash 由 `scripts/sandbox-shell.mjs` 的 landlock grants 执行，
-write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI），批准后仅以绑定精确 command digest 的一次性 grant 重启该 worker。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
+write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程的判定与预审直接走主 agent 那条审核链（`lib/bash-approval.ts`，含共享的 LLM 预审缓存）：预审判 safe 且 auto 模式就自动批准，其余经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI）。批准只绑定精确 command digest，worker 在 bash 工具内继续执行本条命令，不重启、不丢上下文。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -268,6 +268,20 @@ worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTr
 - `/provider:fast-pop [provider/model 或模型名]` — 从审核池移除一个模型（池子清空后审核回退当前会话模型）
 
 审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/token_idle_ms/max_cache）。
+
+### 谁判、谁审、什么时候问人：只有这一处实现（lib/bash-approval.ts）
+
+命令进入审批的那一整套编排只有一份：`lib/bash-approval.ts` 的 `approveBashCommand`（`checkCommand` 的判定由调用方做，黑名单/内联脚本/全 autoReject 仍是调用方硬拒）。三条路都用它：
+
+| 调用方 | 卡片 | 审计条目 |
+|--------|------|----------|
+| `bash-guard.ts`（前台 bash） | `audit` | `bash-audit`（带 `origin: "bash"`） |
+| `dsh-jobs`（bash_background） | `audit` | `bash-audit`（带 `origin: "bash_background"`） |
+| `trident-subagent` 的 `approveCapability`（worker 风险命令） | `capability` | `subagent-capability-approval` |
+
+后两条路通过 `buildRequest` / `audit` 两个接点换外形，判定、预审、缓存与「safe+auto 才自动放行」的策略都是同一份。**LLM 预审缓存也因此共用**（`bashApprovalReviewCache`，键是命令原文 + 命中规则）：主 agent 刚判过 safe 的清理命令，worker 再跑同一条不再重新掷一次骰子。
+
+审计落点的差别是故意的：`bash-audit` 只在人工真的答过时写（自动放行不记，历史行为）；capability 条目连自动放行也留着 —— worker 什么时候拿到过能力，本身就是要看的事。
 
 ### 人工审批通道（lib/approval-channel.ts）
 

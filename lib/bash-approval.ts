@@ -1,11 +1,16 @@
-// lib/bash-approval.ts — bash / bash_background 共用的审批编排
+// lib/bash-approval.ts — 命令审核链的唯一编排（bash / bash_background / subagent capability）
 //
 // 这里只编排「需确认类」命令：checkCommand 的黑名单、内联脚本和全
 // autoReject 结果仍由调用方硬拒。LLM 与 GUI runner 均可注入，便于后台工具
 // 和单元测试复用，而不让 extensions 之间互相依赖。
+//
+// worker 的风险命令（capability 请求）也走这条链：预审与 LLM 缓存同主 agent 一份，
+// 只是通过 buildRequest / audit 两个接点换成 capability 卡片与 capability 审计条目。
+// 谁判、谁审、什么时候弹人，只有这一处实现。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SandboxCheckResult, TokenRule } from "./sandbox-check.ts";
+import type { ApprovalRequest } from "./approval-channel.ts";
 import { formatFacts } from "./preshell.ts";
 import {
 	createReviewCache,
@@ -25,7 +30,11 @@ import {
 
 export { normalizeApprovalComment };
 
-/** bash 审批链共用的 LLM 缓存；bash 与 bash_background 不重复审核同一命令。 */
+/**
+ * 本链共用的 LLM 缓存；bash / bash_background / worker capability 不重复审核同一命令。
+ * 缓存键是（命令原文 + 命中的规则），与谁发起无关：主 agent 刚判过 safe 的命令，
+ * worker 再跑同一条不必重新掷一次骰子。
+ */
 export const bashApprovalReviewCache = createReviewCache();
 
 export interface BashApprovalDependencies {
@@ -53,6 +62,40 @@ export interface BashApprovalOptions {
 	/** 审批来源，写进 bash-audit 条目便于事后分辨前台/后台。 */
 	origin?: "bash" | "bash_background";
 	deps?: BashApprovalDependencies;
+	/**
+	 * 问人这一步的请求形态；缺省是 audit 卡片（「这条 bash 命令要不要执行」）。
+	 * subagent 传自己的构造器换成 capability 卡片 —— 判定与预审是同一条链，
+	 * 只有卡片长什么样按通道来定。
+	 */
+	buildRequest?: (context: ApprovalRequestContext) => ApprovalRequest;
+	/**
+	 * 审计落点；缺省只在人工真的答过时写 bash-audit（自动放行不写，历史行为如此）。
+	 * subagent 用它换成 subagent-capability-approval 条目（那条记录连自动放行也留着，
+	 * 因为「worker 什么时候拿到过能力」本身就是要看的事）。
+	 */
+	audit?: (record: BashAuditRecord, outcome: "approved" | "denied", auto: boolean) => void;
+}
+
+/** 构造审批请求时能拿到的东西：判定结果、预审意见与影响面摘要 */
+export interface ApprovalRequestContext {
+	command: string;
+	rules: TokenRule[];
+	reason?: string;
+	review?: ReviewResult;
+	factsText?: string;
+	taskId?: string;
+	signal?: AbortSignal;
+}
+
+/** 交给审计落点的记录；默认实现把它折成 bash-audit 条目 */
+export interface BashAuditRecord {
+	command: string;
+	origin?: "bash" | "bash_background";
+	rules: Array<{ name: string; matched?: string[] }>;
+	/** 完整预审意见；bash-audit 只取 verdict/reason 落盘 */
+	review?: ReviewResult;
+	comment?: string;
+	ts: number;
 }
 
 export interface BashApprovalResult {
@@ -63,45 +106,54 @@ export interface BashApprovalResult {
 	review?: ReviewResult;
 }
 
-function auditEntry(
+function auditRecord(
 	command: string,
 	verdict: SandboxCheckResult,
 	review: ReviewResult | undefined,
 	comment: string | undefined,
 	origin: BashApprovalOptions["origin"],
-): Record<string, unknown> {
+): BashAuditRecord {
 	return {
 		command,
 		...(origin ? { origin } : {}),
 		rules: (verdict.rules ?? []).map((rule) => ({ name: rule.name, matched: rule.matched })),
-		...(review ? { review: { verdict: review.verdict, reason: review.reason } } : {}),
+		...(review ? { review } : {}),
 		...(comment ? { comment } : {}),
 		ts: Date.now(),
 	};
 }
 
+/** bash-audit 条目的形态：预审只留 verdict 与 reason，全文不进会话记录 */
+function bashAuditPayload(record: BashAuditRecord, outcome: "approved" | "denied"): Record<string, unknown> {
+	const { review, ...rest } = record;
+	return {
+		...rest,
+		...(review ? { review: { verdict: review.verdict, reason: review.reason } } : {}),
+		outcome,
+	};
+}
+
 async function humanConfirm(
 	ctx: ExtensionContext,
-	command: string,
-	rules: TokenRule[],
-	reason: string | undefined,
-	review: ReviewResult | undefined,
-	taskId: string | undefined,
-	signal: AbortSignal | undefined,
+	context: ApprovalRequestContext,
 	deps: BashApprovalDependencies,
-	factsText?: string,
+	buildRequest: BashApprovalOptions["buildRequest"],
 ): Promise<{ approved: boolean; comment?: string }> {
-	const decision = await resolveApprovalChannel(deps)({
-		kind: "audit",
-		command,
-		taskId,
-		rules,
-		review,
-		reason,
-		// 影响面也给人看一份：审核模型拿到的是同一段事实（含解释器载荷原文）
-		...(factsText ? { factsText } : {}),
-		signal,
-	}, ctx);
+	// 缺省是 audit 卡片（bash / bash_background 的形态）；subagent 换成 capability 卡片
+	const request: ApprovalRequest = buildRequest
+		? buildRequest(context)
+		: {
+			kind: "audit",
+			command: context.command,
+			taskId: context.taskId,
+			rules: context.rules,
+			review: context.review,
+			reason: context.reason,
+			// 影响面也给人看一份：审核模型拿到的是同一段事实（含解释器载荷原文）
+			...(context.factsText ? { factsText: context.factsText } : {}),
+			signal: context.signal,
+		};
+	const decision = await resolveApprovalChannel(deps)(request, ctx);
 	return { approved: decision.action === "allow", comment: decision.comment };
 }
 
@@ -134,24 +186,30 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 			review = undefined;
 		}
 		if (review?.verdict === "safe" && config.mode === "auto") {
+			// 预审放行：默认落点不写条目（历史行为），接了 audit 的调用方自己决定记不记
+			if (options.audit) options.audit(auditRecord(command, verdict, review, undefined, origin), "approved", true);
 			return { approved: true, review };
 		}
 	}
 
-	const decision = await humanConfirm(
-		ctx,
+	const context: ApprovalRequestContext = {
 		command,
-		verdict.rules ?? [],
-		verdict.reason,
+		rules: verdict.rules ?? [],
+		reason: verdict.reason,
 		review,
-		taskId,
-		signal,
-		deps,
 		// 事实层的展示文本：与送审的那份同一口径（formatFacts），人看到的和模型看到的一样
-		verdict.facts ? formatFacts(verdict.facts) : undefined,
-	);
-	const entry = auditEntry(command, verdict, review, decision.comment, origin);
-	pi.appendEntry("bash-audit", { ...entry, outcome: decision.approved ? "approved" : "denied" });
+		...(verdict.facts ? { factsText: formatFacts(verdict.facts) } : {}),
+		...(taskId ? { taskId } : {}),
+		signal,
+	};
+	const decision = await humanConfirm(ctx, context, deps, options.buildRequest);
+	const outcome: "approved" | "denied" = decision.approved ? "approved" : "denied";
+	const record = auditRecord(command, verdict, review, decision.comment, origin);
+	if (options.audit) {
+		options.audit(record, outcome, false);
+	} else {
+		pi.appendEntry("bash-audit", bashAuditPayload(record, outcome));
+	}
 	return { approved: decision.approved, comment: decision.comment, review };
 }
 

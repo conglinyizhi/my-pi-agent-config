@@ -5,6 +5,9 @@
 // 默认模型优先级：显式 model > subagent 独立默认 > 当前会话模型；可由用户命令设置独立默认。
 // skills 可按简报逐 worker 指定。
 // /subagent:gui：异步启动实时监视窗口（Wails 窗口轮询状态文件，不阻塞命令）。
+//
+// worker 的风险命令（capability 请求）由 approveCapability 处理，判定与预审走主 agent 那条链
+// （lib/bash-approval.ts，含共享的 LLM 预审缓存），这里只负责 capability 卡片与审计条目。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
@@ -15,7 +18,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { launchGuiWindow } from "../../lib/gui-runner.ts";
 import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis.ts";
-import { resolveApprovalChannel } from "../../lib/approval-channel.ts";
+import { approveBashCommand, type BashApprovalDependencies } from "../../lib/bash-approval.ts";
 import { prepareSubagentArgs, taskHeadline } from "./tool-args.ts";
 import { planSubagentSandbox } from "./sandbox-params.ts";
 import { buildSafeWorkerTools } from "./worker-tools.ts";
@@ -23,10 +26,9 @@ import { describeSnapshot, listStatusSnapshots } from "./status-history.ts";
 import { formatUnclaimedReturn } from "./return-notice.ts";
 import { startBatch, MAX_PARALLEL_WORKERS_SAFETY_CAP, type BatchItemResult, type BatchRuntime } from "./batch.ts";
 import { beginDiagnostics, clearDiagnosticsContext } from "./diagnostics.ts";
-import { commandDigest, isWorkerApprovalCapability, needsHumanApproval, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
-import { createReviewCache, formatReviewNote, loadLlmReviewConfig, reviewCommand } from "../sandbox-permissions/llm-review.ts";
+import { commandDigest, isWorkerApprovalCapability, validateCapabilityRequest, type CapabilityApproval, type CapabilityGrant, type CapabilityRequest, type CapabilityReview } from "../../lib/subagent-capability.ts";
+import { formatReviewNote } from "../sandbox-permissions/llm-review.ts";
 import { checkCommand } from "../../lib/sandbox-check.ts";
-import type { TokenRule } from "../sandbox-permissions/rule-engine.ts";
 import { beginBatch, configureStatusFile, currentStatusPath, flushStatusFile, getSnapshot, sessionHashOf, statusPathFor, updateWorker, type WorkerRun } from "./status.ts";
 import { planMemoryGate, readAvailableMb, readMemoryGateConfig } from "./memory-gate.ts";
 import {
@@ -104,7 +106,6 @@ function deliverUnclaimedReturn(
   );
 }
 let capabilityApprovalTail: Promise<void> = Promise.resolve();
-const capabilityReviewCache = createReviewCache();
 
 function enqueueCapabilityApproval<T>(work: () => Promise<T>): Promise<T> {
   const run = capabilityApprovalTail.then(work, work);
@@ -138,59 +139,57 @@ export function appendCapabilityApprovalAudit(
   pi.appendEntry("subagent-capability-approval", payload);
 }
 
-async function approveCapability(
+export async function approveCapability(
   pi: ExtensionAPI,
   request: CapabilityRequest,
   ctx: ExtensionContext,
   signal: AbortSignal | undefined,
+  deps?: BashApprovalDependencies,
 ): Promise<CapabilityApproval | undefined> {
   const validated = validateCapabilityRequest(request);
   if (!validated || !isWorkerApprovalCapability(validated.capability)) return undefined;
 
-  // 所有 worker 能力请求先过审核模型（与主会话 bash 审批链一致）：
-  // safe + auto 直接放行；risky/dangerous/error/无意见一律回退人工弹窗。
-  // 审核调用异常按 error 处理（fail-closed），绝不静默放行。
-  const reviewConfig = loadLlmReviewConfig();
-  let rules: TokenRule[] = [];
-  let review: CapabilityReview;
-  try {
-    // 一次判定拿全（rules + facts）：facts 随审核请求一并给模型，worker 请求也看影响面
-    const verdict = checkCommand(validated.command, { cwd: validated.cwd });
-    rules = verdict.rules ?? [];
-    review = await reviewCommand(pi, ctx, validated.command, rules, signal, capabilityReviewCache, reviewConfig, {
-      facts: verdict.facts,
-      factsUnavailable: verdict.factsUnavailable,
-    });
-  } catch {
-    review = { verdict: "error", reason: "审核调用异常，回退人工确认", suggestion: "" };
-  }
+  // worker 的风险命令走的就是主 agent 那条链（lib/bash-approval.ts 的 approveBashCommand）：
+  // 同为 checkCommand 判定 → LLM 预审（同一个 bashApprovalReviewCache）→ safe+auto 自动放行，
+  // 其余回退人工。这里只换两处外形：问人时出 capability 卡片，审计写 capability 条目。
+  // 不照抄一份的意义在于，主链往后加的豁免/收窄（临时目录清理、可信目录…）对 worker 同时生效。
+  const verdict = checkCommand(validated.command, { cwd: validated.cwd });
+  const decision = await approveBashCommand({
+    pi,
+    ctx,
+    command: validated.command,
+    verdict,
+    taskId: validated.taskId,
+    signal,
+    deps,
+    buildRequest: (context) => ({
+      kind: "capability",
+      command: context.command,
+      taskId: context.taskId,
+      capability: validated.capability,
+      scope: validated.scope,
+      requestReason: context.reason ?? validated.reason,
+      rules: context.rules,
+      review: context.review,
+      signal: context.signal,
+    }),
+    audit: (record, outcome) => appendCapabilityApprovalAudit(
+      pi,
+      validated,
+      outcome === "approved" ? "allow" : "deny",
+      record.comment,
+      record.review,
+    ),
+  });
 
+  const review = decision.review as CapabilityReview | undefined;
+  const comment = decision.comment;
+  if (!decision.approved) return { ...(review ? { review } : {}), ...(comment ? { comment } : {}) };
   const grant: CapabilityGrant = {
     capability: validated.capability,
     commandDigest: commandDigest(validated.command),
   };
-
-  if (!needsHumanApproval(review, reviewConfig.mode)) {
-    appendCapabilityApprovalAudit(pi, validated, "allow", undefined, review);
-    return { grant, review };
-  }
-
-  const asked = await resolveApprovalChannel()({
-    kind: "capability",
-    command: validated.command,
-    taskId: validated.taskId,
-    capability: validated.capability,
-    scope: validated.scope,
-    requestReason: validated.reason,
-    rules,
-    review,
-    signal,
-  }, ctx);
-  const allow = asked.action === "allow";
-  const comment = asked.comment;
-  const action = allow ? "allow" : "deny";
-  appendCapabilityApprovalAudit(pi, validated, action, comment, review);
-  return allow ? { grant, review, ...(comment ? { comment } : {}) } : { review, ...(comment ? { comment } : {}) };
+  return { grant, ...(review ? { review } : {}), ...(comment ? { comment } : {}) };
 }
 
 /**
