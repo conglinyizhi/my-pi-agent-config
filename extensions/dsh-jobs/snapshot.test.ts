@@ -2,7 +2,7 @@
 //
 // 跑法：node --test --experimental-strip-types extensions/dsh-jobs/snapshot.test.ts
 //
-// 隔离：把 PI_CODING_AGENT_DIR 指到临时目录，job-state 落在里面，不碰真实的 agent 目录。
+// 隔离：把 PI_JOB_STATE_DIR 指到临时目录，不碰真实的运行时目录。
 // 注意 worker 里跑测试时 PI_SUBAGENT / PI_TASK_ID 是真值，身份相关用例得自己控制这两个变量。
 
 import assert from "node:assert/strict";
@@ -25,7 +25,7 @@ import {
 } from "./snapshot.ts";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "dsh-jobs-snapshot-"));
-process.env.PI_CODING_AGENT_DIR = tmpRoot;
+process.env.PI_JOB_STATE_DIR = join(tmpRoot, "state");
 
 const savedEnv = {
 	subagent: process.env.PI_SUBAGENT,
@@ -74,9 +74,9 @@ function freePid(): number {
 }
 
 describe("jobStateDir / currentOwner", () => {
-	it("共享目录挂在 agent 目录下的 job-state", () => {
-		assert.equal(JOB_STATE_DIR_NAME, "job-state");
-		assert.equal(jobStateDir(), join(tmpRoot, "job-state"));
+	it("共享目录挂在运行时目录下", () => {
+		assert.equal(JOB_STATE_DIR_NAME, "pi-jobs");
+		assert.equal(jobStateDir(), join(tmpRoot, "state"));
 	});
 
 	it("主进程身份：没有 PI_SUBAGENT / PI_TASK_ID 时是 main", () => {

@@ -13,10 +13,9 @@ import { cancelRow, collectRows, filterRows, moveSelection, REFRESH_MS, rowText,
 import type { JobRegistry, JobSnapshot } from "./registry.ts";
 import { readKillRequests, type OwnerInfo } from "./snapshot.ts";
 
-/** 测试用 agent 目录：快照层按 PI_CODING_AGENT_DIR 定位 job-state，指到临时目录即隔离 */
-const agentDir = mkdtempSync(join(tmpdir(), "jobs-panel-test-"));
-const stateDir = join(agentDir, "job-state");
-process.env.PI_CODING_AGENT_DIR = agentDir;
+/** 测试用状态目录：快照层按 PI_JOB_STATE_DIR 定位，指到临时目录即隔离 */
+const stateDir = mkdtempSync(join(tmpdir(), "jobs-panel-state-"));
+process.env.PI_JOB_STATE_DIR = stateDir;
 
 // 快照层拿 pid 探活（ESRCH 判死），所以测试里的 pid 必须是真实存在的进程：
 // owner 借一个 spawn 出来的 sleep（与 worker 区分开），worker 用测试进程自己。
@@ -75,7 +74,8 @@ beforeEach(() => {
 
 after(() => {
 	ownerChild.kill();
-	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(stateDir, { recursive: true, force: true });
+	mkdirSync(stateDir, { recursive: true });
 });
 
 describe("tailOf", () => {

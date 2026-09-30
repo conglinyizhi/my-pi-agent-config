@@ -6,19 +6,23 @@
 //   job-state/kill-<pid>-<jobId>.json             跨进程 kill 请求，目标进程轮询后消费
 // 读方读全目录 = 全舰队的任务视图；写方只管自己那份，互不阻塞。
 //
+// 目录位置：这是**运行时状态**（每进程一份，带 pid，进程死了就是垃圾），放
+// XDG_RUNTIME_DIR（per-user、0700、登录会话结束自动清）或系统临时目录，
+// 不挂 agent 目录：那里是配置与备份的地方，落进去会一直往 git status 里冒未跟踪文件。
+// 多进程共享的约束照样满足：同一用户的进程都看得见同一个目录。
+//
 // 宽容是硬要求：同一个目录里可能同时有半写文件、崩溃进程的残留、旧版本写的格式。
 // 读不动就跳过，不抛异常——面板刷新的失败方式只能是「少显示几项」，
 // 不能是「整个任务视图打不开」。
 //
-// 纯逻辑，零 pi 运行期依赖（只借 getAgentDir 定位目录），方便单测用
-// PI_CODING_AGENT_DIR 把它指到临时目录。
+// 纯逻辑，零 pi 运行期依赖，方便单测用 PI_JOB_STATE_DIR 把它指到临时目录。
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { tmpdir } from "node:os";
 
-/** 共享目录名（挂在 pi 的 agent 目录下，随 agent 目录一起被备份/清理） */
-export const JOB_STATE_DIR_NAME = "job-state";
+/** 共享目录名（挂在运行时目录下，进程退出后无保留价值） */
+export const JOB_STATE_DIR_NAME = "pi-jobs";
 
 const SNAPSHOT_PREFIX = "owner-";
 const REQUEST_PREFIX = "kill-";
@@ -57,9 +61,21 @@ export interface OwnerSnapshot {
 	jobs: JobRecord[];
 }
 
-/** 共享目录绝对路径（每次现算，测试可借 PI_CODING_AGENT_DIR 隔离） */
+/**
+ * 共享目录绝对路径（每次现算）。
+ *
+ * 三种来源，按优先级：
+ *   PI_JOB_STATE_DIR  显式覆盖（测试隔离用，也留给用户改）
+ *   XDG_RUNTIME_DIR   per-user 运行时目录，0700，登录会话结束自动清理，语义最贴
+ *   系统临时目录       兜底；带 uid 子目录，避免多用户机器上互相看见
+ */
 export function jobStateDir(): string {
-	return join(getAgentDir(), JOB_STATE_DIR_NAME);
+	const override = envValue("PI_JOB_STATE_DIR");
+	if (override) return override;
+	const runtime = envValue("XDG_RUNTIME_DIR");
+	if (runtime) return join(runtime, JOB_STATE_DIR_NAME);
+	const uid = typeof process.getuid === "function" ? process.getuid() : "default";
+	return join(tmpdir(), `${JOB_STATE_DIR_NAME}-${uid}`);
 }
 
 /**
