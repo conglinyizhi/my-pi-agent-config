@@ -144,6 +144,25 @@ export class JobRegistry {
 		return { text, snapshot: this.snapshotOf(record) };
 	}
 
+	/**
+	 * 只读投影输出（不推进游标、不改 reported）。
+	 *
+	 * 与 read 的区别是本方法没有副作用：面板与共享快照只是「看」，不能把 agent 的
+	 * job_output 增量偷走（read 会推进 readCursor，看一次就少一段）。
+	 * 前提：hooks.readOutput() 返回全量累积输出而非增量（drainStream 自己按游标切片，
+	 * 说明生产者给的本来就是全量；当前唯一生产者沙盒 bash 确实如此）。
+	 */
+	peekOutput(id: string): string {
+		const record = this.records.get(id);
+		if (!record) return "";
+		if (record.finalOutput !== undefined) return record.finalOutput;
+		try {
+			return record.hooks.readOutput ? record.hooks.readOutput() : "";
+		} catch {
+			return "";
+		}
+	}
+
 	/** 请求取消（DSH kill）；返回 requested | already-finished；终态报告位照抄 DSH */
 	kill(id: string, reason?: string): "requested" | "already-finished" {
 		const record = this.expect(id);

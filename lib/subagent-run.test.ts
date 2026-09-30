@@ -70,6 +70,19 @@ describe("buildSubagentArgs", () => {
     assert(extIdxs.some((i) => args[i].includes("custom-providers")));
   });
 
+  it("显式加载 dsh-jobs 扩展（worker 的后台任务 bash_background / job_output）", () => {
+    const args = buildSubagentArgs(base);
+    const extIdxs: number[] = [];
+    for (let i = 0; i < args.length; i++) if (args[i] === "--extension") extIdxs.push(i + 1);
+    const dshJobs = extIdxs.map((i) => args[i]).filter((p) => p.includes("dsh-jobs"));
+    assert.strictEqual(dshJobs.length, 1, "dsh-jobs 扩展在 worker 参数中只出现一次");
+    assert.ok(path.isAbsolute(dshJobs[0]));
+    assert.ok(
+      dshJobs[0].endsWith(path.join("extensions", "dsh-jobs", "index.ts")),
+      "指向 dsh-jobs/index.ts（AGENT_DIR 派生）",
+    );
+  });
+
   it("无 tools 时不传 --tools", () => {
     const args = buildSubagentArgs(base);
     assert(!args.includes("--tools"));
