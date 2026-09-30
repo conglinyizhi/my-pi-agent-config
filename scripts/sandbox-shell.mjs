@@ -50,6 +50,34 @@ const DEFAULT_MEMORY_MB = 1024;    // 默认 1GiB
 const MAX_MEMORY_MB = 32 * 1024;   // 防御性上限 32GiB（沙盒层钳制；正常上限由 helpers.ts 统一约束）
 const MEMORY_POLL_MS = 500;        // 采样周期（毫秒）
 const OOM_EXIT = 137;              // 128 + SIGKILL，标识内存超限被终止
+
+/**
+ * 非零退出时补的一行指路。
+ *
+ * 目的：撞沙箱墙（「权限不够 / 只读文件系统」）看起来就像普通权限问题，
+ * agent 容易去试 sudo、或者反复重试同一条命令，实际都白费。
+ * 这句把「下一步该干什么」直接摊在报错旁边，不指望 agent 去翻提示词。
+ *
+ * 措辞用条件句（“若是权限问题”）：命令自己的非零退出也会走到这里，
+ * 不能把「你被沙箱拦了」说成事实。
+ *
+ * 内存上限写实际值：这条命令可能被 sandbox-allow 提过额度（memoryMb），
+ * 嘴硬说“1GiB”会让人照着那个数去猜。
+ */
+function sandboxHint(memMb) {
+  return [
+    "（若是权限问题）这条命令跑在文件系统沙箱里：只能写工作目录、/tmp、/dev/null。",
+    "写别处要用 sandbox-allow 申请（permission=write-paths + 最小 paths + 一句 justification），sudo 解决不了。",
+    `命令内存上限 ${memMb > 0 ? `${memMb} MB` : "未启用"}，不够就用 sandbox-allow 的 memoryMb 给具体数值。`,
+    "不要为绕过沙箱而改写命令或反复重试同一条。",
+  ].join("\n");
+}
+
+/** 沙箱是否被整体关掉（关掉时那句指路就是噪音） */
+function sandboxDisabled() {
+  return process.env.PI_SANDBOX_DISABLE === "1";
+}
+
 const STOP_GRACE_MS = 1500;        // 收到终止信号后，留给命令自己收尾的时间；超时 SIGKILL 整组
 
 function readSettings() {
@@ -209,7 +237,14 @@ function runCommand(launcher, args, cwd) {
       if (poll) clearInterval(poll);
       // 我们自己触发的内存超限 → 用统一 OOM_EXIT；其余情况透传子进程状态。
       if (oomKilled) process.exit(OOM_EXIT);
-      process.exit(code ?? (signal ? 128 + (signal === "SIGKILL" ? 9 : 15) : 1));
+      const exitCode = code ?? (signal ? 128 + (signal === "SIGKILL" ? 9 : 15) : 1);
+      // 非零退出时补一行指路。不区分「是不是沙箱拦的」——判不准，而且判错的代价
+      // （命令自己报错却被说成沙箱）只是多一句废话，漏报的代价是 agent 卡在
+      // 一条根本没有报错的死路上。措辞用条件句，退出码一字不改地透传。
+      if (exitCode !== 0 && !sandboxDisabled()) {
+        console.error(sandboxHint(memMb));
+      }
+      process.exit(exitCode);
     });
   });
 }
