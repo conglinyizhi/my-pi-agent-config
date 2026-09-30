@@ -130,9 +130,9 @@ func TestPayloadFlag(t *testing.T) {
 		t.Fatal("显式 true 应当算开启")
 	}
 	for name, payload := range map[string]map[string]any{
-		"缺字段":     {},
+		"缺字段":      {},
 		"显式 false": {"urgent": false},
-		"类型不对":    {"urgent": "true"},
+		"类型不对":     {"urgent": "true"},
 		"null":     {"urgent": nil},
 	} {
 		if payloadFlag(payload, "urgent") {

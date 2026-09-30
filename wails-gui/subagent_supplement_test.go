@@ -361,7 +361,7 @@ func TestGetSubagentStatusEnrichment(t *testing.T) {
 	// w1：running + inboxId + 队列有 entries；w2：running 无 inboxId；w3：success + inboxId 但队列缺失。
 	// 顶层额外塞一个未知字段，验证富化后原样保留。
 	seedDoc := map[string]any{
-		"updatedAt": "2025-07-29T12:00:00.000Z",
+		"updatedAt":          "2025-07-29T12:00:00.000Z",
 		"extraTopLevelField": "keep-me",
 		"workers": []map[string]any{
 			{"id": "w1", "inboxId": "en-1", "status": "running", "task": "t1"},
