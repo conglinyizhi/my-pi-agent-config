@@ -134,7 +134,7 @@ planMb = 512
 [sandbox-llm-review]
 enabled = true # 总开关；false = 回到纯规则弹窗流程
 mode = "strict"  # auto=判安全直接放行；strict=仅给意见仍弹窗
-backend = "classifier" # chat=对话模型出 verdict（旧路径）；classifier=分类模型出维度答案（见下段）
+backend = "chain" # chat=只跑对话模型；classifier=只跑分类模型；chain=两边都跑，意见合并（任一判风险就弹窗）
 # 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
 # 用 /provider:fast-put / /provider:fast-pop 管理
 timeout_ms = 30000 # 注册模型单次审核总时长兜底（毫秒）；超时切换下一个模型
@@ -142,7 +142,7 @@ token_idle_ms = 4000 # 免费模型相邻 token 间隔上限（毫秒）；停�
 max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
 
 # ─────────────────────────────────────────────────────────────
-# sandbox-review-classifier：分类模型审核后端（[sandbox-llm-review] backend = "classifier" 时生效）
+# sandbox-review-classifier：分类模型审核后端（backend = "classifier" 或 "chain" 时生效）
 # 一次请求问八个原子问题，拿回类型化答案 + 概率，由下面的阈值决定「要不要提示用户」。
 # 硬约束：分类器是试验品，action 只有 review / ignore，**不允许直接拒绝任何请求**。
 # API key 从环境变量读：TYPESAFE_API_KEY 或 SILICONFLOW_API_KEY（不写进本文件）。

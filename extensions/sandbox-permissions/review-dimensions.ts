@@ -50,11 +50,14 @@ export const DIMENSIONS: DimensionSpec[] = [
 		id: "network",
 		label: "网络",
 		type: "choice",
-		instructions: "这条命令是否会访问网络？如果会，是把数据发出去还是只取回来？",
+		instructions:
+			"这条命令是否会访问外部网络？如果会，是把数据发出去还是只取回来？" +
+			"访问本机地址不算外部网络（localhost / 127.0.0.1 / ::1 / 0.0.0.0 / *.local / Unix socket），" +
+			"因为数据没离开这台机器",
 		criteria: {
-			none: "纯本地操作，不经网络",
-			"fetch-only": "只从远端取数据：git clone/fetch、curl 下载、包管理器安装、访问只读 API",
-			upload: "把本地内容发往外部：curl -d/-F 上传、POST/PUT 到远端、scp/rsync 推送、往 paste 服务写",
+			none: "纯本地操作，不经网络；或只访问本机地址（localhost:3000 / 127.0.0.1 / Unix socket 等），数据不出本机",
+			"fetch-only": "从外部主机取数据：git clone/fetch、curl 外网下载、包管理器安装、访问远端只读 API",
+			upload: "把本地内容发往外部主机：curl -d/-F 上传到外网、POST/PUT 到远端、scp/rsync 推送、往 paste 服务写",
 		},
 		riskLevels: ["fetch-only", "upload"],
 		supportsBelow: true,

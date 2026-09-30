@@ -44,6 +44,21 @@ export interface ReviewResult {
 	 * 由 review-dimensions.ts 的 dimensionReport() 产出，已是可 JSON 序列化的原始数据。
 	 */
 	dimensions?: ReviewDimensionRow[];
+	/**
+	 * 串联模式下 chat 那边的审核意见（chain 后端专用）。
+	 *
+	 * 分类器不产文本，只能靠维度拼理由；chat 会写一句人话。两边都跑时，把 chat 的
+	 * 结论单独放这里，而不是揉进 reason——审批窗要能分清「谁说的什么」，
+	 * 出问题时才好判断是哪一边在误报。
+	 */
+	chatReview?: {
+		verdict: ReviewVerdict;
+		reason: string;
+		suggestion: string;
+		opinion?: string;
+		/** chat 侧的失败原因（verdict=error 时） */
+		error?: string;
+	};
 }
 
 /** 与 review-dimensions.ts 的 DimensionReportRow 同形；此处只声明，不复制逻辑 */
@@ -56,8 +71,8 @@ export interface ModelRef {
 }
 
 export interface LlmReviewConfig {
-	/** 审核后端：chat = 通用对话模型出 verdict（旧路径）；classifier = 分类模型出维度答案（新路径） */
-	backend: "chat" | "classifier";
+	/** 审核后端：chat = 只跑对话模型；classifier = 只跑分类模型；chain = 两个都跑，意见合并（任一判风险就弹窗） */
+	backend: "chat" | "classifier" | "chain";
 	/** 总开关：false 时 gate 完全跳过本层，回到原弹窗流程 */
 	enabled: boolean;
 	/**
@@ -115,6 +130,7 @@ export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	const cfg = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 	const out: LlmReviewConfig = { ...DEFAULT_CONFIG };
 	if (cfg.backend === "classifier") out.backend = "classifier";
+	if (cfg.backend === "chain") out.backend = "chain";
 	if (typeof cfg.enabled === "boolean") out.enabled = cfg.enabled;
 	if (cfg.mode === "strict") out.mode = "strict";
 	// 模型池：models = [{ provider, model }, ...]；仅收录结构合法的条目
@@ -472,25 +488,127 @@ export async function reviewCommand(
 
 	// 分类后端：一次请求问八个原子问题，拿回类型化答案 + 概率，
 	// 由 review-dimensions 的阈值决定「要不要打扰用户」（永不 block）。
-	// 失败同样是 verdict=error，调用方回退弹窗——不进下面的模型池重试（那是 chat 后端的语义）。
+	// 失败同样是 verdict=error，调用方回退弹窗——不进 chat 那边的模型池重试（那是 chat 后端的语义）。
 	if (cfg.backend === "classifier") {
-		const classifierConfig = loadClassifierConfig();
-		const result = await reviewViaClassifier(
-			{
-				command,
-				cwd: ctx.cwd ?? process.cwd(),
-				preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
-				preshellUnavailable: facts?.factsUnavailable,
-				matchedRules: rules.map((r) => r.name).filter(Boolean),
-			},
-			classifierConfig,
-			{ signal },
-		);
+		const result = await runClassifierReview(ctx, command, rules, signal, facts);
 		// 只缓存有效结论（error 是瞬态的：无 key / 超时 / 限流，下次重试）
 		if (result.verdict !== "error") cache.set(key, result);
 		return result;
 	}
 
+	if (cfg.backend === "chain") {
+		const result = await runChainedReview(ctx, command, rules, signal, cfg, facts);
+		if (result.verdict !== "error") cache.set(key, result);
+		return result;
+	}
+
+	// chat 单跑
+	const result = await runChatReview(ctx, command, rules, signal, cfg, facts);
+	if (result.verdict !== "error") cache.set(key, result);
+	return result;
+}
+
+/** 跑分类器那一路（chain 与 classifier 共用） */
+async function runClassifierReview(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	signal: AbortSignal | undefined,
+	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+): Promise<ReviewResult> {
+	return reviewViaClassifier(
+		{
+			command,
+			cwd: ctx.cwd ?? process.cwd(),
+			preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
+			preshellUnavailable: facts?.factsUnavailable,
+			matchedRules: rules.map((r) => r.name).filter(Boolean),
+		},
+		loadClassifierConfig(),
+		{ signal },
+	);
+}
+
+/**
+ * 串联：分类器与 chat 两边都跑，意见合并。
+ *
+ * 结论取**两边最严**（任一判风险就弹窗）：分类器是试验品、chat 会瞎报，
+ * 两边都不可靠，那就不要任何一边单独拍板放行。代价是弹窗变多，
+ * 而这是审核层，宁可多问一句。
+ *
+ * 两边都跑而不是短路：只跑分类器就不知道 chat 会说什么，反过来也一样；
+ * 要“意见合并”就得真拿到两份意见。并行发，快的那路不用等慢的跑完才开跑。
+ */
+async function runChainedReview(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	signal: AbortSignal | undefined,
+	cfg: LlmReviewConfig,
+	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+): Promise<ReviewResult> {
+	const [classifier, chat] = await Promise.all([
+		runClassifierReview(ctx, command, rules, signal, facts),
+		runChatReview(ctx, command, rules, signal, cfg, facts),
+	]);
+	return mergeChainedReview(classifier, chat);
+}
+
+/**
+ * 合并两边结论（纯函数，可单测）。
+ *
+ * verdict 取严：dangerous > risky > safe；error 不当成风险，但两边都 error 时
+ * 结果也是 error（调用方据此回退弹窗，永不静默放行）。
+ */
+export function mergeChainedReview(classifier: ReviewResult, chat: ReviewResult): ReviewResult {
+	const rank: Record<ReviewVerdict, number> = { dangerous: 3, risky: 2, safe: 1, error: 0 };
+	const worst = rank[classifier.verdict] >= rank[chat.verdict] ? classifier.verdict : chat.verdict;
+
+	// 两边都没结论：报 error，把双方原因都带上（弹窗里能看出是哪边挂了）
+	if (worst === "error") {
+		return {
+			verdict: "error",
+			reason: `两边审核都失败：\n分类器：${classifier.reason}\n对话模型：${chat.reason}`,
+			suggestion: "",
+		};
+	}
+
+	// 理由：谁判的风险就写谁的理由；两边都判风险就并列，注明来源
+	const parts: string[] = [];
+	if (rank[classifier.verdict] >= 2) parts.push(`分类器：${classifier.reason}`);
+	if (rank[chat.verdict] >= 2) parts.push(`对话模型：${chat.reason}`);
+	const reason = parts.length > 0 ? parts.join("\n") : classifier.reason;
+
+	// suggestion 优先取 chat 的（它会写具体的替代写法），分类器的模板句只做兑底
+	const suggestion = chat.suggestion || classifier.suggestion;
+
+	const merged: ReviewResult = { verdict: worst, reason, suggestion };
+	if (classifier.dimensions) merged.dimensions = classifier.dimensions;
+	// chat 那边的完整意见单独带着：审批窗要能分清谁说的什么
+	merged.chatReview = {
+		verdict: chat.verdict,
+		reason: chat.reason,
+		suggestion: chat.suggestion,
+		...(chat.opinion ? { opinion: chat.opinion } : {}),
+		...(chat.verdict === "error" ? { error: chat.reason } : {}),
+	};
+	return merged;
+}
+/**
+ * 走 chat 模型池审一次（旧路径：一个 verdict + 一段人话理由）。
+ *
+ * 抽出来是为了给 chain 后端复用：那边两边都要跑，不能把 chat 这整段
+ * 再抄一遍（模型池重试 / 超时区分 / 免费档分支都是容易抄漏的细节）。
+ * 缓存不由这里管：chain 要等两边都跑完才能合成后再写缓存。
+ */
+async function runChatReview(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	signal: AbortSignal | undefined,
+	cfg: LlmReviewConfig,
+	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+): Promise<ReviewResult> {
 	const { models, source } = pickModels(ctx, cfg);
 	if (models.length === 0) {
 		return {
@@ -506,8 +624,8 @@ export async function reviewCommand(
 	}
 	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, facts?.facts, facts?.factsUnavailable);
 
-	// 本地类型 0.80.10 的 ModelRegistry 尚无 complete（运行时 0.84.2 已提供），
-	// 用窄接口断言绕过类型检查；运行时行为以实际 pi 版本为准。
+	// ModelRegistry 的 complete 在各版本 pi 上都有，但类型声明滞后过；用窄接口断言，
+	// 运行时行为以实际 pi 版本为准。
 	const completer = ctx.modelRegistry as unknown as {
 		complete(
 			model: Model<any>,
@@ -567,8 +685,6 @@ export async function reviewCommand(
 			}
 			const result = extractReviewResult(response.content);
 			if (result.verdict !== "error") {
-				// 只缓存有效结论；error 是瞬态（网络抖动等），下次重审
-				cache.set(key, result);
 				return result;
 			}
 			// 未调用审核工具（未给出结构化结论）的模型，把它的自由文本输出也附上，

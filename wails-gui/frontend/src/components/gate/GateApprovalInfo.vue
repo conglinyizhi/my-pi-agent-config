@@ -56,6 +56,17 @@
       <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
       <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
 
+      <!-- 串联模式：对话模型那边的意见单独列，能分清哪边说了什么 -->
+      <div v-if="review.chatReview" class="chat-review">
+        <div class="chat-review-head">
+          对话模型意见
+          <span class="chat-badge" :class="chatMeta.cls">{{ chatMeta.label }}</span>
+        </div>
+        <div class="chat-reason">{{ review.chatReview.reason }}</div>
+        <div v-if="review.chatReview.suggestion" class="chat-suggestion">💡 {{ review.chatReview.suggestion }}</div>
+        <div v-if="review.chatReview.opinion" class="chat-opinion">{{ review.chatReview.opinion }}</div>
+      </div>
+
       <div v-if="weightRows.length" class="weight-table" data-name="dimension-weights">
         <div class="weight-head">分类模型权重（条宽即风险值；越线行标底色）</div>
         <div
@@ -242,6 +253,14 @@ const showRules = ref(false);
 // 分类模型权重表（chat 后端不产这个字段，缺就空表 → 整块不渲染）
 const weightRows = computed(() => buildWeightRows(props.review?.dimensions));
 const flaggedCount = computed(() => countFlagged(props.review?.dimensions));
+// 串联模式下对话模型的结论（单跑 chat 时不渲染：那时 review 本身就是它的意见）
+const chatMeta = computed(() => {
+  const verdict = props.review?.chatReview?.verdict;
+  if (verdict === "safe") return { label: "✅ 安全", cls: "c-safe" };
+  if (verdict === "risky") return { label: "⚠️ 有风险", cls: "c-risky" };
+  if (verdict === "dangerous") return { label: "🔴 危险", cls: "c-dangerous" };
+  return { label: "❌ 未出结论", cls: "c-error" };
+});
 const decisionSummary = computed(() => gateDecisionSummary({
   kind: props.isCapability ? "capability" : props.isSandboxAllow ? "sandbox-allow" : "audit",
   permission: props.permission,
@@ -376,6 +395,17 @@ function removeWorkspace(path) {
 .weight-conf { flex: 0 0 62px; color: #888; font-family: monospace; }
 .weight-threshold { flex: 0 0 100px; color: #666; font-family: monospace; }
 .weight-raw { flex: 1 1 160px; min-width: 0; color: #999; word-break: break-word; }
+/* 串联模式下对话模型的独立意见块 */
+.chat-review { margin-top: 8px; padding: 6px 10px; background: #10101f; border-left: 2px solid #7aa2f7; border-radius: 3px; }
+.chat-review-head { font-size: 11.5px; color: #7aa2f7; display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.chat-badge { font-size: 10.5px; padding: 0 6px; border-radius: 3px; }
+.chat-badge.c-safe { color: #7ee787; background: #12261a; border: 1px solid #7ee78744; }
+.chat-badge.c-risky { color: #e67e22; background: #2a1a0a; border: 1px solid #e67e2255; }
+.chat-badge.c-dangerous { color: #ff6b6b; background: #3a1a1a; border: 1px solid #ff6b6b55; }
+.chat-badge.c-error { color: #999; background: #1a1a2e; border: 1px solid #444; }
+.chat-reason { font-size: 12.5px; color: #d0d0e0; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.chat-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
+.chat-opinion { margin-top: 5px; padding: 5px 8px; background: #0d0d1a; border-left: 2px solid #555; border-radius: 3px; font-size: 12px; color: #c0c0d0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }
 .rule-pattern { color: #ce9178; background: #0d0d1a; padding: 1px 4px; border-radius: 2px; }
 .rule-matched { color: #e67e22; background: #2a1a0a; padding: 1px 4px; border-radius: 2px; font-family: monospace; font-size: 11px; }
