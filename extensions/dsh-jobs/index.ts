@@ -147,6 +147,9 @@ export default function (pi: ExtensionAPI) {
 	// 只在内容真的变了才写文件（终态任务会一直留在列表里，没必要每秒重写同样的字节）。
 	let lastWritten = "";
 	let ticks = 0;
+	// 推送时报告“哪个文件变了”（面板收到信号后据此重读目录）。文件名规则只有
+	// snapshot.ts 一处实现，这里跟着写快照那一侧走，不再自己拼一遍。
+	const changedFile = ownerFileName(owner);
 	// hub 加速通道：文件仍是唯一真相，这里只把“变了”这件事尽快告诉面板，
 	// 让它不用等下一次轮询。节流 200ms：面板是人看的，高频变化时把 hub 打热没意义。
 	const NOTIFY_MS = 200;
@@ -156,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 		notifyTimer = setTimeout(() => {
 			notifyTimer = null;
 			// fire-and-forget：连不上 hub 就是 false，不重试也不报错（可选加速件）
-			void pushJobUpdate({ owner: ownerFileNameOf(owner) }, { sessionId: owner.sessionId }).catch(() => {});
+			void pushJobUpdate({ file: changedFile }, { sessionId: owner.sessionId }).catch(() => {});
 		}, NOTIFY_MS);
 		notifyTimer.unref?.();
 	};
