@@ -8,7 +8,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { cancelRow, collectRows, REFRESH_MS, rowText, TAIL_CHARS, tailOf, type PanelRow } from "./jobs-panel.ts";
+import { applyVimKey, parseVimKey, type VimState } from "../../lib/vim-select.ts";
+import { cancelRow, collectRows, filterRows, moveSelection, REFRESH_MS, rowText, TAIL_CHARS, tailOf, type PanelRow } from "./jobs-panel.ts";
 import type { JobRegistry, JobSnapshot } from "./registry.ts";
 import { readKillRequests, type OwnerInfo } from "./snapshot.ts";
 
@@ -186,6 +187,92 @@ describe("rowText", () => {
 			record: { id: "bash-9", kind: "bash", label: "npm run dev", status: "running", startedAt: Date.now() },
 		};
 		assert.ok(rowText(row, 100, theme).includes("w:batch-x-w1"));
+	});
+});
+
+describe("moveSelection", () => {
+	it("正负位移都夹在 [0, length-1]", () => {
+		assert.equal(moveSelection(0, 3, 10), 3);
+		assert.equal(moveSelection(3, -1, 10), 2);
+		assert.equal(moveSelection(0, -5, 10), 0);
+		assert.equal(moveSelection(9, 5, 10), 9);
+	});
+
+	it("空列表固定回 0，不会悬在越界下标上", () => {
+		assert.equal(moveSelection(5, 1, 0), 0);
+	});
+});
+
+describe("Vim 键位接入（lib/vim-select 引擎）", () => {
+	/** 把一串按键喂给引擎，返回最终状态与最后一个 effect */
+	const feed = (keys: string[]) => {
+		let state: VimState = { count: null, filterMode: false, query: "" };
+		let effect: ReturnType<typeof applyVimKey>["effect"] = { type: "none" };
+		for (const data of keys) {
+			const result = applyVimKey(state, parseVimKey(data));
+			state = result.state;
+			effect = result.effect;
+		}
+		return { state, effect };
+	};
+
+	it("j / k 是单行移动", () => {
+		assert.deepStrictEqual(feed(["j"]).effect, { type: "move", delta: 1 });
+		assert.deepStrictEqual(feed(["k"]).effect, { type: "move", delta: -1 });
+	});
+
+	it("计数前缀：3j 往下三行、5k 往上五行（并与夹紧配合）", () => {
+		const down = feed(["3", "j"]);
+		assert.deepStrictEqual(down.effect, { type: "move", delta: 3 });
+		assert.equal(moveSelection(0, 3, 10), 3);
+
+		const up = feed(["5", "k"]);
+		assert.deepStrictEqual(up.effect, { type: "move", delta: -5 });
+		assert.equal(moveSelection(2, -5, 10), 0, "上移越界要停在首行");
+
+		// 两位数计数：12j 走十二行
+		assert.deepStrictEqual(feed(["1", "2", "j"]).effect, { type: "move", delta: 12 });
+	});
+
+	it("计数被退格清掉，不会用到下一次 j", () => {
+		const { state, effect } = feed(["3", "\u007f", "j"]);
+		assert.deepStrictEqual(effect, { type: "move", delta: 1 });
+		assert.equal(state.count, null);
+	});
+
+	it("/ 进过滤模式、Esc 退出并清词，过滤模式下 j/k 仍是移动", () => {
+		const entering = feed(["/"]);
+		assert.equal(entering.state.filterMode, true);
+
+		const typing = feed(["/", "b", "a", "s"]);
+		assert.equal(typing.state.query, "bas");
+		assert.deepStrictEqual(typing.effect, { type: "refilter" });
+
+		const cancelled = feed(["/", "b", "\u001b"]);
+		assert.equal(cancelled.state.filterMode, false);
+		assert.equal(cancelled.state.query, "");
+	});
+});
+
+describe("filterRows", () => {
+	const { registry } = fakeRegistry([
+		snapshot({ id: "bash-1", label: "npm run dev" }),
+		snapshot({ id: "bash-2", label: "cargo build --release" }),
+	]);
+
+	it("空查询保持原顺序", () => {
+		const rows = collectRows(registry, owner);
+		assert.deepStrictEqual(filterRows(rows, "   ").map((r) => r.record.id), rows.map((r) => r.record.id));
+	});
+
+	it("能按命令内容与任务 id 命中", () => {
+		const rows = collectRows(registry, owner);
+		assert.deepStrictEqual(filterRows(rows, "cargo").map((r) => r.record.id), ["bash-2"]);
+		assert.deepStrictEqual(filterRows(rows, "bash-1").map((r) => r.record.id), ["bash-1"]);
+	});
+
+	it("无匹配返回空，不抛错", () => {
+		assert.deepStrictEqual(filterRows(collectRows(registry, owner), "zzz-nope"), []);
 	});
 });
 
