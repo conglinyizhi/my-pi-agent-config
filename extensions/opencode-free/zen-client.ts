@@ -13,7 +13,7 @@
 // 可选优化（非默认）：需要时设 UA 为 "opencode/latest" 能解锁个别被 UA 门禁的模型
 // （如 big-pickle）。默认发诚实 Hermes 归属头，不冒充别的客户端。
 
-import type { AssistantMessage, Tool } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, Tool } from "@earendil-works/pi-ai";
 
 const ZEN_BASE = "https://opencode.ai/zen/v1";
 
@@ -168,9 +168,11 @@ interface ZenChatParams {
 }
 
 /** 解析分片累积的 toolCall arguments JSON；失败回退空对象 */
-function parseToolArgs(raw: string): Record<string, unknown> {
+/** 工具实参解析。JSON.parse 的产物天然是合法 JSON（pi-ai 的 JsonObject 是递归的
+ *  JsonValue 类型，无法从 Record<string, unknown> 推断），所以这里断言是安全的。 */
+function parseToolArgs(raw: string): JsonObject {
 	try {
-		return JSON.parse(raw) as Record<string, unknown>;
+		return JSON.parse(raw) as JsonObject;
 	} catch {
 		return {};
 	}

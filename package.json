@@ -15,10 +15,10 @@
     "smol-toml": "^1.7.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.80.10",
-    "@earendil-works/pi-ai": "^0.80.10",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@earendil-works/pi-tui": "^0.80.10",
+    "@earendil-works/pi-agent-core": "^0.99.1",
+    "@earendil-works/pi-ai": "^0.99.1",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@earendil-works/pi-tui": "^0.99.1",
     "@types/node": "^25.9.3",
     "tsx": "^4.19.0",
     "typebox": "^1.2.8",

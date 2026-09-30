@@ -5,14 +5,14 @@
  * 注册、写盘、通知顺序仍按 providers.toml 里的原顺序，由调用方收口。
  */
 
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ChatModelConfig } from "./models.ts";
 import { mapWithConcurrencyLimit } from "../../lib/concurrency.ts";
 import {
   buildMatchedModel as defaultBuildMatchedModel,
   findModelCandidates as defaultFindModelCandidates,
   type ModelCandidate,
 } from "./models-dev.ts";
-import { buildModelConfig, resolveModels as defaultResolveModels, toPiApi } from "./models.ts";
+import { asChatModels, buildModelConfig, resolveModels as defaultResolveModels, toPiApi } from "./models.ts";
 import { isProtected, preserveProtectedUpdate } from "./model-protection.ts";
 import { diffModelLists, formatDiffReport, formatTokens, fmtPrice } from "./provider-diff.ts";
 import { parseInputCapabilities, toPiInput, type ModelOverride, type RawProvider, type ResolvedApiFormat } from "./types.ts";
@@ -49,9 +49,9 @@ export interface ReloadSuccess {
   provider: RawProvider;
   apiKey: string;
   format: ResolvedApiFormat["format"];
-  models: ProviderModelConfig[];
+  models: ChatModelConfig[];
   mergedOverrides: ModelOverride[];
-  oldModels: ProviderModelConfig[];
+  oldModels: ChatModelConfig[];
   newCount: number;
   removedIds: string[];
   capabilityUpdates: string[];
@@ -94,8 +94,8 @@ type FetchAttempt =
       provider: RawProvider;
       apiKey: string;
       format: ResolvedApiFormat["format"];
-      models: ProviderModelConfig[];
-      oldModels: ProviderModelConfig[];
+      models: ChatModelConfig[];
+      oldModels: ChatModelConfig[];
     }
   | { index: number; kind: "empty"; providerId: string }
   | { index: number; kind: "error"; providerId: string; message: string };
@@ -113,23 +113,23 @@ export async function buildOldModelList(
   provider: RawProvider,
   format: ResolvedApiFormat["format"],
   resolve: typeof defaultResolveModels = defaultResolveModels,
-): Promise<ProviderModelConfig[]> {
+): Promise<ChatModelConfig[]> {
   const oldProvider: RawProvider = {
     ...provider,
     models: provider.models === "auto" ? [] : provider.models,
   };
   try {
-    return await resolve(oldProvider, format, provider.baseUrl, "");
+    return asChatModels(await resolve(oldProvider, format, provider.baseUrl, ""));
   } catch {
     return [];
   }
 }
 
 export function applyOnlineProtection(
-  fetched: ProviderModelConfig[],
+  fetched: ChatModelConfig[],
   provider: RawProvider,
   format: ResolvedApiFormat["format"],
-): ProviderModelConfig[] {
+): ChatModelConfig[] {
   const models = [...fetched];
   const existingOverrides: ModelOverride[] = Array.isArray(provider.models) ? provider.models : [];
   const onlineIds = new Set(models.map(m => m.id));
@@ -176,7 +176,7 @@ export async function matchModelsDev(
 }
 
 export async function mergeOneOverride(
-  model: ProviderModelConfig,
+  model: ChatModelConfig,
   existing: ModelOverride | undefined,
   devCandidate: ModelCandidate | null | undefined,
   buildMatched: typeof defaultBuildMatchedModel = defaultBuildMatchedModel,
@@ -300,7 +300,7 @@ export async function reloadProvidersOnline(
           provider,
           apiKey: decision.apiKey,
           format: decision.format,
-          models: applyOnlineProtection(modelsRaw, provider, decision.format),
+          models: applyOnlineProtection(asChatModels(modelsRaw), provider, decision.format),
           oldModels,
         };
       } catch (err) {
@@ -480,8 +480,9 @@ function collectUpdates(
 function overrideToRuntime(
   override: ModelOverride,
   format: ResolvedApiFormat["format"],
-): ProviderModelConfig {
+): ChatModelConfig {
   return {
+    type: "chat",
     id: override.id,
     name: override.name || override.id,
     api: toPiApi(format),
@@ -496,5 +497,5 @@ function overrideToRuntime(
     contextWindow: override.contextWindow ?? 128000,
     maxTokens: override.maxTokens ?? 4096,
     compat: { supportsDeveloperRole: false },
-  } as ProviderModelConfig;
+  };
 }

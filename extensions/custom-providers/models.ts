@@ -1,4 +1,25 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+
+/**
+ * custom-providers 只产出 chat 模型（不碰 image / classifier）。
+ *
+ * pi 0.99.1 把 ProviderModelConfig 改成了判别联合
+ * （chat | image | classifier），但没导出单独那几支，所以这里用 Extract
+ * 自己取出来：不写 type 的对象会被 TS 拿去試 classifier 那支，而它要 contextWindow，
+ * 就会报一个看不懂的错（字段明明就在）。
+ */
+export type ChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
+
+/**
+ * 把通用模型列表收窄成 chat 模型。
+ *
+ * resolveModels 是通用工厂（返回联合），而 custom-providers 这一路
+ * 只会造 chat 模型（buildModelConfig 就是干这个的），所以在边界上收一次。
+ * 不把这个收窄写进 resolveModels 签名：它是通用工具，不该被这一路的用途绑住。
+ */
+export function asChatModels(models: ProviderModelConfig[]): ChatModelConfig[] {
+  return models.filter((m): m is ChatModelConfig => m.type === undefined || m.type === "chat");
+}
 import { parseCommaList } from "../../lib/string-utils.ts";
 import { toPiInput, type CompatOverride, type InputCapability, type ModelOverride, type RawProvider, type ResolvedApiFormat } from "./types.ts";
 
@@ -102,7 +123,7 @@ function toJsCompat(raw: CompatOverride | undefined): Record<string, unknown> | 
   return Object.keys(c).length > 0 ? c : undefined;
 }
 
-export function buildModelConfig(id: string, provider: RawProvider, override?: ModelOverride): Omit<ProviderModelConfig, "api"> {
+export function buildModelConfig(id: string, provider: RawProvider, override?: ModelOverride): Omit<ChatModelConfig, "api"> {
   const defaults = provider.defaults || {};
   const anthropic = ANTHROPIC_MODELS.find((m) => m.id === id);
 
@@ -126,6 +147,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   const mergedCompat = { ...autoCompat, ...providerCompat, ...modelCompat };
 
   return {
+    type: "chat",
     id,
     name: override?.name ?? anthropic?.name ?? id,
     reasoning,
@@ -143,7 +165,7 @@ export function buildModelConfig(id: string, provider: RawProvider, override?: M
   };
 }
 
-export function toPiApi(format: ResolvedApiFormat["format"]): ProviderModelConfig["api"] {
+export function toPiApi(format: ResolvedApiFormat["format"]): ChatModelConfig["api"] {
   switch (format) {
     case "openai-new":
       return "openai-responses";

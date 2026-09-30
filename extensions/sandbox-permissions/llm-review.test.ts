@@ -16,6 +16,7 @@ import {
 	reviewCacheKey,
 	reviewCommand,
 } from "./llm-review.ts";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import type { TokenRule } from "./rule-engine.ts";
 
 const rule = (name: string, matched: string[] = []): TokenRule => ({
@@ -164,7 +165,9 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("extractReviewResult", () => {
-	const toolCall = (args: Record<string, unknown>) => ({
+	// arguments 用 JsonObject：pi 0.99.1 的 ToolCall 把它从 Record<string, unknown>
+	// 收紧了（JsonValue 递归类型），裸 Record 不再兼容
+	const toolCall = (args: JsonObject) => ({
 		type: "toolCall" as const,
 		id: "call_1",
 		name: REVIEW_TOOL.name,

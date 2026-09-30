@@ -5,7 +5,7 @@
  * 向用户报告模型变更：新增/移除/价格变动/能力变化
  */
 
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ChatModelConfig } from "./models.ts";
 
 // ─── 类型 ───────────────────────────────────────────
 
@@ -37,12 +37,16 @@ interface CapabilityChange {
 /**
  * 比较新旧模型列表，生成差异报告
  *
+ * 入参收窄到 chat 模型：下面要比的 contextWindow / maxTokens / reasoning
+ * 只有 chat 那支有（pi 0.99.1 的 ProviderModelConfig 是判别联合），
+ * 拿联合类型进来当场就报「属性不存在」。
+ *
  * @param oldModels 刷新前的模型列表
  * @param newModels 刷新后的模型列表
  */
 export function diffModelLists(
-  oldModels: ProviderModelConfig[],
-  newModels: ProviderModelConfig[],
+  oldModels: ChatModelConfig[],
+  newModels: ChatModelConfig[],
 ): ModelDiff {
   const oldMap = new Map(oldModels.map(m => [m.id, m]));
   const newMap = new Map(newModels.map(m => [m.id, m]));

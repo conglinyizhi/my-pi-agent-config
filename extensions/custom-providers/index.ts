@@ -4,7 +4,7 @@ import { parse, stringify } from "smol-toml";
 import { getApiKey } from "../../lib/auth.ts";
 import { detectApiFormat } from "./detector.ts";
 import { loadProvidersConfig } from "./loader.ts";
-import { resolveModels, toPiApi } from "./models.ts";
+import { asChatModels, resolveModels, toPiApi, type ChatModelConfig } from "./models.ts";
 import { diffModelLists, formatDiffReport } from "./provider-diff.ts";
 import type { ModelOverride, RawProvider, ResolvedApiFormat } from "./types.ts";
 import { fastAddHandler } from "./fast-add.ts";
@@ -259,7 +259,7 @@ export default async function customProvidersExtension(pi: ExtensionAPI) {
 
   async function registerProviders(providers: RawProvider[], raw: string): Promise<string[]> {
     // 清理前：捕获旧模型列表
-    const oldSnapshots = new Map<string, ProviderModelConfig[]>();
+    const oldSnapshots = new Map<string, ChatModelConfig[]>();
     for (const provider of providers) {
       const explicitApi = provider.api && provider.api !== "auto";
       if (explicitApi) {

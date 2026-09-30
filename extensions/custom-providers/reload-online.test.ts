@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ChatModelConfig } from "./models.ts";
 import type { ModelCandidate, ModelWithCandidates } from "./models-dev.ts";
 import {
   applyOnlineProtection,
@@ -12,8 +12,9 @@ import {
 import { toPiApi } from "./models.ts";
 import type { ModelOverride, RawProvider } from "./types.ts";
 
-function runtimeModel(id: string, extra: Partial<ProviderModelConfig> = {}): ProviderModelConfig {
+function runtimeModel(id: string, extra: Partial<ChatModelConfig> = {}): ChatModelConfig {
   return {
+    type: "chat",
     id,
     name: extra.name ?? id,
     api: extra.api ?? "openai-completions",
@@ -23,7 +24,7 @@ function runtimeModel(id: string, extra: Partial<ProviderModelConfig> = {}): Pro
     contextWindow: extra.contextWindow ?? 128000,
     maxTokens: extra.maxTokens ?? 4096,
     ...extra,
-  } as ProviderModelConfig;
+  };
 }
 
 function provider(id: string, extra: Partial<RawProvider> = {}): RawProvider {
