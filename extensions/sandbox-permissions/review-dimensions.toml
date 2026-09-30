@@ -1,0 +1,68 @@
+# 指令审核维度阈值（分类模型后端）
+#
+# 由 /sandbox:review 面板维护（整文件重写，手改请保持本格式）。
+# 端点与模型在 extensions.toml 的 [sandbox-review-classifier]；本文件只管阈值。
+#
+#   above  = 风险值高于它 → 提示用户过目
+#            （choice 取高风险档概率之和；score 按档位线性归一化；noul 取「是」的概率）
+#   below  = 置信度低于它 → 提示用户过目（模型没把握，宁可信其有）
+#            noul 没有置信度，该字段对 scripted_edit 无效
+#   action = review（提示）| ignore（不看这一维）
+#            —— 没有 block：分类器是试验品，不允许它直接拒绝任何请求
+#
+# 默认 0.5，慢慢调。
+
+[[dimension]]
+id = "elevation"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "network"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "intent"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "secret_exposure"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "wallet_access"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "scripted_edit"
+enabled = true
+above = 0.5
+action = "review"
+
+[[dimension]]
+id = "preshell_trust"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"
+
+[[dimension]]
+id = "oddity"
+enabled = true
+above = 0.5
+below = 0.5
+action = "review"

@@ -134,6 +134,7 @@ planMb = 512
 [sandbox-llm-review]
 enabled = true # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
+backend = "chat" # chat=对话模型出 verdict（旧路径）；classifier=分类模型出维度答案（见下段）
 # 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
 # 用 /provider:fast-put / /provider:fast-pop 管理
 timeout_ms = 30000 # 注册模型单次审核总时长兜底（毫秒）；超时切换下一个模型
@@ -141,107 +142,22 @@ token_idle_ms = 4000 # 免费模型相邻 token 间隔上限（毫秒）；停�
 max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
 
 # ─────────────────────────────────────────────────────────────
-# skillful：/skillful 界面里的「来源组」规则
-# 把多个技能来源合并成一行统一启停；不配则退回按 source/包名分组。
-#   id    - 组标识，同 id 合并为一行（必填）
-#   label - 组显示名（必填）
-#   match - canonical path 片段，命中任意一条即归入该组；按规则顺序先匹配先归组
-#   singletonPackages - true 时做单包兜底：收下未命中其它规则的「单技能包」，
-#                       多技能聚合仓库（如 superpowers）保持各自独立
-# match 与 singletonPackages 至少给一个
+# sandbox-review-classifier：分类模型审核后端（[sandbox-llm-review] backend = "classifier" 时生效）
+# 一次请求问八个原子问题，拿回类型化答案 + 概率，由下面的阈值决定「要不要提示用户」。
+# 硬约束：分类器是试验品，action 只有 review / ignore，**不允许直接拒绝任何请求**。
+# API key 从环境变量读：TYPESAFE_API_KEY 或 SILICONFLOW_API_KEY（不写进本文件）。
+#   above = 风险值高于它提示（choice 取高风险档概率之和；score 线性归一化；noul 取「是」的概率）
+#   below = 置信度低于它提示（noul 没有置信度，该字段无效）
+# 面板：/sandbox:review 可视化调阈值（默认 0.5，慢慢调）
 # ─────────────────────────────────────────────────────────────
-[[skillful.skillGroups]]
-id = "moonbit-environment"
-label = "MoonBit 开发环境"
-match = [
-  "skills/external/moonbit-skills",
-  "skills/external/clyzhi-moonwell-spring",
-  "skills/clyzhi/moonbit-skills-guide",
-]
-
-# 零散单技能包收敛成组，避免每个包占一行；按规则顺序先匹配先归组，兜底放最后
-[[skillful.skillGroups]]
-id = "huaxia"
-label = "华夏技能"
-match = [
-  "skills/external/nopua",
-  "skills/external/tiangong",
-  "skills/external/bibuzaohua",
-  "skills/external/paoding-jieniu",
-]
-
-# 兜底：未命中上面规则的「单技能包」收进这组，多技能包不受影响
-[[skillful.skillGroups]]
-id = "auxiliary"
-label = "辅助技能"
-singletonPackages = true
-
-# ─────────────────────────────────────────────────────────────
-# loop-guard：重复输出（死循环）拦截
-# 盯 thinking / 正文的流式增量，判定「同几句短话反复输出」并提示或中止。
-# 判据与校准依据见 extensions/loop-guard/README.md；键名见 detector.ts 的
-# LoopGuardOptions。改阈值前先看 README 的「校准依据」一节。
-# ─────────────────────────────────────────────────────────────
-[loop-guard]
-enabled = true
-mode = "abort" # off=不检测 | warn=只提示 | abort=提示并中止
-# 每个 session 的中止次数上限。一次中止 = 掐掉当前生成 + 注入一条约 4~5 千字符的
-# 纠正消息，所以这是「一次会话能救几次」的预算，不是「能报几次」。
-# 6 = 479 个历史会话里观测到的最坏一次卡死（同一会话 6 个真循环块）；代码兜底仍是 3。
-maxActionsPerSession = 6
-cooldownMs = 15000 # 两次中止之间的最小间隔（毫秒）
-
-[loop-guard.detector]
-# 空缺项用 detector.ts 的 DEFAULT_OPTIONS；常用旋钮：
-# warnRepeatChars = 2500 # 重复多少字开始提示
-# abortRepeatChars = 9000 # 重复多少字开始中止
-# maxAvgLineChars = 20 # 重复行平均行长上限（主要精度来源）
-# maxIntruderRatio = 0.3 # 窗口内新行占比上限
-# maxAlphabet = 10 # 重复字母表大小上限
-#
-# ── 极纯档：附加的更早 abort（默认开）──
-# 形态比现行判据严得多（字母表 ≤ 3、平均行长 ≤ 5、新行占比 ≤ 0.05），所以中止线
-# 能从 9000 压到 2000。命中形态且重复量过 pureRepeatChars 先进 armed，再确认
-# pureConfirmChars 仍然这个形态才真中止 —— 确认期用来避开「贴块尾白拦」：命中点
-# 之后只剩几百字符的块，掐了也省不下什么，反而白付一条纠正消息。
-# 校准（479 会话 / 16.1 万块）：confirm 800 时 9 个 armed 里 7 个真中止、2 个贴块尾
-# 被挡下，正文与 toolResult 对照组零命中。详见 README 的「校准依据」。
-# pureEnabled = true # 极纯档总开关（关掉后行为与旧版一字不差）
-# pureRepeatChars = 2000 # 极纯形态的重复字符起始线
-# pureConfirmChars = 800 # armed 后需再重复积累多少字符才真中止
-# pureMaxAlphabet = 3 # 极纯形态：字母表上限
-# pureMaxAvgLineChars = 5 # 极纯形态：重复行平均行长上限
-# pureMaxIntruderRatio = 0.05 # 极纯形态：窗口内新行占比上限
-
-# ─────────────────────────────────────────────────────────────
-# thinking-fold：把 thinking 块里的重复输出折成一行提示（块内所有复读段，不只尾部）
-# 纯渲染层，只改 TUI 显示，不动会话内容与模型上下文。
-# 与 loop-guard 同族但分工不同：loop-guard 管「整块失控」并中止生成，
-# 这里管「模型能自愈、但屏幕被刷满」的轻症（复读不一定落在块尾）。
-# 判据、误伤与阈值取舍见 extensions/thinking-fold/README.md。
-# ─────────────────────────────────────────────────────────────
-[thinking-fold]
-enabled = true
-
-[thinking-fold.detector]
-# 空缺项用 detector.ts 的 DEFAULT_DUP_OPTIONS；常用旋钮：
-# minDensity = 0.75 # 段内复读字符占比下限，调高更保守（误伤更少、折得也更少）
-# gapMax = 2 # 段内允许夹几个连续非复读行不断段
-# minChars = 600 # 折叠段字符下限
-# minLines = 40 # 折叠段行数下限
-# minCount = 3 # 一行至少出现几次才算复读行
-
-# ─────────────────────────────────────────────────────────────
-# repo-prompts：按目录（仓库）注入提示词段
-# 规则集中放在 dir 下（每条一个 md 正文），按 cwd 路径前缀匹配，
-# 注册成 prompt-sections 的段 repo:<name>（order 缺省 200）。
-# 规则表是该目录下所有 *.toml（不递归），按文件名序合并，同名规则后者覆盖前者。
-# 共享 / 私有靠 git 区分，扩展不看文件名：index.toml / xxx.toml 随仓提交，
-# xxx.local.toml / xxx.local.md 由 agent 仓 .gitignore 排除（改名即切换共享性）。
-# 这个目录本身可以 git init + push 当分发单元，扩展不管 git。
-# 见 extensions/repo-prompts/README.md；/repo-prompts 看当前命中情况。
-# ─────────────────────────────────────────────────────────────
-[repo-prompts]
-enabled = true
-# 改 dir 或规则表（含增删 / 改名 toml）要 /reload 才重新注册段；md 正文改了下一次装配即生效
-dir = "~/.pi/agent/repo-prompts"
+[sandbox-review-classifier]
+base_url = "https://api.siliconflow.cn"
+# 模型选型（2026-09-30 实测，6 组命令 × 3 模型）：
+#   diffusiongemma  判定准（4/4 符合预期）、注入抵抗过、1.8-4.3s、out 56 tok  ← 用这个
+#   Kev-4b          快（0.3s）但误报严重：`git status` 判 intent=0.83 unrelated，会把每条命令都弹出来
+#   SemIf           同样误报（`git status` → intent=0.73、preshell=0.62 blind-spots）
+# 注意：diffusiongemma 的 confidence 恒为 1.0，所以各维度的 below 阈值实际不生效（面板上看得见）。
+model = "diffusiongemma"
+timeout_ms = 3000
+# 维度阈值已移到独立文件 extensions/sandbox-permissions/review-dimensions.toml
+# （/sandbox:review 面板要整文件重写它，不拿本文件冒险）

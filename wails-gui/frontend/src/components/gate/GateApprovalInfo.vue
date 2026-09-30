@@ -48,10 +48,31 @@
       <div class="review-header">
         🤖 云端模型审核
         <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
+        <span v-if="weightRows.length" class="weight-count">
+          {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
+        </span>
       </div>
       <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
       <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
       <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
+
+      <div v-if="weightRows.length" class="weight-table" data-name="dimension-weights">
+        <div class="weight-head">分类模型权重（条宽即风险值；越线行标底色）</div>
+        <div
+          v-for="row in weightRows"
+          :key="row.key"
+          class="weight-row"
+          :class="{ flagged: row.flagged }"
+          :title="row.reason || `阈值 ${row.threshold}`"
+        >
+          <span class="weight-label">{{ row.label }}</span>
+          <span class="weight-bar"><span class="weight-fill" :style="{ width: `${row.riskWidth}%` }" /></span>
+          <span class="weight-risk">{{ row.risk }}</span>
+          <span class="weight-conf">置信 {{ row.confidence }}</span>
+          <span class="weight-threshold">{{ row.threshold }}</span>
+          <span v-if="row.raw" class="weight-raw">{{ row.raw }}</span>
+        </div>
+      </div>
     </div>
 
     <div v-if="!isSandboxAllow && !isCapability" @click="showRules = !showRules" class="collapse-header" title="点击展开/收起规则">
@@ -184,6 +205,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import { checkScopeEdit, checkWorkspacePath, scopeRowModel } from "../../domain/gate/path-actions.js";
+import { flaggedCount as countFlagged, weightRows as buildWeightRows } from "../../domain/gate/dimension-weights.js";
 import { gateDecisionSummary } from "../../domain/gate/summary.js";
 
 const props = defineProps({
@@ -217,6 +239,9 @@ const props = defineProps({
 
 const emit = defineEmits(["stage-path", "cancel-path", "edit-scope", "remove-scope", "add-scope", "add-workspace", "remove-workspace"]);
 const showRules = ref(false);
+// 分类模型权重表（chat 后端不产这个字段，缺就空表 → 整块不渲染）
+const weightRows = computed(() => buildWeightRows(props.review?.dimensions));
+const flaggedCount = computed(() => countFlagged(props.review?.dimensions));
 const decisionSummary = computed(() => gateDecisionSummary({
   kind: props.isCapability ? "capability" : props.isSandboxAllow ? "sandbox-allow" : "audit",
   permission: props.permission,
@@ -336,6 +361,21 @@ function removeWorkspace(path) {
 .review-reason { font-size: 13px; color: #e0e0e0; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .review-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+/* 权重表：条宽表达数值，底色只表达“越线”。不给命令文本上色。 */
+.weight-count { font-size: 11px; color: #888; }
+.weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
+.weight-head { font-size: 11px; color: #666; margin-bottom: 4px; }
+.weight-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 3px; font-size: 11.5px; line-height: 1.6; flex-wrap: wrap; }
+.weight-row.flagged { background: #2a1a0a; box-shadow: inset 2px 0 0 #e67e22; }
+.weight-label { flex: 0 0 68px; color: #a9b1d6; }
+.weight-row.flagged .weight-label { color: #f0c674; }
+.weight-bar { flex: 0 0 90px; height: 6px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 3px; overflow: hidden; }
+.weight-fill { display: block; height: 100%; background: #7aa2f7; }
+.weight-row.flagged .weight-fill { background: #e67e22; }
+.weight-risk { flex: 0 0 34px; color: #e0e0e0; font-family: monospace; }
+.weight-conf { flex: 0 0 62px; color: #888; font-family: monospace; }
+.weight-threshold { flex: 0 0 100px; color: #666; font-family: monospace; }
+.weight-raw { flex: 1 1 160px; min-width: 0; color: #999; word-break: break-word; }
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }
 .rule-pattern { color: #ce9178; background: #0d0d1a; padding: 1px 4px; border-radius: 2px; }
 .rule-matched { color: #e67e22; background: #2a1a0a; padding: 1px 4px; border-radius: 2px; font-family: monospace; font-size: 11px; }

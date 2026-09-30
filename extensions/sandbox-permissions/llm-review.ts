@@ -24,6 +24,7 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
 import { callZenChat } from "../opencode-free/zen-client.ts";
+import { loadClassifierConfig, reviewViaClassifier } from "./review-classifier.ts";
 import { loadTrustedProgramDirs } from "./trusted.ts";
 import { formatFacts, type PreshellFacts } from "../../lib/preshell.ts";
 import type { TokenRule } from "./rule-engine";
@@ -38,7 +39,15 @@ export interface ReviewResult {
 	suggestion: string;
 	/** 模型调用工具后补充的命令质量看法（可选，供人工审核参考） */
 	opinion?: string;
+	/**
+	 * 分类后端的各维度权重（可选；chat 后端不产，审批窗据此自动决定要不要渲染权重表）。
+	 * 由 review-dimensions.ts 的 dimensionReport() 产出，已是可 JSON 序列化的原始数据。
+	 */
+	dimensions?: ReviewDimensionRow[];
 }
+
+/** 与 review-dimensions.ts 的 DimensionReportRow 同形；此处只声明，不复制逻辑 */
+export type ReviewDimensionRow = import("./review-dimensions.ts").DimensionReportRow;
 
 /** 审核模型引用（provider/model 对，用于模型池） */
 export interface ModelRef {
@@ -47,6 +56,8 @@ export interface ModelRef {
 }
 
 export interface LlmReviewConfig {
+	/** 审核后端：chat = 通用对话模型出 verdict（旧路径）；classifier = 分类模型出维度答案（新路径） */
+	backend: "chat" | "classifier";
 	/** 总开关：false 时 gate 完全跳过本层，回到原弹窗流程 */
 	enabled: boolean;
 	/**
@@ -78,6 +89,7 @@ export interface LlmReviewConfig {
 }
 
 const DEFAULT_CONFIG: LlmReviewConfig = {
+	backend: "chat",
 	enabled: true,
 	mode: "auto",
 	timeoutMs: 30_000,
@@ -102,6 +114,7 @@ const REVIEW_POOL_PATH = join(getAgentDir(), "extensions", "sandbox-permissions"
 export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	const cfg = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 	const out: LlmReviewConfig = { ...DEFAULT_CONFIG };
+	if (cfg.backend === "classifier") out.backend = "classifier";
 	if (typeof cfg.enabled === "boolean") out.enabled = cfg.enabled;
 	if (cfg.mode === "strict") out.mode = "strict";
 	// 模型池：models = [{ provider, model }, ...]；仅收录结构合法的条目
@@ -456,6 +469,27 @@ export async function reviewCommand(
 	const key = reviewCacheKey(command, rules);
 	const hit = cache.get(key);
 	if (hit) return hit;
+
+	// 分类后端：一次请求问八个原子问题，拿回类型化答案 + 概率，
+	// 由 review-dimensions 的阈值决定「要不要打扰用户」（永不 block）。
+	// 失败同样是 verdict=error，调用方回退弹窗——不进下面的模型池重试（那是 chat 后端的语义）。
+	if (cfg.backend === "classifier") {
+		const classifierConfig = loadClassifierConfig();
+		const result = await reviewViaClassifier(
+			{
+				command,
+				cwd: ctx.cwd ?? process.cwd(),
+				preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
+				preshellUnavailable: facts?.factsUnavailable,
+				matchedRules: rules.map((r) => r.name).filter(Boolean),
+			},
+			classifierConfig,
+			{ signal },
+		);
+		// 只缓存有效结论（error 是瞬态的：无 key / 超时 / 限流，下次重试）
+		if (result.verdict !== "error") cache.set(key, result);
+		return result;
+	}
 
 	const { models, source } = pickModels(ctx, cfg);
 	if (models.length === 0) {
