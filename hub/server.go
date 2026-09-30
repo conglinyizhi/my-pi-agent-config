@@ -25,6 +25,9 @@ type client struct {
 	enc  *json.Encoder
 	mu   sync.Mutex
 	asks []string
+	// jobWatch 表示本连接订阅了 job 变化（jobwatch 置上）。
+	// 不存在 Server 那边：连接一断订阅就该失效，挂在 client 上就不用额外清理。
+	jobWatch bool
 }
 
 func (c *client) send(env Envelope) error {
@@ -160,6 +163,25 @@ func (s *Server) broadcast(env Envelope, roles ...string) {
 	}
 }
 
+// broadcastJobUpdate 把一次 job 变化通知给订阅过的 rolePI 连接，发起方自己不发。
+//
+// 与 broadcast 分开写而不是传 rolePI 了事，有两个原因：
+//   - 只发给 jobwatch 过的连接：一个开着多个 pi session 的机器上，不关心任务列表的
+//     session 不该被别人的任务刷新刷到
+//   - 排除发起方：它刚写完快照，自己就是最新的，再收一条只会白读一次文件
+//
+// 只认 rolePI。不列 roleAdapter 是故意的：任务快照是本机运行时状态，
+// 跟“要人点头”无关，不该流进飞书适配器的扇出。
+func (s *Server) broadcastJobUpdate(env Envelope, except *client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.clients {
+		if c.role == rolePI && c.jobWatch && c != except {
+			_ = c.send(env)
+		}
+	}
+}
+
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	if !s.skipPeer {
@@ -225,6 +247,23 @@ func (s *Server) dispatch(c *client, env Envelope) error {
 			return errUnknownType
 		}
 		return s.onAsk(c, env)
+	case typeJobWatch:
+		// 订阅 job 变化：只标记本连接。断开即失效（标记在 client 上）。
+		if c.role != rolePI {
+			return errUnknownType
+		}
+		c.jobWatch = true
+		return c.send(Envelope{Type: typeJobWatchOK, ID: env.ID})
+	case typeJobPush:
+		// 推一次 job 变化。payload 不解释，原样转发给订阅过的 rolePI。
+		if c.role != rolePI {
+			return errUnknownType
+		}
+		if err := c.send(Envelope{Type: typeJobPushOK, ID: env.ID}); err != nil {
+			return err
+		}
+		s.broadcastJobUpdate(Envelope{Type: typeJobUpdate, SessionID: env.SessionID, Payload: env.Payload}, c)
+		return nil
 	case typeAbort:
 		if c.role != rolePI && c.role != roleAdmin {
 			return errUnknownType

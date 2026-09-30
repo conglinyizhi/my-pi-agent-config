@@ -620,3 +620,129 @@ func TestSettledCarriesDecideWritePaths(t *testing.T) {
 		t.Fatalf("writePaths 没原样透传：%s", got)
 	}
 }
+
+// jobBridge 起一个 server 并连上一个 pi 客户端，返回二者。
+func jobBridge(t *testing.T) (*Server, net.Conn, string) {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "hub.sock")
+	h := newHub("", time.Hour, 15*time.Minute, nil)
+	s := newServer(h, sock)
+	s.skipPeer = true
+	if err := s.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	go s.Serve()
+
+	pi := dial(t, sock)
+	t.Cleanup(func() { pi.Close() })
+	mustSend(t, pi, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	if hello := mustRecv(t, pi); hello.Type != typeHelloOK {
+		t.Fatalf("hello %s", hello.Type)
+	}
+	return s, pi, sock
+}
+
+func TestJobPushReachesSubscribedPI(t *testing.T) {
+	_, pi, sock := jobBridge(t)
+
+	mustSend(t, pi, Envelope{V: 1, Type: typeJobWatch, ID: "w1"})
+	if ok := mustRecv(t, pi); ok.Type != typeJobWatchOK {
+		t.Fatalf("jobwatch-ok %s", ok.Type)
+	}
+
+	// 第二个 pi：订阅后应当收到别人推的变化
+	other := dial(t, sock)
+	defer other.Close()
+	mustSend(t, other, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, other)
+	mustSend(t, other, Envelope{V: 1, Type: typeJobWatch, ID: "w2"})
+	mustRecv(t, other)
+
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeJobPush, ID: "p1",
+		Payload: map[string]any{"file": "owner-main-123.json"},
+	})
+	if ack := mustRecv(t, pi); ack.Type != typeJobPushOK {
+		t.Fatalf("jobpush-ok %s", ack.Type)
+	}
+	// 发起方自己不该收到 jobupdate
+	if push := mustRecv(t, other); push.Type != typeJobUpdate {
+		t.Fatalf("jobupdate %s", push.Type)
+	} else if push.Payload["file"] != "owner-main-123.json" {
+		t.Fatalf("payload 没原样透传: %+v", push.Payload)
+	}
+}
+
+func TestJobUpdateSkippedWithoutWatch(t *testing.T) {
+	_, pi, sock := jobBridge(t)
+
+	// 没订阅的 pi：推了也不该收到 jobupdate。
+	// 判定方式是读超时（2s 内什么都没来）；ask 的 event 只播 adapter/gui/admin，
+	// 不会给这条连接带来假信号。
+	quiet := dial(t, sock)
+	defer quiet.Close()
+	mustSend(t, quiet, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, quiet)
+
+	mustSend(t, pi, Envelope{V: 1, Type: typeJobPush, ID: "p1", Payload: map[string]any{"n": 1}})
+	mustRecv(t, pi) // jobpush-ok
+
+	_ = quiet.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	dec := json.NewDecoder(quiet)
+	var got Envelope
+	if err := dec.Decode(&got); err == nil {
+		t.Fatalf("未订阅的连接收到了 job 变化: %+v", got)
+	}
+}
+
+// 关键边界：job 事件只走 rolePI，绝不流进 roleAdapter 扇出（飞书拿不到任务快照）
+func TestJobUpdateNeverReachesAdapter(t *testing.T) {
+	_, pi, sock := jobBridge(t)
+
+	adapterConn := dial(t, sock)
+	defer adapterConn.Close()
+	mustSend(t, adapterConn, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapterConn)
+
+	// 连上订阅的 pi，确保 broadcast 路径真的跑起来了
+	sub := dial(t, sock)
+	defer sub.Close()
+	mustSend(t, sub, Envelope{V: 1, Type: typeHello, Role: rolePI})
+	mustRecv(t, sub)
+	mustSend(t, sub, Envelope{V: 1, Type: typeJobWatch, ID: "w"})
+	mustRecv(t, sub)
+
+	mustSend(t, pi, Envelope{V: 1, Type: typeJobPush, ID: "p1", Payload: map[string]any{"secret": "x"}})
+	mustRecv(t, pi)  // jobpush-ok
+	mustRecv(t, sub) // jobupdate
+
+	// adapter 那边用 ask 当探针：它收到的头一条必须是审批事件，不是 jobupdate
+	mustSend(t, pi, Envelope{
+		V: 1, Type: typeAsk, Kind: "audit", RequestID: "req-after",
+		SessionID: "sess", Payload: map[string]any{"command": "ls"}, TimeoutMs: 60_000,
+	})
+	mustRecv(t, pi) // ask-ok
+	if ev := mustRecv(t, adapterConn); ev.Type != typeEvent {
+		t.Fatalf("adapter 收到了非审批消息（job 事件泄漏到适配器扇出）: %+v", ev)
+	}
+}
+
+func TestJobPushRejectedForNonPI(t *testing.T) {
+	_, _, sock := jobBridge(t)
+
+	adapterConn := dial(t, sock)
+	defer adapterConn.Close()
+	mustSend(t, adapterConn, Envelope{V: 1, Type: typeHello, Role: roleAdapter})
+	mustRecv(t, adapterConn)
+
+	mustSend(t, adapterConn, Envelope{V: 1, Type: typeJobPush, ID: "p1", Payload: map[string]any{"n": 1}})
+	if got := mustRecv(t, adapterConn); got.Type != typeError {
+		t.Fatalf("非 pi 角色推 job 应当被拒，收到 %s", got.Type)
+	}
+	mustSend(t, adapterConn, Envelope{V: 1, Type: typeJobWatch, ID: "w"})
+	if got := mustRecv(t, adapterConn); got.Type != typeError {
+		t.Fatalf("非 pi 角色订阅 job 应当被拒，收到 %s", got.Type)
+	}
+}

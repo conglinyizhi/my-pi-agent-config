@@ -177,7 +177,8 @@ function envValue(name: string): string | undefined {
 	return value ? value : undefined;
 }
 
-function ownerFileName(owner: OwnerInfo): string {
+/** 本进程快照文件名。导出供推送方报“哪个文件变了”（面板收到信号后重读目录） */
+export function ownerFileName(owner: OwnerInfo): string {
 	const parts = ["owner", owner.kind];
 	if (owner.kind === "worker" && owner.taskId) parts.push(slug(owner.taskId));
 	parts.push(String(owner.pid));

@@ -16,6 +16,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { applyVimKey, parseVimKey, relativeLineGutter, relativeLineGutterWidth, type VimState } from "../../lib/vim-select.ts";
+import { watchJobUpdates } from "../../lib/hub-jobs.ts";
 import type { JobRegistry } from "./registry.ts";
 import { readAllSnapshots, writeKillRequest, type JobRecord, type OwnerInfo } from "./snapshot.ts";
 
@@ -189,10 +190,14 @@ export async function showJobsPanel(
 		let notice = "";
 
 		let closed = false;
+		// hub 加速订阅：在线时收到“快照变了”就立即重读（信号，不是状态）。
+		// 取消函数在关闭时调；hub 不在就是 undefined，轮询照旧兜底。
+		let unwatch: (() => void) | undefined;
 		const close = (): void => {
 			if (closed) return;
 			closed = true;
 			clearInterval(timer);
+			unwatch?.();
 			finish(undefined);
 		};
 
@@ -206,9 +211,18 @@ export async function showJobsPanel(
 			tui.requestRender();
 		};
 
-		// 节拍刷新：跨进程的状态变化没有事件可订阅，只能轮询。
+		// 节拍刷新：跨进程的状态变化没有廉价的通知通道，先靠轮询保底。
 		// 不 unref：面板活着期间正是需要这个定时器（关掉面板会 clearInterval）。
+		// hub 在线时下面还会接一条快路，这个节拍降级成兜底（快路漏了也能自己追上）。
 		const timer = setInterval(refreshRows, REFRESH_MS);
+
+		// hub 在线时额外接一条快路：收到信号立即重读目录（仍然是读文件，不是拿 payload 当状态）。
+		// 订阅失败（hub 没装/没起）就不接，纯轮询——与今天的行为一模一样。
+		void watchJobUpdates(() => refreshRows()).then((cancel) => {
+			// 面板可能在订阅完成前就关了：关了就直接取消，别留个孤儿订阅
+			if (closed) cancel?.();
+			else unwatch = cancel;
+		});
 
 		const current = (): PanelRow | undefined => filtered[selected];
 

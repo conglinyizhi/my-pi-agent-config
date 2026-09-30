@@ -34,7 +34,14 @@ const (
 	typePresence     = "presence"
 	typePresenceOK   = "presence-ok"
 	typeAbort        = "abort"
-	typeError        = "error"
+	// job 变化桥：pi 侧写完全局快照后推一把，面板就能不等轮询直接刷新。
+	// 只走 rolePI：payload hub 不解释，也**不会**流进 roleAdapter 扇出（飞书拿不到）。
+	typeJobWatch   = "jobwatch"
+	typeJobWatchOK = "jobwatch-ok"
+	typeJobPush    = "jobpush"
+	typeJobPushOK  = "jobpush-ok"
+	typeJobUpdate  = "jobupdate"
+	typeError      = "error"
 )
 
 const (

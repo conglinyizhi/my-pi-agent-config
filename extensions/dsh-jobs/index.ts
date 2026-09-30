@@ -27,6 +27,7 @@ import { registerJobsTools } from "./tools.ts";
 import { cancelRow, collectRows, showJobsPanel, tailOf, type PanelRow } from "./jobs-panel.ts";
 import {
 	currentOwner,
+	ownerFileName,
 	pruneStaleSnapshots,
 	readKillRequests,
 	removeOwnerSnapshot,
@@ -34,6 +35,7 @@ import {
 	type JobRecord,
 	type OwnerInfo,
 } from "./snapshot.ts";
+import { pushJobUpdate } from "../../lib/hub-jobs.ts";
 
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
 /** 快照心跳（毫秒）：跨进程观察没有事件通道，靠这个节拍把状态推给别的进程 */
@@ -145,12 +147,26 @@ export default function (pi: ExtensionAPI) {
 	// 只在内容真的变了才写文件（终态任务会一直留在列表里，没必要每秒重写同样的字节）。
 	let lastWritten = "";
 	let ticks = 0;
+	// hub 加速通道：文件仍是唯一真相，这里只把“变了”这件事尽快告诉面板，
+	// 让它不用等下一次轮询。节流 200ms：面板是人看的，高频变化时把 hub 打热没意义。
+	const NOTIFY_MS = 200;
+	let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+	const scheduleNotify = (): void => {
+		if (notifyTimer) return;
+		notifyTimer = setTimeout(() => {
+			notifyTimer = null;
+			// fire-and-forget：连不上 hub 就是 false，不重试也不报错（可选加速件）
+			void pushJobUpdate({ owner: ownerFileNameOf(owner) }, { sessionId: owner.sessionId }).catch(() => {});
+		}, NOTIFY_MS);
+		notifyTimer.unref?.();
+	};
 	const writeIfChanged = (): void => {
 		const jobs = snapshotJobs(registry, owner);
 		const payload = JSON.stringify(jobs);
 		if (payload === lastWritten) return;
 		lastWritten = payload;
 		writeOwnerSnapshot(owner, jobs);
+		scheduleNotify();
 	};
 
 	const heartbeat = setInterval(() => {
@@ -175,6 +191,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		clearInterval(heartbeat);
+		if (notifyTimer) clearTimeout(notifyTimer);
 		removeOwnerSnapshot(owner);
 	});
 

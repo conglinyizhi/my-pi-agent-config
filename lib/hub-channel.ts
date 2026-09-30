@@ -24,8 +24,8 @@ import {
 import { guiBinaryCandidates, type GuiDiagnosis, type GuiFallbackReason } from "./gui-diagnosis.ts";
 
 export const DEFAULT_HUB_SOCKET = join(homedir(), ".pi", "agent", "run", "hub.sock");
-const CONNECT_MS = 400;
-const PROTOCOL_V = 1;
+export const CONNECT_MS = 400;
+export const PROTOCOL_V = 1;
 
 type HubMsg = {
 	v?: number;
@@ -346,7 +346,8 @@ function abortThenFinish(
 	writeLine(conn, { v: PROTOCOL_V, type: "abort", requestId }, () => done());
 }
 
-function writeLine(
+/** 与 hub 的 JSON 行协议写一行。导出供 hub-jobs 复用（协议只有一处实现） */
+export function writeLine(
 	conn: { write(data: string, cb?: (err?: Error | null) => void): void },
 	msg: unknown,
 	cb?: (err?: Error | null) => void,
@@ -356,7 +357,8 @@ function writeLine(
 	else conn.write(line);
 }
 
-function connectUnix(path: string, timeoutMs: number): Promise<import("node:net").Socket> {
+/** 连 hub 的 Unix socket，带连接超时。导出理由同 writeLine。 */
+export function connectUnix(path: string, timeoutMs: number): Promise<import("node:net").Socket> {
 	try {
 		accessSync(path, constants.R_OK);
 	} catch (err) {
