@@ -47,7 +47,8 @@ describe("buildSubagentArgs", () => {
     for (let i = 0; i < args.length; i++) if (args[i] === "--extension") extIdxs.push(i + 1);
     assert(extIdxs.length >= 2);
     assert(extIdxs.some((i) => args[i].includes("custom-providers")));
-    assert(extIdxs.some((i) => args[i].includes("pi-mcp-adapter")));
+    assert(extIdxs.some((i) => args[i].includes("pi-mcp-adapter")) === false);
+    assert(extIdxs.some((i) => args[i] === "builtin:mcp"));
     assert(args.includes("--no-session"));
     assert(args.includes("--no-skills"));
     assert(args.includes("--no-prompt-templates"));

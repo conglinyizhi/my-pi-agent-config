@@ -38,7 +38,9 @@ description: 查询 pi 的文档和源码所在位置；包含 pi 插件开发�
 
 ## 非官方插件
 
-- MCP 插件:https://github.com/nicobailon/pi-mcp-adapter/ 仓库下可参考的内容：`README.md`、`OAUTH.md`
+无。MCP 走 pi 自带的内置扩展（`builtin:mcp`），配置与用法看 `docs/mcp.md`、
+`docs/cli.md`（`pi mcp …` 与 codemode）。曾经用过的三方 `pi-mcp-adapter` 已下声明，
+不再加载——它注册的 `/mcp`、`mcp`、`mcpScript` 会顶掉内置实现。
 
 ## 扩展的文件布局（先看这一节，错了 pi 直接起不来）
 

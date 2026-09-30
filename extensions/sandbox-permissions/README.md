@@ -21,7 +21,8 @@
 
 拦截面涵盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 MCP 直挂工具：`be-read`、
 `be-write`、`be-replace`、`be-insert`、`be-delete`，以及 `be-insert-chip` 的 `to`（写）与 `from`（`file://` 时算读）。
-参数名与 `:行范围` 后缀的解析统一在 `targetPathOf` 里，新增写通道时必须同时补上——
+参数名与 `:行范围` 后缀的解析统一在 `targetPathOf` 里（查表前用 `bareMcpToolName` 剥掉内置 mcp 的
+`mcp__<server>__` 前缀，所以表里按 `be-*` 原名维护），新增写通道时必须同时补上——
 只挂内置工具会让整条 MCP 写通道绕过这一层（2026-09-23 实测：readonly worker 用 `be-write` 成功写了工作区）。
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。

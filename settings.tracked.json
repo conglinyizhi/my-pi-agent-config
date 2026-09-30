@@ -1,12 +1,12 @@
 {
+  "defaultTools": [
+    "+codemode"
+  ],
   "externalEditor": "kate --block",
   "npmCommand": [
     "pnpm",
     "install",
     "--ignore-scripts"
-  ],
-  "packages": [
-    "npm:pi-mcp-adapter"
   ],
   "promptSections": true,
   "retry": {

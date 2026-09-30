@@ -231,6 +231,15 @@ describe("targetPathOf（读写通道的目标路径）", () => {
     }
   });
 
+  it("MCP 前缀名（mcp__<server>__be-*）与原名走同一张表", () => {
+    const pre = "mcp__better-edit-tools__";
+    assert.equal(targetPathOf(pre + "be-read", { file: "/a/b.ts" }, "read"), "/a/b.ts");
+    assert.equal(targetPathOf(pre + "be-write", { file: "src/a.ts:10-15" }, "write"), "src/a.ts");
+    assert.equal(targetPathOf(pre + "be-insert-chip", { from: "file:///a/b.ts" }, "read"), "/a/b.ts");
+    // 表按原名维护：服务器改名或换一个服务器提供同名工具，路径拦截照样生效
+    assert.equal(targetPathOf("mcp__other-server__be-delete", { file: "/a/b.ts" }, "write"), "/a/b.ts");
+  });
+
   it("be-* 的 file 可带 :行范围 与 :ALL 后缀", () => {
     assert.equal(targetPathOf("be-replace", { file: "src/a.ts:10-15" }, "write"), "src/a.ts");
     assert.equal(targetPathOf("be-delete", { file: "src/a.ts:7" }, "write"), "src/a.ts");
@@ -294,6 +303,13 @@ describe("tool_call 钩子（工具分发，不只是纯函数）", () => {
   it("be-read 读黑名单路径被拦，普通路径放行", () => {
     assert.equal(handler({ toolName: "be-read", input: { file: `${homedir()}/.ssh/id_rsa` } }, ctx)?.block, true);
     assert.equal(handler({ toolName: "be-read", input: { file: "src/main.ts" } }, ctx), undefined);
+  });
+
+  it("MCP 前缀名在钩子里同样被拦（内置 mcp 的注册名）", () => {
+    const pre = "mcp__better-edit-tools__";
+    assert.equal(handler({ toolName: pre + "be-read", input: { file: `${homedir()}/.ssh/id_rsa` } }, ctx)?.block, true);
+    assert.equal(handler({ toolName: pre + "be-write", input: { file: `${homedir()}/.ssh/authorized_keys` } }, ctx)?.block, true);
+    assert.equal(handler({ toolName: pre + "be-write", input: { file: "src/main.ts" } }, ctx), undefined);
   });
 
   it("be-insert-chip 从黑名单文件取内容也被拦", () => {

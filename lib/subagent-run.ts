@@ -240,7 +240,10 @@ export const SUBAGENT_PROMPT = `你是一名具备完整能力的 worker agent�
 // 与 pi 自身的 agent dir 保持一致（PI_CODING_AGENT_DIR 可覆盖）；worker 子进程据此加载扩展
 const AGENT_DIR = getAgentDir();
 const CUSTOM_PROVIDERS_EXT = path.join(AGENT_DIR, "extensions", "custom-providers", "index.ts");
-const MCP_ADAPTER_EXT = path.join(AGENT_DIR, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
+// worker 的 MCP 工具（better-edit-tools 的 be-*）走 pi 内置 mcp 扩展：
+// --no-extensions 连内置扩展一起关，所以要用 `-e builtin:mcp` 显式开回来。
+// 工具名是官方的 mcp__<server>__<tool>，白名单与路径拦截按这个形态拼（见 worker-tools.ts）
+const MCP_BUILTIN_EXT = "builtin:mcp";
 const SUPPLEMENT_BRIDGE_EXT = path.join(AGENT_DIR, "extensions", "subagent-supplement-bridge", "index.ts");
 const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "guard.ts");
 const SUBAGENT_BASH_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "subagent-bash-guard.ts");
@@ -355,7 +358,7 @@ export function buildSubagentArgs(opts: {
     "--no-context-files",
     "--model", opts.model,
     "--extension", CUSTOM_PROVIDERS_EXT,
-    "--extension", MCP_ADAPTER_EXT,
+    "--extension", MCP_BUILTIN_EXT,
     "--extension", SANDBOX_GUARD_EXT,
     "--extension", SUBAGENT_BASH_GUARD_EXT,
     "--extension", ZHIPU_SEARCH_EXT,

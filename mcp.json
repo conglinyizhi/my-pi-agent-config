@@ -2,11 +2,7 @@
   "mcpServers": {
     "better-edit-tools": {
       "command": "/home/clyzhi/.local/share/better-edit-tools/bin/better-edit-tools",
-      "directTools": true
+      "exposure": "direct"
     }
-  },
-  "settings": {
-    "toolPrefix": "none",
-    "idleTimeout": 0
   }
 }

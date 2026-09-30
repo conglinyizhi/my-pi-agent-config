@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { SubagentUsage, TimelineEvent, VisibleWorkerMessage } from "./subagent-run.ts";
+import { bareMcpToolName } from "./string-utils.ts";
 
 export interface AttemptSnapshot {
   /** 1-based 尝试序号 */
@@ -54,7 +55,7 @@ export const FILE_STEPS_MAX = 30;
 export const FILE_STDERR_TAIL_MAX = 2000;
 export const FILE_PATH_CLUES_MAX = 20;
 
-/** 疑似产生文件副作用的工具名（启发式白名单；非 LLM 判定） */
+/** 疑似产生文件副作用的工具名（启发式白名单；非 LLM 判定）；MCP 工具按剥前缀后的原名判定 */
 const WRITE_TOOL_HINTS = new Set([
   "edit", "write", "be-write", "be-replace", "be-insert", "be-delete",
   "apply_patch", "patch", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "install",
@@ -136,7 +137,7 @@ function pickInlineSteps(attempts: AttemptSnapshot[], cap: number): string[] {
 function detectSideEffects(attempts: AttemptSnapshot[]): string {
   const touched = new Set<string>();
   for (const ev of concatTimelines(attempts)) {
-    if (ev.type === "tool" && ev.tool && WRITE_TOOL_HINTS.has(ev.tool)) {
+    if (ev.type === "tool" && ev.tool && WRITE_TOOL_HINTS.has(bareMcpToolName(ev.tool))) {
       touched.add(ev.tool);
     }
   }

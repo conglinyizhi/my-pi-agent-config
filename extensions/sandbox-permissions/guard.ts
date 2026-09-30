@@ -13,7 +13,8 @@
 //   read / be-read                     → 参数 path / file（黑名单）
 //   write / edit / be-write / be-replace / be-insert / be-delete / be-insert-chip
 //                                      → 参数 path / file / to（黑名单 + 仅写保护路径 + worker 沙箱可写根）
-//   （be-* 是 MCP 直挂的写通道，不挂上来就绕过了这一层；见 targetPathOf）
+//   （be-* 是 MCP 直挂的写通道，不挂上来就绕过了这一层；见 targetPathOf。
+//     MCP 工具名是 mcp__<server>__<tool>，查表前剥前缀）
 //   bash    → 2026-08 起不再在此拦截：bash 检查移至 extensions/bash-guard.ts
 //             的 bash 工具内部（checkCommand 前置调用 commandBlocked）。
 //             纯函数 commandBlocked/loadBlacklist 仍保留，供 lib/sandbox-check.ts 复用。
@@ -37,6 +38,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { loadSandboxPaths } from "./paths.ts";
+import { bareMcpToolName } from "../../lib/string-utils.ts";
 import { isTrustedProgramPath } from "./trusted.ts";
 import { beginSandboxSession, isSessionTrustedPath } from "./session-access.ts";
 import { yoloEnabled } from "./yolo.ts";
@@ -373,6 +375,8 @@ export function workerWriteBlocked(path: string, cwd: string, scope: WorkerWrite
 // be-* 是 MCP 直挂工具，参数用的是 `file`（可带 `:行范围` / `:ALL` 后缀），
 // 只挂内置 write/edit 会留下一条完全绕开黑名单与 worker 写入边界的通道
 // （2026-09-23 实测：readonly worker 用 be-write 成功写了工作区）。
+// 名字形态：pi 内置 mcp 扩展注册成 `mcp__<server>__<tool>`，查表前先剥前缀，
+// 表里仍按 be-* 原名维护，服务器改名 / 换工具源不用动这张表。
 
 /** 工具名 → 目标路径字段+是否剥 `:行范围` 后缀 */
 const READ_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
@@ -404,7 +408,7 @@ export function targetPathOf(
   input: unknown,
   kind: "read" | "write",
 ): string | undefined {
-  const spec = (kind === "read" ? READ_TARGET : WRITE_TARGET)[toolName];
+  const spec = (kind === "read" ? READ_TARGET : WRITE_TARGET)[bareMcpToolName(toolName)];
   if (!spec || !input || typeof input !== "object") return undefined;
   const raw = (input as Record<string, unknown>)[spec.field];
   if (typeof raw !== "string" || !raw.trim()) return undefined;
