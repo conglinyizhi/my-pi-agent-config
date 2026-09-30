@@ -11,7 +11,7 @@ import {
 	createReviewCache,
 	extractReviewResult,
 	formatReviewNote,
-	mergeChainedReview,
+	toAdvisorNote,
 	normalizeConfig,
 	REVIEW_TOOL,
 	reviewCacheKey,
@@ -374,7 +374,8 @@ describe("reviewCommand 失败拼装", () => {
 	});
 });
 
-describe("mergeChainedReview", () => {
+
+describe("toAdvisorNote", () => {
 	const r = (verdict: "safe" | "risky" | "dangerous" | "error", extra: Record<string, unknown> = {}) => ({
 		verdict,
 		reason: `${verdict} 的理由`,
@@ -382,74 +383,37 @@ describe("mergeChainedReview", () => {
 		...extra,
 	});
 
-	it("两边都 safe → safe", () => {
-		const merged = mergeChainedReview(r("safe"), r("safe"));
-		assert.equal(merged.verdict, "safe");
+	it("原样带上 chat 的 verdict / reason / suggestion", () => {
+		const note = toAdvisorNote(r("risky"), "risky");
+		assert.equal(note?.verdict, "risky");
+		assert.equal(note?.reason, "risky 的理由");
+		assert.equal(note?.suggestion, "risky 的建议");
 	});
 
-	it("任一 risky 就 risky（分类器判风险，chat 说安全）", () => {
-		const merged = mergeChainedReview(r("risky"), r("safe"));
-		assert.equal(merged.verdict, "risky");
-		assert.ok(merged.reason.includes("分类器："), "要标明风险来自哪一边");
-		assert.ok(!merged.reason.includes("对话模型："), "没判风险的那边不进理由");
+	it("有 opinion 就带上", () => {
+		const note = toAdvisorNote(r("risky", { opinion: "- 一条看法" }), "risky");
+		assert.equal(note?.opinion, "- 一条看法");
 	});
 
-	it("任一 risky 就 risky（chat 判风险，分类器说安全）", () => {
-		const merged = mergeChainedReview(r("safe"), r("risky"));
-		assert.equal(merged.verdict, "risky");
-		assert.ok(merged.reason.includes("对话模型："));
+	it("chat 失败时带 error 说明", () => {
+		const note = toAdvisorNote({ verdict: "error", reason: "超时", suggestion: "" }, "risky");
+		assert.equal(note?.error, "超时");
+		assert.equal(note?.verdict, "error");
 	});
 
-	it("dangerous 压过 risky", () => {
-		const merged = mergeChainedReview(r("risky"), r("dangerous"));
-		assert.equal(merged.verdict, "dangerous");
+	it("分类器放行但 chat 喊风险：留一行提醒（判决不变）", () => {
+		const note = toAdvisorNote(r("risky"), "safe");
+		assert.ok(note?.reason.startsWith("（分类器判放行，对话模型持异议）"));
+		assert.ok(note?.reason.includes("risky 的理由"));
 	});
 
-	it("两边都 risky 时理由并列，注明来源", () => {
-		const merged = mergeChainedReview(r("risky"), r("risky"));
-		assert.equal(merged.verdict, "risky");
-		assert.ok(merged.reason.includes("分类器："));
-		assert.ok(merged.reason.includes("对话模型："));
+	it("分类器放行 + chat 也放行：不加那句提醒", () => {
+		const note = toAdvisorNote(r("safe"), "safe");
+		assert.equal(note?.reason, "safe 的理由");
 	});
 
-	it("一边 error 一边 safe → safe（error 不当成风险）", () => {
-		const merged = mergeChainedReview(r("error"), r("safe"));
-		assert.equal(merged.verdict, "safe");
-	});
-
-	it("两边都 error → error，两边原因都带上", () => {
-		const merged = mergeChainedReview(r("error"), r("error"));
-		assert.equal(merged.verdict, "error");
-		assert.ok(merged.reason.includes("分类器："));
-		assert.ok(merged.reason.includes("对话模型："));
-	});
-
-	it("dimensions 与 chatReview 都带进结果", () => {
-		const dims = [{ id: "elevation", label: "提权", type: "choice", risk: 1, raw: "x", triggered: true, reason: "", above: 0.5, below: 0.5 }];
-		const merged = mergeChainedReview(r("risky", { dimensions: dims }), r("risky", { opinion: "- 看法一条" }));
-		assert.deepEqual(merged.dimensions, dims);
-		assert.equal(merged.chatReview?.verdict, "risky");
-		assert.equal(merged.chatReview?.opinion, "- 看法一条");
-	});
-
-	it("suggestion 优先取 chat 的（它会写具体替代写法）", () => {
-		const merged = mergeChainedReview(
-			{ verdict: "risky", reason: "分类器命中", suggestion: "分类器的模板句" },
-			{ verdict: "risky", reason: "chat 也命中", suggestion: "改用 ls 先确认" },
-		);
-		assert.equal(merged.suggestion, "改用 ls 先确认");
-	});
-
-	it("chat 没建议时用分类器的兜底", () => {
-		const merged = mergeChainedReview(
-			{ verdict: "risky", reason: "x", suggestion: "分类器兜底" },
-			{ verdict: "safe", reason: "y", suggestion: "" },
-		);
-		assert.equal(merged.suggestion, "分类器兜底");
-	});
-
-	it("chat 失败时 chatReview 里带 error 说明", () => {
-		const merged = mergeChainedReview(r("safe"), { verdict: "error", reason: "超时", suggestion: "" });
-		assert.equal(merged.chatReview?.error, "超时");
+	it("chat 失败时不加异议提醒（失败不等于喊风险）", () => {
+		const note = toAdvisorNote({ verdict: "error", reason: "超时", suggestion: "" }, "safe");
+		assert.ok(!note?.reason.includes("持异议"));
 	});
 });

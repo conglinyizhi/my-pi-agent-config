@@ -59,6 +59,11 @@ export interface ReviewStateInput {
 	cwd: string;
 	/** 用户最近请求的片段（判断「符合意图」需要） */
 	userRequestExcerpt?: string;
+	/**
+	 * 对话模型的参考意见（chain 后端给）。明确标为「参考」：
+	 * 它可能错，且没有权威性；分类器自己看证据下结论。
+	 */
+	advisorReview?: { verdict?: string; reason?: string; suggestion?: string };
 	/** 命中的规则名列表 */
 	matchedRules?: string[];
 }
@@ -83,6 +88,18 @@ export function buildReviewState(input: ReviewStateInput): Record<string, unknow
 	}
 	if (input.userRequestExcerpt && input.userRequestExcerpt.trim() !== "") {
 		state.user_request = `<user_request>\n${clip(input.userRequestExcerpt, 1500)}\n</user_request>`;
+	}
+	// 参考意见：包成 XML 并明说「不是裁决」，避免它被当成必须跟从的结论
+	if (input.advisorReview && typeof input.advisorReview === "object") {
+		const a = input.advisorReview;
+		const lines: string[] = [];
+		if (a.verdict) lines.push(`它给的结论：${a.verdict}`);
+		if (a.reason) lines.push(`它的理由：${clip(a.reason, 600)}`);
+		if (a.suggestion) lines.push(`它的建议：${clip(a.suggestion, 400)}`);
+		if (lines.length > 0) {
+			state.advisor_review =
+				`<advisor_review>\n（另一个对话模型的看法，仅供参考、可能出错，你要自己看证据判断）\n${lines.join("\n")}\n</advisor_review>`;
+		}
 	}
 	if (input.matchedRules && input.matchedRules.length > 0) {
 		state.matched_rules = input.matchedRules;

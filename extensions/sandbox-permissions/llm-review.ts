@@ -27,6 +27,7 @@ import { callZenChat } from "../opencode-free/zen-client.ts";
 import { loadClassifierConfig, reviewViaClassifier } from "./review-classifier.ts";
 import { loadTrustedProgramDirs } from "./trusted.ts";
 import { formatFacts, type PreshellFacts } from "../../lib/preshell.ts";
+import { lastUserRequest } from "../../lib/last-user-request.ts";
 import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
@@ -276,6 +277,7 @@ export function buildReviewPrompt(
 	rules: TokenRule[],
 	facts?: PreshellFacts,
 	factsUnavailable?: string,
+	userRequest?: string,
 ): { system: string; user: string } {
 	const ruleText =
 		rules.length === 0
@@ -283,6 +285,11 @@ export function buildReviewPrompt(
 			: rules
 					.map((r) => `- ${r.name}：${r.tip}${r.matched?.length ? `（命中：${r.matched.join(" ")}）` : ""}`)
 					.join("\n");
+	// 用户最近的要求：判「这条命令与要求的关系」靠它。没给就明说没有，
+	// 而不是静默省略——静默省略会让模型默认「与要求无关」，把 intent 判成风险。
+	const requestText = userRequest
+		? `\n\n用户最近的要求（判断意图是否对得上）：\n${userRequest}`
+		: "\n\n用户最近的要求：取不到（无会话上下文），意图判断只能看命令本身";
 	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（命令过长已截断）" : command;
 	// 事实层：静态分析出的影响面。有就给，没有就明说读不到（别让它被当成「什么都没碰」）
 	const factsText = facts
@@ -292,7 +299,7 @@ export function buildReviewPrompt(
 			: "";
 	return {
 		system,
-		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}${factsText}`,
+		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}${factsText}${requestText}`,
 	};
 }
 
@@ -486,121 +493,38 @@ export async function reviewCommand(
 	const hit = cache.get(key);
 	if (hit) return hit;
 
-	// 分类后端：一次请求问八个原子问题，拿回类型化答案 + 概率，
-	// 由 review-dimensions 的阈值决定「要不要打扰用户」（永不 block）。
-	// 失败同样是 verdict=error，调用方回退弹窗——不进 chat 那边的模型池重试（那是 chat 后端的语义）。
+	// 用户最近说了什么：分类器的 intent 维度与 chat 的提示词都要它。
+	// 拿不到时 intent 只能猜，会倾向判「与要求无关」，于是满屏误报——
+	// 所以这条链路必须真的接上，不能留空。
+	const userRequest = sessionUserRequest(ctx);
+
+	const runClassifier = () => runClassifierReview(ctx, command, rules, signal, facts, userRequest);
+
+	let result: ReviewResult;
 	if (cfg.backend === "classifier") {
-		const result = await runClassifierReview(ctx, command, rules, signal, facts);
-		// 只缓存有效结论（error 是瞬态的：无 key / 超时 / 限流，下次重试）
-		if (result.verdict !== "error") cache.set(key, result);
-		return result;
+		result = await runClassifier();
+	} else if (cfg.backend === "chain") {
+		result = await runChainedReview(ctx, command, rules, signal, cfg, facts, userRequest);
+	} else {
+		result = await runChatReview(ctx, command, rules, signal, cfg, facts, userRequest);
 	}
 
-	if (cfg.backend === "chain") {
-		const result = await runChainedReview(ctx, command, rules, signal, cfg, facts);
-		if (result.verdict !== "error") cache.set(key, result);
-		return result;
-	}
-
-	// chat 单跑
-	const result = await runChatReview(ctx, command, rules, signal, cfg, facts);
+	// 只缓存有效结论（error 是瞬态的：无 key / 超时 / 限流，下次重试）
 	if (result.verdict !== "error") cache.set(key, result);
 	return result;
 }
 
-/** 跑分类器那一路（chain 与 classifier 共用） */
-async function runClassifierReview(
-	ctx: ExtensionContext,
-	command: string,
-	rules: TokenRule[],
-	signal: AbortSignal | undefined,
-	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
-): Promise<ReviewResult> {
-	return reviewViaClassifier(
-		{
-			command,
-			cwd: ctx.cwd ?? process.cwd(),
-			preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
-			preshellUnavailable: facts?.factsUnavailable,
-			matchedRules: rules.map((r) => r.name).filter(Boolean),
-		},
-		loadClassifierConfig(),
-		{ signal },
-	);
-}
-
-/**
- * 串联：分类器与 chat 两边都跑，意见合并。
- *
- * 结论取**两边最严**（任一判风险就弹窗）：分类器是试验品、chat 会瞎报，
- * 两边都不可靠，那就不要任何一边单独拍板放行。代价是弹窗变多，
- * 而这是审核层，宁可多问一句。
- *
- * 两边都跑而不是短路：只跑分类器就不知道 chat 会说什么，反过来也一样；
- * 要“意见合并”就得真拿到两份意见。并行发，快的那路不用等慢的跑完才开跑。
- */
-async function runChainedReview(
-	ctx: ExtensionContext,
-	command: string,
-	rules: TokenRule[],
-	signal: AbortSignal | undefined,
-	cfg: LlmReviewConfig,
-	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
-): Promise<ReviewResult> {
-	const [classifier, chat] = await Promise.all([
-		runClassifierReview(ctx, command, rules, signal, facts),
-		runChatReview(ctx, command, rules, signal, cfg, facts),
-	]);
-	return mergeChainedReview(classifier, chat);
-}
-
-/**
- * 合并两边结论（纯函数，可单测）。
- *
- * verdict 取严：dangerous > risky > safe；error 不当成风险，但两边都 error 时
- * 结果也是 error（调用方据此回退弹窗，永不静默放行）。
- */
-export function mergeChainedReview(classifier: ReviewResult, chat: ReviewResult): ReviewResult {
-	const rank: Record<ReviewVerdict, number> = { dangerous: 3, risky: 2, safe: 1, error: 0 };
-	const worst = rank[classifier.verdict] >= rank[chat.verdict] ? classifier.verdict : chat.verdict;
-
-	// 两边都没结论：报 error，把双方原因都带上（弹窗里能看出是哪边挂了）
-	if (worst === "error") {
-		return {
-			verdict: "error",
-			reason: `两边审核都失败：\n分类器：${classifier.reason}\n对话模型：${chat.reason}`,
-			suggestion: "",
-		};
+/** 从会话里取用户最近一条请求（拿不到就是 undefined，审核侧自行降级） */
+function sessionUserRequest(ctx: ExtensionContext): string | undefined {
+	try {
+		const entries = ctx.sessionManager?.getEntries?.() ?? [];
+		return lastUserRequest(entries as never);
+	} catch {
+		// 会话不可读不该让审核整条挂掉：按「没有上下文」处理，与没有会话时一致
+		return undefined;
 	}
-
-	// 理由：谁判的风险就写谁的理由；两边都判风险就并列，注明来源
-	const parts: string[] = [];
-	if (rank[classifier.verdict] >= 2) parts.push(`分类器：${classifier.reason}`);
-	if (rank[chat.verdict] >= 2) parts.push(`对话模型：${chat.reason}`);
-	const reason = parts.length > 0 ? parts.join("\n") : classifier.reason;
-
-	// suggestion 优先取 chat 的（它会写具体的替代写法），分类器的模板句只做兑底
-	const suggestion = chat.suggestion || classifier.suggestion;
-
-	const merged: ReviewResult = { verdict: worst, reason, suggestion };
-	if (classifier.dimensions) merged.dimensions = classifier.dimensions;
-	// chat 那边的完整意见单独带着：审批窗要能分清谁说的什么
-	merged.chatReview = {
-		verdict: chat.verdict,
-		reason: chat.reason,
-		suggestion: chat.suggestion,
-		...(chat.opinion ? { opinion: chat.opinion } : {}),
-		...(chat.verdict === "error" ? { error: chat.reason } : {}),
-	};
-	return merged;
 }
-/**
- * 走 chat 模型池审一次（旧路径：一个 verdict + 一段人话理由）。
- *
- * 抽出来是为了给 chain 后端复用：那边两边都要跑，不能把 chat 这整段
- * 再抄一遍（模型池重试 / 超时区分 / 免费档分支都是容易抄漏的细节）。
- * 缓存不由这里管：chain 要等两边都跑完才能合成后再写缓存。
- */
+
 async function runChatReview(
 	ctx: ExtensionContext,
 	command: string,
@@ -608,6 +532,7 @@ async function runChatReview(
 	signal: AbortSignal | undefined,
 	cfg: LlmReviewConfig,
 	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	userRequest: string | undefined,
 ): Promise<ReviewResult> {
 	const { models, source } = pickModels(ctx, cfg);
 	if (models.length === 0) {
@@ -622,7 +547,7 @@ async function runChatReview(
 	if (systemPrompt === null) {
 		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
 	}
-	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, facts?.facts, facts?.factsUnavailable);
+	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, facts?.facts, facts?.factsUnavailable, userRequest);
 
 	// ModelRegistry 的 complete 在各版本 pi 上都有，但类型声明滞后过；用窄接口断言，
 	// 运行时行为以实际 pi 版本为准。
@@ -711,6 +636,87 @@ async function runChatReview(
 		reason: `审核模型全部失败：${failures.join("\n")}`,
 		suggestion: "",
 	};
+}
+
+/** 跑分类器那一路（chain 与 classifier 共用） */
+async function runClassifierReview(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	signal: AbortSignal | undefined,
+	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	userRequest: string | undefined,
+	advisor?: ReviewResult,
+): Promise<ReviewResult> {
+	return reviewViaClassifier(
+		{
+			command,
+			cwd: ctx.cwd ?? process.cwd(),
+			preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
+			preshellUnavailable: facts?.factsUnavailable,
+			matchedRules: rules.map((r) => r.name).filter(Boolean),
+			userRequestExcerpt: userRequest,
+			// chat 的意见作为参考材料进 state（不参与判决）：
+			// 分类器是判决者，chat 只是多一双眼睛。见 runChainedReview 的说明。
+			advisorReview: advisor,
+		},
+		loadClassifierConfig(),
+		{ signal },
+	);
+}
+
+/**
+ * 串联：**chat 先给意见，分类器拿它当参考做判决**。
+ *
+ * 判不判弹窗只看分类器（它的阈值决定 safe/risky），chat 的结论不单独触发弹窗——
+ * chat 会瞎报，让它一票否决等于把误报直接变成满屏弹窗。它的作用是给分类器
+ * 多一份视角（尤其是 intent 这类需要读懂上下文的维度）。
+ *
+ * 串行是刻意的：参考意见必须在判决之前拿到。chat 失败不影响判决（advisor 省略）。
+ */
+async function runChainedReview(
+	ctx: ExtensionContext,
+	command: string,
+	rules: TokenRule[],
+	signal: AbortSignal | undefined,
+	cfg: LlmReviewConfig,
+	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	userRequest: string | undefined,
+): Promise<ReviewResult> {
+	// advisor 失败就当作没有参考意见：分类器本来就不依赖它
+	const advisor = await runChatReview(ctx, command, rules, signal, cfg, facts, userRequest);
+
+	const classifier = await runClassifierReview(ctx, command, rules, signal, facts, userRequest, advisor);
+
+	// 分类器的判决就是最终判决。chat 的意见挂上去供弹窗展示，但不改变 verdict。
+	const merged: ReviewResult = { ...classifier, chatReview: toAdvisorNote(advisor, classifier.verdict) };
+	return merged;
+}
+
+/**
+ * chat 的意见转成展示用的附注（纯函数，可单测）。
+ *
+ * 两种情形值得分开写：
+ *   - 分类器判 risky：chat 说什么都只是旁证，带上它的结论即可
+ *   - 分类器判 safe：chat 若判了风险，这里要明确标出来给人看
+ *     （判决仍是放行，但人翻记录时该看到「有一边喊过风险」）
+ */
+export function toAdvisorNote(
+	chat: ReviewResult,
+	classifierVerdict: ReviewVerdict,
+): ReviewResult["chatReview"] {
+	const note: NonNullable<ReviewResult["chatReview"]> = {
+		verdict: chat.verdict,
+		reason: chat.reason,
+		suggestion: chat.suggestion,
+	};
+	if (chat.opinion) note.opinion = chat.opinion;
+	if (chat.verdict === "error") note.error = chat.reason;
+	// 分类器放行、但 chat 喊了风险：留一行提醒，别让这条完全消失在记录里
+	if (classifierVerdict === "safe" && (chat.verdict === "risky" || chat.verdict === "dangerous")) {
+		note.reason = `（分类器判放行，对话模型持异议）${chat.reason}`;
+	}
+	return note;
 }
 
 /** 审核结论的展示文本（供弹窗 / GUI 展示附加） */

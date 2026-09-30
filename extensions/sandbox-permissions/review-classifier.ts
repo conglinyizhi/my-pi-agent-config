@@ -135,6 +135,12 @@ export interface ClassifierReviewInput {
 	agentReason?: string;
 	/** 用户最近请求的片段 */
 	userRequestExcerpt?: string;
+	/**
+	 * 对话模型（chat 后端）给出的参考意见：只是一双额外的眼睛，**不参与判决**。
+	 * 分类器拿它当额外上下文（尤其是需要读懂上下文的 intent 维度），
+	 * 弹不弹窗仍只看分类器的维度阈值。
+	 */
+	advisorReview?: ReviewResult;
 	matchedRules?: string[];
 }
 
@@ -169,6 +175,7 @@ export async function reviewViaClassifier(
 		preshellUnavailable: input.preshellUnavailable,
 		agentReason: input.agentReason,
 		userRequestExcerpt: input.userRequestExcerpt,
+		advisorReview: input.advisorReview,
 		matchedRules: input.matchedRules,
 	});
 	const questions = buildQuestions(specs);
