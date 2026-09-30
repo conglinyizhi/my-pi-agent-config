@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { defaultClassifierConfig, formatHitReason, normalizeDimensions, reviewViaClassifier } from "./review-classifier.ts";
-import { evaluateAll, synthesize } from "./review-dimensions.ts";
+import { evaluateAll, synthesize, type RawAnswer } from "./review-dimensions.ts";
 
 const BASE_INPUT = {
 	command: "sudo rm -rf /var/tmp/build",
@@ -173,7 +173,7 @@ describe("normalizeDimensions", () => {
 
 describe("formatHitReason", () => {
 	it("逐条列出命中维度，便于人工核对", () => {
-		const answers = {
+		const answers: Record<string, RawAnswer> = {
 			elevation: { type: "choice", choice: "user-elevation", probabilities: { none: 0.1, "user-elevation": 0.9, "privileged-change": 0 }, confidence: 0.9 },
 		};
 		const verdicts = evaluateAll(answers, defaultClassifierConfig().dimensions);

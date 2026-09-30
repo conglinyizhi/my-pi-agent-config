@@ -22,9 +22,12 @@ export async function pushJobUpdate(
 	opts: { socketPath?: string; sessionId?: string; timeoutMs?: number } = {},
 ): Promise<boolean> {
 	const path = opts.socketPath ?? hubSocketPath();
-	let conn: Socket | undefined;
+	let sock: Socket | undefined;
 	try {
-		conn = await connectFor(path, opts.timeoutMs ?? CONNECT_MS);
+		// 用 const 接住：赋给外部 let 的话，闭包里 TS 不认这次赋值，
+		// 每个回调里都得再加一次非空断言（这一层就是被 tsc 报出来的）
+		const conn = await connectFor(path, opts.timeoutMs ?? CONNECT_MS);
+		sock = conn;
 		return await new Promise<boolean>((resolve) => {
 			let buf = "";
 			let done = false;
@@ -32,7 +35,7 @@ export async function pushJobUpdate(
 				if (done) return;
 				done = true;
 				clearTimeout(timer);
-				try { conn?.destroy(); } catch {}
+				try { conn.destroy(); } catch {}
 				resolve(ok);
 			};
 			// 兜底：hub 收了却不回执（不该发生）也不能把调用方挂住
@@ -50,7 +53,7 @@ export async function pushJobUpdate(
 						if (msg.type === "jobpush-ok") finish(true);
 						else if (msg.type === "hello-ok") {
 							// 握手完成才发正式消息，与 hub 的 hello 约定一致
-							writeLine(conn!, { v: PROTOCOL_V, type: "jobpush", id: "jobpush", sessionId: opts.sessionId, payload });
+							writeLine(conn, { v: PROTOCOL_V, type: "jobpush", id: "jobpush", sessionId: opts.sessionId, payload });
 						}
 					} catch {
 						// 半截/坏行：继续读
@@ -63,7 +66,7 @@ export async function pushJobUpdate(
 			writeLine(conn, { v: PROTOCOL_V, type: "hello", role: "pi" });
 		});
 	} catch {
-		try { conn?.destroy(); } catch {}
+		try { sock?.destroy(); } catch {}
 		return false;
 	}
 }

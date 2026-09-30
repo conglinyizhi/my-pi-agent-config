@@ -33,27 +33,28 @@ function findJiti() {
 }
 
 const jitiPath = findJiti();
-let load;
+// 两条加载路径都用同一个签名：测试脚本，`any` 就够（不引 pi 的类型进来）
+let load: (path: string) => Promise<any>;
 let via = "node 自带的 TS 加载";
 if (jitiPath) {
 	const { createJiti } = await import(pathToFileURL(jitiPath).href);
 	const jiti = createJiti(import.meta.url, { interopDefault: true, tryNative: false });
-	load = (path) => jiti.import(path, { default: true });
+	load = (path: string) => jiti.import(path, { default: true });
 	via = "jiti（pi 加载扩展用的那套）";
 } else {
-	load = async (path) => (await import(pathToFileURL(path).href)).default;
+	load = async (path: string) => (await import(pathToFileURL(path).href)).default;
 }
 
 const factory = await load(join(here, "index.ts"));
 if (typeof factory !== "function") throw new Error("扩展入口的默认导出不是 factory 函数");
 
-const onTypes = [];
-const commands = [];
+const onTypes: string[] = [];
+const commands: Array<{ name: string; hasHandler: boolean }> = [];
 factory({
-	on(type) {
+	on(type: string) {
 		onTypes.push(type);
 	},
-	registerCommand(name, command) {
+	registerCommand(name: string, command: { handler?: unknown }) {
 		commands.push({ name, hasHandler: typeof command?.handler === "function" });
 	},
 });

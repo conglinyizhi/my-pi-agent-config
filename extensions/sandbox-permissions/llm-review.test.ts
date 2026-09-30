@@ -339,6 +339,7 @@ describe("reviewCommand 失败拼装", () => {
 	const text = (s: string) => ({ type: "text", text: s });
 	const cache = createReviewCache(10);
 	const config = {
+		backend: "chat" as const,
 		enabled: true,
 		mode: "auto" as const,
 		timeoutMs: 30000,

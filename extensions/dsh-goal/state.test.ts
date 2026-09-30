@@ -64,7 +64,7 @@ describe("CAS 与转换", () => {
 	it("get_goal 展示用的短 id 可以 complete", () => {
 		const domain = freshDomain();
 		const first = createGoal(domain);
-		const short = `${first.view!.id.slice(0, 12)}…` as typeof first.view.id;
+		const short = `${first.view!.id.slice(0, 12)}…` as NonNullable<typeof first.view>["id"];
 		const done = domain.mutate({ operation: "complete", ref: { id: short, revision: 1 } });
 		const view = done.result.kind === "view" ? done.result.view : undefined;
 		assert.equal(view!.phase, "complete");

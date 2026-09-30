@@ -31,7 +31,7 @@ describe("共享 bash 审批器", () => {
 			verdict,
 			origin: "bash_background",
 			deps: {
-				loadReviewConfig: () => ({ enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
 				runGui: async () => ({ ok: true, data: { action: "allow", comment: "  X  " } }),
 			},
 		});
@@ -52,7 +52,7 @@ describe("共享 bash 审批器", () => {
 			command: "sudo echo test",
 			verdict,
 			deps: {
-				loadReviewConfig: () => ({ enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
 				runGui: async () => ({ ok: true, data: { action: "deny", comment: "不要执行" } }),
 			},
 		});
@@ -95,7 +95,7 @@ describe("收窄命令的审批链", () => {
 			},
 		],
 	};
-	const reviewConfig = { enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
+	const reviewConfig = { backend: "chat" as const, enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
 
 	it("不是硬拒（autoReject:false）→ 进得来审批器", () => {
 		assert.equal(isHardRejected(narrowedVerdict), false);
@@ -178,7 +178,7 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 		reason: "命令需人工确认（命中危险/动态规则）",
 		rules: [{ name: "rm-recursive", tip: "避免递归删除", matched: ["-rf"] }],
 	};
-	const reviewConfig = { enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
+	const reviewConfig = { backend: "chat" as const, enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
 
 	it("缺省用共享的审核缓存：同一条命令不因换个调用方就再审一遍", async () => {
 		let seenCache: unknown;

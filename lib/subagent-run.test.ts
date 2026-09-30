@@ -216,12 +216,16 @@ describe("runSubagent retry loop (injected runOnce)", () => {
             task: "t", exitCode: 1, messages: [], stderr: "x", stopReason: "error",
             errorMessage: "sse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline: [],
+            visibleConversation: [],
+            archiveTimeline: [],
           };
         }
         return {
           task: "t", exitCode: 0, messages: [], stderr: "",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
           timeline: [],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       sleep: async () => {},
@@ -283,6 +287,8 @@ describe("runSubagent retry loop (injected runOnce)", () => {
           task: "t", exitCode: 1, messages: [], stderr: "e", stopReason: "error",
           errorMessage: "down", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
           timeline: [{ id: "l", type: "lifecycle", ts: "t", state: "failed" }],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       sleep: async () => {},
@@ -305,6 +311,8 @@ describe("runSubagent retry loop (injected runOnce)", () => {
           errorMessage: "Concurrency limit exceeded for account, please retry later",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
           timeline: [],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       sleep: async (ms) => { delays.push(ms); },
@@ -350,12 +358,16 @@ describe("runSubagent retry loop (injected runOnce)", () => {
             errorMessage: "Upstream response stream was interrupted",
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline: [],
+            visibleConversation: [],
+            archiveTimeline: [],
           };
         }
         return {
           task: "t", exitCode: 0, messages: [], stderr: "",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
           timeline: [],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       sleep: async () => {},
@@ -401,12 +413,16 @@ describe("runSubagent retry loop (injected runOnce)", () => {
             errorMessage: "Upstream response stream was interrupted",
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline,
+            visibleConversation: [],
+            archiveTimeline: [],
           };
         }
         return {
           task: "t", exitCode: 0, messages: [], stderr: "",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
           timeline,
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       sleep: async () => {},
@@ -816,11 +832,15 @@ describe("runSubagent capability request", () => {
             },
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
             timeline: [],
+            visibleConversation: [],
+            archiveTimeline: [],
           };
         }
         return {
           task: "t", exitCode: 0, messages: [], stderr: "",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       onCapabilityRequest: async () => ({
@@ -848,6 +868,8 @@ describe("runSubagent capability request", () => {
             commandDigest: commandDigest("curl x"), reason: "network", cwd: "/tmp", createdAt: "2026-01-01T00:00:00.000Z",
           },
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, timeline: [],
+          visibleConversation: [],
+          archiveTimeline: [],
         };
       },
       onCapabilityRequest: async () => ({

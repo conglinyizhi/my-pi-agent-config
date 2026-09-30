@@ -99,6 +99,9 @@ hub-state/
 # dsh-jobs 运行时状态（已迁到 XDG_RUNTIME_DIR / tmp；这行兜旧版本残留）
 job-state/
 
+# pi 运行时崩溃报告（本机发生的事故记录，不入库）
+crashes.json
+
 # photo 网关（运行时状态与构建产物）
 photo-state/
 photo/pi-photo

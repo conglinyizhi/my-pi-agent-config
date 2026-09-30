@@ -13,7 +13,7 @@
 // 因此「取消」不占 k（k 是上移），改用 x。刷新靠面板自带节拍：跨进程状态变化没有事件可订阅。
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { applyVimKey, parseVimKey, relativeLineGutter, relativeLineGutterWidth, type VimState } from "../../lib/vim-select.ts";
 import { watchJobUpdates } from "../../lib/hub-jobs.ts";
@@ -150,7 +150,17 @@ function oneLine(text: string, max: number): string {
 }
 
 /** 行摘要：`[主] bash-1 running 12s  命令…` */
-export function rowText(row: PanelRow, width: number, theme: { fg: (token: string, text: string) => string }): string {
+/**
+ * 渲染一行所需的 theme 能力。
+ *
+ * 不直接写 Theme：测试只需要一个 fg 就能渲染出可断言的文本，
+ * 逼测试去造完整 Theme 是白加一副夹具。
+ * token 参数用 ThemeColor（而不是 string）才能和 pi 的 Theme 对上：
+ * 参数是逆变的，测试里那个 string 参数版本照样能当参数传进来。
+ */
+export type RowTheme = { fg: (token: ThemeColor, text: string) => string };
+
+export function rowText(row: PanelRow, width: number, theme: RowTheme): string {
 	const ownerTag = row.owner.kind === "main" ? "主" : `w:${row.owner.taskId ?? row.owner.pid}`;
 	const head = `${row.record.id} ${row.record.status}${row.record.detail ? `(${row.record.detail})` : ""} ${formatElapsed(row.record.startedAt, row.record.finishedAt)}`;
 	const labelRoom = Math.max(12, width - head.length - ownerTag.length - 8);
