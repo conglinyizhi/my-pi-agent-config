@@ -50,6 +50,7 @@ const DEFAULT_MEMORY_MB = 1024;    // 默认 1GiB
 const MAX_MEMORY_MB = 32 * 1024;   // 防御性上限 32GiB（沙盒层钳制；正常上限由 helpers.ts 统一约束）
 const MEMORY_POLL_MS = 500;        // 采样周期（毫秒）
 const OOM_EXIT = 137;              // 128 + SIGKILL，标识内存超限被终止
+const STOP_GRACE_MS = 1500;        // 收到终止信号后，留给命令自己收尾的时间；超时 SIGKILL 整组
 
 function readSettings() {
   try {
@@ -128,13 +129,16 @@ function treeRssAnonKb(pid) {
 
 /**
  * 以异步 spawn 方式执行一条命令并阻塞等待退出，附带可选的内存墙监控。
- *   1. detached:true → 子进程成为进程组组长；超限时 `process.kill(-pid)` 可整棵终止进程树。
+ *   1. detached:false → 命令留在**我们自己的进程组**里。pi 起我们时用了 detached
+ *      （sandbox-shell 是组长），它们才收得住：abort/超时是 `kill(-我们的pid, SIGKILL)`，
+ *      命令若自成一个组就逃过这一刀，变成孤儿继续跑（2026-09-30 实测：bash_background
+ *      任务被取消后 sleep 仍活着，因为它在另一个进程组里）。
  *   2. 采样进程树匿名内存；超过上限 → 打印原因、SIGKILL 整组、以 OOM_EXIT(137) 退出。
  *   3. 正常退出按子进程 exit code 透传；启动失败（error 事件）以 FAIL_EXIT 退出。
  */
 function runCommand(launcher, args, cwd) {
   return new Promise((resolve) => {
-    const child = spawn(launcher, args, { stdio: "inherit", cwd, detached: true });
+    const child = spawn(launcher, args, { stdio: "inherit", cwd, detached: false });
     const memMb = resolveMemoryMB();
     let oomKilled = false;
     let poll;
@@ -146,11 +150,8 @@ function runCommand(launcher, args, cwd) {
         console.error(
           `sandbox-shell: 命令进程树匿名内存超出上限（${memMb} MB），已终止进程组：${(args[args.length - 1] ?? "").slice(0, 120)}`,
         );
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          /* 进程组已退出，忽略 */
-        }
+        // 组杀会连自己一起带走，退出码就是 137（128+SIGKILL）= OOM_EXIT，不用再 exit
+        killGroup("SIGKILL");
       }
     };
 
@@ -158,6 +159,45 @@ function runCommand(launcher, args, cwd) {
       // 启动瞬间与周期采样双保险：短命但瞬态超限的命令也能触发。
       setImmediate(checkMem);
       poll = setInterval(checkMem, MEMORY_POLL_MS);
+    }
+
+    /**
+     * 终止整条命令链。命令与我们同组、组长是我们（pi 用 detached 起我们），
+     * `-process.pid` 一下带走全体；万一我们不是组长（被别的调用方当库用），
+     * `-pid` 会 ESRCH，退化为只杀直接子进程。
+     */
+    const killGroup = (signal) => {
+      try {
+        process.kill(-process.pid, signal);
+      } catch {
+        try {
+          process.kill(child.pid, signal);
+        } catch {
+          /* 都退出了，忽略 */
+        }
+      }
+    };
+
+    // 父进程（pi）终止我们时信号要传到命令。pi 的 abort 走 killProcessTree（组杀 SIGKILL）
+    // 已覆盖；这个 handler 是给「有人只 SIGTERM 我们」的场景兜底的。
+    let stopping = false;
+    for (const [signal, code] of [
+      ["SIGTERM", 143],
+      ["SIGINT", 130],
+      ["SIGHUP", 129],
+      ["SIGQUIT", 131],
+    ]) {
+      process.on(signal, () => {
+        if (stopping) return; // 连发多次信号只处理第一发
+        stopping = true;
+        if (poll) clearInterval(poll);
+        killGroup(signal);
+        // 不 unref：这段时间正是等命令收尾，进程要活着
+        setTimeout(() => {
+          killGroup("SIGKILL");
+          process.exit(code);
+        }, STOP_GRACE_MS);
+      });
     }
 
     child.on("error", (err) => {
