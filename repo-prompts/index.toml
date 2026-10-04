@@ -22,11 +22,5 @@ paths = ["~/disk/ai_workspace/preshell"]
 file = "preshell.md"
 order = 200
 
-# 沙箱限制与 sandbox-allow 申请方式。
-# paths 挂根：沙箱对每条 bash 命令都生效，不分目录，只在某个仓里说明没用。
-# order 190 比默认略靠前：撞墙时最该先看到的是这段。
-[[prompt]]
-name = "sandbox"
-paths = ["/"]
-file = "sandbox-guide.md"
-order = 190
+# 注：沙箱墙与升权说明是全局规则（对任何 cwd 都成立），不走本表 —— 它是通用提示词，
+# 落在 SYSTEM.md 末尾。repo-prompts 只承载「某目录才成立」的规范。
