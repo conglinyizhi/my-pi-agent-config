@@ -56,10 +56,10 @@ describe("buildSubagentArgs", () => {
   });
 
   it("tools 白名单拼成逗号分隔精确名单", () => {
-    const args = buildSubagentArgs({ ...base, tools: ["read", "bash", "be-read", "be-replace"] });
+    const args = buildSubagentArgs({ ...base, tools: ["read", "bash", "mcp__some-server__read"] });
     const idx = args.indexOf("--tools");
     assert(idx !== -1);
-    assert.strictEqual(args[idx + 1], "read,bash,be-read,be-replace");
+    assert.strictEqual(args[idx + 1], "read,bash,mcp__some-server__read");
   });
 
   it("extraExtensions 逐个显式加载", () => {

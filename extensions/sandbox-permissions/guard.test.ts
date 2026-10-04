@@ -271,45 +271,27 @@ describe("targetPathOf（读写通道的目标路径）", () => {
     assert.equal(targetPathOf("edit", { path: "/a/b.ts", edits: [] }, "write"), "/a/b.ts");
   });
 
-  it("be-* 写入通道取 file（否则整条 MCP 写通道绕过拦截）", () => {
-    for (const tool of ["be-write", "be-replace", "be-insert", "be-delete"]) {
-      assert.equal(targetPathOf(tool, { file: "/a/b.ts", content: "x" }, "write"), "/a/b.ts", tool);
-    }
+  it("MCP 前缀名（mcp__<server>__<tool>）与原名走同一张表", () => {
+    const pre = "mcp__some-server__";
+    assert.equal(targetPathOf(pre + "read", { path: "/a/b.ts" }, "read"), "/a/b.ts");
+    assert.equal(targetPathOf(pre + "write", { path: "src/a.ts" }, "write"), "src/a.ts");
+    // 表按原名维护：服务器改名、或换一个服务器提供同名工具，路径拦截照样生效
+    assert.equal(targetPathOf("mcp__other-server__edit", { path: "/a/b.ts" }, "write"), "/a/b.ts");
   });
 
-  it("MCP 前缀名（mcp__<server>__be-*）与原名走同一张表", () => {
-    const pre = "mcp__better-edit-tools__";
-    assert.equal(targetPathOf(pre + "be-read", { file: "/a/b.ts" }, "read"), "/a/b.ts");
-    assert.equal(targetPathOf(pre + "be-write", { file: "src/a.ts:10-15" }, "write"), "src/a.ts");
-    assert.equal(targetPathOf(pre + "be-insert-chip", { from: "file:///a/b.ts" }, "read"), "/a/b.ts");
-    // 表按原名维护：服务器改名或换一个服务器提供同名工具，路径拦截照样生效
-    assert.equal(targetPathOf("mcp__other-server__be-delete", { file: "/a/b.ts" }, "write"), "/a/b.ts");
+  it("file:// 前缀先剥掉", () => {
+    assert.equal(targetPathOf("read", { path: "file:///a/b.ts" }, "read"), "/a/b.ts");
   });
 
-  it("be-* 的 file 可带 :行范围 与 :ALL 后缀", () => {
-    assert.equal(targetPathOf("be-replace", { file: "src/a.ts:10-15" }, "write"), "src/a.ts");
-    assert.equal(targetPathOf("be-delete", { file: "src/a.ts:7" }, "write"), "src/a.ts");
-    assert.equal(targetPathOf("be-delete", { file: "src/a.ts:ALL" }, "write"), "src/a.ts");
-  });
-
-  it("be-insert-chip 取 to（file:// 前缀剥掉）", () => {
-    assert.equal(targetPathOf("be-insert-chip", { from: "chip://x", to: "file:///a/b.ts:3" }, "write"), "/a/b.ts");
-  });
-
-  it("be-insert-chip 的 from 是 file:// 时按读路径算（取内容也是读）", () => {
-    assert.equal(targetPathOf("be-insert-chip", { from: "file:///a/b.ts" }, "read"), "/a/b.ts");
-    assert.equal(targetPathOf("be-insert-chip", { from: "chip://abc123" }, "read"), undefined);
-  });
-
-  it("be-read 走 read 通道，不在 write 表里", () => {
-    assert.equal(targetPathOf("be-read", { file: "~/.ssh/id_rsa" }, "read"), "~/.ssh/id_rsa");
-    assert.equal(targetPathOf("be-read", { file: "/a/b.ts" }, "write"), undefined);
+  it("read 走 read 通道，不在 write 表里", () => {
+    assert.equal(targetPathOf("read", { path: "~/.ssh/id_rsa" }, "read"), "~/.ssh/id_rsa");
+    assert.equal(targetPathOf("read", { path: "/a/b.ts" }, "write"), undefined);
   });
 
   it("不相干的工具 / 空入参 / 空路径返回 undefined", () => {
     assert.equal(targetPathOf("bash", { command: "rm -rf /" }, "write"), undefined);
-    assert.equal(targetPathOf("be-trx", { action: "rollback" }, "write"), undefined);
-    assert.equal(targetPathOf("be-read", { brief: true }, "read"), undefined);
+    assert.equal(targetPathOf("todo_write", { todos: [] }, "write"), undefined);
+    assert.equal(targetPathOf("read", { brief: true }, "read"), undefined);
     assert.equal(targetPathOf("read", { path: "   " }, "read"), undefined);
     assert.equal(targetPathOf("read", undefined, "read"), undefined);
   });
@@ -334,11 +316,12 @@ describe("tool_call 钩子（工具分发，不只是纯函数）", () => {
   const handler = toolCallHandler();
   const ctx = { cwd: "/work/proj" };
 
-  it("be-write / be-delete 写黑名单路径被拦（旧代码只认 write/edit，这条通道是开的）", () => {
-    for (const toolName of ["be-write", "be-replace", "be-insert", "be-delete"]) {
-      const res = handler({ toolName, input: { file: `${homedir()}/.ssh/authorized_keys` } }, ctx);
-      assert.equal(res?.block, true, toolName);
-    }
+  it("MCP 直挂的写工具写黑名单路径被拦（只挂内置 write/edit 会留一条绕开的路）", () => {
+    const res = handler(
+      { toolName: "mcp__some-server__write", input: { path: `${homedir()}/.ssh/authorized_keys` } },
+      ctx,
+    );
+    assert.equal(res?.block, true);
   });
 
   it("内置 write / edit 仍被拦（重构不得把它弄丢）", () => {
@@ -346,33 +329,22 @@ describe("tool_call 钩子（工具分发，不只是纯函数）", () => {
     assert.equal(handler({ toolName: "edit", input: { path: "node_modules/x/i.js" } }, ctx)?.block, true);
   });
 
-  it("be-read 读黑名单路径被拦，普通路径放行", () => {
-    assert.equal(handler({ toolName: "be-read", input: { file: `${homedir()}/.ssh/id_rsa` } }, ctx)?.block, true);
-    assert.equal(handler({ toolName: "be-read", input: { file: "src/main.ts" } }, ctx), undefined);
-  });
-
   it("MCP 前缀名在钩子里同样被拦（内置 mcp 的注册名）", () => {
-    const pre = "mcp__better-edit-tools__";
-    assert.equal(handler({ toolName: pre + "be-read", input: { file: `${homedir()}/.ssh/id_rsa` } }, ctx)?.block, true);
-    assert.equal(handler({ toolName: pre + "be-write", input: { file: `${homedir()}/.ssh/authorized_keys` } }, ctx)?.block, true);
-    assert.equal(handler({ toolName: pre + "be-write", input: { file: "src/main.ts" } }, ctx), undefined);
+    const pre = "mcp__some-server__";
+    assert.equal(handler({ toolName: pre + "read", input: { path: `${homedir()}/.ssh/id_rsa` } }, ctx)?.block, true);
+    assert.equal(handler({ toolName: pre + "read", input: { path: "src/main.ts" } }, ctx), undefined);
+    assert.equal(handler({ toolName: pre + "write", input: { path: `${homedir()}/.ssh/authorized_keys` } }, ctx)?.block, true);
   });
 
-  it("be-insert-chip 从黑名单文件取内容也被拦", () => {
-    const res = handler({ toolName: "be-insert-chip", input: { from: `file://${homedir()}/.ssh/id_rsa` } }, ctx);
-    assert.equal(res?.block, true);
-    assert.equal(handler({ toolName: "be-insert-chip", input: { from: "chip://xxxx" } }, ctx), undefined);
-  });
-
-  it("worker 写入边界对 be-* 同样生效", () => {
+  it("worker 写入边界对 MCP 写通道同样生效", () => {
     const backup = { ...process.env };
     try {
       process.env.PI_SUBAGENT = "1";
       process.env.PI_SANDBOX_RW = "/work/wt";
       delete process.env.PI_SANDBOX_READONLY;
       delete process.env.PI_SANDBOX_DISABLE;
-      assert.equal(handler({ toolName: "be-write", input: { file: "/work/elsewhere/x.ts" } }, ctx)?.block, true);
-      assert.equal(handler({ toolName: "be-write", input: { file: "/work/wt/x.ts" } }, ctx), undefined);
+      assert.equal(handler({ toolName: "mcp__some-server__write", input: { path: "/work/elsewhere/x.ts" } }, ctx)?.block, true);
+      assert.equal(handler({ toolName: "mcp__some-server__write", input: { path: "/work/wt/x.ts" } }, ctx), undefined);
       assert.equal(handler({ toolName: "write", input: { path: "/work/elsewhere/x.ts" } }, ctx)?.block, true);
     } finally {
       for (const key of ["PI_SUBAGENT", "PI_SANDBOX_RW", "PI_SANDBOX_READONLY", "PI_SANDBOX_DISABLE"]) delete process.env[key];
@@ -383,7 +355,7 @@ describe("tool_call 钩子（工具分发，不只是纯函数）", () => {
   it("yolo 下不拦（现有行为保持一致）", () => {
     setYolo(true);
     try {
-      assert.equal(handler({ toolName: "be-write", input: { file: `${homedir()}/.ssh/authorized_keys` } }, ctx), undefined);
+      assert.equal(handler({ toolName: "write", input: { path: `${homedir()}/.ssh/authorized_keys` } }, ctx), undefined);
     } finally {
       setYolo(false);
     }

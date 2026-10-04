@@ -19,16 +19,15 @@
 | `session-access.ts` | 当前 session 临时可写根与信任根（不落盘） | allow/bash/job 内部调用 |
 | `lib/approval-channel.ts` | 人工审批通道（优先连本机 hub，挂了回退 GUI→TUI） | bash / sandbox-allow / capability 共用 |
 
-拦截面涵盖内置 `read`/`write`/`edit` 与 better-edit-tools 的 MCP 直挂工具：`be-read`、
-`be-write`、`be-replace`、`be-insert`、`be-delete`，以及 `be-insert-chip` 的 `to`（写）与 `from`（`file://` 时算读）。
-参数名与 `:行范围` 后缀的解析统一在 `targetPathOf` 里（查表前用 `bareMcpToolName` 剥掉内置 mcp 的
-`mcp__<server>__` 前缀，所以表里按 `be-*` 原名维护），新增写通道时必须同时补上——
-只挂内置工具会让整条 MCP 写通道绕过这一层（2026-09-23 实测：readonly worker 用 `be-write` 成功写了工作区）。
+拦截面涵盖内置读/写/检索工具（`read`/`grep`/`find`/`ls`/`write`/`edit`）与带 MCP 前缀的同名工具：
+参数提取统一在 `targetPathOf` 里（查表前用 `bareMcpToolName` 剥掉内置 mcp 的 `mcp__<server>__`
+前缀，所以表按工具原名维护），接到新的 MCP 读写通道时必须同时补上——
+只挂内置工具会让整条 MCP 读写通道绕过这一层（2026-09-23 实测：readonly worker 用 MCP 的写工具写进了工作区）。
 
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
 注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。这套写入边界对 **bash 与写入类工具一起生效**：bash 由 `scripts/sandbox-shell.mjs` 的 landlock grants 执行，
-write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程的判定与预审直接走主 agent 那条审核链（`lib/bash-approval.ts`，含共享的 LLM 预审缓存）：预审判 safe 且 auto 模式就自动批准，其余经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI）。批准只绑定精确 command digest，worker 在 bash 工具内继续执行本条命令，不重启、不丢上下文。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash 默认在内核层断网（`scripts/vendor/network-block-run` 的 seccomp 墙，拦 `AF_INET`/`AF_INET6` socket、保留 `AF_UNIX`）：只有走通 network capability 审批的精确命令由 worker 的 `spawnHook` 注入 `PI_SANDBOX_NET=allow` 带网。审核链决定谁可以出网，网络墙保证没走通审核的命令真连不上（包括审核判漏、没识出成网络的命令）。worker 的读面同样是白名单（`--ro <具体目录>` 代替 `--ro /`，清单见 `worker-read-roots.json`），读取类工具由 `guard.ts` 按同一份清单拦。publish/read-secrets 不开放给 worker。
+write/edit 与 MCP 写通道由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程的判定与预审直接走主 agent 那条审核链（`lib/bash-approval.ts`，含共享的 LLM 预审缓存）：预审判 safe 且 auto 模式就自动批准，其余经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI）。批准只绑定精确 command digest，worker 在 bash 工具内继续执行本条命令，不重启、不丢上下文。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash 默认在内核层断网（`scripts/vendor/network-block-run` 的 seccomp 墙，拦 `AF_INET`/`AF_INET6` socket、保留 `AF_UNIX`）：只有走通 network capability 审批的精确命令由 worker 的 `spawnHook` 注入 `PI_SANDBOX_NET=allow` 带网。审核链决定谁可以出网，网络墙保证没走通审核的命令真连不上（包括审核判漏、没识出成网络的命令）。worker 的读面同样是白名单（`--ro <具体目录>` 代替 `--ro /`，清单见 `worker-read-roots.json`），读取类工具由 `guard.ts` 按同一份清单拦。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -211,7 +210,7 @@ venv 激活（`uv venv`、`source|x` 激活、`python -m venv`）之后的安装
 列表里的路径**同时**是受写入保护的：
 
 - **允许执行** —— 这些目录下的程序照旧可以跑（单向放宽，它本来的语义）
-- **禁止编辑** —— `write` / `edit` / `be-*` 写向这些路径会被拦下，要改得走 `sandbox-allow`
+- **禁止编辑** —— `write` / `edit` / MCP 写通道写向这些路径会被拦下，要改得走 `sandbox-allow`
   （`permission=write-paths`，`paths` 指定目录）让人批；批过之后**本次 session 内**可以写
 
 一份名单两个方向看着矛盾，其实是一件事：这里放的是本机自己编译、自己维护的产物，

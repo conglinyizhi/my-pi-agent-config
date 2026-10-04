@@ -10,11 +10,10 @@
 //   - 读取时机：session_start（初始化与 /reload 都会触发）时读取并编译
 //
 // 拦截点（pi.on("tool_call")，返回 { block: true, reason } 阻止执行）：
-//   read / be-read                     → 参数 path / file（黑名单）
-//   write / edit / be-write / be-replace / be-insert / be-delete / be-insert-chip
-//                                      → 参数 path / file / to（黑名单 + 仅写保护路径 + worker 沙箱可写根）
-//   （be-* 是 MCP 直挂的写通道，不挂上来就绕过了这一层；见 targetPathOf。
-//     MCP 工具名是 mcp__<server>__<tool>，查表前剥前缀）
+//   read / grep / find / ls            → 参数 path（黑名单）
+//   write / edit                       → 参数 path（黑名单 + 仅写保护路径 + worker 沙箱可写根）
+//   （MCP 直挂工具的注册名是 mcp__<server>__<tool>，查表前剥前缀；表按原名维护，
+//     见 targetPathOf —— 只挂内置工具、漏掉 MCP 的读写通道就留了一条绕开的路）
 //   bash    → 2026-08 起不再在此拦截：bash 检查移至 extensions/bash-guard.ts
 //             的 bash 工具内部（checkCommand 前置调用 commandBlocked）。
 //             纯函数 commandBlocked/loadBlacklist 仍保留，供 lib/sandbox-check.ts 复用。
@@ -432,55 +431,43 @@ export function workerWriteBlocked(path: string, cwd: string, scope: WorkerWrite
     + `worker 的写入被限制在派工时指定的范围，需要改这里就把改动范围报给主 agent，由主 agent 调整 sandbox_dir 或自己动手。`;
 }
 
-// ── 目标路径提取（内置 read/write/edit 与 better-edit-tools 的 be-*） ──
-// be-* 是 MCP 直挂工具，参数用的是 `file`（可带 `:行范围` / `:ALL` 后缀），
-// 只挂内置 write/edit 会留下一条完全绕开黑名单与 worker 写入边界的通道
-// （2026-09-23 实测：readonly worker 用 be-write 成功写了工作区）。
-// 名字形态：pi 内置 mcp 扩展注册成 `mcp__<server>__<tool>`，查表前先剥前缀，
-// 表里仍按 be-* 原名维护，服务器改名 / 换工具源不用动这张表。
+// ── 目标路径提取（内置读/写/检索工具，以及带 MCP 前缀的同名工具） ──
+// 名字形态：pi 内置 mcp 扩展把服务器工具注册成 `mcp__<server>__<tool>`，查表前先剥前缀，
+// 表按工具原名维护，服务器改名 / 换工具源不用动这张表。
+// 只挂内置工具、漏掉 MCP 直挂的读写通道，就留了一条完全绕开黑名单与 worker 写入
+// 边界的路（2026-09-23 实测过：readonly worker 用 MCP 的写工具写进了工作区）。
+// 接新的 MCP 工具时先看它的 schema：承载路径的字段名不一定是内置那套。
 
-/** 工具名 → 目标路径字段+是否剥 `:行范围` 后缀 */
-const READ_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
-  read: { field: "path", rangeSuffix: false },
-  "be-read": { field: "file", rangeSuffix: true },
-  // be-insert-chip 的 from 可以是 file://（从某文件取内容插到另一处）——取内容也是读
-  "be-insert-chip": { field: "from", rangeSuffix: false },
+/** 工具名 → 承载目标路径的参数字段 */
+const READ_TARGET: Record<string, string> = {
+  read: "path",
   // 检索类工具同样是读通道：grep/find/ls 的 path 指向哪里，就能看见哪里的目录树
-  grep: { field: "path", rangeSuffix: false },
-  find: { field: "path", rangeSuffix: false },
-  ls: { field: "path", rangeSuffix: false },
+  grep: "path",
+  find: "path",
+  ls: "path",
 };
 
-const WRITE_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
-  write: { field: "path", rangeSuffix: false },
-  edit: { field: "path", rangeSuffix: false },
-  "be-write": { field: "file", rangeSuffix: true },
-  "be-replace": { field: "file", rangeSuffix: true },
-  "be-insert": { field: "file", rangeSuffix: true },
-  "be-delete": { field: "file", rangeSuffix: true },
-  // 插入目标写成 file:///abs/path:line
-  "be-insert-chip": { field: "to", rangeSuffix: true },
+const WRITE_TARGET: Record<string, string> = {
+  write: "path",
+  edit: "path",
 };
 
 /**
  * 取本次工具调用的目标路径；不是读写类工具或没带路径就返回 undefined。
  *
- * be-trx 的 rollback/status 不带路径（它只能回滚本会话已经写过的快照，
- * 而那些写已经过一次同样的边界检查），所以不在表里。
+ * 不带路径的工具（回滚、状态查询这类）不进表：它们触及的对象要么是本会话已经
+ * 过同一层检查的写入，要么压根不碰文件。
  */
 export function targetPathOf(
   toolName: string,
   input: unknown,
   kind: "read" | "write",
 ): string | undefined {
-  const spec = (kind === "read" ? READ_TARGET : WRITE_TARGET)[bareMcpToolName(toolName)];
-  if (!spec || !input || typeof input !== "object") return undefined;
-  const raw = (input as Record<string, unknown>)[spec.field];
+  const field = (kind === "read" ? READ_TARGET : WRITE_TARGET)[bareMcpToolName(toolName)];
+  if (!field || !input || typeof input !== "object") return undefined;
+  const raw = (input as Record<string, unknown>)[field];
   if (typeof raw !== "string" || !raw.trim()) return undefined;
-  // chip 缓存不是文件系统路径，不参与路径拦截
-  if (raw.startsWith("chip://")) return undefined;
-  const stripped = raw.startsWith("file://") ? raw.slice("file://".length) : raw;
-  return spec.rangeSuffix ? stripped.replace(/:(?:\d+(?:-\d+)?|ALL)$/i, "") : stripped;
+  return raw.startsWith("file://") ? raw.slice("file://".length) : raw;
 }
 
 // ── 扩展入口 ──
@@ -513,7 +500,7 @@ export default function (pi: ExtensionAPI) {
     const readPath = targetPathOf(event.toolName, input, "read");
     const writePath = targetPathOf(event.toolName, input, "write");
 
-    // read / be-read：黑名单（敏感凭据路径防读也防写）+ worker 读面白名单
+    // read / grep / find / ls：黑名单（敏感凭据路径防读也防写）+ worker 读面白名单
     if (readPath !== undefined) {
       const hit = rules.find((r) => pathBlocked(readPath, ctx.cwd, [r]));
       if (hit) {
@@ -525,7 +512,7 @@ export default function (pi: ExtensionAPI) {
         if (outside) return { block: true, reason: outside };
       }
     }
-    // write / edit（含 be-* 写入通道）：黑名单 + 仅写保护路径（.git/、node_modules/、.env*）+ worker 可写根
+    // write / edit（含 MCP 写通道）：黑名单 + 仅写保护路径（.git/、node_modules/、.env*）+ worker 可写根
     if (writePath !== undefined) {
       const hit = rules.find((r) => pathBlocked(writePath, ctx.cwd, [r]));
       if (hit) {

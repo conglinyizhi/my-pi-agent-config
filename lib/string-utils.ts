@@ -29,7 +29,7 @@ export function parseCommaList(s: string | undefined): string[] {
 const MCP_TOOL_PREFIX = /^mcp__[A-Za-z0-9_-]+__/;
 
 /**
- * 剥掉 MCP 命名前缀，取工具原名：`mcp__better-edit-tools__be-read` → `be-read`。
+ * 剥掉 MCP 命名前缀，取工具原名：`mcp__some-server__read` → `read`。
  *
  * 非 MCP 工具名原样返回，所以按原名建的判定表（读写工具、副作用启发式）
  * 对内置工具与 MCP 直挂工具是同一张表。
