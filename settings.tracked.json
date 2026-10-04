@@ -1,10 +1,6 @@
 {
-  "codemode": {
-    "mode": "only",
-    "inlineBudget": 12000
-  },
-  "defaultTools": [
-    "+codemode"
+  "extensions": [
+    "-builtin:codemode"
   ],
   "externalEditor": "kate --block",
   "npmCommand": [
@@ -13,6 +9,10 @@
     "--ignore-scripts"
   ],
   "promptSections": true,
+  "ptc": {
+    "mode": "only",
+    "inlineBudget": 12000
+  },
   "retry": {
     "enabled": true,
     "maxRetries": 10,
