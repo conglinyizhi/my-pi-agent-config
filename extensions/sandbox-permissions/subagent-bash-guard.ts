@@ -7,7 +7,7 @@
 import type { ExtensionAPI, BashToolDetails } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import { checkCommand } from "../../lib/sandbox-check.ts";
 import { findForeignPackageManager, foreignPackageManagerMessage } from "../../lib/package-manager-guard.ts";
 import { DEFAULT_BASH_TIMEOUT_SECONDS, withDefaultTimeout, withTimeoutDoc } from "../../lib/bash-timeout.ts";
@@ -16,8 +16,10 @@ import {
   isWorkerApprovalCapability,
   makeCapabilityRequest,
   parseCapabilityGrants,
+  readCapabilityDecisionFile,
   requestedCapability,
   waitForCapabilityDecision,
+  writeCapabilityRequestFile,
   type CapabilityGrant,
 } from "../../lib/subagent-capability.ts";
 import { decideNetwork, loadNetworkMode } from "./network-policy.ts";
@@ -26,31 +28,18 @@ import { rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
 const PROMPT_SNIPPET = "Execute a bash command in the isolated worker sandbox. Risky commands block until the parent agent approves or denies them.";
 const PROMPT_GUIDELINES = [
   "bash 在 worker 中经过文件系统沙箱；不要尝试读取凭据或绕过隔离。",
+  "worker 的 bash 默认在内核层断网（只有 Unix socket 可用）：需要出网的命令会阻塞等待主 agent 审批，获批后才带网；被拒时不要假装已经联网，换个不需要网络的方式继续。",
+  "worker 的读面是白名单（系统目录 + 工具链缓存 + 工作目录与派工可写根）：白名单外的路径读不到，确实需要就把目录报给主 agent。",
   `bash 默认 ${DEFAULT_BASH_TIMEOUT_SECONDS} 秒超时（超时杀整个进程组），与主 agent 一致；构建、测试、安装这类预期更久的命令要显式传 timeout 参数，否则会被按超时终止。`,
   "如果命令需要网络或其他额外能力，工具会阻塞等待主 agent 审批；被拒绝时按返回的理由换个安全写法继续，不要假装已经获批。",
 ] as const;
 
-/** 原子写请求：tmp + rename，父进程读到的永远是完整 JSON（可覆盖上一轮残留） */
-function writeRequest(path: string | undefined, request: unknown): boolean {
-  if (!path) return false;
-  try {
-    const tmp = `${path}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
-    renameSync(tmp, path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** 读一次响应文件：不存在 / 半截 JSON 都返回 undefined */
-function readDecisionFile(path: string | undefined): unknown {
-  if (!path) return undefined;
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return undefined;
-  }
+/**
+ * 本条命令的沙箱网络档：已获批 network 的精确命令带网，其余一律断网。
+ * 直接写进 env（不依赖未设时的默认值），worker 的档位在 spawnHook 里就是显式的。
+ */
+export function networkEnvForCommand(command: string, granted: Set<string>): "allow" | "block" {
+  return granted.has(`network:${commandDigest(command)}`) ? "allow" : "block";
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -66,7 +55,16 @@ export default function (pi: ExtensionAPI): void {
   const grants: CapabilityGrant[] = parseCapabilityGrants(process.env.PI_SUBAGENT_CAPABILITY_GRANTS);
   const granted = new Set(grants.map((g) => `${g.capability}:${g.commandDigest}`));
 
-  const bashDef = createBashToolDefinition(cwd, { shellPath });
+  const bashDef = createBashToolDefinition(cwd, {
+    shellPath,
+    // 网络：worker 默认断网（sandbox-shell 的 seccomp 层），只有走通了 network 审批的
+    // 精确命令才带网。审核链判漏的命令因此也出不去——这是「审核 + 内核兜底」两层里的第二层。
+    spawnHook: ({ command, cwd, env }) => ({
+      command,
+      cwd,
+      env: { ...env, PI_SANDBOX_NET: networkEnvForCommand(command, granted) },
+    }),
+  });
 
   pi.registerTool({
     ...bashDef,
@@ -141,7 +139,7 @@ export default function (pi: ExtensionAPI): void {
             taskId,
             scope: networkRisk ? (requested?.scope ?? "访问网络或远程包源") : "命令安全规则需要主 agent 审批",
           });
-          if (!writeRequest(requestPath, request)) {
+          if (!writeCapabilityRequestFile(requestPath, request)) {
             return {
               content: [{ type: "text", text: "权限请求写入失败，命令未执行。" }],
               details: {} as BashToolDetails,
@@ -149,7 +147,7 @@ export default function (pi: ExtensionAPI): void {
           }
           // 在工具调用内阻塞等待：不 kill worker，保留上下文与进度
           const decision = await waitForCapabilityDecision(request.requestId, {
-            readDecision: () => readDecisionFile(responsePath),
+            readDecision: () => readCapabilityDecisionFile(responsePath),
             parentAlive: () => process.ppid === initialParentPid && process.ppid !== 1,
           });
           try { unlinkSync(responsePath); } catch { /* 父进程可能已清理 */ }

@@ -4,6 +4,7 @@
 // 不把一次批准扩大成 worker 生命周期内的泛权限。
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 export type CapabilityName = "network" | "command" | "publish" | "read-secrets";
 
@@ -217,6 +218,34 @@ export function makeCapabilityRequest(input: Omit<CapabilityRequest, "version" |
     createdAt: new Date().toISOString(),
     ...input,
   };
+}
+
+/**
+ * 原子写 capability 请求（tmp + rename）：父进程读到的永远是完整 JSON，也能覆盖上一轮残留。
+ *
+ * worker 的 capability 通道共用这一份：格式、权限位（0o600）、写法的差异以前
+ * 是每处手写一遍，迟早会在某一条上漏掉一处细节。
+ */
+export function writeCapabilityRequestFile(path: string | undefined, request: CapabilityRequest): boolean {
+  if (!path) return false;
+  try {
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读一次响应文件：不存在 / 半截 JSON 都返回 undefined */
+export function readCapabilityDecisionFile(path: string | undefined): unknown {
+  if (!path) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
 export function hasMatchingGrant(command: string, capability: CapabilityName, grants: CapabilityGrant[]): boolean {

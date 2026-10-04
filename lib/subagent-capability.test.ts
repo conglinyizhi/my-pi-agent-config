@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,10 +11,12 @@ import {
   consumeMatchingGrant,
   isWorkerApprovalCapability,
   makeCapabilityRequest,
+  readCapabilityDecisionFile,
   requestedCapability,
   validateCapabilityDecision,
   validateCapabilityRequest,
   waitForCapabilityDecision,
+  writeCapabilityRequestFile,
   type CapabilityWaitOptions,
 } from "./subagent-capability.ts";
 
@@ -24,6 +26,29 @@ test("network commands produce a scoped request", () => {
     scope: "访问网络或远程包源",
   });
   assert.equal(requestedCapability("cd /tmp && curl https://example.com")?.capability, "network");
+});
+
+test("capability 请求/决策文件：原子写，半截 JSON 当没读到", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cap-req-"));
+  try {
+    const path = join(dir, "request.json");
+    const request = makeCapabilityRequest({
+      capability: "network",
+      command: "curl https://example.com",
+      reason: "r",
+      cwd: "/tmp",
+    });
+    assert.equal(writeCapabilityRequestFile(path, request), true);
+    assert.deepStrictEqual(JSON.parse(readFileSync(path, "utf8")), request);
+    // 父进程正在写的半截内容不能当成决策用
+    writeFileSync(path, '{"requestId":"cap-x"');
+    assert.equal(readCapabilityDecisionFile(path), undefined);
+    assert.equal(readCapabilityDecisionFile(join(dir, "missing.json")), undefined);
+    assert.equal(readCapabilityDecisionFile(undefined), undefined);
+    assert.equal(writeCapabilityRequestFile(undefined, request), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("publish and secret capabilities are not worker approval capabilities", () => {

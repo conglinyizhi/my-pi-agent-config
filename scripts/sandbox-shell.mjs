@@ -16,7 +16,14 @@
 //   PI_SANDBOX_RW_EXTRA=<dir>[:<dir>...] 额外可写根，叠加在默认 cwd 之上（sandbox-allow 一次性升权用）
 //   PI_SANDBOX_DISABLE=1                 文件系统沙箱完全开放，直接透传 bash（一次性升权 / 逃生门）
 //
-// 资源限制（与文件系统沙箱正交，独立维度；采样式，与内存墙同一套机制）：
+// 网络限制（与文件系统沙箱正交，独立维度）：
+//   PI_SANDBOX_NET=block                  内核层断网（seccomp 拦 socket(AF_INET/AF_INET6)）
+//   PI_SANDBOX_NET=allow                  本条命令不带断网层（已获批 network capability 的命令走这条）
+//   未设时 worker（PI_SUBAGENT=1）按 block，主 agent 不拦（主 agent 的网络判断在工具层，
+//   不做 OS 级隔离）。网络墙与审核链是纵深关系：审核链决定「哪条命令可以出网」，
+//   seccomp 层保证「没走通审核的命令即使审核判漏了也真连不上」。
+//
+// 资源限制（与文件系统 / 网络沙箱正交，独立维度；采样式，与内存墙同一套机制）：
 //   PI_SANDBOX_MEMORY_MB=<整数>          进程树匿名内存上限（MB）。缺省 1GiB（worker 与主 agent 同）。
 //                                        由 sandbox-allow 的 memoryMb 参数注入（大模型须给具体数字才能提额）。
 //   PI_SANDBOX_NPROC=<整数>              进程树进程数上限（含自身）。缺省：worker 128，主 agent 不限。
@@ -34,10 +41,11 @@
 // 安全策略：fail-closed——landlock-run 缺失时拒绝执行并报错，绝不裸跑。
 // 跨平台：仅 Linux（Landlock 内核机制）；macOS/Windows 不适用本 wrapper。
 //
-// 网络：本 wrapper 不做网络拦截。worker 的网络访问由 capability 审批链控制
-// （subagent-bash-guard 请求 → 主对话审批），不用内核级网络墙。
-// 历史：2026-09-06 曾接入 seccomp runner（scripts/network-block-run.c）默认断掉
-// worker bash 的 IPv4/IPv6 socket；2026-09-13 按原设计移除该层。源码保留但不再编译调用。
+// 网络：worker 默认挂 seccomp 网络墙（scripts/network-block-run.c），只有 capability
+// 批过的命令带 PI_SANDBOX_NET=allow 放行；主 agent 不挂。审核链决定「谁可以出网」，
+// 网络墙保证「没走通审核的命令真连不上」——两层是纵深，不是替代。
+// 历史：2026-09-06 首次接入，2026-09-13 因审核链接手而移除，2026-10-01 作为
+// 「防注入外传」的兜底接回（那之前「审核判漏的命令」是可以直接联网的）。
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync, statfsSync } from "node:fs";
@@ -57,6 +65,11 @@ const DEFAULT_WORKER_WRITE_MB = 2048; // worker 进程树累计写入上限（2G
 const MAX_WRITE_MB = 32 * 1024;
 const MEMORY_POLL_MS = 500;        // 采样周期（毫秒），三项限制共用
 const OOM_EXIT = 137;              // 128 + SIGKILL，标识资源超限被终止
+const VENDORED_NETWORK_BLOCK = join(AGENT_DIR, "scripts", "vendor", "network-block-run"); // seccomp 网络墙（worker 默认）
+
+/** 本条命令是否挂了网络墙（给退出提示用；单命令进程，模块级变量够） */
+let netBlockedThisRun = false;
+
 /**
  * 非零退出时补的一行指路。
  *
@@ -70,11 +83,15 @@ const OOM_EXIT = 137;              // 128 + SIGKILL，标识资源超限被终�
  * 内存上限写实际值：这条命令可能被 sandbox-allow 提过额度（memoryMb），
  * 嘴硬说“1GiB”会让人照着那个数去猜。
  */
-function sandboxHint(limits) {
+function sandboxHint(limits, netBlocked) {
   const lines = [
     "（若是权限问题）这条命令跑在文件系统沙箱里：只能写工作目录、/tmp、/dev/null。",
     "写别处要用 sandbox-allow 申请（permission=write-paths + 最小 paths + 一句 justification），sudo 解决不了。",
   ];
+  if (netBlocked) {
+    // 断网失败的报错（ECONNREFUSED / EPERM）不像权限问题，容易被当成目标服务挂了
+    lines.push("这条命令同时跑在内核级断网里：worker 的 bash 默认不带网（seccomp 拦 socket）。需要出网的命令要走 capability 审批，获批后才带网。");
+  }
   lines.push(
     `命令资源上限：内存 ${limits.memoryMb > 0 ? `${limits.memoryMb} MB` : "不限"}、进程 ${limits.nproc > 0 ? limits.nproc : "不限"}、累计写盘 ${limits.writeMb > 0 ? `${limits.writeMb} MB` : "不限"}。内存不够就用 sandbox-allow 的 memoryMb 给具体数值。`,
     "不要为绕过沙箱而改写命令或反复重试同一条。",
@@ -329,7 +346,7 @@ function runCommand(launcher, args, cwd, opts = {}) {
       // （命令自己报错却被说成沙箱）只是多一句废话，漏报的代价是 agent 卡在
       // 一条根本没有报错的死路上。措辞用条件句，退出码一字不改地透传。
       if (exitCode !== 0 && !sandboxDisabled()) {
-        console.error(sandboxHint(limits));
+        console.error(sandboxHint(limits, netBlockedThisRun));
       }
       process.exit(exitCode);
     });
@@ -400,10 +417,47 @@ function buildGrants() {
   return grants;
 }
 
-/** 经 landlock-run 沙箱执行（只约束文件系统；网络不拦截，由 capability 审批链管）。 */
+/**
+ * 本条命令要不要挂 seccomp 网络墙。
+ *   PI_SANDBOX_NET=allow → 不挂（capability 已批本条命令出网）
+ *   PI_SANDBOX_NET=block → 挂
+ *   未设 → worker 挂（默认不带网），主 agent 不挂
+ */
+function networkWallWanted() {
+  const explicit = process.env.PI_SANDBOX_NET;
+  if (explicit === "allow") return false;
+  if (explicit === "block") return true;
+  return process.env.PI_SUBAGENT === "1";
+}
+
+/**
+ * 经 landlock-run（文件系统）+ 可选 seccomp 网络墙执行。
+ *
+ * 两个 launcher 前后串联：landlock 先给自身落规则、exec 网络 runner，runner 再落 seccomp、
+ * exec 真正的命令——两条限制都跨 execve 继承。
+ * 网络 runner 缺失时降级为「不断网」并出声：审核链仍然在，只是少一层内核兜底，
+ * 不该让 worker 的所有命令全挂（那是把加固变成故障）。
+ */
 function execSandboxed(command, launcher) {
+  const argv = [];
+  if (networkWallWanted()) {
+    const netRun = process.env.NETWORK_BLOCK_RUN || VENDORED_NETWORK_BLOCK;
+    if (existsSync(netRun)) {
+      // 网络墙在前、landlock 在后：runner 自身住在 agent 目录里，
+      // 先落 landlock 的话它连 exec 自己都拿不到读权限（worker 读面是白名单）。
+      // seccomp 是 no_new_privs + 过滤网，不影响後面 landlock 再落一层。
+      argv.push(netRun);
+      netBlockedThisRun = true;
+    } else {
+      console.error(
+        `sandbox-shell: 找不到网络墙 runner（${netRun}），本条命令不做内核级断网（capability 审批链仍然生效）。` +
+        "编译：cc -O2 -Wall -Wextra -o scripts/vendor/network-block-run scripts/network-block-run.c -lseccomp",
+      );
+    }
+  }
   const grants = buildGrants();
-  return runCommand(launcher, [...grants, "--", "bash", "-c", command], process.cwd(), { watchPaths: writableRootsOf(grants) });
+  argv.push(launcher, ...grants, "--", "bash", "-c", command);
+  return runCommand(argv[0], argv.slice(1), process.cwd(), { watchPaths: writableRootsOf(grants) });
 }
 
 // ── 入口 ──

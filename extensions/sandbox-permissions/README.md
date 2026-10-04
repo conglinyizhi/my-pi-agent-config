@@ -28,7 +28,7 @@
 `index.ts` 按 guard → gate → allow 顺序合成注册（guard 硬拦截先于 gate 审批）。
 
 注意：subagent 子进程经 `lib/subagent-run.ts` 显式加载 `guard.ts` 与 `subagent-bash-guard.ts`，不加载 gate/allow。worker 默认 readonly；显式 worktree profile 只写 `sandbox_dir`。这套写入边界对 **bash 与写入类工具一起生效**：bash 由 `scripts/sandbox-shell.mjs` 的 landlock grants 执行，
-write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程的判定与预审直接走主 agent 那条审核链（`lib/bash-approval.ts`，含共享的 LLM 预审缓存）：预审判 safe 且 auto 模式就自动批准，其余经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI）。批准只绑定精确 command digest，worker 在 bash 工具内继续执行本条命令，不重启、不丢上下文。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash **不做内核级网络拦截**——网络访问本身不算越权，是否执行由审批链决定。publish/read-secrets 不开放给 worker。
+write/edit 与 be-* 由 `guard.ts` 按同一份 env（`PI_SANDBOX_RW` / `PI_SANDBOX_READONLY` / `PI_SANDBOX_RW_EXTRA`，内置 `/tmp`）在工具层拦截，越界直接拒绝并让 worker 把目标路径报回主 agent。风险命令由 guard 写结构化 capability request，父进程的判定与预审直接走主 agent 那条审核链（`lib/bash-approval.ts`，含共享的 LLM 预审缓存）：预审判 safe 且 auto 模式就自动批准，其余经审批通道问人（默认仍是 gate GUI，窗口异常回退 TUI）。批准只绑定精确 command digest，worker 在 bash 工具内继续执行本条命令，不重启、不丢上下文。network 走同一条审批链：可识别为网络的命令（curl/包管理器/git 同步等）未获批就不执行，开发期拉取白名单内的简单命令自动放行。worker bash 默认在内核层断网（`scripts/vendor/network-block-run` 的 seccomp 墙，拦 `AF_INET`/`AF_INET6` socket、保留 `AF_UNIX`）：只有走通 network capability 审批的精确命令由 worker 的 `spawnHook` 注入 `PI_SANDBOX_NET=allow` 带网。审核链决定谁可以出网，网络墙保证没走通审核的命令真连不上（包括审核判漏、没识出成网络的命令）。publish/read-secrets 不开放给 worker。
 
 ## 文件结构
 
@@ -98,16 +98,16 @@ node --experimental-strip-types lib/subagent-capability.test.ts
 node --experimental-strip-types lib/subagent-env.test.ts
 ```
 
-可选加固：network seccomp runner（当前未启用）
+网络墙（默认对 worker 启用）
 
-`scripts/network-block-run.c` 是一层可选的 Linux 网络墙，能在内核层禁止 worker bash 创建 IPv4/IPv6 socket（Unix socket 保留）。2026-09 上线时曾默认启用，同月按原设计移除：网络能力交给 capability 审批链，不做 OS 级隔离。需要恢复时自行编译：
+`scripts/network-block-run.c` 是一层 Linux 网络墙，在内核层禁止 worker bash 创建 IPv4/IPv6 socket（Unix socket 保留）。2026-09 上线时曾默认启用，同月按原设计移除（网络能力交给 capability 审批链，不做 OS 级隔离）；2026-10 作为「防注入外传」的兜底接回：那时「审核判漏的命令」可以直接联网。现在两层是纵深关系。编译：
 
 ```bash
 cc -O2 -Wall -Wextra -o scripts/vendor/network-block-run scripts/network-block-run.c -lseccomp
 chmod 755 scripts/vendor/network-block-run
 ```
 
-注意 `scripts/sandbox-shell.mjs` 已不再引用该 runner，编译出来不会生效，需同时改回 wrapper。
+`scripts/sandbox-shell.mjs` 默认对 worker（`PI_SUBAGENT=1`）启用该 runner；缺失时降级为不断网并打一行提示（审核链仍生效）。同一条命令要不要带网由 `PI_SANDBOX_NET` 决定：`block` / `allow` / 未设时 worker=block、主 agent 不拦。
 
 ## gate 规则引擎（原 permission-gate）
 
