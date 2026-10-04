@@ -1,136 +1,89 @@
 ---
 name: gui-standards
-description: pi 扩展 GUI 开发规范——Wails 单二进制 + windowName 路由 + 文件 JSON 协议（2026 迁移后）
+description: pi 扩展 GUI 开发规范——Electron 宿主 + windowName 路由 + 文件 JSON 协议；加窗口、接平台能力、开 devtools、出问题往哪查
 disable-model-invocation: true
 ---
 
-# GUI 开发规范（Wails）
+# GUI 开发规范（Electron）
 
 ## 架构
 
-所有 GUI 窗口由**单一 Wails 二进制** `wails-gui` 提供（Go + WebKitGTK 4.1，Vue 3 前端）。
-2026 年已从 Electron 全量迁移，旧 Electron 链（gui-kit.mjs / rsbuild / esbuild / build:gui-*）已删除。
+所有 GUI 窗口由**同一个 Electron 宿主**提供，用系统装的 electron，没有编译步骤：
 
-- `wails-gui/main.go` — 窗口配置表（windowName → 标题 / 尺寸）
-- `wails-gui/app.go` — Go 侧方法：`GetInitData`（按窗口分支）/ `GetWindowName` / `SaveResponse` / `MarkReady` / `OpenFile` / `LoadReasons` / `SaveReason`
-- `wails-gui/frontend/src/main.js` — 窗口路由壳（windowName → 视图）+ 全局错误兜底
-- `wails-gui/frontend/src/views/*.vue` — 当前 GUI 窗口视图
-- extension 侧用 `lib/gui-runner.ts` 启动窗口（替代 Electron spawn + 轮询）
+- `bin/gui` — 启动器壳脚本：`exec electron gui/electron/main.js <windowName> <requestFile> <responseFile>`
+- `gui/electron/main.js` — 主进程：窗口配置表、IPC 处理、写响应文件
+- `gui/electron/preload.cjs` — 渲染进程唯一的宿主接口（`window.piGui`）
+- `gui/electron/init-data.js` — 窗口表与 `buildInitData`（请求 JSON → 前端结构）
+- `gui/frontend/` — Vue 3 前端（产物 `dist/`）
+
+协议与调用方无关：读 `request.json`，写 `<responseFile>.ready`（渲染就绪）与 `<responseFile>`（提交后退出）。
+Go 侧（hub）与 TS 侧（`lib/gui-runner.ts`）共用这一套，所以换引擎不动调用方。
 
 ## 目录结构
 
 ```
-wails-gui/
-├── main.go                ← 窗口配置（windowName / 标题 / 尺寸）
-├── app.go                 ← GetInitData（按窗口分支）/ SaveResponse / MarkReady / OpenFile
-└── frontend/
-    ├── index.html         ← body 必须 margin:0（防 WebKitGTK 白边）
+gui/
+├── electron/
+│   ├── main.js          ← 窗口表 + IPC（getInitData / submit / markReady / openFile / copyText）
+│   ├── preload.cjs      ← contextBridge 暴露 window.piGui（沙箱下 preload 不支持 ESM，用 .cjs）
+│   └── init-data.js     ← 窗口配置与字段映射（测试：init-data.test.mjs）
+└── frontend/            ← Vue 工程，与引擎无关
+    ├── index.html
     └── src/
-        ├── main.js        ← 创建 Wails platform adapter、窗口路由壳与全局错误兜底
-        ├── platform/      ← 平台接口与 Wails adapter；未来浏览器壳在此实现 HTTP/SSE adapter
-        ├── domain/        ← 不依赖 Vue、DOM、Wails 的领域纯逻辑与 Node 测试
-        ├── components/    ← 可复用领域展示组件（不得直接访问平台 binding）
-        ├── gui-theme.css  ← 共享样式（顶部有全局 box-sizing:border-box）
-        └── views/         ← 4 个窗口页面编排（不得直接访问 window.go / window.runtime）
-lib/gui-runner.ts          ← extension 侧统一启动器（findGuiBinary + runGuiWindow）
+        ├── main.js      ← 平台选择 + 窗口路由壳 + 全局错误兜底
+        ├── platform/    ← 平台接口与各宿主的 adapter（electron / browser / detect）
+        ├── domain/      ← 不依赖 Vue、DOM、宿主的纯逻辑（node --test 直接测）
+        ├── components/  ← 领域展示组件
+        └── views/       ← 窗口页面编排
 ```
 
-## 窗口名映射
+Wails 那一套（Go 宿主、旧二进制、当时的规范）已归档：`archive/wails-gui/` 与 `archive/gui-standards-wails/`。
+归档不参与运行，也不再是候选位——要复活得先请回来并显式指路。
 
-| windowName | 视图 | 调用方 |
-|---|---|---|
-| subagents | SubagentsView | extensions/trident-subagent（/subagent:gui；/gui:subagents 为兼容别名）|
-| routing | RoutingView | extensions/trident-routing（/routing:gui；/gui:scan-todo 为兼容别名）|
-| gate | GateView | extensions/sandbox-permissions（gate/allow） |
-| editor | EditorView | extensions/editor（/editor:gui；/prompt-edit-gui 为兼容别名） |
+## 加一个窗口
 
-## extension 侧调用
+1. `gui/electron/init-data.js` 的 `WINDOW_CONFIGS` 加一项（标题 / 尺寸 / 最小尺寸）
+2. 同文件的 `buildInitData` 加分支：请求 JSON 的哪些字段铺给前端
+3. `frontend/src/views/` 加视图，`frontend/src/main.js` 的 `views` 表登记 windowName
+4. 调用方用 `lib/gui-runner.ts`：`runGuiWindow(name, request)`（等结果）或 `launchGuiWindow`（只拉起）
+5. 测试：`init-data.test.mjs` 断字段映射；视图逻辑下沉到 `domain/` 并写 node --test 用例
 
-```typescript
-import { findGuiBinary, runGuiWindow } from "../../lib/gui-runner";
-import { announceGuiFallback, classifyGuiFailure } from "../../lib/gui-diagnosis";
+## 平台能力的接法
 
-if (!findGuiBinary()) {
-  // 用户主动执行的命令：force 跳过去重，每次都给原因与修法
-  announceGuiFallback(ctx, "no-binary", { force: true });
-  return;
-}
-const result = await runGuiWindow("gate", { command, taskId, rules }, { timeoutMs: 120_000, signal });
-// result = { ok, data?, reason?: "unavailable" | "spawn" | "timeout" | "exited" | "aborted" }
-// ok=false 时：aborted 是用户撤单（静默）；其余交 classifyGuiFailure 分类后提示
-if (!result.ok) {
-  if (result.reason !== "aborted") announceGuiFallback(ctx, classifyGuiFailure(result.reason), { force: true });
-  return;
-}
-```
+视图只吃 `platform` 接口（`usePlatform()`），**不许**直接碰 `window.piGui`。加一项能力要动四处：
 
-## 回退 TUI 时的提示
+1. `gui/electron/preload.cjs` 暴露方法
+2. `gui/electron/main.js` 注册 `ipcMain.handle("pi-gui:<name>")`
+3. `frontend/src/platform/electron.js` 加同名方法
+4. `frontend/src/platform/browser.js` 补桩（浏览器预览用）
 
-不要自己拼「未找到 wails-gui，请先构建」这类一句话——用户看不出是二进制没构建、
-依赖缺失、hub 没起来，还是窗口被别人挡住了。统一走 `lib/gui-diagnosis.ts`：
+一份 dist 同时服务 Electron 与其它宿主：`platform/detect.js` 按宿主注入的东西认（有 `piGui` 走 Electron）。
 
-- `announceGuiFallback(ctx, reason, { force })`：弹一条含原因 + 修复命令 + 排查文档路径的通知。
-  默认按原因进程内去重（审批回退会连着发生，重弹会淹掉真正要看的命令）；
-  用户主动执行的命令入口传 `force: true`
-- `classifyGuiFailure(runGuiWindow.reason)`：`unavailable|spawn|timeout|exited` → 诊断原因
-- 提示正文里自带修复步骤和排查清单（`skills/clyzhi/_internal/gui-fallback-recovery.md`），不要再手写一套
+## 调试
 
-审批通道（`lib/approval-channel.ts` → `lib/hub-channel.ts`）已经内置：回退 TUI 前会说明
-原因，并把一行短提示挂在选择框标题上。新写的 GUI 入口只需要接上面两行。
+- **F12 / Ctrl+Shift+I** 随时开 devtools；`PI_GUI_DEV=1` 启动即开（detached 窗口）
+- 手动起一次看报错：`PI_GUI_DEV=1 bin/gui gate <请求.json> <响应.json>`
+- 渲染进程崩溃会打 `render-process-gone`，Electron 自身日志走 stderr
+- 受限环境（容器 / 沙箱）里 Chromium 需要 `/dev/shm`，起不来时报 "Failed to move to new namespace"，
+  这种场合加 `PI_GUI_ELECTRON_ARGS=--no-sandbox`（正常桌面会话不需要）
 
-## 浏览器 mock shell
+## 构建与验证
 
-`wails-gui/frontend/browser.html` 是 Wails 外的独立 Vite 入口，以静态 fixture 和 `platform/browser.js` 挂载同一组 View，用于验证 Vue/domain 层不依赖 Wails binding。它不是权限或 agent 后端；未来 Web 服务以 HTTP/SSE adapter 替换 mock 的接口实现。
+- 前端：`cd gui/frontend && node_modules/.bin/vite build`。产物用 `file://` 直接加载，
+  所以 vite 的 `base` 必须是 `./`（绝对路径在 file:// 下取不到资源）
+- 前端纯逻辑：`node --test src/domain/**/*.test.js`、`node --test src/platform/electron.test.js`
+- 宿主字段映射：`node --test gui/electron/init-data.test.mjs`
+- 端到端：`scripts/gui-fasttest.ts`（拉起窗口并断言渲染就绪）
 
-```bash
-cd ~/.pi/agent/wails-gui/frontend
-pnpm build:browser
-# browser.html?view=gate|subagents|routing|editor
-```
+## 约定
 
-浏览器入口不得从 `platform/index.js` 导入（那里导出 Wails adapter）；应直接导入 `platform/context.js` 与 `platform/browser.js`，避免静态打包 Wails generated binding。
+- GUI 交互元素带语义化 `data-name`（配合用户脚本做元素定位）
+- 窗口渲染前出错要落到 `#fatal-error` 错误条，别白板
+- `getInitData` 失败必须显式报错，不静默给空数据
 
-## 构建
+## 出问题先看哪里
 
-```bash
-cd ~/.pi/agent/wails-gui
-wails build -tags webkit2_41
-# 必带 -tags webkit2_41：Arch 上 webkit2gtk-4.0 的 libjxl.so 依赖已断，4.1 匹配 libjxl 0.12
-# 漏了 -tags 会链接失败，报错特征：libwebkit2gtk-4.0.so undefined reference to Jxl*（JXL_0 符号）
-# 修改 frontend/src/** 后必须重新 wails build（二进制内嵌前端资源，不重建则跑旧 UI）；
-# 只改 extension 侧（lib/gui-runner.ts 等）无需重建
-# 产物：wails-gui/build/bin/wails-gui（约 8.8MB，启动 ~288ms）
-```
-
-## 测试
-
-```bash
-pnpm test:gui   # node scripts/gui-fasttest.ts —— 并行启动 6 窗口，等 .ready/.error sidecar 判定渲染就绪
-```
-
-## 前端平台边界
-
-Vue 页面通过 `usePlatform()` 使用 `platform.session`、`platform.capabilities`、`platform.gate`、`platform.subagents`；领域组件应通过 props/emits 接收数据与上报操作，不得直接导入 Wails generated binding 或访问 `window.go` / `window.runtime`。`domain/` 只放不依赖 Vue、DOM、Wails 的纯逻辑并配 Node 测试。当前 `platform/wails.js` 将接口映射到 Wails，未来浏览器壳只需提供同一接口的 HTTP/SSE 实现即可复用领域 UI。
-
-## 协议（文件 JSON，沿用 Electron 时代设计）
-
-1. extension 写 `request.json` 到临时目录
-2. `spawn(wails-gui, [windowName, requestFile, responseFile])`
-3. 前端 `GetInitData()` 读 request → 用户操作 → `SaveResponse()` 写 response
-4. extension 300ms 轮询 response 文件（helper 已封装）
-
-## 新增窗口步骤
-
-1. `main.go` 窗口配置表加一行（windowName / 标题 / 尺寸）
-2. `frontend/src/views/` 新建视图 + `main.js` 的 views 对象注册
-3. `app.go` 的 `GetInitData()` 加窗口分支
-4. extension 用 `runGuiWindow(newName, req, opts)` 调用
-5. `scripts/gui-fasttest.ts` 加测试项
-
-## WebKitGTK 已知坑
-
-- 前端 `select` 需 `appearance:none` 才吃 CSS 背景
-- index.html body 必须 `margin:0`（防白边）
-- 全局 `box-sizing:border-box` 在 gui-theme.css 顶部
-- IME（fcitx5）需 `gtk_im_module=fcitx` 环境变量（已实测可用）
-- 启动首帧冷缓存 ~466ms，热缓存稳定 ~285ms
+1. 起不来：`guiBinaryCandidates()` 的两个候选位有没有可执行的 `bin/gui`；PATH 里有没有 `electron`
+2. 白屏：`gui/frontend/dist/index.html` 是否构建过
+3. 起得来但没反应：devtools 里看 `pi-gui:*` 的 IPC 有没有报错
+4. 回退终端审批的原因与修复步骤：`lib/gui-diagnosis.ts` 会按真实缺项给命令（不看模板）
