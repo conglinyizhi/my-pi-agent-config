@@ -144,10 +144,9 @@ func findGUIBinary() string {
 	candidates := []string{
 		// Electron 宿主（bin/gui，壳脚本）：没有编译步骤，改前端不用重编
 		filepath.Join(home, ".pi", "agent", "bin", "gui"),
-		// 兜底：Wails 二进制还在时照旧可用（搬迁期的退路，随时可删）
-		filepath.Join(home, ".pi", "agent", "bin", "wails-gui"),
-		filepath.Join(home, ".pi", "agent", "wails-gui", "build", "bin", "wails-gui"),
 	}
+	// Wails 那一套（含旧二进制）已归档到 archive/wails-gui/：归档的东西不该被自动选中，
+	// 要复活得先把它请回来并在这里显式加回候选位。
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p

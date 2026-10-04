@@ -20,7 +20,7 @@
 // 拿不准一律 known:false + reason：宁可少渲染，不能渲染错（渲染错会把不该放的命令放过去）。
 //
 // 不含任何 I/O：只看文本 + 读传进来的 env。target 是命令文本片段，偏移不进 payload
-// （审批窗自己按 target 定位；见 wails-gui/frontend/src/domain/gate/var-renders.js）。
+// （审批窗自己按 target 定位；见 gui/frontend/src/domain/gate/var-renders.js）。
 
 import { maskHeredocBodies } from "../extensions/sandbox-permissions/scanner.ts";
 import { expandValue, parseValue } from "./env-notes.ts";

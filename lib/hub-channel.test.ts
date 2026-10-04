@@ -25,10 +25,8 @@ function diag(overrides: Partial<GuiDiagnosis> = {}): GuiDiagnosis {
 		repoRoot: "/repo",
 		hasHubSocket: true,
 		hubUnitActive: true,
-		hasWailsCli: false,
-		hasGo: false,
+		hasElectron: false,
 		hasFrontendDist: false,
-		hasWebkit2Gtk41: null,
 		hasDisplayEnv: true,
 		...overrides,
 	};

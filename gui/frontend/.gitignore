@@ -1,0 +1,3 @@
+# 构建产物：Electron 直接用 file:// 加载 dist/，两份都是输出，不入库
+dist
+dist-browser

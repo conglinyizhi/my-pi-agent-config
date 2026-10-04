@@ -40,7 +40,7 @@ export const bashApprovalReviewCache = createReviewCache();
 export interface BashApprovalDependencies {
 	/** 测试或 IM 注入整条通道；优先于 runGui / selectApproval。 */
 	channel?: ApprovalChannel;
-	/** 测试注入；默认使用真实 wails-gui runner。 */
+	/** 测试注入；默认使用真实 GUI 启动器（bin/gui → Electron）。 */
 	runGui?: ApprovalRunGui;
 	/** 测试注入；默认使用 ctx.ui.select；不注入时保持 TUI 回退语义。 */
 	selectApproval?: ApprovalSelect;

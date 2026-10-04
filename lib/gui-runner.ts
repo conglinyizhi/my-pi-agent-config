@@ -53,7 +53,6 @@ export interface GuiRunResult {
   reason?: "timeout" | "aborted" | "exited" | "unavailable" | "spawn";
 }
 
-/** 查找 wails-gui 二进制（优先安装位，其次仓库构建位） */
 /**
  * 写请求文件。
  *
@@ -68,15 +67,15 @@ function writeRequestFile(file: string, request: unknown): void {
   fs.writeFileSync(file, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
 }
 
+/** 查找 GUI 启动器：优先安装位 ~/.pi/agent/bin/gui，其次仓库里的 bin/gui */
 export function findGuiBinary(): string | null {
   const candidates = [
     // Electron 宿主（bin/gui）：系统装的 electron，没有编译步骤
     path.join(os.homedir(), ".pi", "agent", "bin", "gui"),
     path.join(__dirname, "..", "bin", "gui"),
-    // 兜底：Wails 二进制还在时照旧可用（搬迁期的退路，随时可删）
-    path.join(os.homedir(), ".pi", "agent", "bin", "wails-gui"),
-    path.join(__dirname, "..", "wails-gui", "build", "bin", "wails-gui"),
   ];
+  // Wails 那一套（含旧二进制）已归档到 archive/wails-gui/，不再作为运行时退路：
+  // 归档的东西不该被自动选中，要复活得先把它请回来并显式指路。
   for (const c of candidates) {
     try {
       if (fs.existsSync(c)) return c;

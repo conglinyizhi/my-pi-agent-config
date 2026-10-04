@@ -13,7 +13,7 @@ import { findGuiBinary } from "../lib/gui-runner.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TIMEOUT = 30_000; // 每个 GUI 最多等 30 秒
 
-// 找 wails-gui 二进制
+// 找 GUI 启动器（bin/gui → Electron）
 const guiBin = findGuiBinary();
 if (!guiBin) {
   console.error("❌ 未找到 GUI 启动器（bin/gui）。Electron 宿主不需要编译，检查 ~/.pi/agent/bin/gui 是否可执行、PATH 里有没有 electron");
@@ -181,7 +181,7 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
         },
         {
           id: "w3",
-          task: "运行 wails-gui 前端类型检查与单元测试，定位 flaky 的渲染断言（预期失败：用于验证失败路径展示）",
+          task: "运行 GUI 前端类型检查与单元测试，定位 flaky 的渲染断言（预期失败：用于验证失败路径展示）",
           model: "test/test-model",
           status: "failed",
           startedAt: "2025-07-29T12:00:02+08:00",

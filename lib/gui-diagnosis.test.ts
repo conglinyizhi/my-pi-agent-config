@@ -25,10 +25,8 @@ function diag(overrides: Partial<GuiDiagnosis> = {}): GuiDiagnosis {
 		repoRoot: "/repo",
 		hasHubSocket: true,
 		hubUnitActive: true,
-		hasWailsCli: true,
-		hasGo: true,
+		hasElectron: true,
 		hasFrontendDist: true,
-		hasWebkit2Gtk41: true,
 		hasDisplayEnv: true,
 		...overrides,
 	};
@@ -72,23 +70,24 @@ describe("guiFallbackReasonText", () => {
 });
 
 describe("guiFallbackFixSteps", () => {
-	it("没有二进制时给 wails build，并按需补装 CLI", () => {
-		const steps = guiFallbackFixSteps("no-binary", diag({ hasWailsCli: false }));
+	it("没有启动器时给搭启动器与装 electron 的路", () => {
+		const steps = guiFallbackFixSteps("no-binary", diag({ hasElectron: false, hasFrontendDist: false }));
 		const text = steps.join("\n");
-		assert.match(text, /wails build -tags webkit2_41/);
-		assert.match(text, /go install github\.com\/wailsapp\/wails/);
+		assert.match(text, /bin\/gui/);
+		assert.match(text, /PATH 里没有 electron/);
+		assert.match(text, /vite build/);
 	});
 
 	it("候选位有文件但不可执行时先 chmod，不去劝重构建", () => {
-		const stuck = { path: "/repo/wails-gui/build/bin/wails-gui", exists: true, executable: false };
+		const stuck = { path: "/repo/bin/gui", exists: true, executable: false };
 		const steps = guiFallbackFixSteps("no-binary", diag({ candidates: [stuck], binary: null }));
-		assert.match(steps.join("\n"), /chmod \+x \/repo\/wails-gui\/build\/bin\/wails-gui/);
-		assert.doesNotMatch(steps.join("\n"), /wails build/);
+		assert.match(steps.join("\n"), /chmod \+x \/repo\/bin\/gui/);
+		assert.doesNotMatch(steps.join("\n"), /vite build/);
 	});
 
-	it("缺 WebKitGTK 时点名依赖", () => {
-		const steps = guiFallbackFixSteps("spawn-failed", diag({ binary: "/bin/wails-gui", hasWebkit2Gtk41: false }));
-		assert.match(steps.join("\n"), /webkit2gtk-4\.1/);
+	it("没装 electron 时点名它", () => {
+		const steps = guiFallbackFixSteps("spawn-failed", diag({ binary: "/bin/gui", hasElectron: false }));
+		assert.match(steps.join("\n"), /PATH 里没有 electron/);
 	});
 
 	it("hub 连不上时给 install.sh", () => {
@@ -97,19 +96,19 @@ describe("guiFallbackFixSteps", () => {
 	});
 
 	it("hub-no-channel 不反过来劝人装 hub", () => {
-		const steps = guiFallbackFixSteps("hub-no-channel", diag({ binary: "/bin/wails-gui" }));
+		const steps = guiFallbackFixSteps("hub-no-channel", diag({ binary: "/bin/gui" }));
 		const text = steps.join("\n");
 		assert.doesNotMatch(text, /hub\/install\.sh/);
 		assert.match(text, /lark-cli/);
 	});
 
 	it("timeout 且没有显示变量时点出会话问题", () => {
-		const steps = guiFallbackFixSteps("timeout", diag({ binary: "/bin/wails-gui", hasDisplayEnv: false }));
+		const steps = guiFallbackFixSteps("timeout", diag({ binary: "/bin/gui", hasDisplayEnv: false }));
 		assert.match(steps.join("\n"), /DISPLAY/);
 	});
 
 	it("末尾始终给排查文档路径", () => {
-		const steps = guiFallbackFixSteps("exited", diag({ binary: "/bin/wails-gui" }));
+		const steps = guiFallbackFixSteps("exited", diag({ binary: "/bin/gui" }));
 		assert.match(steps.at(-1) ?? "", /gui-fallback-recovery\.md$/);
 	});
 });
@@ -118,7 +117,7 @@ describe("提示文本", () => {
 	it("标题提示是一行且带原因", () => {
 		const hint = guiFallbackTitleHint("no-binary", diag());
 		assert.equal(hint.includes("\n"), false);
-		assert.match(hint, /没找到 wails-gui/);
+		assert.match(hint, /没找到 GUI 启动器/);
 	});
 
 	it("notify 文本首行是原因，后续是编号步骤", () => {

@@ -32,8 +32,9 @@ export function displayPath(p: string): string {
 /** 与 lib/gui-runner.ts 的 findGuiBinary 保持同一组候选位 */
 export function guiBinaryCandidates(): string[] {
 	return [
-		path.join(os.homedir(), ".pi", "agent", "bin", "wails-gui"),
-		path.join(REPO_ROOT, "wails-gui", "build", "bin", "wails-gui"),
+		// Electron 宿主：壳脚本 exec 系统装的 electron（没有编译步骤）
+		path.join(os.homedir(), ".pi", "agent", "bin", "gui"),
+		path.join(REPO_ROOT, "bin", "gui"),
 	];
 }
 
@@ -52,12 +53,10 @@ export interface GuiDiagnosis {
 	hasHubSocket: boolean;
 	/** pi-hub.service 是否 active；null 表示查不到（无 systemd 或超时） */
 	hubUnitActive: boolean | null;
-	hasWailsCli: boolean;
-	hasGo: boolean;
-	/** wails-gui/frontend/dist/index.html 是否已构建 */
+	/** PATH 里（或 PI_GUI_ELECTRON 指定的路径上）有 electron 吗 */
+	hasElectron: boolean;
+	/** gui/frontend/dist/index.html 是否已构建 */
 	hasFrontendDist: boolean;
-	/** webkit2gtk-4.1 是否可被 pkg-config 找到；null 表示 pkg-config 不可用 */
-	hasWebkit2Gtk41: boolean | null;
 	/** 当前会话有 DISPLAY / WAYLAND_DISPLAY */
 	hasDisplayEnv: boolean;
 }
@@ -123,17 +122,11 @@ function hubUnitActive(): boolean | null {
 	}
 }
 
-function hasWebkit41(): boolean | null {
-	try {
-		execFileSync("pkg-config", ["--exists", "webkit2gtk-4.1"], { timeout: 800, stdio: "ignore" });
-		return true;
-	} catch (err) {
-		// pkg-config 不在 / 命令失败要分开：前者查不到，后者是真缺库
-		const code = (err as { status?: number }).status;
-		if (code === undefined) return null;
-		if (inPath("pkg-config")) return false;
-		return null;
-	}
+/** electron 在不在：优先看 PI_GUI_ELECTRON 指的路径，其次 PATH */
+function hasElectron(): boolean {
+	const override = process.env.PI_GUI_ELECTRON;
+	if (override) return fs.existsSync(override);
+	return inPath("electron");
 }
 
 /** 收集一次本机现状。checkCommands=false 时跳过 systemctl / pkg-config 这类子进程。 */
@@ -151,10 +144,8 @@ export function collectGuiDiagnosis(checkCommands = true): GuiDiagnosis {
 		repoRoot: REPO_ROOT,
 		hasHubSocket: fs.existsSync(path.join(os.homedir(), ".pi", "agent", "run", "hub.sock")),
 		hubUnitActive: checkCommands ? hubUnitActive() : null,
-		hasWailsCli: inPath("wails"),
-		hasGo: inPath("go"),
-		hasFrontendDist: fileExists(path.join(REPO_ROOT, "wails-gui", "frontend", "dist", "index.html")),
-		hasWebkit2Gtk41: checkCommands ? hasWebkit41() : null,
+		hasElectron: hasElectron(),
+		hasFrontendDist: fileExists(path.join(REPO_ROOT, "gui", "frontend", "dist", "index.html")),
 		hasDisplayEnv: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
 	};
 }
@@ -163,9 +154,9 @@ export function collectGuiDiagnosis(checkCommands = true): GuiDiagnosis {
 export function guiFallbackReasonText(reason: GuiFallbackReason, d: GuiDiagnosis): string {
 	switch (reason) {
 		case "no-binary":
-			return "没找到 wails-gui 二进制，图形审批窗起不来";
+			return "没找到 GUI 启动器（bin/gui），图形审批窗起不来";
 		case "spawn-failed":
-			return "wails-gui 存在但进程起不来（不可执行或缺动态库）";
+			return "bin/gui 在，但进程起不来（没装 electron，或脚本不可执行）";
 		case "timeout":
 			return "图形窗没有在时限内给出结果（窗口没显示或卡住了）";
 		case "exited":
@@ -192,19 +183,22 @@ export function guiFallbackFixSteps(reason: GuiFallbackReason, d: GuiDiagnosis):
 		if (stuck) {
 			steps.push(`候选位有文件但不可执行：chmod +x ${stuck.path}`);
 		} else {
-			steps.push("构建：cd ~/.pi/agent/wails-gui && wails build -tags webkit2_41");
-			// hub 只在启动时判定一次能不能拉闸门窗，构建完不重启就还是只能靠适配器
-			steps.push("构建完重启 hub：systemctl --user restart pi-hub.service");
-			if (!d.hasWailsCli) {
-				steps.push(`没有 wails CLI：go install github.com/wailsapp/wails/v2/cmd/wails@latest${d.hasGo ? "" : "（且没找到 go，先装 Go）"}`);
+			steps.push("搭出启动器：~/.pi/agent/bin/gui（壳脚本，exec 系统里的 electron）");
+			if (!d.hasElectron) {
+				steps.push("PATH 里没有 electron：装一个（Arch 上 sudo pacman -S electron），或用 PI_GUI_ELECTRON 指向它的路径");
+			}
+			if (!d.hasFrontendDist) {
+				steps.push("前端还没构建：cd ~/.pi/agent/gui/frontend && node_modules/.bin/vite build");
 			}
 		}
 	} else if (reason === "spawn-failed" || reason === "exited") {
-		if (d.hasWebkit2Gtk41 === false) {
-			steps.push("缺 WebKitGTK 4.1（wails-gui 的运行时依赖）：Arch 上 sudo pacman -S webkit2gtk-4.1");
+		if (!d.hasElectron) {
+			steps.push("PATH 里没有 electron：装一个（Arch 上 sudo pacman -S electron），或用 PI_GUI_ELECTRON 指向它");
 		}
-		steps.push("重构建一次：cd ~/.pi/agent/wails-gui && wails build -tags webkit2_41");
-		steps.push("依赖自检：wails doctor");
+		if (!d.hasFrontendDist) {
+			steps.push("前端没构建，窗口会白屏：cd ~/.pi/agent/gui/frontend && node_modules/.bin/vite build");
+		}
+		steps.push("手动起一次看报错：PI_GUI_DEV=1 ~/.pi/agent/bin/gui gate <请求.json> <响应.json>");
 	}
 
 	if (reason === "timeout") {

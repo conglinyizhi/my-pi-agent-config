@@ -19,8 +19,8 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** 前端产物：还是 wails-gui 那份 Vue 工程（引擎换了，界面不变） */
-const FRONTEND_DIST = resolve(HERE, "..", "..", "wails-gui", "frontend", "dist");
+/** 前端产物：gui/frontend（Vue 工程，与引擎无关；两个引擎共用一份 dist） */
+const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 /** subagent 状态快照：与 Go 侧同一路径 */
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
 

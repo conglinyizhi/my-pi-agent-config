@@ -28,10 +28,8 @@ function diag(overrides: Partial<GuiDiagnosis> = {}): GuiDiagnosis {
 		repoRoot: "/repo",
 		hasHubSocket: false,
 		hubUnitActive: null,
-		hasWailsCli: false,
-		hasGo: false,
+		hasElectron: false,
 		hasFrontendDist: false,
-		hasWebkit2Gtk41: null,
 		hasDisplayEnv: true,
 		...overrides,
 	};
@@ -242,7 +240,7 @@ describe("createGuiTuiApprovalChannel", () => {
 		const notices: string[] = [];
 		let seenTitle = "";
 		const channel = createGuiTuiApprovalChannel({
-			// 二进制位为空 + hub 没起：回退说明应该是「没找到 wails-gui」，不再是光秃秃一张终端表
+			// 二进制位为空 + hub 没起：回退说明应该是「没找到 GUI 启动器」，不再是光秃秃一张终端表
 			diagnosis: diag({ binary: null, hasHubSocket: false, hubUnitActive: false }),
 			runGui: async () => ({ ok: false, reason: "unavailable" }),
 			selectApproval: async (title) => {
@@ -252,13 +250,13 @@ describe("createGuiTuiApprovalChannel", () => {
 		});
 		await channel(auditRequest, ctx({ ui: true, notices }));
 
-		assert.match(seenTitle, /已回退终端审批：没找到 wails-gui 二进制/);
+		assert.match(seenTitle, /已回退终端审批：没找到 GUI 启动器/);
 		// 原有标题内容不能被说明挤掉
 		assert.match(seenTitle, /命中 sudo/);
 		assert.match(seenTitle, /是否允许执行？/);
 		assert.equal(notices.length, 1);
-		assert.match(notices[0], /没找到 wails-gui 二进制/);
-		assert.match(notices[0], /wails build/);
+		assert.match(notices[0], /没找到 GUI 启动器/);
+		assert.match(notices[0], /vite build/);
 	});
 
 	it("上游原因优先于本跳：hub 连不上时不改口报 no-binary", async () => {
@@ -276,9 +274,9 @@ describe("createGuiTuiApprovalChannel", () => {
 		await channel(auditRequest, ctx({ ui: true, notices }));
 
 		assert.match(seenTitle, /连不上本机审批 hub/);
-		// 真正的病因和「顺便也缺什么」都要说：起 hub 与构建 wails-gui 两条
+		// 真正的病因和「顺便也缺什么」都要说：起 hub 与构建前端两条
 		assert.match(notices[0], /起 hub/);
-		assert.match(notices[0], /wails build/);
+		assert.match(notices[0], /vite build/);
 	});
 
 	it("撤单不算故障：aborted 时既不 notify 也不在标题里挂原因", async () => {
@@ -369,7 +367,7 @@ describe("sandbox-allow 的敏感路径命中", () => {
 	});
 
 	// varRenders：命令里变量**使用处**的渲染值（与 envNotes 分工不同：那边是赋值解析成什么）。
-	// 字段形状是前端（wails-gui/frontend/src/domain/gate/var-renders.js）已实现的集成契约
+	// 字段形状是前端（gui/frontend/src/domain/gate/var-renders.js）已实现的集成契约
 	it("变量使用处的渲染值随 payload 下发（命令名变量 → 值 + 来源）", () => {
 		const payload = toGuiPayload({ ...request, command: "cd /tmp && P=/usr/bin/jq && $P --version" });
 		assert.deepEqual(payload.varRenders, [
