@@ -99,28 +99,47 @@ function main(): void {
 
 	const paths = resolveReviewSettingsPaths();
 
-	if (args.command === "get") {
+	// 常驻模式：给 Electron 主进程用。每次保存都冷启一个 node 进程 + 转译一遍
+	// 模块图（实测 ~0.6s 起），窗口一按保存就卡；常驻之后只有第一次付这个钱。
+	if (args.command === "serve") {
+		serveStdio();
+		return;
+	}
+
+	emitOnce(args.command, args.json, paths);
+}
+
+/** 一次请求的完整处理：serve 与一次性两种入口共用同一份逻辑 */
+function handleRequest(
+	command: string,
+	json: string | undefined,
+	paths: ReturnType<typeof resolveReviewSettingsPaths>,
+): { payload: CliOutput; code: number } {
+	if (command === "get") {
 		try {
 			const settings = loadReviewSettings(paths);
-			emit({ ok: true, settings, specs: dimensionFieldSpecs(), limits: REVIEW_LIMITS, paths }, 0);
+			return { payload: { ok: true, settings, specs: dimensionFieldSpecs(), limits: REVIEW_LIMITS, paths }, code: 0 };
 		} catch (err) {
-			emit({ ok: false, error: err instanceof Error ? err.message : String(err) }, 2);
+			return { payload: { ok: false, error: err instanceof Error ? err.message : String(err) }, code: 2 };
 		}
 	}
 
-	if (args.command === "set") {
-		const raw = (args.json ?? readStdin()).trim();
-		if (raw === "") emit({ ok: false, error: "set 需要 JSON（命令行参数或 stdin）" }, 2);
+	if (command === "set") {
+		const raw = (json ?? readStdin()).trim();
+		if (raw === "") return { payload: { ok: false, error: "set 需要 JSON（命令行参数或 stdin）" }, code: 2 };
 		let patch: unknown;
 		try {
 			patch = JSON.parse(raw);
 		} catch (err) {
-			emit({ ok: false, error: `patch 不是合法 JSON：${err instanceof Error ? err.message : String(err)}` }, 2);
+			return {
+				payload: { ok: false, error: `patch 不是合法 JSON：${err instanceof Error ? err.message : String(err)}` },
+				code: 2,
+			};
 		}
 		try {
 			const result = saveReviewSettings(patch, paths);
-			emit(
-				{
+			return {
+				payload: {
 					ok: true,
 					changed: result.changed,
 					settings: result.settings,
@@ -128,19 +147,60 @@ function main(): void {
 					limits: result.limits,
 					paths: result.paths,
 				},
-				0,
-			);
+				code: 0,
+			};
 		} catch (err) {
 			if (err instanceof ReviewSettingsError) {
 				const issues: ReviewIssue[] = err.issues;
 				process.stderr.write(`${err.message}\n`);
-				emit({ ok: false, issues }, 1);
+				return { payload: { ok: false, issues }, code: 1 };
 			}
-			emit({ ok: false, error: err instanceof Error ? err.message : String(err) }, 2);
+			return { payload: { ok: false, error: err instanceof Error ? err.message : String(err) }, code: 2 };
 		}
 	}
 
-	usage();
+	return { payload: { ok: false, error: "用法错误：需要一个子命令 get 或 set" }, code: 2 };
+}
+
+function emitOnce(command: string, json: string | undefined, paths: ReturnType<typeof resolveReviewSettingsPaths>): never {
+	const { payload, code } = handleRequest(command, json, paths);
+	emit(payload, code);
+}
+
+/**
+ * 常驻桥：stdin 一行一个请求 `{"id":…,"cmd":"get|set","patch":…}`，
+ * stdout 一行一个响应（原请求的 id 原样带回）。读不到完整行就一直攒着。
+ */
+function serveStdio(): void {
+	let buffer = "";
+	process.stdin.setEncoding("utf8");
+	process.stdin.on("data", (chunk: string) => {
+		buffer += chunk;
+		let cut = buffer.indexOf("\n");
+		while (cut >= 0) {
+			const line = buffer.slice(0, cut);
+			buffer = buffer.slice(cut + 1);
+			if (line.trim() !== "") {
+				process.stdout.write(`${JSON.stringify(respondToLine(line))}\n`);
+			}
+			cut = buffer.indexOf("\n");
+		}
+	});
+	process.stdin.on("end", () => process.exit(0));
+}
+
+function respondToLine(line: string): CliOutput {
+	let request: { id?: unknown; cmd?: unknown; patch?: unknown };
+	try {
+		request = JSON.parse(line) as { id?: unknown; cmd?: unknown; patch?: unknown };
+	} catch (err) {
+		return { ok: false, error: `请求不是合法 JSON：${err instanceof Error ? err.message : String(err)}` };
+	}
+	const command = typeof request.cmd === "string" ? request.cmd : "";
+	const json = request.patch === undefined ? undefined : JSON.stringify(request.patch);
+	const { payload } = handleRequest(command, json, resolveReviewSettingsPaths());
+	if (request.id !== undefined) payload.id = request.id;
+	return payload;
 }
 
 main();

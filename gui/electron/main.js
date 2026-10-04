@@ -12,7 +12,7 @@
 // 一律降级成"能跑但不生效"，不做假的成功返回。
 
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -110,6 +110,122 @@ function runReviewCli(args, input = "") {
 	}
 }
 
+// ── 常驻桥 ──
+// 一次性 spawn 每次保存都要冷启一个 node 并转译一遍模块图（同机实测 ~750ms），
+// 而且 spawnSync 会把主进程整个卡住，所有窗口一起冻。所以默认走常驻进程：
+// 只有第一次付冷启动，之后每个请求就是个来回；起不来或中途死掉再退回一次性。
+
+const REVIEW_SERVE_TIMEOUT_MS = 15_000;
+/** 常驻桥状态；null = 还没起或已经收掉 */
+let reviewServe = null;
+/** 常驻桥起不来过（真起不来就别每次都试一遍） */
+let reviewServeUnavailable = false;
+
+/** 常驻桥的一个来回；拿不到结果返回 null，由调用方退回一次性 */
+function reviewServeRequest(cmd, patch) {
+	if (reviewServeUnavailable || !existsSync(REVIEW_CLI)) return null;
+
+	if (!reviewServe) {
+		let child;
+		try {
+			child = spawn(resolveNodeBin(), ["--experimental-strip-types", REVIEW_CLI, "serve"], {
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch {
+			reviewServeUnavailable = true;
+			return null;
+		}
+		const state = { child, buffer: "", pending: [], nextId: 1, served: 0 };
+		reviewServe = state;
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => {
+			state.buffer += chunk;
+			let cut = state.buffer.indexOf("\n");
+			while (cut >= 0) {
+				const line = state.buffer.slice(0, cut).trim();
+				state.buffer = state.buffer.slice(cut + 1);
+				if (line !== "") {
+					const waiter = state.pending.shift();
+					if (waiter) {
+						let payload;
+						try {
+							payload = JSON.parse(line);
+						} catch {
+							payload = { ok: false, error: `桥输出不是 JSON：${line.slice(0, 120)}` };
+						}
+						waiter.settle(payload);
+					}
+				}
+				cut = state.buffer.indexOf("\n");
+			}
+		});
+		// 人可读的失败原因已经随 payload 回来了；stderr 只丢给系统，不往终端喷
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", () => {});
+		child.on("exit", () => {
+			if (reviewServe === state) reviewServe = null;
+			for (const waiter of state.pending.splice(0)) waiter.settle(null);
+			// 一次都没服务成就死了 → 这台机器上别指望常驻；跑过一段再死 → 下次允许重起
+			if (state.served === 0) reviewServeUnavailable = true;
+		});
+		child.stdin.on("error", () => {});
+	}
+
+	const state = reviewServe;
+	const id = state.nextId++;
+	return new Promise((resolveRequest) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			const index = state.pending.indexOf(waiter);
+			if (index >= 0) state.pending.splice(index, 1);
+			// 卡住的桥比慢一点的桥更坏：拆掉它，这一次退回一次性
+			try {
+				state.child.kill();
+			} catch {
+				// 已经死了就算了
+			}
+			resolveRequest(null);
+		}, REVIEW_SERVE_TIMEOUT_MS);
+		const waiter = {
+			settle: (payload) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				if (payload !== null) state.served += 1;
+				resolveRequest(payload);
+			},
+		};
+		state.pending.push(waiter);
+		try {
+			state.child.stdin.write(`${JSON.stringify({ id, cmd, patch })}\n`);
+		} catch {
+			waiter.settle(null);
+		}
+	});
+}
+
+/** 设置窗的读写入口：常驻优先，拿不到就退回一次性 spawn */
+async function reviewRequest(cmd, patch) {
+	const viaServe = await reviewServeRequest(cmd, patch);
+	if (viaServe !== null) return viaServe;
+	return runReviewCli(cmd === "set" ? ["set"] : ["get"], patch === undefined ? "" : JSON.stringify(patch));
+}
+
+/** 收工：常驻进程不能留成孤儿 */
+function stopReviewServe() {
+	const state = reviewServe;
+	reviewServe = null;
+	if (!state) return;
+	for (const waiter of state.pending.splice(0)) waiter.settle(null);
+	try {
+		state.child.kill();
+	} catch {
+		// 已经死了就算了
+	}
+}
+
 let mainWindow = null;
 
 function createWindow() {
@@ -186,8 +302,8 @@ function registerIpc(request) {
 	// ── 审核设置（review 窗口）──
 	// 读：每次都现读文件（改完即生效，设置窗自己也会再拉一次）。
 	// 写：patch → 桥脚本；校验不过时原样把 issues 交给前端展示，文件没被动过。
-	handle("review:load", () => runReviewCli(["get"]));
-	handle("review:save", (patch) => runReviewCli(["set"], JSON.stringify(patch ?? {})));
+	handle("review:load", () => reviewRequest("get"));
+	handle("review:save", (patch) => reviewRequest("set", patch ?? {}));
 
 	// ── 以下四组是 Go 侧还没搬过来的能力 ──
 	// 宁可明确降级（空结果 + 警告一次），也不假装成功：假的成功会让人以为数据存下来了
@@ -238,7 +354,11 @@ function registerIpc(request) {
 }
 
 // 单实例锁按 responseFile 归一：同一个窗口重复拉起时不再开第二个
-app.on("window-all-closed", () => app.quit());
+app.on("window-all-closed", () => {
+	stopReviewServe();
+	app.quit();
+});
+app.on("will-quit", () => stopReviewServe());
 
 app.whenReady().then(() => {
 	if (!existsSync(FRONTEND_DIST)) {
