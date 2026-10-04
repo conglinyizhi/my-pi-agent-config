@@ -109,8 +109,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// 副工作区管理（持久 allowDirs）：/sandbox:workspaces 列出 / add / remove
 	// GUI 的目录授权是另一路；本命令是 TUI 回退时唯一能管理副工作区的手段，
 	// 只用 ctx.ui（notify/select/input/confirm），不依赖 GUI 窗口。
+	pi.registerCommand("sandbox:gui", {
+		description: "审核工作流设置：开设置窗改总开关/档位/后端/超时/缓存/分类器与八个维度的阈值；无图形时回退 TUI 面板。用法 /sandbox:gui [key]",
+		handler: (args, ctx) => reviewCommandHandler(args, ctx),
+	});
+
+	// 旧名字留个别名：肌肉记忆还写着 /sandbox:review，行为完全一样
 	pi.registerCommand("sandbox:review", {
-		description: "审核工作流设置：开设置窗改总开关/档位/后端/超时/缓存/分类器与八个维度的阈值；无图形时回退 TUI 面板。用法 /sandbox:review [key]",
+		description: "旧名，等价于 /sandbox:gui",
 		handler: (args, ctx) => reviewCommandHandler(args, ctx),
 	});
 

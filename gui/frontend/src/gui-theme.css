@@ -80,3 +80,17 @@ html, body { font-family: var(--font); }
 .collapse-body {
   padding: 4px 16px 8px; background: var(--bg-hover); font-size: 11px;
 }
+
+/* ── 深色下的滚动条 ──
+   Chromium 默认那套浅色滚动条在深色窗口里非常突兀（每个窗口都有），统一换掉：
+   透明轨道、圆角细滑块、悬停才亮一点。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2a2a4a;
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #3d3d63; background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }

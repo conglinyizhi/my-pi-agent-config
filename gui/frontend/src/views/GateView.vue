@@ -13,6 +13,7 @@
       :env-notes="envNotes"
       :var-renders="varRenders"
       :current="cur"
+      :fold="isScript"
       @update:current="cur = $event"
     />
 

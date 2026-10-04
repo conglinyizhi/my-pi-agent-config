@@ -194,7 +194,7 @@ export async function classifyReview(
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const apiKey = opts.apiKey ?? resolveApiKey();
 	if (!apiKey) {
-		return { ok: false, error: "缺少 API key（/sandbox:review key 添加，或设 TYPESAFE_API_KEY）" };
+		return { ok: false, error: "缺少 API key（/sandbox:gui key 添加，或设 TYPESAFE_API_KEY）" };
 	}
 
 	const doFetch = opts.fetchImpl ?? fetch;

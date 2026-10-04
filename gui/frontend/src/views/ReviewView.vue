@@ -90,7 +90,7 @@
           </label>
         </div>
         <div class="note" data-name="review-key-status">
-          API key：{{ keyConfigured ? "已配置" : "未配置" }}（key 不入界面，用 <code>/sandbox:review key</code> 录入）
+          API key：{{ keyConfigured ? "已配置" : "未配置" }}（key 不入界面，用 <code>/sandbox:gui key</code> 录入）
           · 维度阈值写在 <code>{{ dimensionsPath }}</code>
         </div>
       </section>

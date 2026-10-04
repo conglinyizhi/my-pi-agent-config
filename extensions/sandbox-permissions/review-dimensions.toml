@@ -9,60 +9,58 @@
 #            noul 没有置信度，该字段对 scripted_edit 无效
 #   action = review（提示）| ignore（不看这一维）
 #            —— 没有 block：分类器是试验品，不允许它直接拒绝任何请求
-#
-# 默认 0.5，慢慢调。
 
 [[dimension]]
 id = "elevation"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "network"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "intent"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "secret_exposure"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "wallet_access"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "scripted_edit"
-enabled = true
-above = 0.5
+enabled = false
+above = 0.50
 action = "review"
 
 [[dimension]]
 id = "preshell_trust"
-enabled = true
-above = 0.5
-below = 0.5
+enabled = false
+above = 0.50
+below = 0.50
 action = "review"
 
 [[dimension]]
 id = "oddity"
 enabled = true
-above = 0.5
-below = 0.5
+above = 0.50
+below = 0.50
 action = "review"

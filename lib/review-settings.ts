@@ -642,7 +642,7 @@ export function planSettingsWrite(current: ReviewSettings, patch: unknown): Writ
 
 const DIMENSIONS_HEADER = `# 指令审核维度阈值（分类模型后端）
 #
-# 由 /sandbox:review 面板维护（整文件重写，手改请保持本格式）。
+# 由 /sandbox:gui 面板维护（整文件重写，手改请保持本格式）。
 # 端点与模型在 extensions.toml 的 [sandbox-review-classifier]；本文件只管阈值。
 #
 #   above  = 风险值高于它 → 提示用户过目

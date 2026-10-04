@@ -1,11 +1,11 @@
-// review-command.ts — /sandbox:review：审核工作流设置（GUI 优先，TUI 面板兜底）
+// review-command.ts — /sandbox:gui：审核工作流设置（GUI 优先，TUI 面板兜底）
 //
 // 入口分三层：
-//   1 /sandbox:review            有图形时开设置窗（review 窗口，见 review-gui.ts）；
+//   1 /sandbox:gui            有图形时开设置窗（review 窗口，见 review-gui.ts）；
 //                                起不来 / 没图形 → 回退下面的 TUI 面板
 //   2 TUI 面板（ctx.mode === "tui"） 每个维度是否启用、above/below 两条阈值、动作
 //   3 非 TUI                      纯文本列出当前值
-// 另外 /sandbox:review key 仍走输入框录 SiliconFlow key。
+// 另外 /sandbox:gui key 仍走输入框录 SiliconFlow key。
 //
 // 面板管的三件事里**没有 block**——分类器是试验品，不允许它直接拒绝任何请求。
 // 阈值写在独立文件 review-dimensions.toml（整文件重写，格式与写盘逻辑在
@@ -65,7 +65,7 @@ export function dimensionsAsText(dims: DimensionConfig[]): string {
 }
 
 /**
- * /sandbox:review key —— 用 pi 的输入框录入 key，写进 auth.json 的 siliconflow-cn。
+ * /sandbox:gui key —— 用 pi 的输入框录入 key，写进 auth.json 的 siliconflow-cn。
  * 全程不打印 key 值：只报“已保存（长度 N）”。
  */
 async function promptForKey(ctx: ExtensionCommandContext): Promise<void> {
@@ -107,13 +107,13 @@ async function tryOpenSettingsGui(ctx: ExtensionCommandContext): Promise<boolean
 }
 
 export async function reviewCommandHandler(args: string, ctx: ExtensionCommandContext): Promise<void> {
-	// 子命令：/sandbox:review key —— 用 TUI 录入 SiliconFlow API key（写进 auth.json）
+	// 子命令：/sandbox:gui key —— 用 TUI 录入 SiliconFlow API key（写进 auth.json）
 	if (args.trim().toLowerCase() === "key") {
 		await promptForKey(ctx);
 		return;
 	}
 	if (args.trim() !== "") {
-		ctx.ui.notify(`未知参数“${args.trim()}”：用法 /sandbox:review [key]`, "warning");
+		ctx.ui.notify(`未知参数“${args.trim()}”：用法 /sandbox:gui [key]`, "warning");
 		return;
 	}
 
@@ -133,7 +133,7 @@ async function reviewPanel(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.mode !== "tui") {
 		const hasKey = readKeyFromAuth() !== undefined;
 		ctx.ui.notify(
-			`审核后端：${cfg.model}（分类模型）· key ${hasKey ? "已配置" : "未配置（/sandbox:review key）"}\n${dimensionsAsText(dims)}`,
+			`审核后端：${cfg.model}（分类模型）· key ${hasKey ? "已配置" : "未配置（/sandbox:gui key）"}\n${dimensionsAsText(dims)}`,
 			"info",
 		);
 		return;
@@ -155,7 +155,7 @@ async function reviewPanel(ctx: ExtensionCommandContext): Promise<void> {
 			const lines: string[] = [];
 			lines.push(
 				theme.fg("accent", theme.bold("指令审核维度（分类模型）"))
-					+ theme.fg("dim", `  后端 ${cfg.model} · key ${readKeyFromAuth() ? "已配置" : "未配置（/sandbox:review key）"}`),
+					+ theme.fg("dim", `  后端 ${cfg.model} · key ${readKeyFromAuth() ? "已配置" : "未配置（/sandbox:gui key）"}`),
 			);
 			lines.push(theme.fg("dim", "above = 风险高于它提示 · below = 置信度低于它提示（- 表示该维度没有置信度）"));
 			// 场景不影响本面板的配置值：PTC 场景只是不问 scripted_edit（审批窗里灰显）

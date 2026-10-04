@@ -401,9 +401,26 @@ function removeWorkspace(path) {
 .weight-disabled { flex: 1 1 160px; min-width: 0; color: var(--text-muted); font-style: italic; }
 .weight-label { flex: 0 0 68px; color: #a9b1d6; }
 .weight-row.flagged .weight-label { color: #f0c674; }
-.weight-bar { flex: 0 0 90px; height: 6px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 3px; overflow: hidden; }
-.weight-fill { display: block; height: 100%; background: #7aa2f7; }
-.weight-row.flagged .weight-fill { background: #e67e22; }
+.weight-bar {
+  flex: 0 0 96px;
+  height: 8px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: linear-gradient(90deg, #14142a, #0d0d1a);
+  box-shadow: inset 0 0 0 1px #2a2a4a, inset 0 1px 2px #00000066;
+}
+.weight-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #4ec9b0, #7aa2f7);
+  box-shadow: 0 0 6px #7aa2f755;
+  transition: width 0.18s ease;
+}
+.weight-row.flagged .weight-fill {
+  background: linear-gradient(90deg, #e6a23c, #e67e22);
+  box-shadow: 0 0 8px #e67e2266;
+}
 .weight-risk { flex: 0 0 34px; color: #e0e0e0; font-family: monospace; }
 .weight-conf { flex: 0 0 62px; color: #888; font-family: monospace; }
 .weight-threshold { flex: 0 0 100px; color: #666; font-family: monospace; }
