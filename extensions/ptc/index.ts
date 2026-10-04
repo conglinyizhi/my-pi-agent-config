@@ -13,6 +13,9 @@
 // 引擎不重写：定义从宿主 pi 的 dist 里取（见 host.ts），我们只改名、换入参、
 // 加理由登记与呈现。
 //
+// 事前审核走 lib/ptc-audit.ts：批了才执行，批过的脚本登记一个作用域，
+// 内层调用不再逐条弹人工闸门（硬拦与自动判定照旧）。拒了就整段废弃。
+//
 // 设置（settings.json，/reload 生效）：
 //   "ptc": false                              不注册 run_code（缺省注册）
 //   "ptc": { "mode": "only" | "on", "inlineBudget": 12000 }
@@ -24,6 +27,14 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ptcCodeDigest, ptcReasonLedger } from "../../lib/ptc-reason.ts";
+import {
+	approvePtcScript,
+	beginPtcScope,
+	endPtcScope,
+	ptcRejectedText,
+	ptcScriptDigest,
+	type PtcToolInfo,
+} from "../../lib/ptc-audit.ts";
 import { RUN_CODE_SCHEMA, buildRunCodeDefinition, loadHostCodemode, type HostCodemodeModule } from "./host.ts";
 
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
@@ -76,13 +87,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	registerRunCode(pi, host);
 }
 
+/**
+ * 送审用的工具面：注册表里的全部工具。
+ * 第 0 步还不知道脚本真正会调哪几个（静态扫描还没做），先把全集报一遍；
+ * 自明的只列名字，其余附描述（见 lib/ptc-audit.ts 的 describeTools）。
+ */
+function registeredTools(pi: ExtensionAPI): PtcToolInfo[] {
+	return (pi.getAllTools?.() ?? []).map((tool) => {
+		const info = tool as { description?: string; annotations?: Record<string, unknown> };
+		return { name: tool.name, description: info.description, annotations: info.annotations };
+	});
+}
+
 /** 注册 run_code 与 /ptc-reasons。宿主模块与设置来源由调用方给，测试可以注入桩件 */
 export function registerRunCode(
 	pi: ExtensionAPI,
 	host: HostCodemodeModule,
-	options: { settings?: () => Record<string, unknown> } = {},
+	options: { settings?: () => Record<string, unknown>; approve?: typeof approvePtcScript } = {},
 ): void {
 	const settingsOf = options.settings ?? readSettings;
+	const approve = options.approve ?? approvePtcScript;
 	const definition = buildRunCodeDefinition(host, {
 		getMode: () => readPtcSettings(settingsOf()).mode ?? "on",
 		getInlineBudget: () => readPtcSettings(settingsOf()).inlineBudget,
@@ -103,14 +127,37 @@ export function registerRunCode(
 				};
 			}
 			const code = typeof params?.code === "string" ? params.code : "";
-			// 先登记、再广播、最后执行：内层调用到达审核链时，理由已经在表里了
+			// 先登记、再广播、再审核：内层调用到达审核链时，理由已经在表里了
 			pi.events.emit("ptc:reason", {
 				toolCallId,
 				reason,
 				codeDigest: ptcCodeDigest(code),
 				codeChars: code.length,
 			});
-			return definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
+
+			// 事前审核：过了才执行；没过整段不执行，返回编译失败式的错误
+			const outcome = await approve({
+				pi,
+				ctx,
+				input: { script: code, reason, tools: registeredTools(pi) },
+				signal,
+			});
+			if (!outcome.approved) {
+				return {
+					content: [{
+						type: "text",
+						text: ptcRejectedText(outcome.review?.reason ?? "未获批准", outcome.comment),
+					}],
+					details: undefined,
+				};
+			}
+
+			beginPtcScope(toolCallId, ptcScriptDigest(code));
+			try {
+				return await definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
+			} finally {
+				endPtcScope(toolCallId);
+			}
 		},
 	} as never);
 

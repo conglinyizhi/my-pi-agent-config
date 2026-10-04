@@ -19,6 +19,7 @@ import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { resetProcessSingleton } from "../../lib/process-singleton.ts";
 import { buildRunCodeDefinition, hostPackageRoot, loadHostCodemode, RUN_CODE_SCHEMA, type HostCodemodeModule } from "./host.ts";
 import { readPtcSettings, registerRunCode } from "./index.ts";
+import { clearPtcScopes, ptcScopeForNestedCall } from "../../lib/ptc-audit.ts";
 
 describe("执行理由的消毒", () => {
 	it("换行与控制字符压成一行", () => {
@@ -372,6 +373,7 @@ describe("注册与调用路径", () => {
 			emitted,
 			pi: {
 				getSettings: () => ({}),
+				getAllTools: () => [{ name: "read" }, { name: "bash" }],
 				registerTool: (tool: unknown) => tools.push(tool),
 				registerCommand: (name: string) => commands.push(name),
 				on: () => {},
@@ -406,7 +408,7 @@ describe("注册与调用路径", () => {
 		resetProcessSingleton("ptc-reason-ledger");
 		const { host, seen } = stubHost();
 		const { tools, emitted, pi } = stubPi();
-		registerRunCode(pi as never, host);
+		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
 		const code = "return await tools.bash({ command: 'git status' })";
 		const result = await tools[0].execute("call-1", { description: "看看\n仓库\t状态", code }, undefined, undefined, {});
 		assert.deepEqual(seen, [{ code }]);
@@ -419,5 +421,46 @@ describe("注册与调用路径", () => {
 		assert.equal(emitted[0].data.toolCallId, "call-1");
 		assert.match(emitted[0].data.codeDigest, /^[0-9a-f]{64}$/);
 		assert.equal(emitted[0].data.codeChars, code.length);
+	});
+
+	it("事前审核拒了：整段不执行，返回编译失败式的错误", async () => {
+		resetProcessSingleton("ptc-reason-ledger");
+		const { host, seen } = stubHost();
+		const { tools, pi } = stubPi();
+		registerRunCode(pi as never, host, {
+			approve: async () => ({ approved: false, comment: "别碰 /etc", review: { verdict: "risky", reason: "写入工作区外", suggestion: "" } as never }),
+		});
+		const result = await tools[0].execute("call-1", { description: "改系统配置", code: "return 1" }, undefined, undefined, {});
+		assert.equal(seen.length, 0, "被拒时不该碰宿主引擎");
+		assert.match(result.content[0].text, /本段未执行/);
+		assert.match(result.content[0].text, /E-DENIED/);
+		assert.match(result.content[0].text, /写入工作区外/);
+		assert.match(result.content[0].text, /没有产生任何读写/);
+		assert.match(result.content[0].text, /审批附言：别碰 \/etc/);
+	});
+
+	it("批过之后作用域开着，执行完就关掉", async () => {
+		resetProcessSingleton("ptc-reason-ledger");
+		clearPtcScopes();
+		const scopesSeen: Array<string | undefined> = [];
+		const host: HostCodemodeModule = {
+			CODEMODE_TOOL_NAME: "codemode",
+			createCodemodeDescription: () => "底稿",
+			createCodemodeToolDefinition: () => ({
+				name: "codemode",
+				description: "宿主描述",
+				parameters: {},
+				execute: async () => {
+					// 内层调用看到的应当是"这次调用在批准作用域里"
+					scopesSeen.push(ptcScopeForNestedCall("call-1/1")?.callId);
+					return { content: [{ type: "text", text: "跑完" }] };
+				},
+			}),
+		};
+		const { tools, pi } = stubPi();
+		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
+		await tools[0].execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
+		assert.deepEqual(scopesSeen, ["call-1"]);
+		assert.equal(ptcScopeForNestedCall("call-1/1"), undefined, "执行完作用域要关掉");
 	});
 });

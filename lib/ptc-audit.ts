@@ -1,0 +1,227 @@
+// lib/ptc-audit.ts — run_code 的事前审核：接现成的审核链，加一个批准作用域
+//
+// 第 0 步（接入）只做四件事：
+//   1. 把这段脚本端到审核链前：llm-review 的 chain（classifier 快筛 + chat 慢审）→ 必要时人工闸门
+//   2. 送审材料带上理由、脚本原文，以及「这次可能用到的工具各是干什么的」——
+//      pi 自带的与 subagent/goal 系列免描述，其余一律附（SELF_EVIDENT_TOOLS）
+//   3. 批了之后登记一个作用域，让内层调用别再逐条弹人工闸门（硬拦与自动判定照旧）
+//   4. 拒了整段不执行，返回编译失败式的错误（规划 §6.2）
+//
+// 还没做（后续生态）：字面量级影响面扫描、干跑、批准表与 hash 绑定、折叠、GUI 调整。
+// 因此第 2 点现在是"把可调用工具的全集报一遍"，不是"这次真正用到的那些"——
+// 等静态扫描进来再收紧。
+
+import { createHash } from "node:crypto";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { processSingleton } from "./process-singleton.ts";
+import { resolveApprovalChannel } from "./approval-channel.ts";
+import {
+	createReviewCache,
+	loadLlmReviewConfig,
+	reviewCommand as defaultReviewCommand,
+	type ReviewCache,
+	type ReviewResult,
+} from "../extensions/sandbox-permissions/llm-review.ts";
+
+/**
+ * 审核模型本来就认识的工具：只给名字，不占送审额度。
+ * 判据是"pi 自带 / subagent 与 goal 系列"；不在名单里的（本仓自定义的、MCP 挂上来的）
+ * 一律附上它的描述——审核模型不认识它们，看到名字只会猜。
+ */
+export const SELF_EVIDENT_TOOLS: ReadonlySet<string> = new Set([
+	"read", "bash", "bash_background", "edit", "write", "grep", "find", "ls",
+	"apply_patch", "patch", "todo_write", "str_replace_editor",
+	"subagent", "subagent_resume", "create_goal", "update_goal", "get_goal", "todo_write",
+	"ask_question", "web_search",
+]);
+
+/** 送审时最多附几个工具的描述：再多是噪音，也不该拿它撑爆一次请求 */
+const MAX_DESCRIBED_TOOLS = 20;
+
+export interface PtcToolInfo {
+	name: string;
+	description?: string;
+	annotations?: Record<string, unknown>;
+}
+
+/** 脚本摘要：批准作用域与审计都按它对齐 */
+export function ptcScriptDigest(script: string): string {
+	return createHash("sha256").update(script, "utf8").digest("hex");
+}
+
+/** 这段脚本要审的东西：理由 + 原文 + 工具面 */
+export interface PtcAuditInput {
+	script: string;
+	reason: string;
+	tools: PtcToolInfo[];
+}
+
+/**
+ * 工具面那一段：自明的只列名字，其余附一句描述与 MCP 注解
+ * （注解带 readOnly / destructive / openWorld 提示，判风险时最有用）。
+ */
+export function describeTools(tools: PtcToolInfo[]): string {
+	const selfEvident: string[] = [];
+	const described: string[] = [];
+	for (const tool of tools) {
+		if (SELF_EVIDENT_TOOLS.has(tool.name)) {
+			selfEvident.push(tool.name);
+			continue;
+		}
+		const hints: string[] = [];
+		const annotations = tool.annotations ?? {};
+		if (annotations.readOnlyHint === true) hints.push("只读");
+		if (annotations.destructiveHint === true) hints.push("可破坏");
+		if (annotations.openWorldHint === true) hints.push("触达外部");
+		const summary = (tool.description ?? "").split("\n")[0]?.trim() ?? "";
+		const line = `- ${tool.name}${hints.length > 0 ? `（${hints.join("、")}）` : ""}: ${summary.slice(0, 160)}`;
+		described.push(line);
+		if (described.length >= MAX_DESCRIBED_TOOLS) break;
+	}
+	const sections: string[] = [];
+	if (described.length > 0) sections.push(`这段脚本可能调用的工具（除下列外都是常见工具）：\n${described.join("\n")}`);
+	if (selfEvident.length > 0) sections.push(`另可调用：${selfEvident.join("、")}`);
+	return sections.join("\n\n");
+}
+
+/** 送审文本：审核模型与审批卡看到的是同一份 */
+export function buildPtcAuditSubject(input: PtcAuditInput): string {
+	return [
+		"【run_code 事前审核】下面这段 JavaScript 会在沙箱里执行，并可以调用工具。",
+		"",
+		`执行理由（模型自述）：${input.reason}`,
+		"",
+		describeTools(input.tools),
+		"",
+		"脚本原文：",
+		input.script,
+	].filter((part) => part !== "").join("\n");
+}
+
+/**
+ * 拒绝时的返回：照编译器报错的样子（位置 + 错误码 + 可行动作），
+ * 让模型自己改再发——这是它最熟的失败形态。整段没有执行，零副作用。
+ */
+export function ptcRejectedText(reason: string, comment?: string): string {
+	const lines = [
+		"run_code: 本段未执行（安全审核未通过）",
+		`  E-DENIED  ${reason}`,
+		"为防止副作用，整段脚本被丢弃：没有产生任何读写。",
+		"",
+		"改完这一处再发一次；确实需要这段能力，就把需求报给主 agent。",
+	];
+	if (comment) lines.push("", `审批附言：${comment}`);
+	return lines.join("\n");
+}
+
+export interface PtcAuditOutcome {
+	approved: boolean;
+	/** 人拒绝时填的附言 */
+	comment?: string;
+	/** 预审结论（没跑预审时为 undefined） */
+	review?: ReviewResult;
+}
+
+let reviewCacheForPtc: ReviewCache | undefined;
+function ptcReviewCache(): ReviewCache {
+	reviewCacheForPtc ??= createReviewCache();
+	return reviewCacheForPtc;
+}
+
+/**
+ * 事前审核一段脚本。判定口径与 bash 那条链一致：
+ * 预审判 safe 且档位是 auto 就直接放行；其余交人工闸门。
+ */
+export async function approvePtcScript(options: {
+	pi: ExtensionAPI;
+	ctx: ExtensionContext;
+	input: PtcAuditInput;
+	signal?: AbortSignal;
+}): Promise<PtcAuditOutcome> {
+	const { pi, ctx, input, signal } = options;
+	const subject = buildPtcAuditSubject(input);
+	const digest = ptcScriptDigest(input.script);
+	const config = loadLlmReviewConfig();
+	let review: ReviewResult | undefined;
+
+	if (config.enabled) {
+		try {
+			review = await defaultReviewCommand(pi, ctx, subject, [], signal, ptcReviewCache(), config);
+		} catch {
+			review = undefined;
+		}
+		if (review?.verdict === "safe" && config.mode === "auto") {
+			appendPtcAudit(pi, { digest, outcome: "approved", via: "preflight", reason: input.reason, review });
+			return { approved: true, review };
+		}
+	}
+
+	const channel = resolveApprovalChannel();
+	const decision = await channel({ kind: "audit", command: subject, reason: input.reason, review, signal }, ctx);
+	const approved = decision.action === "allow";
+	appendPtcAudit(pi, {
+		digest,
+		outcome: approved ? "approved" : "denied",
+		via: "human",
+		reason: input.reason,
+		review,
+		...(decision.comment ? { comment: decision.comment } : {}),
+	});
+	return { approved, comment: decision.comment, review };
+}
+
+/**
+ * 审计条目：只在会话里留判定所需的那点东西。
+ * 脚本全文不进会话记录（与 bash-audit 同一口径），留 digest 与理由。
+ */
+function appendPtcAudit(pi: ExtensionAPI, entry: Record<string, unknown>): void {
+	try {
+		pi.appendEntry("ptc-audit", { ...entry, ts: Date.now() });
+	} catch {
+		/* 审计失败不该挡住执行 */
+	}
+}
+
+// ── 批准作用域 ──
+//
+// 批过的是一段脚本，内层调用不该再逐条弹人工闸门（否则等于双层询问）。
+// 作用域按 run_code 的 callId 存：内层调用的 toolCallId 是 `<父 id>/<n>`，
+// 由它反查父级即可，并行跑两段脚本也不会互相蹭到批准。
+
+export interface PtcScope {
+	callId: string;
+	scriptDigest: string;
+	since: number;
+}
+
+function scopes(): Map<string, PtcScope> {
+	return processSingleton("ptc-approved-scopes", () => new Map<string, PtcScope>());
+}
+
+export function beginPtcScope(callId: string, scriptDigest: string): void {
+	scopes().set(callId, { callId, scriptDigest, since: Date.now() });
+}
+
+export function endPtcScope(callId: string): void {
+	scopes().delete(callId);
+}
+
+/** 由内层调用的 id 反查它所属脚本的批准作用域；没有就返回 undefined */
+export function ptcScopeForNestedCall(toolCallId: string | undefined): PtcScope | undefined {
+	if (!toolCallId) return undefined;
+	const store = scopes();
+	let id = toolCallId;
+	for (let depth = 0; depth < 3; depth++) {
+		const hit = store.get(id);
+		if (hit) return hit;
+		const cut = id.lastIndexOf("/");
+		if (cut <= 0) return undefined;
+		id = id.slice(0, cut);
+	}
+	return undefined;
+}
+
+/** 仅供测试：清空作用域 */
+export function clearPtcScopes(): void {
+	scopes().clear();
+}

@@ -24,6 +24,7 @@ import { reportFactLayerState } from "../lib/preshell.ts";
 import { appendApprovalComment, approveBashCommand, bashApprovalDeniedText, isHardRejected, rethrowWithApprovalComment } from "../lib/bash-approval.ts";
 import { addSessionWriteDirsToEnv, beginSandboxSession } from "../extensions/sandbox-permissions/session-access.ts";
 import { yoloEnabled } from "./sandbox-permissions/yolo.ts";
+import { ptcScopeForNestedCall } from "../lib/ptc-audit.ts";
 
 // ── KV 缓存稳定：静态常量，一次性注册，不动态拼接 ──
 const PROMPT_SNIPPET = "Execute a bash command in the current working directory. Returns stdout and stderr.";
@@ -99,6 +100,12 @@ export default function (pi: ExtensionAPI) {
 				// 黑名单/内联脚本/全 autoReject（以及无规则的硬拒）不进入审批器。
 				if (isHardRejected(verdict)) {
 					return { content: [{ type: "text", text: verdict.reason ?? "已拦截" }], details: {} as BashToolDetails };
+				}
+
+				// 属于一段事前批过的 run_code 脚本：不再逐条弹人工闸门
+				// （硬拦与自动判定照旧生效，这里只省掉"再问一次人"）
+				if (ptcScopeForNestedCall(toolCallId)) {
+					return bashDef.execute(toolCallId, params, signal, onUpdate, ctx);
 				}
 
 				// 需确认类：共享 LLM 预审 + GUI/TUI 人工闸门。
