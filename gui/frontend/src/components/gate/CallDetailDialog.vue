@@ -14,7 +14,7 @@
       <div class="dlg-meta">
         <span>{{ lineLabel }}</span>
         <span v-if="sizeLabel">{{ sizeLabel }}</span>
-        <span v-if="body.kind === 'source'">这一处看不到内容，原文照摆</span>
+        <span v-if="body.kind === 'source' && !chip.literal">这一处看不到内容，原文照摆</span>
       </div>
 
       <div class="dlg-body">
