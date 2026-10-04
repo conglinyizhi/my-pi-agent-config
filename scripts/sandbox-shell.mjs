@@ -16,16 +16,20 @@
 //   PI_SANDBOX_RW_EXTRA=<dir>[:<dir>...] 额外可写根，叠加在默认 cwd 之上（sandbox-allow 一次性升权用）
 //   PI_SANDBOX_DISABLE=1                 文件系统沙箱完全开放，直接透传 bash（一次性升权 / 逃生门）
 //
-// 内存限制（与文件系统沙箱正交，独立维度）：
-//   PI_SANDBOX_MEMORY_MB=<整数>          单条命令进程树的内存上限（MB）。缺省 1GiB（DEFAULT_MEMORY_MB）。
-//                                        由 sandbox-allow 的 memoryMb 参数注入：大模型需给出具体数字才能提升。
-//                                       未提供时所有 bash 命令默认按 1GiB 上限执行。
-//   PI_SANDBOX_MEMORY_DISABLE=1          关闭内存墙（/yolo 全降零时由 spawnHook 注入；不设则内存墙照常生效）。
+// 资源限制（与文件系统沙箱正交，独立维度；采样式，与内存墙同一套机制）：
+//   PI_SANDBOX_MEMORY_MB=<整数>          进程树匿名内存上限（MB）。缺省 1GiB（worker 与主 agent 同）。
+//                                        由 sandbox-allow 的 memoryMb 参数注入（大模型须给具体数字才能提额）。
+//   PI_SANDBOX_NPROC=<整数>              进程树进程数上限（含自身）。缺省：worker 128，主 agent 不限。
+//   PI_SANDBOX_WRITE_MB=<整数>           写盘上限（MB）。按受监控可写根所在文件系统的已用空间增量
+//                                        采样（不是进程 write_bytes：那条只算活着的进程，
+//                                        循环 dd / tmpfs 写入都漏）。缺省：worker 2048（2GiB），主 agent 不限。
+//   三者给 0 或对应 *_DISABLE=1 → 关闭该项（/yolo 全降零同样走 DISABLE）。
 //
-// 内存墙实现：进程树匿名内存（/proc/<pid>/status 的 RssAnon，私有匿名页=真实堆分配）采样。
-// 选用 RssAnon 而非 VmRSS：避免整棵进程树里共享库被逐进程重复计数导致的误杀
-// （多进程构建如 make -j 会常见）。超限 → SIGKILL 整棵进程组，退出码 137（128+SIGKILL）。
-// 仅 Linux（/proc 存在）；macOS/Windows 无 /proc 时采样恒为 0，内存墙自动失效（不误杀、不报错）。
+// 资源墙实现：匿名内存（/proc/<pid>/status 的 RssAnon，私有匿名页=真实堆分配）、进程数、
+// 累计写入三项采样。选用 RssAnon 而非 VmRSS：避免整棵进程树里共享库被逐进程重复计数
+// 导致的误杀（多进程构建如 make -j 会常见）。超限 → SIGKILL 整棵进程组，退出码 137
+// （128+SIGKILL）。仅 Linux（/proc 存在）；macOS/Windows 无 /proc 时采样恒为 0，这些
+// 限制自动失效（不误杀、不报错）。
 //
 // 安全策略：fail-closed——landlock-run 缺失时拒绝执行并报错，绝不裸跑。
 // 跨平台：仅 Linux（Landlock 内核机制）；macOS/Windows 不适用本 wrapper。
@@ -36,7 +40,7 @@
 // worker bash 的 IPv4/IPv6 socket；2026-09-13 按原设计移除该层。源码保留但不再编译调用。
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, statfsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { homedir } from "node:os";
 
@@ -45,12 +49,14 @@ const VENDORED_LANDLOCK = join(AGENT_DIR, "scripts", "vendor", "landlock-run");
 const SETTINGS_PATH = join(AGENT_DIR, "settings.json");
 const FAIL_EXIT = 125;
 
-// ── 内存墙常量 ──
+// ── 资源墙常量 ──
 const DEFAULT_MEMORY_MB = 1024;    // 默认 1GiB
 const MAX_MEMORY_MB = 32 * 1024;   // 防御性上限 32GiB（沙盒层钳制；正常上限由 helpers.ts 统一约束）
-const MEMORY_POLL_MS = 500;        // 采样周期（毫秒）
-const OOM_EXIT = 137;              // 128 + SIGKILL，标识内存超限被终止
-
+const DEFAULT_WORKER_NPROC = 128;  // worker 进程树进程数上限（make -j / pnpm 并发都够）
+const DEFAULT_WORKER_WRITE_MB = 2048; // worker 进程树累计写入上限（2GiB）
+const MAX_WRITE_MB = 32 * 1024;
+const MEMORY_POLL_MS = 500;        // 采样周期（毫秒），三项限制共用
+const OOM_EXIT = 137;              // 128 + SIGKILL，标识资源超限被终止
 /**
  * 非零退出时补的一行指路。
  *
@@ -64,13 +70,16 @@ const OOM_EXIT = 137;              // 128 + SIGKILL，标识内存超限被终�
  * 内存上限写实际值：这条命令可能被 sandbox-allow 提过额度（memoryMb），
  * 嘴硬说“1GiB”会让人照着那个数去猜。
  */
-function sandboxHint(memMb) {
-  return [
+function sandboxHint(limits) {
+  const lines = [
     "（若是权限问题）这条命令跑在文件系统沙箱里：只能写工作目录、/tmp、/dev/null。",
     "写别处要用 sandbox-allow 申请（permission=write-paths + 最小 paths + 一句 justification），sudo 解决不了。",
-    `命令内存上限 ${memMb > 0 ? `${memMb} MB` : "未启用"}，不够就用 sandbox-allow 的 memoryMb 给具体数值。`,
+  ];
+  lines.push(
+    `命令资源上限：内存 ${limits.memoryMb > 0 ? `${limits.memoryMb} MB` : "不限"}、进程 ${limits.nproc > 0 ? limits.nproc : "不限"}、累计写盘 ${limits.writeMb > 0 ? `${limits.writeMb} MB` : "不限"}。内存不够就用 sandbox-allow 的 memoryMb 给具体数值。`,
     "不要为绕过沙箱而改写命令或反复重试同一条。",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 /** 沙箱是否被整体关掉（关掉时那句指路就是噪音） */
@@ -119,11 +128,29 @@ function readAllowDirs() {
  *   PI_SANDBOX_MEMORY_MB 为正整数 → 取该值与 MAX 的较小者
  *   缺省 → DEFAULT_MEMORY_MB
  */
-function resolveMemoryMB() {
-  if (process.env.PI_SANDBOX_MEMORY_DISABLE === "1") return 0;
-  const raw = parseInt(process.env.PI_SANDBOX_MEMORY_MB ?? "", 10);
-  if (Number.isFinite(raw) && raw > 0) return Math.min(raw, MAX_MEMORY_MB);
-  return DEFAULT_MEMORY_MB;
+/**
+ * 解析本条命令的资源上限。
+ *   内存：*_DISABLE=1 → 0；给正整数 → 取该值与 MAX 的较小者；缺省 DEFAULT_MEMORY_MB。
+ *   进程数 / 写盘：显式给数才开（主 agent 默认不限）；worker 缺省走下面两个 worker 默认值。
+ */
+function resolveLimits() {
+  const isWorker = process.env.PI_SUBAGENT === "1";
+  const memRaw = parseInt(process.env.PI_SANDBOX_MEMORY_MB ?? "", 10);
+  const memoryMb = process.env.PI_SANDBOX_MEMORY_DISABLE === "1"
+    ? 0
+    : (Number.isFinite(memRaw) && memRaw > 0 ? Math.min(memRaw, MAX_MEMORY_MB) : DEFAULT_MEMORY_MB);
+
+  const nprocRaw = parseInt(process.env.PI_SANDBOX_NPROC ?? "", 10);
+  const nproc = process.env.PI_SANDBOX_NPROC_DISABLE === "1"
+    ? 0
+    : (Number.isFinite(nprocRaw) && nprocRaw > 0 ? nprocRaw : (isWorker ? DEFAULT_WORKER_NPROC : 0));
+
+  const writeRaw = parseInt(process.env.PI_SANDBOX_WRITE_MB ?? "", 10);
+  const writeMb = process.env.PI_SANDBOX_WRITE_DISABLE === "1"
+    ? 0
+    : (Number.isFinite(writeRaw) && writeRaw > 0 ? Math.min(writeRaw, MAX_WRITE_MB) : (isWorker ? DEFAULT_WORKER_WRITE_MB : 0));
+
+  return { memoryMb, nproc, writeMb };
 }
 
 /** 读单进程匿名内存（RssAnon，kB）。进程不存在返回 0。 */
@@ -155,38 +182,98 @@ function treeRssAnonKb(pid) {
   return total;
 }
 
+/** 进程树进程数（含 pid 自身）。子进程已退出时不计，安全。 */
+function treeProcCount(pid) {
+  if (!pid || pid <= 0) return 0;
+  let count = 1;
+  for (const child of childPids(pid)) count += treeProcCount(child);
+  return count;
+}
+
+/**
+ * 受监控路径所在文件系统的已用空间（字节）。
+ *
+ * 为什么不用 /proc/<pid>/io 的 write_bytes：那条路只统计**当前还活着**的进程，
+ * 而「写满盘」的典型形态恰恰是「起一个进程写一坨、退出、再起一个」（循环 dd、构建产物分片），
+ * 采样时子进程早没了；tmpfs（本机 /tmp）的写入更是压根不计入 write_bytes。
+ * 实测（2026-10-01）：循环往 /tmp 写 25MB，write_bytes 一路为 0，那堵墙形同虚设。
+ *
+ * 换成文件系统用量后：不管是谁写的、进程还在不在，用量都在账上（tmpfs 也算）。
+ * 同一文件系统按设备号去重（多个可写根可能落在同一个 fs 上）。
+ * 代价是它统计的是**整个文件系统**的增量——同机上别人同时在写会算进来；
+ * 阈值给得够大（worker 默认 2GiB）时这不构成实际误伤。
+ */
+function fsUsageSnapshot(paths) {
+  const byDevice = new Map();
+  for (const p of paths) {
+    try {
+      const dev = statSync(p).dev;
+      if (byDevice.has(dev)) continue;
+      const st = statfsSync(p);
+      byDevice.set(dev, (st.blocks - st.bfree) * st.bsize);
+    } catch {
+      /* 路径不存在 / 读不到：跳过这条 */
+    }
+  }
+  let total = 0;
+  for (const used of byDevice.values()) total += used;
+  return total;
+}
+
+/** 从 landlock grants 里取出可写根（写盘墙只盯真正能写的地方，/dev/null 不算） */
+function writableRootsOf(grants) {
+  const roots = [];
+  for (let i = 0; i + 1 < grants.length; i++) {
+    if (grants[i] === "--rw") roots.push(grants[i + 1]);
+  }
+  return roots.filter((p) => p !== "/dev/null");
+}
+
 /**
  * 以异步 spawn 方式执行一条命令并阻塞等待退出，附带可选的内存墙监控。
  *   1. detached:false → 命令留在**我们自己的进程组**里。pi 起我们时用了 detached
  *      （sandbox-shell 是组长），它们才收得住：abort/超时是 `kill(-我们的pid, SIGKILL)`，
  *      命令若自成一个组就逃过这一刀，变成孤儿继续跑（2026-09-30 实测：bash_background
  *      任务被取消后 sleep 仍活着，因为它在另一个进程组里）。
- *   2. 采样进程树匿名内存；超过上限 → 打印原因、SIGKILL 整组、以 OOM_EXIT(137) 退出。
+ *   2. 采样三项资源（匿名内存 / 进程数 / 累计写入）；任一超限 → 打印原因、SIGKILL 整组、
+ *      以 OOM_EXIT(137) 退出。
  *   3. 正常退出按子进程 exit code 透传；启动失败（error 事件）以 FAIL_EXIT 退出。
  */
-function runCommand(launcher, args, cwd) {
+function runCommand(launcher, args, cwd, opts = {}) {
   return new Promise((resolve) => {
     const child = spawn(launcher, args, { stdio: "inherit", cwd, detached: false });
-    const memMb = resolveMemoryMB();
-    let oomKilled = false;
+    const limits = resolveLimits();
+    const watchPaths = opts.watchPaths ?? [];
+    // 写盘基线在 spawn 之后立刻取：只算这条命令跑起来之后的增量
+    const writeBaseline = limits.writeMb > 0 ? fsUsageSnapshot(watchPaths) : 0;
+    const limited = limits.memoryMb > 0 || limits.nproc > 0 || limits.writeMb > 0;
+    let limitKilled = null;
     let poll;
 
-    const checkMem = () => {
-      if (memMb <= 0 || oomKilled) return;
-      if (treeRssAnonKb(child.pid || 0) > memMb * 1024) {
-        oomKilled = true;
-        console.error(
-          `sandbox-shell: 命令进程树匿名内存超出上限（${memMb} MB），已终止进程组：${(args[args.length - 1] ?? "").slice(0, 120)}`,
-        );
-        // 组杀会连自己一起带走，退出码就是 137（128+SIGKILL）= OOM_EXIT，不用再 exit
-        killGroup("SIGKILL");
+    /** 三项资源共用一次采样：哪项先超就报哪项 */
+    const checkLimits = () => {
+      if (limitKilled || !child.pid) return;
+      const pid = child.pid;
+      if (limits.memoryMb > 0 && treeRssAnonKb(pid) > limits.memoryMb * 1024) {
+        limitKilled = `匿名内存超出上限（${limits.memoryMb} MB）`;
+      } else if (limits.nproc > 0 && treeProcCount(pid) > limits.nproc) {
+        limitKilled = `进程数超出上限（${limits.nproc}）`;
+      } else if (limits.writeMb > 0) {
+        const grownMb = Math.round((fsUsageSnapshot(watchPaths) - writeBaseline) / (1024 * 1024));
+        if (grownMb > limits.writeMb) limitKilled = `写盘超出上限（${limits.writeMb} MB）`;
       }
+      if (!limitKilled) return;
+      console.error(
+        `sandbox-shell: 命令进程树${limitKilled}，已终止进程组：${(args[args.length - 1] ?? "").slice(0, 120)}`,
+      );
+      // 组杀会连自己一起带走，退出码就是 137（128+SIGKILL）= OOM_EXIT，不用再 exit
+      killGroup("SIGKILL");
     };
 
-    if (memMb > 0) {
+    if (limited) {
       // 启动瞬间与周期采样双保险：短命但瞬态超限的命令也能触发。
-      setImmediate(checkMem);
-      poll = setInterval(checkMem, MEMORY_POLL_MS);
+      setImmediate(checkLimits);
+      poll = setInterval(checkLimits, MEMORY_POLL_MS);
     }
 
     /**
@@ -235,14 +322,14 @@ function runCommand(launcher, args, cwd) {
     });
     child.on("exit", (code, signal) => {
       if (poll) clearInterval(poll);
-      // 我们自己触发的内存超限 → 用统一 OOM_EXIT；其余情况透传子进程状态。
-      if (oomKilled) process.exit(OOM_EXIT);
+      // 我们自己触发的资源超限 → 用统一 OOM_EXIT；其余情况透传子进程状态。
+      if (limitKilled) process.exit(OOM_EXIT);
       const exitCode = code ?? (signal ? 128 + (signal === "SIGKILL" ? 9 : 15) : 1);
       // 非零退出时补一行指路。不区分「是不是沙箱拦的」——判不准，而且判错的代价
       // （命令自己报错却被说成沙箱）只是多一句废话，漏报的代价是 agent 卡在
       // 一条根本没有报错的死路上。措辞用条件句，退出码一字不改地透传。
       if (exitCode !== 0 && !sandboxDisabled()) {
-        console.error(sandboxHint(memMb));
+        console.error(sandboxHint(limits));
       }
       process.exit(exitCode);
     });
@@ -315,7 +402,8 @@ function buildGrants() {
 
 /** 经 landlock-run 沙箱执行（只约束文件系统；网络不拦截，由 capability 审批链管）。 */
 function execSandboxed(command, launcher) {
-  return runCommand(launcher, [...buildGrants(), "--", "bash", "-c", command], process.cwd());
+  const grants = buildGrants();
+  return runCommand(launcher, [...grants, "--", "bash", "-c", command], process.cwd(), { watchPaths: writableRootsOf(grants) });
 }
 
 // ── 入口 ──
