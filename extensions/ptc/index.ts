@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ptcCodeDigest, ptcReasonLedger } from "../../lib/ptc-reason.ts";
 import { scanScript } from "../../lib/ptc-analyze.ts";
+import { makeProgressContext } from "../../lib/ptc-progress.ts";
 import { runDryRun } from "../../lib/ptc-dryrun.ts";
 import { yoloEnabled } from "../sandbox-permissions/yolo.ts";
 import {
@@ -205,7 +206,12 @@ export function registerRunCode(
 				opaque: scan.opaque.length > 0 || scan.parseError !== undefined,
 			});
 			try {
-				return await definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
+				// 内层调用的流式进度（subagent 的 fleet 快照等）在 codemode 那层会被丢掉，
+			// 这里包一层 ctx 补回来，转成 run_code 自己的部分结果给界面看
+			const progressCtx = makeProgressContext(ctx, (line: string) => {
+				onUpdate?.({ content: [{ type: "text", text: line }], details: undefined });
+			});
+			return await definition.execute(toolCallId, { code }, signal, onUpdate, progressCtx);
 			} finally {
 				endPtcScope(toolCallId);
 				// 跑完把"实际派发了哪些调用"写进审计（内存滚动，不落盘），
