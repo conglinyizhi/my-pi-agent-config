@@ -16,18 +16,30 @@
         <span v-if="chip.label">{{ chip.label }}</span>
         <span v-if="sizeLabel">{{ sizeLabel }}</span>
         <span v-if="body.kind === 'source' && !chip.literal">这一处看不到内容，原文照摆</span>
+        <span v-else-if="chip.call.mode">{{ chip.call.mode }}</span>
       </div>
 
       <div class="dlg-body">
         <template v-if="body.kind === 'diff'">
-          <div class="blk">
-            <div class="blk-head blk-old">原内容</div>
-            <pre class="blk-body" v-html="escaped(body.old)"></pre>
-          </div>
-          <div class="blk">
-            <div class="blk-head blk-new">改成</div>
-            <pre class="blk-body" v-html="escaped(body.new)"></pre>
-          </div>
+          <template v-if="diffBlocks.length">
+            <div class="blk-head">改动（没变的部分折起来了）</div>
+            <DiffView :blocks="diffBlocks" />
+          </template>
+          <template v-else>
+            <div class="blk-head">改动太大，不逐行对比，两段分开摆</div>
+            <div class="blk">
+              <div class="blk-head blk-old">原内容</div>
+              <pre class="blk-body" v-html="escaped(body.old)"></pre>
+            </div>
+            <div class="blk">
+              <div class="blk-head blk-new">改成</div>
+              <pre class="blk-body" v-html="escaped(body.new)"></pre>
+            </div>
+          </template>
+        </template>
+        <template v-else-if="body.kind === 'patch'">
+          <div class="blk-head">补丁原文（{{ patchStat }}，照摆不重算）</div>
+          <DiffView :blocks="patchBlocks" />
         </template>
         <div v-else-if="body.kind === 'content'" class="blk">
           <div class="blk-head">将写入的内容</div>
@@ -54,6 +66,10 @@ import { watch } from "vue";
 import { callTitle, clipMarks } from "../../domain/gate/script-fold.js";
 import { renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { clipTokens, colorTokens, composeCodeHtml } from "../../domain/gate/code-color.js";
+import { blocksOfRows } from "../../domain/gate/diff-render.js";
+import { patchCounts, patchToRows } from "../../domain/gate/patch-rows.js";
+import { collapseContext, lineDiff } from "../../../../../lib/text-diff.ts";
+import DiffView from "./DiffView.vue";
 
 const props = defineProps({
   /** 折叠模型里的一颗芯片（含 pi 侧给的事实） */
@@ -75,11 +91,29 @@ const body = computed(() => {
   if (call.replacement) {
     return { kind: "diff", old: call.replacement.old, new: call.replacement.new, truncated: call.replacement.truncated };
   }
+  if (typeof call.patchText === "string") {
+    return { kind: "patch", text: call.patchText, truncated: call.truncated === true };
+  }
   if (typeof call.contentPreview === "string") {
     return { kind: "content", text: call.contentPreview, truncated: call.truncated === true };
   }
   return { kind: "source", text: (props.source ?? "").slice(call.startOffset, call.endOffset) };
 });
+
+/** 对比块：改动不大时把没变的部分折起来，太大就退回两块分开摆 */
+const diffBlocks = computed(() => {
+  if (body.value.kind !== "diff") return [];
+  const result = lineDiff(body.value.old, body.value.new);
+  if (result.status === "too-large") return [];
+  return collapseContext(result.rows, 3);
+});
+
+const patchBlocks = computed(() => (body.value.kind === "patch" ? blocksOfRows(patchToRows(body.value.text)) : []));
+const patchStat = computed(() => {
+  const counts = patchCounts(patchToRows(body.value.kind === "patch" ? body.value.text : ""));
+  return `+${counts.added} / -${counts.removed}`;
+});
+const diffTooLarge = computed(() => body.value.kind === "diff" && diffBlocks.value.length === 0);
 
 /**
  * 这段内容该按什么语法上色：跟着目标路径的后缀走。

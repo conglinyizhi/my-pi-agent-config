@@ -18,6 +18,26 @@
       @update:current="cur = $event"
     />
 
+    <div v-if="mergedRows.length" data-name="script-merged" class="merged">
+      <div class="merged-head">🧩 同文件改动合并（按字面量推演，不是磁盘上的真身）</div>
+      <div
+        v-for="(entry, index) in mergedRows"
+        :key="index"
+        class="merged-item"
+        :class="{ 'merged-warn': entry.status !== 'merged' }"
+      >
+        <div class="merged-title">
+          <code class="merged-path">{{ entry.path }}</code>
+          <span class="merged-badge">{{ entry.ops }} 处改动</span>
+          <span v-if="entry.added || entry.removed" class="merged-count">+{{ entry.added }} / -{{ entry.removed }}</span>
+          <span v-if="entry.baseAssumedEmpty" class="merged-note">改前按空文件算</span>
+          <span v-if="entry.truncated" class="merged-note">只摆了前一段</span>
+        </div>
+        <div v-if="entry.reason" class="merged-reason">{{ entry.reason }}</div>
+        <DiffView v-if="entry.blocks && entry.blocks.length" :blocks="entry.blocks" />
+      </div>
+    </div>
+
     <div v-if="effectRows.length" data-name="script-effects" class="effects">
       <div class="effects-head">📋 静态扫描（只认字面量，看不清的地方已标出）</div>
       <div
@@ -108,6 +128,7 @@ import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow,
 import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
 import GateCommandPreview from "../components/gate/GateCommandPreview.vue";
+import DiffView from "../components/gate/DiffView.vue";
 
 const platform = usePlatform();
 
@@ -160,6 +181,8 @@ const title = computed(() =>
     ? scriptAuditTitle()
     : isSandboxAllow.value ? "🔓 跨沙箱请求（仅此一次）" : isCapability.value ? "🔐 subagent 能力请求" : "⚠️ 危险命令审计",
 );
+/** 同文件改动合并出来的净变化（显示层推演，pi 侧算好） */
+const mergedRows = computed(() => scriptEffects.value?.mergedChanges ?? []);
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
 const effectsDigest = computed(() => digestLine(scriptEffects.value));
 const permLabel = computed(() =>
@@ -297,4 +320,15 @@ onMounted(async () => {
 .effect-warn .effect-label { color: #e0af68; }
 .effect-warn .effect-items { color: #e0af68; }
 .effects-digest { margin-top: 4px; font-size: 10px; color: #666; font-family: monospace; }
+/* 合并视图：同一文件的净变化，断链/基准不明的一眼看得出 */
+.merged { padding: 8px 16px; border-top: 1px solid #2a2a4a; background: #10101f; max-height: 40vh; overflow: auto; }
+.merged-head { font-size: 12px; color: #9aa4bf; margin-bottom: 6px; }
+.merged-item { margin-bottom: 10px; }
+.merged-title { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.merged-path { color: #c0caf5; }
+.merged-item.merged-warn .merged-path { color: #e6a23c; }
+.merged-badge { color: #7aa2f7; }
+.merged-count { color: #888; font-family: monospace; }
+.merged-note { color: #e6a23c; font-size: 11px; }
+.merged-reason { font-size: 11px; color: #e6a23c; margin: 2px 0 4px; }
 </style>

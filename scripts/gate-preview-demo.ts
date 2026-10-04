@@ -31,6 +31,7 @@ const SOURCE = [
 	"  await tools.edit({ path: '/home/clyzhi/.pi/agent/lib/timeline.ts', old: 'const a = 1;', new: 'const a = 2;' });",
 	"      const body = await tools.read({ path: '/tmp/notes.txt' });",
 	"  await tools.write({ path: '/home/clyzhi/.pi/agent/lib/timeline.ts', content: body });",
+	"  await tools.apply_patch({ patch: \"*** Update File: /tmp/notes.txt\\n@@ -1 +1 @@\\n-old line\\n+new line\\n\" });",
 	"  await tools.cleanup_everything({ path: '/etc/hosts' });",
 	"}",
 ].join("\n");
@@ -58,6 +59,35 @@ async function main(): Promise<void> {
 	console.log("");
 	console.log("=== 审核窗首屏（芯片用 «» 标） ===");
 	console.log(screen);
+
+	const merged = effects.mergedChanges ?? [];
+	if (merged.length > 0) {
+		console.log("");
+		console.log("=== 同文件改动合并（按字面量推演） ===");
+		for (const entry of merged) {
+			const head = [entry.path, entry.status, entry.ops + " 处", "+" + entry.added + "/-" + entry.removed];
+			if (entry.baseAssumedEmpty) head.push("改前按空文件算");
+			if (entry.truncated) head.push("只摆前一段");
+			console.log(head.join("  "));
+			if (entry.reason) console.log("  ! " + entry.reason);
+			for (const block of entry.blocks) {
+				if (block.type === "gap") {
+					console.log("  ⋯ 跳过 " + block.count + " 行未改动");
+					continue;
+				}
+				for (const row of block.rows) {
+					const sign = row.kind === "add" ? "+" : row.kind === "del" ? "-" : " ";
+					console.log("  " + sign + " " + row.text);
+				}
+			}
+		}
+	}
+	const patchCall = (effects.editCalls ?? []).find((call) => typeof call.patchText === "string");
+	if (patchCall && typeof patchCall.patchText === "string") {
+		console.log("");
+		console.log("=== 补丁原文（照摆不重算） ===");
+		console.log(patchCall.patchText.trim());
+	}
 
 	const dir = join(tmpdir(), "pi-gate-preview");
 	mkdirSync(dir, { recursive: true });
