@@ -10,6 +10,7 @@ import {
 	clearPtcScopes,
 	describeTools,
 	endPtcScope,
+	scanSummary,
 	ptcRejectedText,
 	ptcScopeForNestedCall,
 	ptcScriptDigest,
@@ -60,6 +61,32 @@ describe("工具面（送审材料）", () => {
 		}));
 		const lines = describeTools(many).split("\n").filter((line) => line.startsWith("- "));
 		assert.equal(lines.length, 20);
+	});
+
+	it("给了扫描结果就只描述用到的工具，其余只报个数", () => {
+		const text = describeTools(tools, ["mcp__notes__write_note"]);
+		assert.ok(text.includes("mcp__notes__write_note"));
+		assert.ok(!text.includes("- todo_write:"), "没用到的不该带描述");
+		assert.ok(text.includes("其它工具，共 5 个"), text);
+	});
+
+	it("扫描摘要列出工具、路径、命令与看不清的地方", () => {
+		const summary = scanSummary({
+			calls: [],
+			tools: ["read", "bash"],
+			paths: ["/etc/x", "src/a.ts"],
+			commands: ["ls"],
+			opaque: ["12:5 read 的参数里有非字面量"],
+		});
+		assert.ok(summary.includes("read、bash"));
+		assert.ok(summary.includes("/etc/x"));
+		assert.ok(summary.includes('"ls"'));
+		assert.ok(summary.includes("看不清的地方"));
+		assert.ok(summary.includes("12:5"));
+	});
+
+	it("没给扫描结果时摘要为空（退回工具全集）", () => {
+		assert.equal(scanSummary(undefined), "");
 	});
 
 	it("送审文本把理由、工具面、脚本原文都带上", () => {

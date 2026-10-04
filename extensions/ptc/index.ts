@@ -27,6 +27,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ptcCodeDigest, ptcReasonLedger } from "../../lib/ptc-reason.ts";
+import { scanScript } from "../../lib/ptc-analyze.ts";
+import { yoloEnabled } from "../sandbox-permissions/yolo.ts";
 import {
 	approvePtcScript,
 	beginPtcScope,
@@ -135,24 +137,34 @@ export function registerRunCode(
 				codeChars: code.length,
 			});
 
-			// 事前审核：过了才执行；没过整段不执行，返回编译失败式的错误
-			const outcome = await approve({
-				pi,
-				ctx,
-				input: { script: code, reason, tools: registeredTools(pi) },
-				signal,
-			});
-			if (!outcome.approved) {
-				return {
-					content: [{
-						type: "text",
-						text: ptcRejectedText(outcome.review?.reason ?? "未获批准", outcome.comment),
-					}],
-					details: undefined,
-				};
+			// 字面量扫描：送审材料用它收窄工具面，批准范围用它决定内层哪些调用免问
+			const scan = await scanScript(code);
+
+			// 事前审核：过了才执行；没过整段不执行，返回编译失败式的错误。
+			// yolo 与 bash-guard 保持一致：跳过整条审批链。
+			if (!yoloEnabled()) {
+				const outcome = await approve({
+					pi,
+					ctx,
+					input: { script: code, reason, tools: registeredTools(pi), scan },
+					signal,
+				});
+				if (!outcome.approved) {
+					return {
+						content: [{
+							type: "text",
+							text: ptcRejectedText(outcome.review?.reason ?? "未获批准", outcome.comment),
+						}],
+						details: undefined,
+					};
+				}
 			}
 
-			beginPtcScope(toolCallId, ptcScriptDigest(code));
+			beginPtcScope(toolCallId, ptcScriptDigest(code), {
+				tools: scan.tools,
+				// 有看不清的地方就退回逐条审批：批准范围只敢覆盖"写出来的调用"
+				opaque: scan.opaque.length > 0 || scan.parseError !== undefined,
+			});
 			try {
 				return await definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
 			} finally {

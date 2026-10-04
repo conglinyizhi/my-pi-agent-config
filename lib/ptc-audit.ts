@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { processSingleton } from "./process-singleton.ts";
 import { resolveApprovalChannel } from "./approval-channel.ts";
+import type { ScriptScan } from "./ptc-analyze.ts";
 import {
 	createReviewCache,
 	loadLlmReviewConfig,
@@ -54,16 +55,21 @@ export interface PtcAuditInput {
 	script: string;
 	reason: string;
 	tools: PtcToolInfo[];
+	/** 字面量扫描结果；没扫（或扫失败）时不带，送审材料就退回"工具全集" */
+	scan?: ScriptScan;
 }
 
 /**
  * 工具面那一段：自明的只列名字，其余附一句描述与 MCP 注解
  * （注解带 readOnly / destructive / openWorld 提示，判风险时最有用）。
  */
-export function describeTools(tools: PtcToolInfo[]): string {
+export function describeTools(tools: PtcToolInfo[], used?: string[]): string {
 	const selfEvident: string[] = [];
 	const described: string[] = [];
-	for (const tool of tools) {
+	// 扫描给得出"这次真正用到哪几个"时，只描述那几个；其余只报个数（省额度也更准）
+	const narrowed = used !== undefined && used.length > 0 ? new Set(used) : undefined;
+	const pool = narrowed ? tools.filter((tool) => narrowed.has(tool.name)) : tools;
+	for (const tool of pool) {
 		if (SELF_EVIDENT_TOOLS.has(tool.name)) {
 			selfEvident.push(tool.name);
 			continue;
@@ -79,9 +85,25 @@ export function describeTools(tools: PtcToolInfo[]): string {
 		if (described.length >= MAX_DESCRIBED_TOOLS) break;
 	}
 	const sections: string[] = [];
-	if (described.length > 0) sections.push(`这段脚本可能调用的工具（除下列外都是常见工具）：\n${described.join("\n")}`);
+	if (described.length > 0) sections.push(`脚本用到的工具（需要说明的）：\n${described.join("\n")}`);
 	if (selfEvident.length > 0) sections.push(`另可调用：${selfEvident.join("、")}`);
+	if (narrowed) sections.push(`（脚本还能调用注册表里的其它工具，共 ${tools.length} 个）`);
 	return sections.join("\n\n");
+}
+
+/** 静态扫描那一段：用到的工具、字面量路径与命令、以及"看不清"的地方 */
+export function scanSummary(scan: ScriptScan | undefined): string {
+	if (scan === undefined) return "";
+	const lines: string[] = ["【静态扫描（只认字面量）】"];
+	if (scan.parseError) lines.push(`脚本没解析干净：${scan.parseError}`);
+	lines.push(`字面上调用的工具：${scan.tools.length > 0 ? scan.tools.join("、") : "（没有直接写出来的调用）"}`);
+	if (scan.paths.length > 0) lines.push(`路径字面量：${scan.paths.join("、")}`);
+	if (scan.commands.length > 0) lines.push(`命令字面量：${scan.commands.map((cmd) => JSON.stringify(cmd)).join("、")}`);
+	if (scan.opaque.length > 0) {
+		lines.push("看不清的地方（值由运行时决定，可能比上面列的多）：");
+		for (const item of scan.opaque) lines.push(`  ${item}`);
+	}
+	return lines.join("\n");
 }
 
 /** 送审文本：审核模型与审批卡看到的是同一份 */
@@ -91,7 +113,9 @@ export function buildPtcAuditSubject(input: PtcAuditInput): string {
 		"",
 		`执行理由（模型自述）：${input.reason}`,
 		"",
-		describeTools(input.tools),
+		describeTools(input.tools, input.scan?.tools),
+		"",
+		scanSummary(input.scan),
 		"",
 		"脚本原文：",
 		input.script,
@@ -191,6 +215,10 @@ function appendPtcAudit(pi: ExtensionAPI, entry: Record<string, unknown>): void 
 export interface PtcScope {
 	callId: string;
 	scriptDigest: string;
+	/** 字面上用到的工具名：内层调用只在这个集合里才免于逐条问人 */
+	tools: string[];
+	/** 脚本里有推不出来的地方（opaque / 解析失败）：整段退回逐条审批 */
+	opaque: boolean;
 	since: number;
 }
 
@@ -198,8 +226,27 @@ function scopes(): Map<string, PtcScope> {
 	return processSingleton("ptc-approved-scopes", () => new Map<string, PtcScope>());
 }
 
-export function beginPtcScope(callId: string, scriptDigest: string): void {
-	scopes().set(callId, { callId, scriptDigest, since: Date.now() });
+export function beginPtcScope(
+	callId: string,
+	scriptDigest: string,
+	scope: { tools?: string[]; opaque?: boolean } = {},
+): void {
+	scopes().set(callId, {
+		callId,
+		scriptDigest,
+		tools: scope.tools ?? [],
+		opaque: scope.opaque === true,
+		since: Date.now(),
+	});
+}
+
+/**
+ * 这段脚本批过的范围里，能不能免掉 `tools` 里某次调用的"再问一次人"。
+ * 判据故意保守：脚本写不出这次调用（扫描没看见）或整段有看不清的地方，都不免。
+ */
+export function ptcScopeCoversTool(scope: PtcScope, toolName: string): boolean {
+	if (scope.opaque) return false;
+	return scope.tools.includes(toolName);
 }
 
 export function endPtcScope(callId: string): void {
