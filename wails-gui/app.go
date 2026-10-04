@@ -81,6 +81,10 @@ func (a *App) GetInitData() (map[string]interface{}, error) {
 		base["review"] = req["review"]
 		// sandbox-allow 升权审批合并进 gate 窗口：kind 判别 audit（默认）/ sandbox-allow
 		base["kind"] = req["kind"]
+		// 脚本事前审核（PTC）：subject=script 时 command 是 JS 原文，
+		// 影响面走 scriptEffects（结构化），前端据此换标题并铺分区
+		base["subject"] = req["subject"]
+		base["scriptEffects"] = req["scriptEffects"]
 		base["permission"] = req["permission"]
 		base["writePaths"] = req["writePaths"]
 		base["justification"] = req["justification"]

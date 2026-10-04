@@ -50,12 +50,38 @@ interface ApprovalRequestBase {
 	urgent?: boolean;
 }
 
+/**
+ * 受审对象的形态。`script` = run_code 的脚本事前审核，
+ * 审批窗据此换标题、并把 command 当脚本原文渲染（不再跑 shell 命令那套解析）。
+ */
+export type AuditSubject = "script";
+
+/** 脚本事前审核的结构化影响面（pi 侧算好，GUI 只负责摆） */
+export interface ScriptEffectsPayload {
+	/** 字面上调用过的工具 */
+	tools: string[];
+	/** 参数里的路径字面量 */
+	paths: string[];
+	/** 命令字面量（bash 那条） */
+	commands: string[];
+	/** 值由运行时决定、因此看不清的地方（一句话一条） */
+	opaque: string[];
+	/** 语法层面就不干净时的原因 */
+	parseError?: string;
+	/** 脚本摘要（前 12 位足够人眼对齐） */
+	digestShort: string;
+}
+
 export interface AuditApprovalRequest extends ApprovalRequestBase {
 	kind: "audit";
 	command: string;
 	taskId?: string;
 	rules?: unknown[];
 	review?: unknown;
+	/** 受审对象形态；缺省是 bash 命令 */
+	subject?: AuditSubject;
+	/** subject = script 时的影响面 */
+	scriptEffects?: ScriptEffectsPayload;
 	/**
 	 * 事实层摘要（lib/preshell.ts 的 formatFacts 输出）：这条命令碰了哪些路径、
 	 * 跑了什么程序、解释器里那段源码是什么、清单完不完整。
@@ -188,14 +214,18 @@ export function normalizeApprovalComment(comment: unknown): string | undefined {
 
 export function toGuiPayload(request: ApprovalRequest): Record<string, unknown> {
 	const payload = buildKindPayload(request);
-	// 命令里写死的赋值（export / 前置赋值）解析结果：审批窗标绿、悬停看值。
-	// 只在 Linux 给（这条功能是 Linux 闸门窗的）；拿不到环境变量的场合也不给，宁可没有
-	const envNotes = envNotesFor(request.command);
-	if (envNotes) payload.envNotes = envNotes;
-	// 命令里变量**使用处**的渲染值：审批窗标蓝（悬停看值）/标灰（悬停看原因）并列出变量表。
-	// 与 envNotes 分工：那边是「这条命令自己声明的赋值解析成什么」，这边是「用到的地方渲成什么」
-	const varRenders = varRendersFor(request.command);
-	if (varRenders) payload.varRenders = varRenders;
+	// shell 命令那套解析（赋值解析、变量渲染）只对命令有意义：
+	// 脚本事前审核的 command 是 JS 原文，跑它只会给出一堆无意义的标注。
+	if (request.kind !== "audit" || request.subject !== "script") {
+		// 命令里写死的赋值（export / 前置赋值）解析结果：审批窗标绿、悬停看值。
+		// 只在 Linux 给（这条功能是 Linux 闸门窗的）；拿不到环境变量的场合也不给，宁可没有
+		const envNotes = envNotesFor(request.command);
+		if (envNotes) payload.envNotes = envNotes;
+		// 命令里变量**使用处**的渲染值：审批窗标蓝（悬停看值）/标灰（悬停看原因）并列出变量表。
+		// 与 envNotes 分工：那边是「这条命令自己声明的赋值解析成什么」，这边是「用到的地方渲成什么」
+		const varRenders = varRendersFor(request.command);
+		if (varRenders) payload.varRenders = varRenders;
+	}
 	// urgent 随 payload 下发：适配器据此跳过度延迟（见 hub/adapters/feishu/main.go 的 onAskEvent）
 	return request.urgent ? { ...payload, urgent: true } : payload;
 }
@@ -224,6 +254,8 @@ function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {
 			rules: request.rules,
 			review: request.review,
 			...(request.factsText ? { factsText: request.factsText } : {}),
+			...(request.subject ? { subject: request.subject } : {}),
+			...(request.scriptEffects ? { scriptEffects: request.scriptEffects } : {}),
 		};
 	}
 	if (request.kind === "sandbox-allow") {

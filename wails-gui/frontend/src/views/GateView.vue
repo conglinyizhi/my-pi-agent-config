@@ -16,6 +16,20 @@
       @update:current="cur = $event"
     />
 
+    <div v-if="effectRows.length" data-name="script-effects" class="effects">
+      <div class="effects-head">📋 静态扫描（只认字面量，看不清的地方已标出）</div>
+      <div
+        v-for="section in effectRows"
+        :key="section.key"
+        class="effect-row"
+        :class="{ 'effect-warn': section.warn }"
+      >
+        <span class="effect-label">{{ section.label }}</span>
+        <span class="effect-items">{{ section.items.join("、") }}</span>
+      </div>
+      <div v-if="effectsDigest" class="effects-digest">{{ effectsDigest }}</div>
+    </div>
+
     <div v-if="varRows.length" data-name="var-table" class="var-table">
       <div class="var-head">🔎 命令里的变量（{{ varRows.length }}）</div>
       <div
@@ -86,6 +100,7 @@ import "../gui-theme.css";
 import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import { findHighlights } from "../domain/gate/highlights.js";
+import { digestLine, effectSectionsOf, isScriptAudit, scriptAuditTitle } from "../domain/gate/script-audit.js";
 import { varRenderRows } from "../domain/gate/var-renders.js";
 import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow, appendScopeRow, pathDraftsToActions, pathDraftSummary, removeScopeRow, scopeChanged, scopeIssues, scopeWritePaths, workspaceActions } from "../domain/gate/path-actions.js";
 import GateActionBar from "../components/gate/GateActionBar.vue";
@@ -100,6 +115,10 @@ const taskId = ref(null);
 const rules = ref([]);
 const review = ref(null);
 const kind = ref("");
+/** 受审对象形态：script = run_code 的脚本事前审核 */
+const subject = ref("");
+/** 结构化影响面（pi 侧算好）：工具 / 路径 / 命令 / 看不清的地方 */
+const scriptEffects = ref(null);
 const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
@@ -130,9 +149,15 @@ const comment = ref("");
 
 const isSandboxAllow = computed(() => kind.value === "sandbox-allow");
 const isCapability = computed(() => kind.value === "capability");
+/** 脚本事前审核：标题、影响面分区、摘要行都换成这一套 */
+const isScript = computed(() => isScriptAudit({ subject: subject.value }));
 const title = computed(() =>
-  isSandboxAllow.value ? "🔓 跨沙箱请求（仅此一次）" : isCapability.value ? "🔐 subagent 能力请求" : "⚠️ 危险命令审计",
+  isScript.value
+    ? scriptAuditTitle()
+    : isSandboxAllow.value ? "🔓 跨沙箱请求（仅此一次）" : isCapability.value ? "🔐 subagent 能力请求" : "⚠️ 危险命令审计",
 );
+const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
+const effectsDigest = computed(() => digestLine(scriptEffects.value));
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写",
 );
@@ -224,6 +249,8 @@ onMounted(async () => {
   varRenders.value = data.varRenders || [];
   review.value = data.review || null;
   kind.value = data.kind || "audit";
+  subject.value = data.subject || "";
+  scriptEffects.value = data.scriptEffects || null;
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
@@ -257,4 +284,12 @@ onMounted(async () => {
 .var-reason { color: #b0b0b0; font-size: 11px; }
 .var-kind { font-size: 10px; color: #666; }
 .var-row-unknown .var-name { color: #9a9ab0; }
+.effects { border-bottom: 1px solid #2a2a4a; background: #141428; padding: 6px 16px 8px; max-height: 26vh; overflow: auto; }
+.effects-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
+.effect-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
+.effect-label { flex: 0 0 auto; color: #888; font-size: 11px; }
+.effect-items { color: #cfcfcf; font-family: monospace; word-break: break-all; }
+.effect-warn .effect-label { color: #e0af68; }
+.effect-warn .effect-items { color: #e0af68; }
+.effects-digest { margin-top: 4px; font-size: 10px; color: #666; font-family: monospace; }
 </style>

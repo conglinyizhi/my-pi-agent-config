@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { processSingleton } from "./process-singleton.ts";
-import { resolveApprovalChannel } from "./approval-channel.ts";
+import { resolveApprovalChannel, type ScriptEffectsPayload } from "./approval-channel.ts";
 import type { ScriptScan } from "./ptc-analyze.ts";
 import {
 	createReviewCache,
@@ -152,6 +152,19 @@ function ptcReviewCache(): ReviewCache {
 	return reviewCacheForPtc;
 }
 
+/** 从扫描结果整理出给审批窗的结构化影响面 */
+export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
+	const scan = input.scan;
+	return {
+		tools: scan?.tools ?? [],
+		paths: scan?.paths ?? [],
+		commands: scan?.commands ?? [],
+		opaque: scan?.opaque ?? [],
+		...(scan?.parseError ? { parseError: scan.parseError } : {}),
+		digestShort: ptcScriptDigest(input.script).slice(0, 12),
+	};
+}
+
 /**
  * 事前审核一段脚本。判定口径与 bash 那条链一致：
  * 预审判 safe 且档位是 auto 就直接放行；其余交人工闸门。
@@ -180,8 +193,21 @@ export async function approvePtcScript(options: {
 		}
 	}
 
-	const channel = resolveApprovalChannel();
-	const decision = await channel({ kind: "audit", command: subject, reason: input.reason, review, signal }, ctx);
+		const channel = resolveApprovalChannel();
+	// 给审批窗的是**结构化**的一份：command 放脚本原文（窗口当代码块渲染），
+	// 理由与影响面各走各的字段；送审给模型的仍是上面那段带解释的 subject。
+	const decision = await channel(
+		{
+			kind: "audit",
+			command: input.script,
+			reason: input.reason,
+			subject: "script",
+			scriptEffects: scriptEffectsOf(input),
+			review,
+			signal,
+		},
+		ctx,
+	);
 	const approved = decision.action === "allow";
 	appendPtcAudit(pi, {
 		digest,

@@ -16,6 +16,7 @@ import {
 	recentPtcAudits,
 	recordNestedCall,
 	scanSummary,
+	scriptEffectsOf,
 	summarizeArgs,
 	takeNestedCalls,
 	ptcRejectedText,
@@ -94,6 +95,24 @@ describe("工具面（送审材料）", () => {
 
 	it("没给扫描结果时摘要为空（退回工具全集）", () => {
 		assert.equal(scanSummary(undefined), "");
+	});
+
+	it("给审批窗的影响面是结构化的，没扫描也有摘要位", () => {
+		const effects = scriptEffectsOf({
+			script: "return await tools.bash({ command: 'ls' })",
+			reason: "看看目录",
+			tools: [],
+			scan: { calls: [], tools: ["bash"], paths: [], commands: ["ls"], opaque: ["3:1 bash 的参数里有非字面量"] },
+		});
+		assert.deepEqual(effects.tools, ["bash"]);
+		assert.deepEqual(effects.commands, ["ls"]);
+		assert.equal(effects.opaque.length, 1);
+		assert.equal(effects.digestShort.length, 12);
+		assert.equal(effects.parseError, undefined);
+
+		const bare = scriptEffectsOf({ script: "return 1", reason: "空扫", tools: [] });
+		assert.deepEqual(bare.tools, []);
+		assert.equal(bare.digestShort.length, 12);
 	});
 
 	it("送审文本把理由、工具面、脚本原文都带上", () => {
