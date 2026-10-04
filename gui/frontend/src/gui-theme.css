@@ -1,9 +1,12 @@
 /* 全局 box-sizing：防止 width:100% + padding 溢出（WebKitGTK 下 textarea/input/select 常见坑） */
 *, *::before, *::after { box-sizing: border-box; }
 
-/* gui-theme.css — 所有 Wails GUI 共享样式
-   用法：在 rsbuild.config.ts 中 import 或直接 @import
+/* gui-theme.css — 所有 GUI 窗口共享的样式
+   四个视图（gate / editor / subagents / routing）各自 import 一次，Vite 打包时去重。
 */
+/* 中文字形按简体（zh-CN）走：Chromium 靠 html lang 与字体栈挑 CJK 变体，
+   只写 sans-serif 时容易落到日文字形上（MiSans 已在系统里）。 */
+html, body { font-family: var(--font); }
 
 :root {
   --bg: #1a1a2e;
@@ -23,8 +26,8 @@
   --code-bg: #0d0d1a;
   --code-fg: #ce9178;
   --radius: 4px;
-  --font: -apple-system, "Microsoft YaHei", sans-serif;
-  --mono: "JetBrains Mono", "Fira Code", monospace;
+  --font: "MiSans", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", "Noto Sans Mono CJK SC", monospace;
 }
 
 /* 通用按钮 */
