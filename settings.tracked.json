@@ -1,4 +1,8 @@
 {
+  "codemode": {
+    "mode": "only",
+    "inlineBudget": 12000
+  },
   "defaultTools": [
     "+codemode"
   ],
