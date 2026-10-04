@@ -3,7 +3,8 @@ import SubagentsView from "./views/SubagentsView.vue";
 import RoutingView from "./views/RoutingView.vue";
 import GateView from "./views/GateView.vue";
 import EditorView from "./views/EditorView.vue";
-import { createWailsPlatform, platformKey } from "./platform/index.js";
+import { platformKey } from "./platform/index.js";
+import { createPlatform } from "./platform/detect.js";
 
 // 窗口路由壳 —— 按 windowName 选视图
 const views = {
@@ -24,7 +25,8 @@ function showFatal(msg) {
 window.addEventListener("error", (e) => showFatal(e.message || String(e.error || "未知错误")));
 window.addEventListener("unhandledrejection", (e) => showFatal(e.reason?.message || String(e.reason || "未知 Promise 错误")));
 
-const platform = createWailsPlatform();
+// 引擎由宿主决定：Electron（preload 的 window.piGui）或 Wails（window.go），同一份产物
+const platform = createPlatform();
 const winName = await platform.session.getWindowName();
 const View = views[winName] || GateView;
 createApp(View).provide(platformKey, platform).mount("#app");

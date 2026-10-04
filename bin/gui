@@ -1,0 +1,20 @@
+#!/bin/sh
+# pi GUI 启动器 —— Electron 宿主
+#
+# 协议与 Wails 版完全一致，所以 hub 与 lib/gui-runner.ts 只换可执行文件：
+#   gui <windowName> <requestFile> <responseFile>
+#
+# 用系统装的 electron（Arch 上是 /usr/bin/electron），没有编译步骤，
+# devtools（F12 / Ctrl+Shift+I）随时可用。
+#
+# 可调：
+#   PI_GUI_ELECTRON        指定 electron 二进制（缺省走 PATH 里的 electron）
+#   PI_GUI_ELECTRON_ARGS   追加 Chromium 参数。受限命名空间（容器/沙箱）里
+#                           Chromium 起不来时会报 "Failed to move to new namespace"，
+#                           那种场合给 --no-sandbox
+set -e
+
+agent_dir=$(cd "$(dirname "$0")/.." && pwd)
+electron_bin=${PI_GUI_ELECTRON:-electron}
+
+exec "$electron_bin" ${PI_GUI_ELECTRON_ARGS:-} "$agent_dir/gui/electron/main.js" "$@"

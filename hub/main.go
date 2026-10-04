@@ -47,7 +47,7 @@ func main() {
 		s.launchGateGUI(bin)
 		log.Printf("gate gui: %s", bin)
 	} else {
-		log.Printf("gate gui: 未找到 wails-gui，审批只扇出已连接适配器")
+		log.Printf("gate gui: 未找到 GUI 启动器（bin/gui 或 wails-gui），审批只扇出已连接适配器")
 	}
 	if yad := findYad(); yad != "" {
 		s.launchAllowGUI = func(pairs []PairItem, asks []ListItem) {

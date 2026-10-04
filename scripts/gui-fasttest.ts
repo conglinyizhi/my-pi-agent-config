@@ -16,7 +16,7 @@ const TIMEOUT = 30_000; // 每个 GUI 最多等 30 秒
 // 找 wails-gui 二进制
 const guiBin = findGuiBinary();
 if (!guiBin) {
-  console.error("❌ 未找到 wails-gui。请先构建：cd wails-gui && wails build -tags webkit2_41");
+  console.error("❌ 未找到 GUI 启动器（bin/gui）。Electron 宿主不需要编译，检查 ~/.pi/agent/bin/gui 是否可执行、PATH 里有没有 electron");
   process.exit(1);
 }
 

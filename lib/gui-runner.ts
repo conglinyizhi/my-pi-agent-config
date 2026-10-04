@@ -1,4 +1,8 @@
-// lib/gui-runner.ts — 统一 GUI 启动器（Wails 版，替代 Electron spawn + 轮询）
+// lib/gui-runner.ts — 统一 GUI 启动器（Electron 版）
+//
+// 二进制是 bin/gui（壳脚本），它把参数原样交给 Electron 主进程：
+//   gui <windowName> <requestFile> <responseFile>
+// 这套协议与之前的 Wails 版完全一致，所以调用方一行没改。
 //
 // 两个入口：
 //   runGuiWindow    — 启动并等待响应文件（gate/routing/editor 等需要结果的窗口）
@@ -52,6 +56,10 @@ export interface GuiRunResult {
 /** 查找 wails-gui 二进制（优先安装位，其次仓库构建位） */
 export function findGuiBinary(): string | null {
   const candidates = [
+    // Electron 宿主（bin/gui）：系统装的 electron，没有编译步骤
+    path.join(os.homedir(), ".pi", "agent", "bin", "gui"),
+    path.join(__dirname, "..", "bin", "gui"),
+    // 兜底：Wails 二进制还在时照旧可用（搬迁期的退路，随时可删）
     path.join(os.homedir(), ".pi", "agent", "bin", "wails-gui"),
     path.join(__dirname, "..", "wails-gui", "build", "bin", "wails-gui"),
   ];

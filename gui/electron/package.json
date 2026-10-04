@@ -1,0 +1,6 @@
+{
+  "name": "pi-agent-gui",
+  "private": true,
+  "type": "module",
+  "description": "pi 的 GUI 窗口宿主（Electron）。协议与 Wails 版一致：<windowName> <requestFile> <responseFile>"
+}

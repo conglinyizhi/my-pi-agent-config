@@ -142,6 +142,9 @@ func findGUIBinary() string {
 		return ""
 	}
 	candidates := []string{
+		// Electron 宿主（bin/gui，壳脚本）：没有编译步骤，改前端不用重编
+		filepath.Join(home, ".pi", "agent", "bin", "gui"),
+		// 兜底：Wails 二进制还在时照旧可用（搬迁期的退路，随时可删）
 		filepath.Join(home, ".pi", "agent", "bin", "wails-gui"),
 		filepath.Join(home, ".pi", "agent", "wails-gui", "build", "bin", "wails-gui"),
 	}
