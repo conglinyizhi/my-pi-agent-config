@@ -12,6 +12,16 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  commandDigest,
+  hasMatchingGrant,
+  makeCapabilityRequest,
+  parseCapabilityGrants,
+  readCapabilityDecisionFile,
+  waitForCapabilityDecision,
+  writeCapabilityRequestFile,
+} from "../../lib/subagent-capability.ts";
+import { loadNetworkMode } from "../sandbox-permissions/network-policy.ts";
 
 const AUTH_PATH = path.join(os.homedir(), ".pi", "agent", "auth.json");
 const BASE_URL = "https://open.bigmodel.cn/api/paas/v4/web_search";
@@ -139,6 +149,59 @@ export async function zhipuWebSearch(
   return data;
 }
 
+/** 本 worker 进程内已获批的检索查询（同一 query 只问一次） */
+const approvedSearches = new Set<string>();
+
+/**
+ * worker 里 web_search 的审批门。
+ *
+ * 为什么要拦：worker 的 bash 已经被内核网络墙断掉，而 web_search 是唯一一条不过那层墙的
+ * 联网通道——注入的 worker 可以把读到的内容塞进 search_query，发给外部搜索服务（外传）。
+ * 走与 bash 同一条 capability 链：command 表示为 `web_search: <query>`，批准绑定精确 query，
+ * 与「一次性 grant 不扩大成泛权限」的规矩一致。网络档位为 off（网络不算能力）时直接放行。
+ */
+export async function requestSearchApproval(
+  query: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (env.PI_SUBAGENT !== "1") return { ok: true };
+  if (env.PI_SANDBOX_DISABLE === "1") return { ok: true };
+  if (loadNetworkMode() === "off") return { ok: true };
+
+  const command = `web_search: ${query}`;
+  const digest = commandDigest(command);
+  if (approvedSearches.has(digest)) return { ok: true };
+  if (hasMatchingGrant(command, "network", parseCapabilityGrants(env.PI_SUBAGENT_CAPABILITY_GRANTS))) {
+    approvedSearches.add(digest);
+    return { ok: true };
+  }
+
+  const responsePath = env.PI_SUBAGENT_CAPABILITY_RESPONSE;
+  if (!responsePath) return { ok: false, reason: "worker 缺少审批响应通道" };
+
+  const request = makeCapabilityRequest({
+    capability: "network",
+    command,
+    reason: `worker 发起联网检索：${query.slice(0, 80)}`,
+    cwd: process.cwd(),
+    taskId: env.PI_TASK_ID,
+    scope: "联网检索",
+  });
+  if (!writeCapabilityRequestFile(env.PI_SUBAGENT_CAPABILITY_REQUEST, request)) {
+    return { ok: false, reason: "权限请求写入失败" };
+  }
+  const parentPid = process.ppid;
+  const decision = await waitForCapabilityDecision(request.requestId, {
+    readDecision: () => readCapabilityDecisionFile(responsePath),
+    parentAlive: () => process.ppid === parentPid && process.ppid !== 1,
+  });
+  if (decision.action !== "allow") {
+    return { ok: false, reason: decision.comment || decision.review?.reason || "未获批准" };
+  }
+  approvedSearches.add(digest);
+  return { ok: true };
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
@@ -184,6 +247,17 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: "错误：auth.json 中未配置 zhipu key。请先配置：编辑 ~/.pi/agent/auth.json 的 zhipu.key" }],
           details: { error: "no_zhipu_key" },
+        };
+      }
+      // worker：检索走 capability 审批（主 agent 不拦）
+      const approval = await requestSearchApproval(params.search_query);
+      if (!approval.ok) {
+        return {
+          content: [{
+            type: "text",
+            text: `检索未获批准：${approval.reason}\n不要假装已经搜过；换成不需要联网的方式继续，或把需要的检索报给主 agent。`,
+          }],
+          details: { error: "search_not_approved" },
         };
       }
       try {

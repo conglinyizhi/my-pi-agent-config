@@ -184,6 +184,13 @@ export function requestedCapability(command: string): { capability: CapabilityNa
     return { capability: "network", scope: "访问网络或远程包源" };
   }
 
+  // worker 的工具型联网通道（web_search）也走这条能力通道：它由扩展发起、不是 bash，
+  // command 被表示为 `web_search: <query>`。父进程靠这条识别做一致性校验；
+  // 少了它，这条请求会被 validateCapabilityRequest 当成“自称 network 但推不出来”直接丢掉。
+  if (/^web_search:\s*\S/.test(text)) {
+    return { capability: "network", scope: "联网检索" };
+  }
+
   return undefined;
 }
 
@@ -223,8 +230,8 @@ export function makeCapabilityRequest(input: Omit<CapabilityRequest, "version" |
 /**
  * 原子写 capability 请求（tmp + rename）：父进程读到的永远是完整 JSON，也能覆盖上一轮残留。
  *
- * worker 的 capability 通道共用这一份：格式、权限位（0o600）、写法的差异以前
- * 是每处手写一遍，迟早会在某一条上漏掉一处细节。
+ * bash 与 web_search 两条 worker 通道共用这一份：格式、权限位（0o600）、写法的差异
+ * 以前是每处手写一遍，迟早会在某一条上漏掉一处细节。
  */
 export function writeCapabilityRequestFile(path: string | undefined, request: CapabilityRequest): boolean {
   if (!path) return false;

@@ -28,6 +28,24 @@ test("network commands produce a scoped request", () => {
   assert.equal(requestedCapability("cd /tmp && curl https://example.com")?.capability, "network");
 });
 
+test("web_search 请求被识别为 network 能力（worker 的工具型联网通道）", () => {
+  assert.deepStrictEqual(requestedCapability("web_search: DeepSeek Responses API 用法"), {
+    capability: "network",
+    scope: "联网检索",
+  });
+  const request = makeCapabilityRequest({
+    capability: "network",
+    command: "web_search: 查询串",
+    reason: "worker 发起联网检索",
+    cwd: "/tmp/worker",
+    scope: "联网检索",
+  });
+  // 父进程的 validateCapabilityRequest 靠同一条识别做一致性校验：识别不出来整条请求会被丢掉
+  assert.equal(validateCapabilityRequest(request)?.requestId, request.requestId);
+  // 只是命令里出现了这个词的，不算联网检索
+  assert.equal(requestedCapability("echo web_search: x"), undefined);
+});
+
 test("capability 请求/决策文件：原子写，半截 JSON 当没读到", () => {
   const dir = mkdtempSync(join(tmpdir(), "cap-req-"));
   try {

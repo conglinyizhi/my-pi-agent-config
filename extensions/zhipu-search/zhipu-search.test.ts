@@ -6,14 +6,20 @@
 // 跑法：node --experimental-strip-types extensions/zhipu-search/zhipu-search.test.ts
 
 import assert from "node:assert";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   getZhipuKey,
   zhipuWebSearch,
   formatSearchResults,
   formatIntent,
+  requestSearchApproval,
   type SearchResultItem,
 } from "./index.ts";
+import { commandDigest } from "../../lib/subagent-capability.ts";
+import { setNetworkPolicyFileForTest } from "../sandbox-permissions/network-policy.ts";
 
 // mock fetch：拦截 zhipuWebSearch 里的 fetch 调用
 function mockFetchOnce(data: unknown, ok = true, status = 200) {
@@ -157,5 +163,41 @@ describe("zhipu-search", () => {
 
   it("缺 key 抛错", async () => {
     await assert.rejects(() => zhipuWebSearch("查询", ""), /缺少智谱 API key/);
+  });
+});
+
+describe("worker 检索的审批门", () => {
+  // 本机档位（network-policy.json）是提督的配置，测试不跟着它变：指向一个不存在的文件，
+  // 落到默认档 whitelist
+  const policyDir = mkdtempSync(join(tmpdir(), "zhipu-net-policy-"));
+  setNetworkPolicyFileForTest(join(policyDir, "network-policy.json"));
+
+  it("主 agent 不拦", async () => {
+    assert.deepStrictEqual(await requestSearchApproval("查询", {}), { ok: true });
+  });
+
+  it("降零不拦", async () => {
+    assert.deepStrictEqual(
+      await requestSearchApproval("查询-降零", { PI_SUBAGENT: "1", PI_SANDBOX_DISABLE: "1" }),
+      { ok: true },
+    );
+  });
+
+  it("worker 缺审批响应通道时拒绝，不静默放行", async () => {
+    const denied = await requestSearchApproval("查询-无通道", { PI_SUBAGENT: "1" });
+    assert.equal(denied.ok, false);
+    assert.match(denied.ok ? "" : denied.reason, /审批响应通道/);
+  });
+
+  it("父进程预批准的 grant 直接放行", async () => {
+    const query = "查询-已批准";
+    const command = `web_search: ${query}`;
+    const approved = await requestSearchApproval(query, {
+      PI_SUBAGENT: "1",
+      PI_SUBAGENT_CAPABILITY_GRANTS: JSON.stringify([
+        { capability: "network", commandDigest: commandDigest(command) },
+      ]),
+    });
+    assert.deepStrictEqual(approved, { ok: true });
   });
 });
