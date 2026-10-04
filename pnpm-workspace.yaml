@@ -1,6 +1,6 @@
 allowBuilds:
   "@google/genai": false
-  esbuild: set this to true or false
+  esbuild: true
   protobufjs: false
 minimumReleaseAgeExclude:
   - "@earendil-works/chord@1.0.2"

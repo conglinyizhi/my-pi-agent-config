@@ -1,0 +1,4 @@
+# 前端是独立安装根（自带 lockfile）：pnpm 12 只认自己这层的 allowBuilds，
+# 仓根那份管不到这里。esbuild 是 vite 的构建依赖，必须放行它自己的安装脚本。
+allowBuilds:
+  esbuild: true

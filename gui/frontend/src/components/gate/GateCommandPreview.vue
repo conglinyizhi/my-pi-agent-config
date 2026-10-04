@@ -27,6 +27,7 @@
       :chip="detail"
       :source="command"
       :marks="mergedMarks"
+      :tokens="tokens"
       @close="detail = null"
     />
     <div v-if="tip" class="tooltip" :class="tipTone" :style="tipPos">{{ tip }}</div>
@@ -39,6 +40,7 @@ import { mergeEnvHighlights, renderHighlightedCommand } from "../../domain/gate/
 import { envNoteHighlights } from "../../domain/gate/env-notes.js";
 import { mergeVarHighlights, varRenderHighlights } from "../../domain/gate/var-renders.js";
 import { foldScript } from "../../domain/gate/script-fold.js";
+import { clipTokens, colorTokens, composeCodeHtml } from "../../domain/gate/code-color.js";
 import CallDetailDialog from "./CallDetailDialog.vue";
 
 const props = defineProps({
@@ -57,6 +59,8 @@ const props = defineProps({
   varRenders: { type: Array, default: () => [] },
   /** 要折成芯片的调用（pi 侧给事实；空数组 = 一行不折，原文照出） */
   editCalls: { type: Array, default: () => [] },
+  /** 语法着色的语言（shiki 的 lang id）；空 = 不上色 */
+  colorLang: { type: String, default: "" },
   current: { type: Number, default: 0 },
 });
 
@@ -81,8 +85,24 @@ const foldModel = computed(() =>
 const segments = computed(() => foldModel.value.segments);
 const chips = computed(() => foldModel.value.chips);
 
+/** 语法着色的 token（异步来；拿不到就退回不上色） */
+const tokens = ref([]);
+let tokenRequest = 0;
+
+async function refreshTokens() {
+  const request = ++tokenRequest;
+  if (!props.colorLang) {
+    tokens.value = [];
+    return;
+  }
+  const got = await colorTokens(props.command, props.colorLang);
+  if (request === tokenRequest) tokens.value = got; // 晚到的旧结果不能盖新的
+}
+watch(() => [props.command, props.colorLang], refreshTokens, { immediate: true });
+
 function textHtml(segment) {
-  return renderHighlightedCommand(segment.text, segment.marks);
+  if (tokens.value.length === 0) return renderHighlightedCommand(segment.text, segment.marks);
+  return composeCodeHtml(segment.text, clipTokens(tokens.value, segment.start, segment.end), segment.marks);
 }
 function chipClass(chip) {
   return {

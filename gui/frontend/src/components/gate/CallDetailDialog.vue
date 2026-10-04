@@ -30,7 +30,7 @@
         </template>
         <div v-else-if="body.kind === 'content'" class="blk">
           <div class="blk-head">将写入的内容</div>
-          <pre class="blk-body" v-html="escaped(body.text)"></pre>
+          <pre class="blk-body" v-html="previewHtml"></pre>
         </div>
         <div v-else class="blk">
           <div class="blk-head">{{ chip.tone === "shell" ? "命令" : "调用" }}</div>
@@ -49,8 +49,10 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { watch } from "vue";
 import { clipMarks } from "../../domain/gate/script-fold.js";
 import { renderHighlightedCommand } from "../../domain/gate/highlights.js";
+import { clipTokens, colorTokens, composeCodeHtml } from "../../domain/gate/code-color.js";
 
 const props = defineProps({
   /** 折叠模型里的一颗芯片（含 pi 侧给的事实） */
@@ -59,6 +61,8 @@ const props = defineProps({
   source: { type: String, default: "" },
   /** 合并后的标记（全局坐标），用来看被折住的危险片段 */
   marks: { type: Array, default: () => [] },
+  /** 展示脚本的语法 token（全局坐标）：调用原文那一块直接裁着用 */
+  tokens: { type: Array, default: () => [] },
 });
 const emit = defineEmits(["close"]);
 
@@ -76,11 +80,43 @@ const body = computed(() => {
   return { kind: "source", text: (props.source ?? "").slice(call.startOffset, call.endOffset) };
 });
 
-const bodyHtml = computed(() =>
-  body.value.kind === "source"
-    ? renderHighlightedCommand(body.value.text, clipMarks(props.marks, props.chip.call.startOffset, props.chip.call.endOffset))
-    : "",
-);
+/**
+ * 这段内容该按什么语法上色：跟着目标路径的后缀走。
+ * 认不出来的就当纯文本（宁可不上色，也别拿错语法乱涂）。
+ */
+function langFromPath(path) {
+  const value = typeof path === "string" ? path.toLowerCase() : "";
+  if (/\.(m|c)?jsx?$/.test(value)) return "javascript";
+  if (/\.(ts|mts|cts)$/.test(value) || /\.tsx$/.test(value)) return "javascript";
+  if (/\.jsonc?$/.test(value)) return "javascript";
+  return "";
+}
+
+/** 预览正文（pi 侧解出来的字符串）不在脚本原文里，得单独上色 */
+const previewTokens = ref([]);
+let previewRequest = 0;
+
+async function refreshPreviewTokens() {
+  const request = ++previewRequest;
+  const lang = langFromPath(props.chip?.call?.displayPath);
+  const text = body.value.kind === "diff" ? "" : body.value.kind === "content" ? body.value.text : "";
+  if (!lang || !text) {
+    previewTokens.value = [];
+    return;
+  }
+  const got = await colorTokens(text, lang);
+  if (request === previewRequest) previewTokens.value = got;
+}
+watch(() => [props.chip, body.value.kind], refreshPreviewTokens, { immediate: true });
+
+const bodyHtml = computed(() => {
+  if (body.value.kind !== "source") return "";
+  const call = props.chip.call;
+  const text = body.value.text;
+  const marks = clipMarks(props.marks, call.startOffset, call.endOffset);
+  if (props.tokens.length === 0) return renderHighlightedCommand(text, marks);
+  return composeCodeHtml(text, clipTokens(props.tokens, call.startOffset, call.endOffset), marks);
+});
 
 const lineLabel = computed(() => {
   const call = props.chip?.call ?? {};
@@ -95,7 +131,13 @@ const sizeLabel = computed(() => {
   return typeof call.lines === "number" ? `${size} · ${call.lines} 行` : size;
 });
 
-/** 预览正文只做转义：着色留给后面那一步统一接 */
+/** 预览正文：能认路径后缀就上色，认不出来只转义 */
+const previewHtml = computed(() =>
+  previewTokens.value.length === 0
+    ? escaped(body.value.text)
+    : composeCodeHtml(body.value.text, previewTokens.value, []),
+);
+
 function escaped(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
