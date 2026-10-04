@@ -56,6 +56,37 @@ interface ApprovalRequestBase {
  */
 export type AuditSubject = "script";
 
+/**
+ * 折叠芯片的一颗：脚本里一次"会改状态"的调用。
+ *
+ * 纯显示层事实——审核窗据此把调用折成一行、点击看细节。不进送审材料：
+ * 送审文本（subject）与这里无关，模型看到的东西一个字都不变。
+ */
+export interface FoldCallPayload {
+	tool: string;
+	/** file = 改文件（灰芯片）；shell = 可执行命令（橙芯片） */
+	kind: "file" | "shell";
+	/** file：目标路径；shell：cwd。都按 ~ / $PWD 缩过；没有就是 undefined */
+	displayPath?: string;
+	/** 关键字段是不是字面量；false 时芯片上要标"看不清" */
+	literal: boolean;
+	/** 调用在脚本里的字符区间（0 起，半开） */
+	startOffset: number;
+	endOffset: number;
+	/** 起始行 / 结束行（1 起） */
+	line: number;
+	endLine: number;
+	/** write：正文规模；shell：命令规模 */
+	bytes?: number;
+	lines?: number;
+	/** write：被写入的正文预览（有界） */
+	contentPreview?: string;
+	/** edit：旧文与新文预览 */
+	replacement?: { old: string; new: string; truncated: boolean };
+	/** 预览被截断过 */
+	truncated?: boolean;
+}
+
 /** 脚本事前审核的结构化影响面（pi 侧算好，GUI 只负责摆） */
 export interface ScriptEffectsPayload {
 	/** 字面上调用过的工具 */
@@ -74,6 +105,8 @@ export interface ScriptEffectsPayload {
 	dryRunCalls?: string[];
 	/** 干跑的状态；没跑或没跑成时缺省 */
 	dryRunStatus?: string;
+	/** 折叠芯片：只收会改状态的调用（白名单外的调用亮原文，折叠不用来藏风险） */
+	editCalls?: FoldCallPayload[];
 }
 
 export interface AuditApprovalRequest extends ApprovalRequestBase {

@@ -14,8 +14,9 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { processSingleton } from "./process-singleton.ts";
-import { resolveApprovalChannel, type ApprovalChannel, type ScriptEffectsPayload } from "./approval-channel.ts";
-import type { ScriptScan } from "./ptc-analyze.ts";
+import { resolveApprovalChannel, type ApprovalChannel, type FoldCallPayload, type ScriptEffectsPayload } from "./approval-channel.ts";
+import type { LiteralCall, ScriptScan } from "./ptc-analyze.ts";
+import { displayPath } from "./path-display.ts";
 import { compareCalls, compareLine, type DryRunResult } from "./ptc-dryrun.ts";
 import {
 	createReviewCache,
@@ -61,6 +62,80 @@ export interface PtcAuditInput {
 	scan?: ScriptScan;
 	/** 干跑预演结果；没跑或没跑成时不带 */
 	dry?: DryRunResult;
+	/** 当前工作目录：算折叠芯片的显示路径用（$PWD 那条）。缺省就不缩 */
+	cwd?: string;
+	/** 家目录：同上（~ 那条）。缺省就不缩 */
+	home?: string;
+}
+
+/**
+ * 折叠白名单：只有这两类调用折成芯片。
+ *
+ * 折叠的收益是省审核注意力，代价是原文看不见——所以白名单只收"意图已明确"的常见动作。
+ * 白名单外的调用（自定义工具、MCP 挂上来的、subagent……）一律亮原文：
+ * 不认识的动作不折，否则折叠就成了藏风险。
+ */
+const FOLD_FILE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "apply_patch", "str_replace_editor"]);
+const FOLD_SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "bash_background"]);
+
+/** 文件工具的路径字段（apply_patch 交的是补丁正文，没有单一路径，就没有 displayPath） */
+const FILE_PATH_FIELDS: readonly string[] = ["path", "file", "to"];
+
+/** 正文预览上限：显示层，够看清意图即可，别把浮层塞爆 */
+const PREVIEW_MAX = 4000;
+
+function clipPreview(text: string): { text: string; truncated: boolean } {
+	return text.length <= PREVIEW_MAX
+		? { text, truncated: false }
+		: { text: text.slice(0, PREVIEW_MAX), truncated: true };
+}
+
+/**
+ * 正文预览。只给"脚本原文里看不回来"的东西：write 的 content、edit 的 old/new
+ * 都是转义过的字符串字面量，前端拿源码切片只会得到一屏 \n。
+ * 命令与路径不进预览——前端按区间切原文就行，没必要在载荷里再存一份。
+ */
+function previewFieldsOf(call: LiteralCall): Partial<FoldCallPayload> {
+	if (call.tool === "edit" && call.args.old !== undefined && call.args.new !== undefined) {
+		const old = clipPreview(call.args.old);
+		const next = clipPreview(call.args.new);
+		return { replacement: { old: old.text, new: next.text, truncated: old.truncated || next.truncated } };
+	}
+	if (call.args.content !== undefined) {
+		const content = clipPreview(call.args.content);
+		return { contentPreview: content.text, ...(content.truncated ? { truncated: true } : {}) };
+	}
+	return {};
+}
+
+/** 把扫描到的调用整理成折叠芯片（白名单外的丢掉：它们照旧亮原文） */
+export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
+	const out: FoldCallPayload[] = [];
+	for (const call of input.scan?.calls ?? []) {
+		const kind: FoldCallPayload["kind"] | undefined = FOLD_FILE_TOOLS.has(call.tool)
+			? "file"
+			: FOLD_SHELL_TOOLS.has(call.tool) ? "shell" : undefined;
+		if (kind === undefined) continue;
+		const raw = kind === "file"
+			? FILE_PATH_FIELDS.map((field) => call.args[field]).find((value) => value !== undefined)
+			: call.args.cwd;
+		const body = kind === "file" ? call.args.content : call.args.command;
+		out.push({
+			tool: call.tool,
+			kind,
+			...(raw !== undefined ? { displayPath: displayPath(raw, { home: input.home, cwd: input.cwd }) } : {}),
+			literal: call.unresolvedArgs !== true,
+			startOffset: call.startOffset,
+			endOffset: call.endOffset,
+			line: call.line,
+			endLine: call.endLine,
+			...(body !== undefined
+				? { bytes: Buffer.byteLength(body, "utf8"), lines: body.split("\n").length }
+				: {}),
+			...previewFieldsOf(call),
+		});
+	}
+	return out;
 }
 
 /**
@@ -186,6 +261,7 @@ function ptcReviewCache(): ReviewCache {
 /** 从扫描与干跑结果整理出给审批窗的结构化影响面 */
 export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 	const scan = input.scan;
+	const editCalls = foldCallsOf(input);
 	const dryRunCalls: string[] = [];
 	if (input.dry) {
 		const counts = new Map<string, number>();
@@ -200,6 +276,8 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 		...(scan?.parseError ? { parseError: scan.parseError } : {}),
 		digestShort: ptcScriptDigest(input.script).slice(0, 12),
 		...(input.dry ? { dryRunStatus: input.dry.status, dryRunCalls } : {}),
+		// 折叠芯片：显示层字段，送审文本（subject）一个字节都不动
+		...(editCalls.length > 0 ? { editCalls } : {}),
 	};
 }
 

@@ -26,6 +26,12 @@ export interface LiteralCall {
 	/** 源码位置（1 起），报错与审批卡都用它 */
 	line: number;
 	column: number;
+	/** 调用表达式的字符区间（0 起，半开）：前端把这一段原文换成芯片 */
+	startOffset: number;
+	endOffset: number;
+	/** 调用结束位置（1 起）：展示"第 n..m 行"用 */
+	endLine: number;
+	endColumn: number;
 }
 
 export interface ScriptScan {
@@ -116,6 +122,10 @@ export async function scanScript(source: string): Promise<ScriptScan> {
 					opaque.push(`${at.line}:${at.column} 工具名是动态算出来的（${called.dynamic.slice(0, 60)}）`);
 				} else if (called && called.tool) {
 					const at = positionOf(node);
+					const startOffset = node.getStart(file);
+					const endOffset = node.getEnd();
+					const endAt = file.getLineAndCharacterOfPosition(endOffset);
+					const span = { startOffset, endOffset, endLine: endAt.line + 1, endColumn: endAt.character + 1 };
 					const args: Record<string, string> = {};
 					let unresolvedArgs = false;
 					const first = node.arguments[0];
@@ -145,7 +155,7 @@ export async function scanScript(source: string): Promise<ScriptScan> {
 						unresolvedArgs = true;
 					}
 
-					calls.push({ tool: called.tool, args, ...(unresolvedArgs ? { unresolvedArgs: true } : {}), ...at });
+					calls.push({ tool: called.tool, args, ...(unresolvedArgs ? { unresolvedArgs: true } : {}), ...at, ...span });
 					if (unresolvedArgs) {
 						opaque.push(`${at.line}:${at.column} ${called.tool} 的参数里有非字面量，值只能运行时才知道`);
 					}

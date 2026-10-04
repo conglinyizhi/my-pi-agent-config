@@ -193,7 +193,16 @@ export function registerRunCode(
 				const outcome = await approve({
 					pi,
 					ctx,
-					input: { script: code, reason, tools: registeredTools(pi), scan, dry },
+					// cwd/home 只喂折叠芯片的显示路径（$PWD / ~），进不了送审材料
+					input: {
+						script: code,
+						reason,
+						tools: registeredTools(pi),
+						scan,
+						dry,
+						cwd: ctx.cwd,
+						home: process.env.HOME,
+					},
 					signal,
 				});
 				if (!outcome.approved) {
