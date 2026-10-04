@@ -19,7 +19,7 @@ import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { resetProcessSingleton } from "../../lib/process-singleton.ts";
 import { buildRunCodeDefinition, hostPackageRoot, loadHostCodemode, RUN_CODE_SCHEMA, type HostCodemodeModule } from "./host.ts";
 import { readPtcSettings, registerRunCode } from "./index.ts";
-import { clearPtcScopes, ptcScopeForNestedCall } from "../../lib/ptc-audit.ts";
+import { clearNestedCalls, clearPtcAudits, clearPtcScopes, ptcScopeForNestedCall, recentPtcAudits } from "../../lib/ptc-audit.ts";
 
 describe("执行理由的消毒", () => {
 	it("换行与控制字符压成一行", () => {
@@ -367,16 +367,20 @@ describe("注册与调用路径", () => {
 		const tools: any[] = [];
 		const commands: string[] = [];
 		const emitted: Array<{ channel: string; data: any }> = [];
+		const handlers: Record<string, Array<(event: any) => void>> = {};
 		return {
 			tools,
 			commands,
 			emitted,
+			handlers,
 			pi: {
 				getSettings: () => ({}),
 				getAllTools: () => [{ name: "read" }, { name: "bash" }],
 				registerTool: (tool: unknown) => tools.push(tool),
 				registerCommand: (name: string) => commands.push(name),
-				on: () => {},
+				on: (event: string, handler: (payload: any) => void) => {
+					(handlers[event] ??= []).push(handler);
+				},
 				events: { emit: (channel: string, data: unknown) => emitted.push({ channel, data }) },
 			},
 		};
@@ -437,6 +441,44 @@ describe("注册与调用路径", () => {
 		assert.match(result.content[0].text, /写入工作区外/);
 		assert.match(result.content[0].text, /没有产生任何读写/);
 		assert.match(result.content[0].text, /审批附言：别碰 \/etc/);
+	});
+
+	it("内层调用被归集：范围内的标记覆盖，范围外的照实标出", async () => {
+		resetProcessSingleton("ptc-reason-ledger");
+		clearPtcScopes();
+		clearNestedCalls();
+		clearPtcAudits();
+		const { tools, handlers, pi } = stubPi();
+		const host: HostCodemodeModule = {
+			CODEMODE_TOOL_NAME: "codemode",
+			createCodemodeDescription: () => "底稿",
+			createCodemodeToolDefinition: () => ({
+				name: "codemode",
+				description: "宿主描述",
+				parameters: {},
+				execute: async () => {
+					// 模拟脚本执行期间派发的两次调用（都会经过 tool_call 钩子）
+					for (const handler of handlers.tool_call ?? []) {
+						handler({ toolName: "read", toolCallId: "call-1/1", parentToolCallId: "call-1", input: { path: "/etc/hostname" } });
+						handler({ toolName: "bash", toolCallId: "call-1/2", parentToolCallId: "call-1", input: { command: "ls" } });
+					}
+					return { content: [{ type: "text", text: "跑完" }] };
+				},
+			}),
+		};
+		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
+		// 脚本字面量里只写了 read，所以 bash 属于越界
+		await tools[0].execute("call-1", { description: "读一下主机名", code: "return await tools.read({ path: '/etc/hostname' })" }, undefined, undefined, {});
+
+		const audits = recentPtcAudits(5);
+		const executed = audits.find((entry) => entry.outcome === "executed");
+		assert.ok(executed, "跑完要写一条执行审计");
+		assert.deepEqual(executed?.calls?.map((call) => call.tool), ["read", "bash"]);
+		assert.equal(executed?.calls?.[0].covered, true);
+		assert.equal(executed?.calls?.[1].covered, false);
+		assert.deepEqual(executed?.outOfScope, ["bash"]);
+		clearNestedCalls();
+		clearPtcAudits();
 	});
 
 	it("批过之后作用域开着，执行完就关掉", async () => {

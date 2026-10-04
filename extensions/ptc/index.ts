@@ -34,7 +34,12 @@ import {
 	beginPtcScope,
 	endPtcScope,
 	ptcRejectedText,
+	ptcScopeCoversTool,
+	ptcScopeForNestedCall,
 	ptcScriptDigest,
+	recordNestedCall,
+	recordPtcExecution,
+	summarizeArgs,
 	type PtcToolInfo,
 } from "../../lib/ptc-audit.ts";
 import { RUN_CODE_SCHEMA, buildRunCodeDefinition, loadHostCodemode, type HostCodemodeModule } from "./host.ts";
@@ -90,6 +95,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 }
 
 /**
+ * 内层调用的归集（P0 观测）：脚本里派发的每次调用都带 parentToolCallId，
+ * 按它归到所属脚本上。越界的调用**不拦**——它只是不享受这次的免问，
+ * 照旧走自己那条审批链；这里只把"实际发生了什么"记下来。
+ */
+function watchNestedCalls(pi: ExtensionAPI): void {
+	pi.on("tool_call", (event) => {
+		const detail = event as { parentToolCallId?: string; toolName?: string; input?: unknown };
+		if (!detail.parentToolCallId) return;
+		const scope = ptcScopeForNestedCall(detail.parentToolCallId);
+		if (scope === undefined) return;
+		const toolName = detail.toolName ?? "";
+		recordNestedCall(scope.callId, {
+			tool: toolName,
+			args: summarizeArgs(detail.input),
+			covered: ptcScopeCoversTool(scope, toolName),
+		});
+	});
+}
+
+/**
  * 送审用的工具面：注册表里的全部工具。
  * 第 0 步还不知道脚本真正会调哪几个（静态扫描还没做），先把全集报一遍；
  * 自明的只列名字，其余附描述（见 lib/ptc-audit.ts 的 describeTools）。
@@ -113,6 +138,8 @@ export function registerRunCode(
 		getMode: () => readPtcSettings(settingsOf()).mode ?? "on",
 		getInlineBudget: () => readPtcSettings(settingsOf()).inlineBudget,
 	});
+
+	watchNestedCalls(pi);
 
 	pi.registerTool({
 		...definition,
@@ -160,7 +187,8 @@ export function registerRunCode(
 				}
 			}
 
-			beginPtcScope(toolCallId, ptcScriptDigest(code), {
+			const digest = ptcScriptDigest(code);
+			beginPtcScope(toolCallId, digest, {
 				tools: scan.tools,
 				// 有看不清的地方就退回逐条审批：批准范围只敢覆盖"写出来的调用"
 				opaque: scan.opaque.length > 0 || scan.parseError !== undefined,
@@ -169,6 +197,8 @@ export function registerRunCode(
 				return await definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
 			} finally {
 				endPtcScope(toolCallId);
+				// 跑完把"实际派发了哪些调用"写进审计（内存滚动，不落盘）
+				recordPtcExecution(pi, { callId: toolCallId, digest, reason });
 			}
 		},
 	} as never);

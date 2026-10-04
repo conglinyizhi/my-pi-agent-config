@@ -199,11 +199,33 @@ export async function approvePtcScript(options: {
  * 脚本全文不进会话记录（与 bash-audit 同一口径），留 digest 与理由。
  */
 function appendPtcAudit(pi: ExtensionAPI, entry: Record<string, unknown>): void {
+	const full = { ...entry, ts: Date.now() };
 	try {
-		pi.appendEntry("ptc-audit", { ...entry, ts: Date.now() });
+		pi.appendEntry("ptc-audit", full);
 	} catch {
 		/* 审计失败不该挡住执行 */
 	}
+	notePtcAudit(full as unknown as PtcAuditEntry);
+}
+
+/**
+ * 脚本跑完之后的审计条目：这次真的派发了哪些调用、有没有越出批准范围。
+ * 越界不等于被拦下——它只是"不享受这次的免问"，仍旧照原路走自己的审批链。
+ */
+export function recordPtcExecution(
+	pi: ExtensionAPI,
+	input: { callId: string; digest: string; reason?: string },
+): { calls: PtcNestedCallRecord[]; outOfScope: string[] } {
+	const log = takeNestedCalls(input.callId);
+	appendPtcAudit(pi, {
+		digest: input.digest,
+		outcome: "executed",
+		via: "script",
+		...(input.reason ? { reason: input.reason } : {}),
+		calls: log.calls,
+		outOfScope: log.outOfScope,
+	});
+	return log;
 }
 
 // ── 批准作用域 ──
@@ -271,4 +293,104 @@ export function ptcScopeForNestedCall(toolCallId: string | undefined): PtcScope 
 /** 仅供测试：清空作用域 */
 export function clearPtcScopes(): void {
 	scopes().clear();
+}
+
+// ── 内层调用的归集（P0 观测） ──
+//
+// 事前的扫描是"它可能干什么"，这里记的是"它真的干了什么"：脚本里派发的每次调用
+// 都在 tool_call 钩子里经过，按 parentToolCallId 归到所属脚本。
+// 只留一行摘要（工具名 + 参数截断 + 是否在批准范围内），全文不落。
+
+export interface PtcNestedCallRecord {
+	tool: string;
+	/** 参数摘要（单行、截断、已消毒） */
+	args: string;
+	/** 是否落在这次的批准范围内 */
+	covered: boolean;
+	ts: number;
+}
+
+const MAX_NESTED_CALLS = 64;
+
+interface PtcCallLog {
+	calls: PtcNestedCallRecord[];
+	outOfScope: string[];
+}
+
+function callLogs(): Map<string, PtcCallLog> {
+	return processSingleton("ptc-nested-calls", () => new Map<string, PtcCallLog>());
+}
+
+/** 参数摘要：单行 + 截断，够人判断"它在干什么"就行 */
+export function summarizeArgs(input: unknown, maxChars = 120): string {
+	let rendered: string;
+	try {
+		rendered = typeof input === "string" ? input : JSON.stringify(input ?? {});
+	} catch {
+		rendered = "<参数无法序列化>";
+	}
+	const flattened = rendered
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return flattened.length > maxChars ? `${flattened.slice(0, maxChars - 1)}…` : flattened;
+}
+
+/** 记一次脚本里派发的调用 */
+export function recordNestedCall(callId: string, record: Omit<PtcNestedCallRecord, "ts">): void {
+	const logs = callLogs();
+	const log = logs.get(callId) ?? { calls: [], outOfScope: [] };
+	if (log.calls.length < MAX_NESTED_CALLS) log.calls.push({ ...record, ts: Date.now() });
+	if (!record.covered && !log.outOfScope.includes(record.tool)) log.outOfScope.push(record.tool);
+	logs.set(callId, log);
+}
+
+/** 取走并清掉这次脚本的调用记录（脚本结束时调用） */
+export function takeNestedCalls(callId: string): PtcCallLog {
+	const logs = callLogs();
+	const log = logs.get(callId) ?? { calls: [], outOfScope: [] };
+	logs.delete(callId);
+	return log;
+}
+
+/** 仅供测试 */
+export function clearNestedCalls(): void {
+	callLogs().clear();
+}
+
+export interface PtcAuditEntry {
+	ts: number;
+	digest: string;
+	outcome: "approved" | "denied" | "executed";
+	via: "preflight" | "human" | "script";
+	reason?: string;
+	review?: { verdict?: string; reason?: string };
+	comment?: string;
+	/** 脚本执行完才有：真实派发过的调用 */
+	calls?: PtcNestedCallRecord[];
+	/** 脚本执行完才有：不在批准范围内、因此照旧走原链的工具名 */
+	outOfScope?: string[];
+}
+
+/** 审计条目的内存滚动窗口（不落盘，见规划 §8.1） */
+const MAX_AUDIT_ENTRIES = 50;
+
+function auditLog(): PtcAuditEntry[] {
+	return processSingleton("ptc-audit-log", () => [] as PtcAuditEntry[]);
+}
+
+export function notePtcAudit(entry: PtcAuditEntry): void {
+	const log = auditLog();
+	log.push(entry);
+	while (log.length > MAX_AUDIT_ENTRIES) log.shift();
+}
+
+/** 最近若干条审计（新在前）：给探针与 /ptc-audit 用 */
+export function recentPtcAudits(limit = 10): PtcAuditEntry[] {
+	return auditLog().slice(-limit).reverse();
+}
+
+/** 仅供测试 */
+export function clearPtcAudits(): void {
+	auditLog().length = 0;
 }

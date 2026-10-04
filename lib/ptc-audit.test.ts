@@ -7,10 +7,17 @@ import { describe, it } from "node:test";
 import {
 	beginPtcScope,
 	buildPtcAuditSubject,
+	clearNestedCalls,
+	clearPtcAudits,
 	clearPtcScopes,
 	describeTools,
 	endPtcScope,
+	notePtcAudit,
+	recentPtcAudits,
+	recordNestedCall,
 	scanSummary,
+	summarizeArgs,
+	takeNestedCalls,
 	ptcRejectedText,
 	ptcScopeForNestedCall,
 	ptcScriptDigest,
@@ -135,6 +142,41 @@ describe("批准作用域", () => {
 		assert.ok(ptcScopeForNestedCall("call-b/1"), "另一段脚本的作用域不受影响");
 		clearPtcScopes();
 		assert.equal(ptcScopeForNestedCall("call-b/1"), undefined);
+	});
+
+	it("内层调用按脚本归集，越界的单独列出来", () => {
+		clearNestedCalls();
+		recordNestedCall("call-1", { tool: "read", args: "{path:/a}", covered: true });
+		recordNestedCall("call-1", { tool: "bash", args: "{command:ls}", covered: false });
+		recordNestedCall("call-2", { tool: "read", args: "{path:/b}", covered: true });
+
+		const log = takeNestedCalls("call-1");
+		assert.deepEqual(log.calls.map((call) => call.tool), ["read", "bash"]);
+		assert.deepEqual(log.outOfScope, ["bash"]);
+		assert.equal(takeNestedCalls("call-1").calls.length, 0, "取走就清空");
+		assert.equal(takeNestedCalls("call-2").calls.length, 1, "别的脚本不受影响");
+		clearNestedCalls();
+	});
+
+	it("参数摘要压成一行并截断", () => {
+		// 对象走 JSON：换行被转义，天然单行
+		assert.equal(summarizeArgs({ command: "ls\n-a" }), '{"command":"ls\\n-a"}');
+		// 字符串直接压平
+		assert.equal(summarizeArgs("第一行\n第二行\t尾"), "第一行 第二行 尾");
+		const long = summarizeArgs({ code: "x".repeat(500) });
+		assert.ok(long.length <= 120, String(long.length));
+		assert.ok(long.endsWith("…"));
+	});
+
+	it("审计条目内存滚动，最多留 50 条", () => {
+		clearPtcAudits();
+		for (let index = 0; index < 55; index++) {
+			notePtcAudit({ ts: index, digest: `d${index}`, outcome: "approved", via: "preflight" });
+		}
+		const recent = recentPtcAudits(100);
+		assert.equal(recent.length, 50);
+		assert.equal(recent[0].digest, "d54", "新的在前");
+		clearPtcAudits();
 	});
 
 	it("自明名单里都是常见工具名", () => {
