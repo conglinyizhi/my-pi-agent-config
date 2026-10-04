@@ -162,11 +162,24 @@ async function humanConfirm(
  * 调用方应先处理 verdict.allow=false 且全 autoReject / 无 rules 的硬拒结果。
  * 该函数在人工审批结束后才返回；调用方应在其后再 registry.start 或执行 shell。
  */
-export async function approveBashCommand(options: BashApprovalOptions): Promise<BashApprovalResult> {
-	const { pi, ctx, command, verdict, taskId, signal, origin } = options;
+export interface BashPreReviewResult {
+	config: LlmReviewConfig;
+	review?: ReviewResult;
+	/** 判据与主链同款：判 safe 且档位 auto 才算放行 */
+	autoApproved: boolean;
+}
+
+/**
+ * 只跑预审、不碰人工确认的因子化。
+ *
+ * 给「自己决定要不要惊动用户」的调用方用（worker 的工具守门）：它拿到一个判据，
+ * 自己选择自动放行还是走 capability 请求。判据与 approveBashCommand 里的那一处
+ * 是同一个表达式，避免两边规则各写一份、日后漂移。
+ */
+export async function preReviewBashCommand(options: BashApprovalOptions): Promise<BashPreReviewResult> {
+	const { pi, ctx, command, verdict, signal } = options;
 	const deps = options.deps ?? {};
 	const config = (deps.loadReviewConfig ?? loadLlmReviewConfig)();
-	const cache = deps.reviewCache ?? bashApprovalReviewCache;
 	let review: ReviewResult | undefined;
 
 	if (config.enabled) {
@@ -177,7 +190,7 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 				command,
 				verdict.rules ?? [],
 				signal,
-				cache,
+				deps.reviewCache ?? bashApprovalReviewCache,
 				config,
 				// 事实层随命令一起给审核模型：它看的是影响面，不只是命令原文
 				{ facts: verdict.facts, factsUnavailable: verdict.factsUnavailable },
@@ -185,11 +198,21 @@ export async function approveBashCommand(options: BashApprovalOptions): Promise<
 		} catch {
 			review = undefined;
 		}
-		if (review?.verdict === "safe" && config.mode === "auto") {
-			// 预审放行：默认落点不写条目（历史行为），接了 audit 的调用方自己决定记不记
-			if (options.audit) options.audit(auditRecord(command, verdict, review, undefined, origin), "approved", true);
-			return { approved: true, review };
-		}
+	}
+
+	return { config, review, autoApproved: review?.verdict === "safe" && config.mode === "auto" };
+}
+
+export async function approveBashCommand(options: BashApprovalOptions): Promise<BashApprovalResult> {
+	const { pi, ctx, command, verdict, taskId, signal, origin } = options;
+	const deps = options.deps ?? {};
+
+	// 预审走同一处因子化：判据只有一份，谁调都一样
+	const { review, autoApproved } = await preReviewBashCommand(options);
+	if (autoApproved) {
+		// 预审放行：默认落点不写条目（历史行为），接了 audit 的调用方自己决定记不记
+		if (options.audit && review) options.audit(auditRecord(command, verdict, review, undefined, origin), "approved", true);
+		return { approved: true, review };
 	}
 
 	const context: ApprovalRequestContext = {

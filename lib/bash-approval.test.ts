@@ -8,8 +8,65 @@ import {
 	approveBashCommand,
 	bashApprovalReviewCache,
 	isHardRejected,
+	preReviewBashCommand,
 	rethrowWithApprovalComment,
 } from "./bash-approval.ts";
+
+const reviewConfig = (over: Record<string, unknown> = {}) => ({
+	backend: "chat",
+	enabled: true,
+	mode: "auto",
+	timeoutMs: 1,
+	tokenIdleMs: 1,
+	maxCache: 1,
+	...over,
+}) as any;
+
+describe("只跑预审（worker 守门用的判据）", () => {
+	const risky = {
+		allow: false,
+		reason: "命令需人工确认（命中危险/动态规则）",
+		rules: [{ name: "sudo", tip: "提权命令", matched: ["sudo"] }],
+	};
+
+	const pre = (over: {
+		config?: Record<string, unknown>;
+		review?: unknown;
+	}) =>
+		preReviewBashCommand({
+			pi: { appendEntry: () => {} } as any,
+			ctx: context(),
+			command: "sudo echo hi",
+			verdict: risky as any,
+			deps: {
+				loadReviewConfig: () => reviewConfig(over.config),
+				reviewCommand: (async () => over.review) as any,
+			},
+		});
+
+	it("判 safe 且档位 auto：算放行，并带回意见", async () => {
+		const result = await pre({ review: { verdict: "safe", reason: "只是读状态" } });
+		assert.equal(result.autoApproved, true);
+		assert.equal(result.review?.verdict, "safe");
+	});
+
+	it("同样判 safe，档位 strict 就不算放行", async () => {
+		const result = await pre({ config: { mode: "strict" }, review: { verdict: "safe" } });
+		assert.equal(result.autoApproved, false);
+		assert.equal(result.review?.verdict, "safe");
+	});
+
+	it("判 risky 不算放行", async () => {
+		const result = await pre({ review: { verdict: "risky", reason: "会写工作区外" } });
+		assert.equal(result.autoApproved, false);
+	});
+
+	it("链没启用时不预审：没有意见，也不放行", async () => {
+		const result = await pre({ config: { enabled: false }, review: { verdict: "safe" } });
+		assert.equal(result.review, undefined);
+		assert.equal(result.autoApproved, false);
+	});
+});
 
 const verdict = {
 	allow: false,

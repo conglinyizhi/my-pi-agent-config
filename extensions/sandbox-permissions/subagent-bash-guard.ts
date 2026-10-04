@@ -23,7 +23,7 @@ import {
   type CapabilityGrant,
 } from "../../lib/subagent-capability.ts";
 import { decideNetwork, loadNetworkMode } from "./network-policy.ts";
-import { rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
+import { preReviewBashCommand, rethrowWithApprovalComment } from "../../lib/bash-approval.ts";
 
 const PROMPT_SNIPPET = "Execute a bash command in the isolated worker sandbox. Risky commands block until the parent agent approves or denies them.";
 const PROMPT_GUIDELINES = [
@@ -40,6 +40,26 @@ const PROMPT_GUIDELINES = [
  */
 export function networkEnvForCommand(command: string, granted: Set<string>): "allow" | "block" {
   return granted.has(`network:${commandDigest(command)}`) ? "allow" : "block";
+}
+
+/**
+ * 命令风险先过模型：true 表示这次命令可以不惊动用户直接执行。
+ *
+ * 抽成纯函数是为了能单测判据本身——worker 里那段执行路径要搭 env 与假工具面才跑得起来。
+ * 网络档与已获批情形一律返回 false（各自由调用方处理），预审自身出错也返回 false：
+ * 拿不准就老老实实问人。
+ */
+export async function autoApproveCommandByReview(opts: {
+	commandRisk: boolean;
+	networkRisk: boolean;
+	preReview: () => Promise<{ autoApproved: boolean }>;
+}): Promise<boolean> {
+	if (!opts.commandRisk || opts.networkRisk) return false;
+	try {
+		return (await opts.preReview()).autoApproved;
+	} catch {
+		return false;
+	}
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -119,6 +139,23 @@ export default function (pi: ExtensionAPI): void {
         : false;
       const commandRisk = !verdict.allow;
       let approvalComment: string | undefined;
+
+      // 先问模型，再决定要不要惊动人。worker 的命令风险过一遍主 agent 同款预审
+      // （同一条链、同一份缓存）：判 safe 且档位 auto 就把这次命令就地记成已获批，
+      // 下面的请求分支自然跳过，用户不会被叫醒。
+      // 网络档不在这里放行：外网暴露不该由模型单独拍板，照旧走审批。
+      if (commandRisk && !networkRisk) {
+        const key = `command:${commandDigest(command)}`;
+        if (!granted.has(key)) {
+          const approved = await autoApproveCommandByReview({
+            commandRisk,
+            networkRisk,
+            preReview: () => preReviewBashCommand({ pi, ctx, command, verdict, taskId, signal }),
+          });
+          if (approved) granted.add(key);
+        }
+      }
+
       if (networkRisk || commandRisk) {
         const digest = commandDigest(command);
         const capability = networkRisk ? "network" : "command";
