@@ -1,5 +1,4 @@
+# 归档里的产物依然不该入库（二进制与 build/bin 是当年编出来的，留盘供参考）
 build/bin
 node_modules
-frontend/dist
-# 浏览器预览壳的产物（pnpm build:browser），与 Wails 那份一样是构建输出
-frontend/dist-browser
+# 注：前端已搬到 gui/frontend/，它的 dist / dist-browser 规则现在归 gui/frontend/.gitignore
