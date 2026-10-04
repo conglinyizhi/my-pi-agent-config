@@ -5,13 +5,59 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { homedir } from "node:os";
-import { loadBlacklist, pathBlocked, commandBlocked, matchBlacklistHits, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, targetPathOf, trustedWriteBlockedReason } from "./guard.ts";
+import { loadBlacklist, pathBlocked, commandBlocked, matchBlacklistHits, writePathBlocked, readWorkerWriteScope, workerWriteBlocked, readWorkerReadScope, workerReadBlocked, targetPathOf, trustedWriteBlockedReason } from "./guard.ts";
 import { resetTrustedCache, setTrustedProgramsFile } from "./trusted.ts";
 import guardExtension from "./guard.ts";
 import { setYolo } from "./yolo.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
+
+describe("worker 读面白名单", () => {
+  const cwd = process.cwd();
+
+  it("非 worker / 降零 / READ_OPEN 都不受读面约束", () => {
+    assert.equal(readWorkerReadScope({}, cwd), undefined);
+    assert.equal(readWorkerReadScope({ PI_SUBAGENT: "1", PI_SANDBOX_READ_OPEN: "1" }, cwd), undefined);
+    assert.equal(readWorkerReadScope({ PI_SUBAGENT: "1", PI_SANDBOX_DISABLE: "1" }, cwd), undefined);
+  });
+
+  it("worker 的白名单含系统路径、工作目录与可写根", () => {
+    const scope = readWorkerReadScope({ PI_SUBAGENT: "1", PI_SANDBOX_RW: "/tmp" }, cwd);
+    assert.ok(scope, "worker 应有读面白名单");
+    const roots = scope!.roots;
+    assert.ok(roots.includes("/usr"), "系统目录应在白名单里");
+    assert.ok(roots.includes("/tmp"), "可写根也应可读");
+    assert.ok(
+      roots.some((root) => cwd === root || cwd.startsWith(`${root}/`)),
+      `工作目录 ${cwd} 应在白名单里：${roots.join("、")}`,
+    );
+  });
+
+  it("白名单内放行，白名单外拒绝", () => {
+    const scope = readWorkerReadScope({ PI_SUBAGENT: "1" }, cwd)!;
+    assert.equal(workerReadBlocked("/usr/bin/head", cwd, scope), undefined);
+    const outside = joinPath(homedir(), "Documents", "不该被 worker 读到的东西.md");
+    assert.ok(workerReadBlocked(outside, cwd, scope), "仓库外的私人目录应被拒");
+  });
+
+  it("READ_EXTRA 与 RW_EXTRA 追加的根可读", () => {
+    const extra = joinPath(homedir(), "Documents");
+    const scope = readWorkerReadScope({ PI_SUBAGENT: "1", PI_SANDBOX_READ_EXTRA: extra }, cwd)!;
+    assert.equal(workerReadBlocked(joinPath(extra, "note.md"), cwd, scope), undefined);
+    const ws = readWorkerReadScope({ PI_SUBAGENT: "1", PI_SANDBOX_RW_EXTRA: extra }, cwd)!;
+    assert.equal(workerReadBlocked(joinPath(extra, "note.md"), cwd, ws), undefined);
+  });
+
+  it("检索类工具与 read 走同一张读路径表", () => {
+    assert.equal(targetPathOf("read", { path: "/usr/bin/head" }, "read"), "/usr/bin/head");
+    assert.equal(targetPathOf("grep", { pattern: "x", path: "/etc" }, "read"), "/etc");
+    assert.equal(targetPathOf("find", { pattern: "*.md", path: "/tmp" }, "read"), "/tmp");
+    assert.equal(targetPathOf("ls", { path: "/var" }, "read"), "/var");
+    // 不带 path 的检索走 cwd（白名单内），不产生目标路径
+    assert.equal(targetPathOf("grep", { pattern: "x" }, "read"), undefined);
+  });
+});
 
 describe("黑名单加载", () => {
   it("读默认黑名单文件并编译规则", () => {

@@ -350,6 +350,67 @@ export function readWorkerWriteScope(env: NodeJS.ProcessEnv = process.env): Work
   return { roots, readonly };
 }
 
+// ── worker 沙箱只读根（读面白名单） ──
+// 与写入边界同理：worker 读的是不可信内容（三方仓库、网页、issue），读面就是潜在的外传源。
+// bash 层由 sandbox-shell 的 landlock grants 收成白名单（--ro <具体目录>，不再是 --ro /），
+// 这里把同一份白名单补到读取类工具上。两边读同一个配置文件、同一份 env 契约，
+// 否则「bash 读得到、read 工具读不到」，或者反过来留一条完全绕开的通道。
+//   白名单 = worker-read-roots.json + cwd + 可写根（RW / RW_EXTRA / /tmp）+ READ_EXTRA
+// PI_SANDBOX_READ_OPEN=1 退回不拦（与 bash 层同一个逃生口）。
+
+const WORKER_READ_ROOTS_FILE = join(AGENT_DIR, "extensions", "sandbox-permissions", "worker-read-roots.json");
+
+/** 读只读根白名单文件（~ 写法保留，交给 canonicalize 展开）；读不到 / 坏 JSON → [] */
+export function loadWorkerReadRoots(): string[] {
+  try {
+    const doc = JSON.parse(readFileSync(WORKER_READ_ROOTS_FILE, "utf8")) as { roots?: unknown };
+    const list = Array.isArray(doc.roots) ? doc.roots : [];
+    return list.filter((d): d is string => typeof d === "string" && d.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** worker 的读面白名单；主进程 / 降零 / 读面开放时返回 undefined（不做额外拦截） */
+export interface WorkerReadScope {
+  /** 绝对路径形式的只读根 */
+  roots: string[];
+}
+
+/** 读 worker 沙箱只读范围（纯函数，env 可注入便于单测） */
+export function readWorkerReadScope(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): WorkerReadScope | undefined {
+  if (env.PI_SUBAGENT !== "1") return undefined;
+  if (env.PI_SANDBOX_DISABLE === "1") return undefined;
+  if (env.PI_SANDBOX_READ_OPEN === "1") return undefined;
+  const declared = [
+    ...loadWorkerReadRoots(),
+    cwd,
+    ...splitRoots(env.PI_SANDBOX_RW),
+    ...splitRoots(env.PI_SANDBOX_RW_EXTRA),
+    ...WORKER_BUILTIN_WRITABLE,
+    ...splitRoots(env.PI_SANDBOX_READ_EXTRA),
+  ];
+  const roots: string[] = [];
+  for (const root of declared) {
+    const abs = canonicalize(root, cwd);
+    if (!roots.includes(abs)) roots.push(abs);
+  }
+  return { roots };
+}
+
+/** worker 的读取是否越出白名单；越界时返回给模型看的拒绝理由 */
+export function workerReadBlocked(path: string, cwd: string, scope: WorkerReadScope): string | undefined {
+  if (!path) return undefined;
+  const target = canonicalize(path, cwd);
+  if (scope.roots.some((root) => withinRoot(target, root))) return undefined;
+  return `[sandbox-guard] ${path} 不在本批 worker 的只读白名单内。`
+    + `worker 读的是不可信内容，读面被收成白名单（系统目录 + 工具链 + 工作目录）。`
+    + `确实需要读这里，就把目录报给主 agent，由主 agent 通过派工参数决定。`;
+}
+
 /** 路径是否落在某个可写根内（按路径段边界，防 /tmpfoo 冒充 /tmp） */
 function withinRoot(path: string, root: string): boolean {
   if (path === root) return true;
@@ -384,6 +445,10 @@ const READ_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
   "be-read": { field: "file", rangeSuffix: true },
   // be-insert-chip 的 from 可以是 file://（从某文件取内容插到另一处）——取内容也是读
   "be-insert-chip": { field: "from", rangeSuffix: false },
+  // 检索类工具同样是读通道：grep/find/ls 的 path 指向哪里，就能看见哪里的目录树
+  grep: { field: "path", rangeSuffix: false },
+  find: { field: "path", rangeSuffix: false },
+  ls: { field: "path", rangeSuffix: false },
 };
 
 const WRITE_TARGET: Record<string, { field: string; rangeSuffix: boolean }> = {
@@ -448,11 +513,16 @@ export default function (pi: ExtensionAPI) {
     const readPath = targetPathOf(event.toolName, input, "read");
     const writePath = targetPathOf(event.toolName, input, "write");
 
-    // read / be-read：仅黑名单（敏感凭据路径防读也防写）
+    // read / be-read：黑名单（敏感凭据路径防读也防写）+ worker 读面白名单
     if (readPath !== undefined) {
       const hit = rules.find((r) => pathBlocked(readPath, ctx.cwd, [r]));
       if (hit) {
         return { block: true, reason: blockedReason(`工具 ${event.toolName}`, readPath, hit) };
+      }
+      const scope = readWorkerReadScope(undefined, ctx.cwd);
+      if (scope) {
+        const outside = workerReadBlocked(readPath, ctx.cwd, scope);
+        if (outside) return { block: true, reason: outside };
       }
     }
     // write / edit（含 be-* 写入通道）：黑名单 + 仅写保护路径（.git/、node_modules/、.env*）+ worker 可写根

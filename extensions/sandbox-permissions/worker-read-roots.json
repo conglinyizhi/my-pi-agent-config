@@ -1,0 +1,27 @@
+{
+  "_comment": "worker 的只读根白名单（bash 层 scripts/sandbox-shell.mjs 与工具层 guard.ts 共用同一份）。cwd 与派工的可写根另行授予，不在这里。改动后下一条命令 / 下一次工具调用即生效。清单里不存在的路径会被静默跳过（本机没装的工具链不该让 worker 每条命令都吃一行警告）。worker 若需要读 skill 附带文件，把对应 skills 目录加进来即可。",
+  "roots": [
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc",
+    "/opt",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "~/.cache",
+    "~/.npm",
+    "~/.nvm",
+    "~/.cargo",
+    "~/.rustup",
+    "~/.moon",
+    "~/go",
+    "~/.local/share",
+    "~/.local/bin",
+    "~/.gitconfig",
+    "~/.config/git"
+  ]
+}

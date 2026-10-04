@@ -23,6 +23,10 @@
 //   不做 OS 级隔离）。网络墙与审核链是纵深关系：审核链决定「哪条命令可以出网」，
 //   seccomp 层保证「没走通审核的命令即使审核判漏了也真连不上」。
 //
+// 文件系统读（worker）：landlock 是 allow-list，`--ro /` 会把全盘授读。worker 处理的是不可信
+// 内容，读面就是潜在的外传源，所以它的 --ro 换成白名单（系统路径 + 工具链 + cwd，见 workerReadRoots）。
+// 主 agent 不受影响（仍为 --ro /）。
+//
 // 资源限制（与文件系统 / 网络沙箱正交，独立维度；采样式，与内存墙同一套机制）：
 //   PI_SANDBOX_MEMORY_MB=<整数>          进程树匿名内存上限（MB）。缺省 1GiB（worker 与主 agent 同）。
 //                                        由 sandbox-allow 的 memoryMb 参数注入（大模型须给具体数字才能提额）。
@@ -91,6 +95,9 @@ function sandboxHint(limits, netBlocked) {
   if (netBlocked) {
     // 断网失败的报错（ECONNREFUSED / EPERM）不像权限问题，容易被当成目标服务挂了
     lines.push("这条命令同时跑在内核级断网里：worker 的 bash 默认不带网（seccomp 拦 socket）。需要出网的命令要走 capability 审批，获批后才带网。");
+  }
+  if (workerReadScoped()) {
+    lines.push("worker 的读面是白名单（系统目录 + 工具链 + 工作目录）；要读白名单外的路径，就把该目录通过派工参数加进来。");
   }
   lines.push(
     `命令资源上限：内存 ${limits.memoryMb > 0 ? `${limits.memoryMb} MB` : "不限"}、进程 ${limits.nproc > 0 ? limits.nproc : "不限"}、累计写盘 ${limits.writeMb > 0 ? `${limits.writeMb} MB` : "不限"}。内存不够就用 sandbox-allow 的 memoryMb 给具体数值。`,
@@ -353,6 +360,65 @@ function runCommand(launcher, args, cwd, opts = {}) {
   });
 }
 
+/**
+ * 读 worker 只读根白名单（extensions/sandbox-permissions/worker-read-roots.json）。
+ * 与工具层（guard.ts）共用同一份：bash 用 landlock、工具用路径判定，口径必须一致，
+ * 否则 worker 会「bash 读得到、read 工具读不到」。读不到 / 解析失败 → []（用内置默认）。
+ */
+function readWorkerReadRoots() {
+  try {
+    const doc = JSON.parse(
+      readFileSync(join(AGENT_DIR, "extensions", "sandbox-permissions", "worker-read-roots.json"), "utf8"),
+    );
+    const list = Array.isArray(doc.roots) ? doc.roots : [];
+    return list
+      .filter((d) => typeof d === "string" && d)
+      .map((d) => {
+        if (d === "~") return homedir();
+        if (d.startsWith("~/")) return join(homedir(), d.slice(2));
+        return d;
+      })
+      .map((d) => normalize(d))
+      .filter((d) => d !== "/" && d.startsWith("/"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * worker 的只读根白名单（bash 层读面）。
+ *
+ * 主 agent 的 grants 里 `--ro /` 把整个文件系统授读；worker 读的是不可信内容
+ * （三方仓库、网页、issue），读面就是待防的外传源：会话历史、提督的笔记、其它项目。
+ * 这里换成白名单：系统路径 + 工具链缓存（配置见 worker-read-roots.json）+ cwd。
+ * 配置文件缺失 / 读不动时回落到内置基础集，不能因为一个坏文件把 worker 的读面变没了。
+ *
+ * 调优口：PI_SANDBOX_READ_EXTRA=<dir>:…  追加只读根（单条命令级）；
+ *         PI_SANDBOX_READ_OPEN=1           退回全盘只读（逃生口，慎用）。
+ * 漏了路径的表现是「命令读不到东西」（EACCES/ENOENT），不是命令直接挂。
+ */
+function workerReadRoots() {
+  const home = homedir();
+  const fallback = [
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/sys", "/dev", "/run",
+    join(home, ".cache"), join(home, ".npm"), join(home, ".nvm"),
+    join(home, ".cargo"), join(home, ".rustup"), join(home, ".moon"), join(home, "go"),
+    join(home, ".local", "share"), join(home, ".local", "bin"),
+    join(home, ".gitconfig"), join(home, ".config", "git"),
+  ];
+  const configured = readWorkerReadRoots();
+  const roots = configured.length > 0 ? configured : fallback;
+  const extra = process.env.PI_SANDBOX_READ_EXTRA
+    ? process.env.PI_SANDBOX_READ_EXTRA.split(":").filter(Boolean)
+    : [];
+  return [...roots, ...extra];
+}
+
+/** worker 读面是否走白名单（主 agent 始终全盘只读；PI_SANDBOX_READ_OPEN=1 退回全盘） */
+function workerReadScoped() {
+  return process.env.PI_SUBAGENT === "1" && process.env.PI_SANDBOX_READ_OPEN !== "1";
+}
+
 /** 直接执行 bash（豁免命令 / 非沙箱平台 / 完全开放：文件系统不沙箱，但内存墙照常） */
 function execBash(command) {
   return runCommand("bash", ["-c", command], process.cwd());
@@ -367,8 +433,11 @@ function execBash(command) {
  *
  * 丢弃一条写权限是收窄不是放宽，仍然 fail-closed：把「全盘瘫痪」降级成
  * 「那条路径变回只读」，并打一行警告说明丢的是哪条、从哪来。
+ *
+ * opts.quiet：worker 读白名单是「尽力允许」的能力缓存集合（~/.nvm、~/.config/git
+ * 这类本机可能压根没装），每条命令都刷一遍警告只是噪音；可写根那种显式授权缺了才值得出声。
  */
-function filterExisting(paths, source) {
+function filterExisting(paths, source, opts = {}) {
   const kept = [];
   for (const p of paths) {
     if (!p) continue;
@@ -376,7 +445,9 @@ function filterExisting(paths, source) {
       if (!kept.includes(p)) kept.push(p);
       continue;
     }
-    console.error(`sandbox-shell: 忽略不存在的授权路径（来源：${source}）：${p}`);
+    if (!opts.quiet) {
+      console.error(`sandbox-shell: 忽略不存在的授权路径（来源：${source}）：${p}`);
+    }
   }
   return kept;
 }
@@ -384,6 +455,7 @@ function filterExisting(paths, source) {
 /**
  * 细粒度 grants 构造：
  *   默认：--ro / + --rw /tmp /dev/null <cwd>（写工作区）
+ *   worker（PI_SUBAGENT=1，非 READ_OPEN）：--ro 换成读白名单（见 workerReadRoots）
  *   PI_SANDBOX_RW=<dir>[:…]：可写根替换 cwd（subagent 只写指定目录，工程其余只读）
  *   PI_SANDBOX_READONLY=1：只读模式，不写 workspace（/tmp /dev/null 保留作临时文件）
  *
@@ -398,9 +470,11 @@ function buildGrants() {
       for (const dir of filterExisting(process.env.PI_SANDBOX_RW.split(":"), "PI_SANDBOX_RW")) {
         if (!rw.includes(dir)) rw.push(dir);
       }
-    } else {
+    } else if (process.env.PI_SUBAGENT !== "1") {
       // 主 agent 默认：白名单目录（sandbox-paths.json 的 allowDirs）作为常驻可写根，
-      // bash 可直接写这些目录，免走 sandbox-allow 一次授权
+      // bash 可直接写这些目录，免走 sandbox-allow 一次授权。
+      // worker 不走这条：allowDirs 是提督给自己开的白名单，worker 的写面只有
+      // /tmp 与派工指定的可写根；worker 既没 READONLY 又没 RW 时按「只写 /tmp」收敛。
       for (const dir of filterExisting([process.cwd(), ...readAllowDirs()], "cwd / allowDirs")) {
         if (!rw.includes(dir)) rw.push(dir);
       }
@@ -412,7 +486,15 @@ function buildGrants() {
       if (!rw.includes(dir)) rw.push(dir);
     }
   }
-  const grants = ["--ro", "/"];
+  const grants = [];
+  if (workerReadScoped()) {
+    // worker：读面收成白名单（cwd 与可写根另行授予，这里保证它们可读）
+    for (const dir of filterExisting([process.cwd(), ...workerReadRoots()], "worker 读白名单", { quiet: true })) {
+      grants.push("--ro", dir);
+    }
+  } else {
+    grants.push("--ro", "/");
+  }
   for (const dir of rw) grants.push("--rw", dir);
   return grants;
 }
