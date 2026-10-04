@@ -121,6 +121,26 @@ export const TIMELINE_MAX_TEXT = 8000;
 /** 单个字段（args/preview/result/message）上限（字符） */
 export const TIMELINE_MAX_FIELD = 2000;
 
+/**
+ * 从增量结果里抽可读文本：只认 text 段，拼成多行。
+ * 抽不出来（图片、结构化载荷、空内容）返回 undefined，交给调用方走原来的序列化兜底。
+ */
+function previewTextOf(partial: unknown, maxField: number): string | undefined {
+  if (!partial || typeof partial !== "object") return undefined;
+  const content = (partial as { content?: unknown }).content;
+  if (!Array.isArray(content)) return undefined;
+  const lines: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: unknown; text?: unknown };
+    if (record.type !== "text" || typeof record.text !== "string") continue;
+    const text = record.text.trim();
+    if (text !== "") lines.push(text);
+  }
+  if (lines.length === 0) return undefined;
+  return truncate(lines.join("\n"), maxField);
+}
+
 export interface TimelineBuilderOptions {
   /** 时间源（测试注入；默认 new Date().toISOString()） */
   now?: () => string;
@@ -351,7 +371,13 @@ export class TimelineBuilder {
     if (typeof ev.toolCallId !== "string" || !ev.toolCallId) return;
     const rec = this.activeTools.get(ev.toolCallId);
     if (!rec) return;
-    rec.preview = safeSerialize(ev.partialResult ?? ev.args, this.maxField);
+    // 增量结果是 { content: [{type:"text",text}] } 这种形状：先把文本抽出来给人看。
+    // 这层就是 worker 里脚本进度的回流路径（run_code → 内层调用 → 增量输出），
+    // 塞原始 JSON 进面板只会让人读一屏引号。
+    const preview =
+      previewTextOf(ev.partialResult, this.maxField) ?? safeSerialize(ev.partialResult ?? ev.args, this.maxField);
+    // 算不出东西就别动：一条没有内容的更新把已有预览擦成空，等于让看板倒退
+    if (preview !== "") rec.preview = preview;
     this.dirty = true; // 原地更新预览 → 报告变化
   }
 
