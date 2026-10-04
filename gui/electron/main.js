@@ -98,14 +98,19 @@ function registerIpc(request) {
 
 	handle("windowName", () => windowName);
 	handle("initData", () => buildInitData(windowName, request, { responseFile }));
+	// 落这两个文件时统一钉 0600：目录是调用方 mkdtemp 给的 0700，文件自己再收一道，
+	// 不依赖父目录那一个默认值（与 lib/gui-runner.ts、hub 的口径一致）。
+	// mode 只在创建时生效，这里的文件都是新目录里的新文件。
+	const PRIVATE = { encoding: "utf8", mode: 0o600 };
+
 	handle("markReady", () => {
 		// 与 Go 侧一致：写 .ready sidecar，启动方/测试据此判定渲染完成
-		if (responseFile) writeFileSync(`${responseFile}.ready`, "ok");
+		if (responseFile) writeFileSync(`${responseFile}.ready`, "ok", PRIVATE);
 		return true;
 	});
 	handle("submit", (response) => {
 		const body = typeof response === "string" ? response : JSON.stringify(response ?? {});
-		if (responseFile) writeFileSync(responseFile, body);
+		if (responseFile) writeFileSync(responseFile, body, PRIVATE);
 		app.quit();
 		return true;
 	});

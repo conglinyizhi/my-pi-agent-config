@@ -54,6 +54,20 @@ export interface GuiRunResult {
 }
 
 /** 查找 wails-gui 二进制（优先安装位，其次仓库构建位） */
+/**
+ * 写请求文件。
+ *
+ * 目录是 mkdtemp 给的 0700，这里把**文件本身**再钉成 0600：两道各自成立，
+ * 不依赖父目录那一个默认值（有人换成 mkdirSync、或目录经 cp/tar 转手丢了权限位时，
+ * 文件自己还站得住）。hub 那侧（Go）同样写 0600，两侧口径一致。
+ *
+ * 注意 mode 只在**创建**时生效，文件已存在则被忽略——所以这招成立的前提是
+ * "临时目录里都是新文件"；哪天真去复用固定路径，得改成先 chmod。
+ */
+function writeRequestFile(file: string, request: unknown): void {
+  fs.writeFileSync(file, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+}
+
 export function findGuiBinary(): string | null {
   const candidates = [
     // Electron 宿主（bin/gui）：系统装的 electron，没有编译步骤
@@ -104,7 +118,7 @@ export function launchGuiWindow(
   };
 
   try {
-    fs.writeFileSync(requestFile, JSON.stringify(request));
+    writeRequestFile(requestFile, request);
     const proc = (opts.spawnFn ?? spawn)(bin, [windowName, requestFile, responseFile], {
       stdio: "ignore",
       detached: true,
@@ -136,7 +150,7 @@ export async function runGuiWindow(
   const responseFile = path.join(tmpDir, "response.json");
 
   try {
-    fs.writeFileSync(requestFile, JSON.stringify(request));
+    writeRequestFile(requestFile, request);
 
     // 结算装置先于 spawn 建好：'error' 监听必须紧跟着 spawn 挂上，
     // 挂晚了会让 ChildProcess 的未监听 'error' 直接抛穿当前进程

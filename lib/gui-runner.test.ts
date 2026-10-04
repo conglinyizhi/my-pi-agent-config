@@ -98,6 +98,9 @@ describe("launchGuiWindow", () => {
     const requestFile = call.args[1];
     const tmpDir = path.dirname(requestFile);
     assert.match(tmpDir, /pi-subagents-/);
+    // 权限位：目录靠 mkdtemp 的 0700，文件自己钉 0600（两道各自成立）
+    assert.strictEqual(fs.statSync(tmpDir).mode & 0o777, 0o700, "临时目录应当是 0700");
+    assert.strictEqual(fs.statSync(requestFile).mode & 0o777, 0o600, "请求文件应当是 0600");
     assert(fs.existsSync(requestFile));
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(requestFile, "utf-8")), request);
 
