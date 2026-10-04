@@ -1,6 +1,6 @@
 // dimension-weights.test.js — 权重表展示逻辑（node --test）
 //
-// 跑法：cd wails-gui/frontend && node --test src/domain/gate/dimension-weights.test.js
+// 跑法：cd gui/frontend && node --test src/domain/gate/dimension-weights.test.js
 
 import assert from "node:assert";
 import { describe, it } from "node:test";

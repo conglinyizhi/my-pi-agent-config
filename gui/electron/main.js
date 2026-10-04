@@ -75,6 +75,9 @@ function createWindow() {
 		},
 	});
 
+	// 页面里的 <title> 会盖掉窗口标题，拦掉它：窗口标题一律用 WINDOW_CONFIGS 里那一条
+	mainWindow.on("page-title-updated", (event) => event.preventDefault());
+
 	mainWindow.loadFile(join(FRONTEND_DIST, "index.html"), { query: { window: windowName } });
 
 	// 调试：F12 / Ctrl+Shift+I 随时开 devtools；PI_GUI_DEV=1 时启动即开

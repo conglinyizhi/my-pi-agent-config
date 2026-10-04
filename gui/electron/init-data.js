@@ -4,7 +4,7 @@
 // 的等价移植：窗口名 → 尺寸/标题，请求 JSON → 前端 {base} 结构。
 // 前端视图不关心引擎，只吃这个结构，所以两边必须逐字段对齐。
 
-/** 窗口名 → 尺寸与标题（改这里要与 wails-gui/main.go 保持一致，直到那边退役） */
+/** 窗口名 → 尺寸与标题（Wails 版已归档到 archive/wails-gui/，不必再与它对表） */
 export const WINDOW_CONFIGS = {
 	editor: { title: "提示词输入 · pi", width: 900, height: 620, minWidth: 720, minHeight: 480 },
 	gate: { title: "权限闸门 · 命令审批", width: 1280, height: 900, minWidth: 960, minHeight: 640 },
