@@ -43,3 +43,15 @@ describe("worker tools", () => {
     assert.deepStrictEqual(tools, ["bash", "read"]);
   });
 });
+
+describe("worker 的 PTC 脚本面", () => {
+  it("默认下发 run_code（一轮里读多处、比对、一次写出的活靠它）", () => {
+    const tools = buildSafeWorkerTools(["read", "bash", "run_code"]);
+    assert.deepStrictEqual(tools, ["bash", "read", "run_code"]);
+  });
+
+  it("run_code 与旧编排工具的取舍：前者进，后者仍不进", () => {
+    const tools = buildSafeWorkerTools(["run_code", "codemode", "tool_search"]);
+    assert.deepStrictEqual(tools, ["run_code"]);
+  });
+});

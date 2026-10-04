@@ -45,6 +45,7 @@ import {
 	type PtcToolInfo,
 } from "../../lib/ptc-audit.ts";
 import { RUN_CODE_SCHEMA, buildRunCodeDefinition, loadHostCodemode, type HostCodemodeModule } from "./host.ts";
+import { approvePtcScriptInWorker } from "../../lib/worker-ptc-approval.ts";
 
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
 
@@ -78,6 +79,11 @@ export function readPtcSettings(settings: Record<string, unknown>): PtcSettings 
 	return { enabled: true, mode, inlineBudget };
 }
 
+/** worker 进程的标志：与 subagent-bash-guard 用同一个环境变量 */
+function isWorkerProcess(): boolean {
+	return process.env.PI_SUBAGENT === "1";
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
 	if (!readPtcSettings(readSettings()).enabled) return;
 
@@ -93,7 +99,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		return;
 	}
 
-	registerRunCode(pi, host);
+	// worker 里没有窗口、没有人可以问：审批换成「先预审，判不出安全再写 capability 请求」
+	// （lib/worker-ptc-approval.ts）。主 agent 照旧走人工闸门那条。
+	registerRunCode(pi, host, isWorkerProcess() ? { approve: approvePtcScriptInWorker } : undefined);
 }
 
 /**

@@ -21,6 +21,7 @@ import {
 	createReviewCache,
 	loadLlmReviewConfig,
 	reviewCommand as defaultReviewCommand,
+	type LlmReviewConfig,
 	type ReviewCache,
 	type ReviewResult,
 } from "../extensions/sandbox-permissions/llm-review.ts";
@@ -209,13 +210,29 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
  * 送审时标明场景为 ptc：分类器不再问 scripted_edit（审的就是脚本，问了没信息量），
  * 也不拿它计入判定；审批窗里该行以禁用态展示。见 review-dimensions 的 SCENARIOS。
  */
-export async function approvePtcScript(options: {
+export interface PtcPreReviewResult {
+	config: LlmReviewConfig;
+	subject: string;
+	digest: string;
+	review?: ReviewResult;
+	/** 判据与主链同款：判 safe 且档位 auto 才算放行 */
+	autoApproved: boolean;
+}
+
+/**
+ * 只跑预审、不碰人工闸门的因子化。
+ *
+ * 与 lib/bash-approval.ts 的 preReviewBashCommand 对称：给「自己决定要不要惊动用户」
+ * 的调用方用（worker 里的 run_code 没有窗口可弹）。判据只有这一处表达式，
+ * approvePtcScript 与 worker 侧都调它。
+ */
+export async function preReviewPtcScript(options: {
 	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	input: PtcAuditInput;
 	signal?: AbortSignal;
 	deps?: PtcAuditDependencies;
-}): Promise<PtcAuditOutcome> {
+}): Promise<PtcPreReviewResult> {
 	const { pi, ctx, input, signal } = options;
 	const deps = options.deps ?? {};
 	const subject = buildPtcAuditSubject(input);
@@ -239,10 +256,26 @@ export async function approvePtcScript(options: {
 		} catch {
 			review = undefined;
 		}
-		if (review?.verdict === "safe" && config.mode === "auto") {
-			appendPtcAudit(pi, { digest, outcome: "approved", via: "preflight", reason: input.reason, review });
-			return { approved: true, review };
-		}
+	}
+
+	return { config, subject, digest, review, autoApproved: review?.verdict === "safe" && config.mode === "auto" };
+}
+
+export async function approvePtcScript(options: {
+	pi: ExtensionAPI;
+	ctx: ExtensionContext;
+	input: PtcAuditInput;
+	signal?: AbortSignal;
+	deps?: PtcAuditDependencies;
+}): Promise<PtcAuditOutcome> {
+	const { pi, ctx, input, signal } = options;
+	const deps = options.deps ?? {};
+
+	// 预审走同一处因子化：判据只有一份
+	const { digest, review, autoApproved } = await preReviewPtcScript(options);
+	if (autoApproved) {
+		appendPtcAudit(pi, { digest, outcome: "approved", via: "preflight", reason: input.reason, review });
+		return { approved: true, review };
 	}
 
 	const channel = deps.channel ?? resolveApprovalChannel();

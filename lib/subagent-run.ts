@@ -251,6 +251,8 @@ const SANDBOX_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permission
 const SUBAGENT_BASH_GUARD_EXT = path.join(AGENT_DIR, "extensions", "sandbox-permissions", "subagent-bash-guard.ts");
 // 提供 worker 的 web_search（智谱搜索）；凭据从 auth.json 读，不依赖 worker 环境变量
 const ZHIPU_SEARCH_EXT = path.join(AGENT_DIR, "extensions", "zhipu-search", "index.ts");
+/** PTC 脚本面（run_code）：worker 默认带着，审批走 lib/worker-ptc-approval.ts */
+const PTC_EXT = path.join(AGENT_DIR, "extensions", "ptc", "index.ts");
 // 提供 worker 的后台任务（bash_background / job_output）；扩展注册工具，
 // 只有出现在 --tools 精确名单里才会激活（见 worker-tools.ts）
 const DSH_JOBS_EXT = path.join(AGENT_DIR, "extensions", "dsh-jobs", "index.ts");
@@ -368,6 +370,7 @@ export function buildSubagentArgs(opts: {
     "--extension", SUBAGENT_BASH_GUARD_EXT,
     "--extension", ZHIPU_SEARCH_EXT,
     "--extension", DSH_JOBS_EXT,
+    "--extension", PTC_EXT,
   ];
   for (const ext of opts.extraExtensions ?? []) args.push("--extension", ext);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));

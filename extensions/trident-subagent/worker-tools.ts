@@ -1,7 +1,10 @@
 // worker-tools.ts — worker 工具白名单
 //
-// 普通 worker 使用安全白名单：文件读写、bash、本地检索，以及 web_search（联网搜索）。
-// MCP 的编排类工具（codemode / tool_search）不下发：worker 不需要脚本化工具面。
+// 普通 worker 使用安全白名单：文件读写、bash、本地检索、web_search（联网搜索），
+// 以及 run_code（PTC 脚本面，默认启用：一轮里读多处、比对、一次写出的活，靠它才做得完）。
+// worker 里的 run_code 审批与主 agent 同源：先预审，判不出安全才写 capability 请求
+// （见 lib/worker-ptc-approval.ts），不占用窗口。
+// 旧 codemode 与 tool_search 仍不下发：前者已被自建 PTC 取代，后者 worker 用不上。
 // 曾用的 better-edit-tools（be-* 族）已停用（mcp.json 里 enabled: false），
 // 匹配留在下面：哪天再挂上 MCP 编辑工具，worker 不会静默丢掉编辑能力。
 //
@@ -16,6 +19,7 @@
 const DEFAULT_WORKER_TOOLS = new Set([
   "read", "write", "edit", "bash", "grep", "find", "ls", "web_search",
   "bash_background", "job_output",
+  "run_code",
 ]);
 
 /** MCP 直挂的编辑工具：`mcp__<server>__be-*` */
