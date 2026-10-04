@@ -26,6 +26,19 @@ describe("脚本事前审核的呈现", () => {
     assert.equal(sections[0].warn, false);
   });
 
+  it("干跑预演排在字面量之前，没跑成的时候要标出来", () => {
+    const sections = effectSectionsOf({
+      dryRunCalls: ["read×2", "bash"],
+      dryRunStatus: "timeout",
+      tools: ["bash"],
+    });
+    assert.equal(sections[0].key, "dryrun");
+    assert.deepEqual(sections[0].items, ["read×2", "bash"]);
+    assert.equal(sections[0].warn, true, "预演超时要标黄");
+    assert.match(sections[0].label, /可能不全/);
+    assert.equal(sections[1].key, "tools");
+  });
+
   it("空字段不产生空分区", () => {
     assert.deepEqual(effectSectionsOf({ tools: [], paths: [] }), []);
     assert.deepEqual(effectSectionsOf(null), []);

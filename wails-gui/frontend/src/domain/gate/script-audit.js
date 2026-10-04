@@ -33,6 +33,11 @@ export function effectSectionsOf(effects) {
     const list = cleanItems(items);
     if (list.length > 0) sections.push({ key, label, items: list, warn });
   };
+  // 干跑是"假数据走了一遍控制流"的结果，比字面量更接近真实，放最前
+  if (Array.isArray(effects.dryRunCalls) && effects.dryRunCalls.length > 0) {
+    const suffix = effects.dryRunStatus === "ok" ? "" : `（${effects.dryRunStatus === "timeout" ? "预演超时" : "预演失败"}，可能不全）`;
+    sections.push({ key: "dryrun", label: `干跑预演会执行${suffix}`, items: cleanItems(effects.dryRunCalls), warn: effects.dryRunStatus !== "ok" });
+  }
   push("tools", "字面上调用的工具", effects.tools);
   push("paths", "路径字面量", effects.paths);
   push("commands", "命令字面量", (Array.isArray(effects.commands) ? effects.commands : []).map((cmd) => JSON.stringify(cmd)));

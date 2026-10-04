@@ -415,7 +415,7 @@ describe("注册与调用路径", () => {
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
 		const code = "return await tools.bash({ command: 'git status' })";
 		const result = await tools[0].execute("call-1", { description: "看看\n仓库\t状态", code }, undefined, undefined, {});
-		assert.deepEqual(seen, [{ code }]);
+		assert.deepEqual(seen, [{ code }, { code }], "干跑与真跑各调一次宿主引擎，入参都是 { code }");
 		assert.equal(result.content[0].text, "跑完");
 		// 理由在审核侧看到之前就已经洗好、登记好
 		assert.equal(ptcReasonLedger().recall("call-1"), "看看 仓库 状态");
@@ -435,12 +435,47 @@ describe("注册与调用路径", () => {
 			approve: async () => ({ approved: false, comment: "别碰 /etc", review: { verdict: "risky", reason: "写入工作区外", suggestion: "" } as never }),
 		});
 		const result = await tools[0].execute("call-1", { description: "改系统配置", code: "return 1" }, undefined, undefined, {});
-		assert.equal(seen.length, 0, "被拒时不该碰宿主引擎");
+		// 干跑在批准之前（卡上要看预演），所以它会调一次宿主引擎；真跑一次都不能发生
+		assert.equal(seen.length, 1, "被拒时只有干跑跑过，真跑没发生");
 		assert.match(result.content[0].text, /本段未执行/);
 		assert.match(result.content[0].text, /E-DENIED/);
 		assert.match(result.content[0].text, /写入工作区外/);
 		assert.match(result.content[0].text, /没有产生任何读写/);
 		assert.match(result.content[0].text, /审批附言：别碰 \/etc/);
+	});
+
+	it("先干跑再真跑：干跑走假 ctx，审计里留下对账", async () => {
+		resetProcessSingleton("ptc-reason-ledger");
+		clearPtcScopes();
+		clearNestedCalls();
+		clearPtcAudits();
+		const modes: string[] = [];
+		const { tools, pi } = stubPi();
+		const host: HostCodemodeModule = {
+			CODEMODE_TOOL_NAME: "codemode",
+			createCodemodeDescription: () => "底稿",
+			createCodemodeToolDefinition: () => ({
+				name: "codemode",
+				description: "宿主描述",
+				parameters: {},
+				execute: async (_id: string, _params: unknown, _signal: unknown, _onUpdate: unknown, ctx: any) => {
+					// 干跑的 ctx 带我们的记账 executeTool；真跑的是测试给的空 ctx
+					const mode = typeof ctx?.executeTool === "function" ? "dry" : "real";
+					modes.push(mode);
+					if (mode === "dry") await ctx.executeTool("read", { path: "/a" });
+					return { content: [{ type: "text", text: mode }] };
+				},
+			}),
+		};
+		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
+		await tools[0].execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
+
+		assert.deepEqual(modes, ["dry", "real"], "干跑在前，真跑在后");
+		const executed = recentPtcAudits(5).find((entry) => entry.outcome === "executed");
+		assert.deepEqual(executed?.dryRun?.calls, ["read"]);
+		assert.deepEqual(executed?.comparison?.unfulfilled, ["read"], "干跑预演了 read 而真跑没调 → 记在干跑多算");
+		clearNestedCalls();
+		clearPtcAudits();
 	});
 
 	it("内层调用被归集：范围内的标记覆盖，范围外的照实标出", async () => {
@@ -502,7 +537,8 @@ describe("注册与调用路径", () => {
 		const { tools, pi } = stubPi();
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
 		await tools[0].execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
-		assert.deepEqual(scopesSeen, ["call-1"]);
+		// 干跑那次还没登记作用域（它在批准之前），真跑那次才有
+		assert.deepEqual(scopesSeen, [undefined, "call-1"]);
 		assert.equal(ptcScopeForNestedCall("call-1/1"), undefined, "执行完作用域要关掉");
 	});
 });

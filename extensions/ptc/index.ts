@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ptcCodeDigest, ptcReasonLedger } from "../../lib/ptc-reason.ts";
 import { scanScript } from "../../lib/ptc-analyze.ts";
+import { runDryRun } from "../../lib/ptc-dryrun.ts";
 import { yoloEnabled } from "../sandbox-permissions/yolo.ts";
 import {
 	approvePtcScript,
@@ -167,13 +168,23 @@ export function registerRunCode(
 			// 字面量扫描：送审材料用它收窄工具面，批准范围用它决定内层哪些调用免问
 			const scan = await scanScript(code);
 
+			// 干跑：换掉 ctx 把控制流走一遍（不执行任何工具、不花 token）。
+			// 拿到的是"确定会做什么"，与真跑归集对账后进审计；这一步在批准之前，
+			// 所以审批卡上能看到它。
+			const dry = await runDryRun({
+				execute: definition.execute,
+				toolCallId,
+				code,
+				ctx,
+			});
+
 			// 事前审核：过了才执行；没过整段不执行，返回编译失败式的错误。
 			// yolo 与 bash-guard 保持一致：跳过整条审批链。
 			if (!yoloEnabled()) {
 				const outcome = await approve({
 					pi,
 					ctx,
-					input: { script: code, reason, tools: registeredTools(pi), scan },
+					input: { script: code, reason, tools: registeredTools(pi), scan, dry },
 					signal,
 				});
 				if (!outcome.approved) {
@@ -197,8 +208,9 @@ export function registerRunCode(
 				return await definition.execute(toolCallId, { code }, signal, onUpdate, ctx);
 			} finally {
 				endPtcScope(toolCallId);
-				// 跑完把"实际派发了哪些调用"写进审计（内存滚动，不落盘）
-				recordPtcExecution(pi, { callId: toolCallId, digest, reason });
+				// 跑完把"实际派发了哪些调用"写进审计（内存滚动，不落盘），
+				// 顺带把干跑预演与真跑事实对一遍账
+				recordPtcExecution(pi, { callId: toolCallId, digest, reason, dry });
 			}
 		},
 	} as never);

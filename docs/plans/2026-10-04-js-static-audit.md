@@ -247,8 +247,21 @@ run_code: 本段未执行（安全审核未通过）
 | P2 静态 | AST 抽象解释，输出 EffectReport | **部分**：字面量级扫描已落地（`lib/ptc-analyze.ts`）——工具名、路径与命令字面量、`opaque` 标记；抽象解释（值域、循环固定点、别名）未做 | 语料上的"不漏报"断言（§12）；当前只做"扫描看不见就不给免问"，方向已保守 |
 | P0 观测 | 每次 `run_code` 的调用序列、理由落审计 | **已落地**：理由登记（`lib/ptc-reason.ts`）、`ptc:reason` 广播；`tool_call` 钩子按 `parentToolCallId` 把内层调用归到所属脚本，跑完写进 `ptc-audit`（工具名 + 参数摘要 + 是否在批准范围内），审计条目内存滚动不落盘 | 真机验过：一次脚本两条条目（批准 + 执行），内层 bash 记为 `covered: true` |
 | P3 决策 | 摘要进审批卡、越界即停、digest 绑定 | **部分**：事前一次判定 + 整段废弃已在；批准范围已收窄到"字面上调用过的工具"；digest 失效与"真跑越界即停"未做 | 脚本改一处即失去批准 |
-| P1 干跑 | ctx stub + 调用聚合 | 未做（最小实现里排最后：静态够用时它只是提高下界精度） | 干跑与真跑差异必须落在"未知/越界"上 |
+| P1 干跑 | ctx stub + 调用聚合 | **已落地**：`lib/ptc-dryrun.ts` 用原型委托换掉 `executeTool`（记账 + 占位返回）与 `modelRegistry`（一调就抛），脚本在批准之前先预演一遍；预演结果进送审材料、审批卡与审计。跑完与真跑归集**对账**（`compareCalls`：干跑多算 / 真跑多出），差异写进 `ptc-audit` | 真机验过：预演 `read`、真跑 `read`、对账为空；真机上撞过的两个坑见下 |
 | P4 打磨 | 折叠、消毒、性能预算、降级提示 | 未做 | 预算内完成；注入样例不改变卡片语义 |
+
+### 11.1 干跑踩过的两个坑（换 ctx 的方式）
+
+换 ctx 看着简单，两种直觉写法都当场失败，记在这里省得再踩：
+
+- **`{ ...ctx }` 展开**：真的 ctx 把 `tools` / `sessionManager` 挂在原型或 getter 上，
+  展开会丢掉它们，引擎读 `ctx.tools` 得到 undefined
+  （报错：`Cannot read properties of undefined (reading 'filter')`）
+- **Proxy 包一层**：`executeTool` 在真 ctx 上是**只读不可配置**的属性，代理的 `get`
+  返回别的值就违反 Proxy 不变量，直接 TypeError
+
+最后用的是**原型委托**：`Object.create(ctx)` 之后把 `executeTool` 与 `modelRegistry`
+定义成自有属性 —— 自有属性优先于原型，其余字段照常沿原型链取到原值。
 
 ## 12. 语料与测试
 

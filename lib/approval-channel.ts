@@ -70,6 +70,10 @@ export interface ScriptEffectsPayload {
 	parseError?: string;
 	/** 脚本摘要（前 12 位足够人眼对齐） */
 	digestShort: string;
+	/** 干跑预演到的调用（工具名×次数）：这是"确定会做什么" */
+	dryRunCalls?: string[];
+	/** 干跑的状态；没跑或没跑成时缺省 */
+	dryRunStatus?: string;
 }
 
 export interface AuditApprovalRequest extends ApprovalRequestBase {

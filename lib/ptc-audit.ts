@@ -16,6 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { processSingleton } from "./process-singleton.ts";
 import { resolveApprovalChannel, type ScriptEffectsPayload } from "./approval-channel.ts";
 import type { ScriptScan } from "./ptc-analyze.ts";
+import { compareCalls, compareLine, type DryRunResult } from "./ptc-dryrun.ts";
 import {
 	createReviewCache,
 	loadLlmReviewConfig,
@@ -57,6 +58,8 @@ export interface PtcAuditInput {
 	tools: PtcToolInfo[];
 	/** 字面量扫描结果；没扫（或扫失败）时不带，送审材料就退回"工具全集" */
 	scan?: ScriptScan;
+	/** 干跑预演结果；没跑或没跑成时不带 */
+	dry?: DryRunResult;
 }
 
 /**
@@ -107,6 +110,21 @@ export function scanSummary(scan: ScriptScan | undefined): string {
 }
 
 /** 送审文本：审核模型与审批卡看到的是同一份 */
+/** 干跑那一段：预演到会调用什么，或者为什么没预演成 */
+export function dryRunSummary(dry: DryRunResult | undefined): string {
+	if (dry === undefined) return "";
+	const head =
+		dry.status === "ok"
+			? `干跑预演（假数据走了一遍控制流，${dry.ms}ms）会执行：`
+			: dry.status === "timeout"
+				? `干跑预演超时（${dry.ms}ms），已预演到：`
+				: `干跑预演失败（${dry.error ?? "原因不明"}），已预演到：`;
+	const counts = new Map<string, number>();
+	for (const call of dry.calls) counts.set(call.tool, (counts.get(call.tool) ?? 0) + 1);
+	const rendered = [...counts.entries()].map(([tool, count]) => (count > 1 ? `${tool}×${count}` : tool));
+	return `${head}${rendered.length > 0 ? rendered.join("、") : "（没有派发任何调用）"}`;
+}
+
 export function buildPtcAuditSubject(input: PtcAuditInput): string {
 	return [
 		"【run_code 事前审核】下面这段 JavaScript 会在沙箱里执行，并可以调用工具。",
@@ -116,6 +134,7 @@ export function buildPtcAuditSubject(input: PtcAuditInput): string {
 		describeTools(input.tools, input.scan?.tools),
 		"",
 		scanSummary(input.scan),
+		dryRunSummary(input.dry),
 		"",
 		"脚本原文：",
 		input.script,
@@ -152,9 +171,15 @@ function ptcReviewCache(): ReviewCache {
 	return reviewCacheForPtc;
 }
 
-/** 从扫描结果整理出给审批窗的结构化影响面 */
+/** 从扫描与干跑结果整理出给审批窗的结构化影响面 */
 export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 	const scan = input.scan;
+	const dryRunCalls: string[] = [];
+	if (input.dry) {
+		const counts = new Map<string, number>();
+		for (const call of input.dry.calls) counts.set(call.tool, (counts.get(call.tool) ?? 0) + 1);
+		for (const [tool, count] of counts) dryRunCalls.push(count > 1 ? `${tool}×${count}` : tool);
+	}
 	return {
 		tools: scan?.tools ?? [],
 		paths: scan?.paths ?? [],
@@ -162,6 +187,7 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 		opaque: scan?.opaque ?? [],
 		...(scan?.parseError ? { parseError: scan.parseError } : {}),
 		digestShort: ptcScriptDigest(input.script).slice(0, 12),
+		...(input.dry ? { dryRunStatus: input.dry.status, dryRunCalls } : {}),
 	};
 }
 
@@ -240,9 +266,12 @@ function appendPtcAudit(pi: ExtensionAPI, entry: Record<string, unknown>): void 
  */
 export function recordPtcExecution(
 	pi: ExtensionAPI,
-	input: { callId: string; digest: string; reason?: string },
-): { calls: PtcNestedCallRecord[]; outOfScope: string[] } {
+	input: { callId: string; digest: string; reason?: string; dry?: DryRunResult },
+): { calls: PtcNestedCallRecord[]; outOfScope: string[]; comparison?: ReturnType<typeof compareCalls> } {
 	const log = takeNestedCalls(input.callId);
+	// 干跑是预演，真跑是事实：对不上不是错误，但必须留痕——究竟是"假数据把控制流带偏"
+	// 还是"只有真数据才走到那条路"，只有这里能回答。
+	const comparison = input.dry ? compareCalls(input.dry.calls, log.calls) : undefined;
 	appendPtcAudit(pi, {
 		digest: input.digest,
 		outcome: "executed",
@@ -250,8 +279,19 @@ export function recordPtcExecution(
 		...(input.reason ? { reason: input.reason } : {}),
 		calls: log.calls,
 		outOfScope: log.outOfScope,
+		...(input.dry
+			? {
+					dryRun: {
+						status: input.dry.status,
+						calls: input.dry.calls.map((call) => call.tool),
+						...(input.dry.error ? { error: input.dry.error } : {}),
+						...(input.dry.output ? { output: input.dry.output } : {}),
+					},
+					...(comparison ? { comparison, compareLine: compareLine(comparison) } : {}),
+				}
+			: {}),
 	});
-	return log;
+	return { ...log, ...(comparison ? { comparison } : {}) };
 }
 
 // ── 批准作用域 ──
@@ -396,6 +436,10 @@ export interface PtcAuditEntry {
 	calls?: PtcNestedCallRecord[];
 	/** 脚本执行完才有：不在批准范围内、因此照旧走原链的工具名 */
 	outOfScope?: string[];
+	/** 脚本执行完才有：干跑预演的结果，以及它与真跑对不上的地方 */
+	dryRun?: { status: string; calls: string[]; error?: string; output?: string };
+	comparison?: { unfulfilled: string[]; unpredicted: string[] };
+	compareLine?: string;
 }
 
 /** 审计条目的内存滚动窗口（不落盘，见规划 §8.1） */

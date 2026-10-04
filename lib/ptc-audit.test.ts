@@ -11,10 +11,12 @@ import {
 	clearPtcAudits,
 	clearPtcScopes,
 	describeTools,
+	dryRunSummary,
 	endPtcScope,
 	notePtcAudit,
 	recentPtcAudits,
 	recordNestedCall,
+	recordPtcExecution,
 	scanSummary,
 	scriptEffectsOf,
 	summarizeArgs,
@@ -97,13 +99,47 @@ describe("工具面（送审材料）", () => {
 		assert.equal(scanSummary(undefined), "");
 	});
 
+	it("干跑摘要：预演到什么、或为什么没预演成", () => {
+		assert.equal(dryRunSummary(undefined), "");
+		const ok = dryRunSummary({ calls: [{ tool: "read", args: "" }, { tool: "read", args: "" }, { tool: "bash", args: "" }], status: "ok", ms: 12 });
+		assert.match(ok, /干跑预演.*12ms.*会执行：read×2、bash/);
+		assert.match(dryRunSummary({ calls: [], status: "ok", ms: 3 }), /没有派发任何调用/);
+		assert.match(dryRunSummary({ calls: [{ tool: "read", args: "" }], status: "timeout", ms: 3000 }), /超时/);
+		assert.match(dryRunSummary({ calls: [], status: "error", error: "引擎没起来", ms: 1 }), /引擎没起来/);
+	});
+
+	it("对账留痕：干跑多算的与真跑多出的都写进审计", () => {
+		clearNestedCalls();
+		clearPtcAudits();
+		recordNestedCall("call-1", { tool: "bash", args: "{command:ls}", covered: true });
+		recordNestedCall("call-1", { tool: "write", args: "{path:/tmp/x}", covered: true });
+		const pi = { appendEntry: () => {} } as never;
+		const result = recordPtcExecution(pi, {
+			callId: "call-1",
+			digest: "d1",
+			reason: "跑一下",
+			dry: { calls: [{ tool: "read", args: "" }, { tool: "bash", args: "" }], status: "ok", ms: 5 },
+		});
+		assert.deepEqual(result.comparison?.unpredicted, ["write"]);
+		assert.deepEqual(result.comparison?.unfulfilled, ["read"]);
+		const entry = recentPtcAudits(1)[0];
+		assert.equal(entry.outcome, "executed");
+		assert.deepEqual(entry.dryRun?.calls, ["read", "bash"]);
+		assert.match(entry.compareLine ?? "", /真跑多出：write/);
+		assert.match(entry.compareLine ?? "", /干跑多算：read/);
+		clearPtcAudits();
+		clearNestedCalls();
+	});
+
 	it("给审批窗的影响面是结构化的，没扫描也有摘要位", () => {
 		const effects = scriptEffectsOf({
 			script: "return await tools.bash({ command: 'ls' })",
 			reason: "看看目录",
 			tools: [],
 			scan: { calls: [], tools: ["bash"], paths: [], commands: ["ls"], opaque: ["3:1 bash 的参数里有非字面量"] },
+			dry: { calls: [{ tool: "bash", args: "" }], status: "ok", ms: 4 },
 		});
+		assert.deepEqual(effects.dryRunCalls, ["bash"]);
 		assert.deepEqual(effects.tools, ["bash"]);
 		assert.deepEqual(effects.commands, ["ls"]);
 		assert.equal(effects.opaque.length, 1);
