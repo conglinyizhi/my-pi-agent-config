@@ -14,15 +14,21 @@
       </div>
     </header>
 
-    <div class="cmd-wrap" :class="{ folded: foldable && !expanded }">
-      <pre ref="cmdBox" class="cmd-area" v-html="commandHtml" @mouseover="onHover" @mouseout="onLeave"></pre>
-      <div v-if="foldable && !expanded" class="fold-fade"></div>
+    <!-- 这一行不能折：<pre> 里元素之间的空白会被当正文渲染，所以标签必须贴着写 -->
+    <div class="cmd-wrap">
+      <pre ref="cmdBox" class="cmd-area" @mouseover="onHover" @mouseout="onLeave"><template v-for="(segment, index) in segments" :key="index"><span v-if="segment.kind === 'text'" v-html="textHtml(segment)"></span><button v-else class="fold-chip" :class="chipClass(segment.chip)" :data-name="'fold-chip-' + segment.chip.index" :title="chipTitle(segment.chip)" @click="openDetail(segment.chip)">{{ segment.chip.warned ? "⚠ " : "" }}{{ segment.chip.label }}</button></template></pre>
     </div>
-    <div v-if="foldable" class="fold-bar">
-      <button data-name="cmd-fold-toggle" class="fold-btn" @click="expanded = !expanded">
-        {{ expanded ? "收起脚本" : `展开全部（共 ${lineCount} 行）` }}
-      </button>
+    <div v-if="chips.length" class="fold-legend">
+      灰 = 改文件，橙 = 可执行 shell（$$SHELL$$）；点芯片看具体改动
     </div>
+
+    <CallDetailDialog
+      v-if="detail"
+      :chip="detail"
+      :source="command"
+      :marks="mergedMarks"
+      @close="detail = null"
+    />
     <div v-if="tip" class="tooltip" :class="tipTone" :style="tipPos">{{ tip }}</div>
   </div>
 </template>
@@ -32,6 +38,8 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { mergeEnvHighlights, renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { envNoteHighlights } from "../../domain/gate/env-notes.js";
 import { mergeVarHighlights, varRenderHighlights } from "../../domain/gate/var-renders.js";
+import { foldScript } from "../../domain/gate/script-fold.js";
+import CallDetailDialog from "./CallDetailDialog.vue";
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -47,33 +55,65 @@ const props = defineProps({
   envNotes: { type: Array, default: () => [] },
   /** pi 侧算好的变量渲染值：{name, value?, source, target, kind, known, reason?} */
   varRenders: { type: Array, default: () => [] },
+  /** 要折成芯片的调用（pi 侧给事实；空数组 = 一行不折，原文照出） */
+  editCalls: { type: Array, default: () => [] },
   current: { type: Number, default: 0 },
-  /** 长脚本先折起来：篇幅太大、用处不多，点一下再全展开 */
-  fold: Boolean,
 });
 
 const emit = defineEmits(["update:current"]);
 const cmdBox = ref(null);
-const expanded = ref(false);
-/** 超过这么多行就先折不展开（脚本 / 批量改写的正文都在这） */
-const FOLD_LINES = 14;
-const lineCount = computed(() => props.command.split("\n").length);
-const foldable = computed(() => props.fold && lineCount.value > FOLD_LINES);
+/** 打开着的细节对话框：一颗芯片（模型给的，含 pi 侧事实） */
+const detail = ref(null);
 const tip = ref("");
 /** tip 的底色：rule=黄（旧行为），env=绿（赋值解析出来了），env-unknown=灰（赋值没解析出来），var/var-unknown=蓝/灰（变量渲染值） */
 const tipTone = ref("rule");
 const tipPos = ref({});
-const commandHtml = computed(() => {
+
+const mergedMarks = computed(() => {
   // 先按老路径合并规则与赋值高亮，再叠变量渲染值（重叠时后者让位，绿框不被蓝框盖）
   const ruleAndEnv = mergeEnvHighlights(envNoteHighlights(props.command, props.envNotes), props.highlights);
-  return renderHighlightedCommand(props.command, mergeVarHighlights(varRenderHighlights(props.command, props.varRenders), ruleAndEnv));
+  return mergeVarHighlights(varRenderHighlights(props.command, props.varRenders), ruleAndEnv);
 });
+const foldModel = computed(() =>
+  foldScript(props.command, props.editCalls, mergedMarks.value, { warnMarks: props.highlights }),
+);
+// <pre> 里要贴着写元素，所以分段渲染在模板里完成，这里只算出片段
+const segments = computed(() => foldModel.value.segments);
+const chips = computed(() => foldModel.value.chips);
+
+function textHtml(segment) {
+  return renderHighlightedCommand(segment.text, segment.marks);
+}
+function chipClass(chip) {
+  return {
+    "chip-file": chip.tone !== "shell",
+    "chip-shell": chip.tone === "shell",
+    "chip-warn": chip.warned,
+    "chip-vague": !chip.literal,
+  };
+}
+function chipTitle(chip) {
+  const what = chip.tone === "shell" ? "这段 shell 命令" : "这次写入/改写";
+  return `点击查看${what}的具体内容`;
+}
+function openDetail(chip) {
+  detail.value = chip;
+}
 
 function scroll() {
+  const model = foldModel.value;
+  // 被折住的规则标记：滚动定位没有意义，改成把对应芯片的内容摆出来
+  const owner = model.ruleOwner[props.current] ?? -1;
+  if (owner >= 0) {
+    openDetail(model.chips[owner]);
+    return;
+  }
+  const position = model.ruleVisible.indexOf(props.current);
+  if (position < 0) return;
   nextTick(() => {
     const marks = cmdBox.value?.querySelectorAll("mark.h") ?? [];
-    marks.forEach((mark, index) => mark.classList.toggle("f", index === props.current));
-    marks[props.current]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    marks.forEach((mark, index) => mark.classList.toggle("f", index === position));
+    marks[position]?.scrollIntoView({ behavior: "smooth", block: "center" });
   });
 }
 function next() {
@@ -105,15 +145,14 @@ function onLeave() {
 }
 
 onMounted(scroll);
-// 要跳到被折住的位置时先展开：折叠的意思是"先不看"，不是"看不到"
-watch(() => props.current, () => {
-  if (foldable.value) expanded.value = true;
+// 被折住的高亮跳过去时会把细节对话框打开（折叠不是"看不到"，是"先不看"）
+watch(() => props.current, scroll);
+// 文本换了，之前打开的细节就作废
+watch(() => [props.command, props.editCalls], () => {
+  detail.value = null;
   scroll();
 });
-watch(() => props.fold, (value) => {
-  if (!value) expanded.value = false;
-});
-watch(() => [props.command, props.highlights], scroll, { deep: true });
+watch(() => props.highlights, scroll, { deep: true });
 </script>
 
 <style scoped>
@@ -130,12 +169,16 @@ watch(() => [props.command, props.highlights], scroll, { deep: true });
 .hl-btn { padding: 3px 10px; background: #2a2a4a; border: 1px solid #444; border-radius: 3px; color: #ccc; cursor: pointer; font-size: 11px; }
 .hl-btn:disabled { opacity: 0.4; }
 .cmd-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
-.cmd-wrap.folded .cmd-area { max-height: 26em; overflow: hidden; }
-.fold-fade { position: absolute; left: 0; right: 0; bottom: 0; height: 60px; background: linear-gradient(180deg, #0d0d1a00, #0d0d1a 78%); pointer-events: none; }
-.fold-bar { display: flex; justify-content: center; padding: 6px; border-top: 1px solid #2a2a4a; background: #14142a; }
-.fold-btn { padding: 4px 14px; font-size: 11px; color: #a9b1d6; background: #1f1f38; border: 1px solid #2a2a4a; border-radius: 99px; cursor: pointer; transition: all 0.12s; }
-.fold-btn:hover { color: #c0caf5; border-color: #4ec9b055; background: #24243f; }
+.fold-legend { padding: 4px 16px 8px; font-size: 11px; color: #777; }
 .cmd-area { flex: 1; margin: 0; padding: 16px; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
+/* 芯片：灰=改文件，橙=可执行 shell。字号跟着正文走，别在 <pre> 里跳出来 */
+.fold-chip { font-family: inherit; font-size: inherit; line-height: inherit; padding: 0 6px; margin: 0 1px; border-radius: 3px; border: 1px solid; cursor: pointer; vertical-align: baseline; }
+.fold-chip.chip-file { color: #b9c0d0; background: #2a2a3d55; border-color: #555a6b; }
+.fold-chip.chip-file:hover { background: #3a3a5566; color: #dfe4f0; }
+.fold-chip.chip-shell { color: #e6a23c; background: #3a2a1233; border-color: #e6a23c88; }
+.fold-chip.chip-shell:hover { background: #4a361688; }
+.fold-chip.chip-warn { box-shadow: inset 0 0 0 1px #ff6b6b; }
+.fold-chip.chip-vague { border-style: dashed; }
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #e67e22; padding: 5px 10px; border-radius: 4px; font-size: 12px; color: #e67e22; z-index: 100; pointer-events: none; white-space: pre-line; max-width: 70vw; }
 .tooltip.rule::before { content: "⚠️ "; }
 .tooltip.env { border-color: #4ec9b0; color: #4ec9b0; }

@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chipIndexOfMark, foldScript, normalizeFoldCalls } from "./script-fold.js";
+import { chipIndexOfMark, clipMarks, foldScript, normalizeFoldCalls } from "./script-fold.js";
 
 const call = (over = {}) => ({
   tool: "write",
@@ -138,6 +138,24 @@ describe("mark 与折叠的关系", () => {
     const model = foldScript(text, calls, [danger, other], { warnMarks: [danger] });
     assert.equal(model.chips[0].warned, true);
     assert.deepEqual(model.chips[0].hiddenMarks, [0, 1]);
+  });
+
+  it("规则标记的导航视图：被折住的指向芯片，露着的给出滚动位置", () => {
+    const danger = { s: text.indexOf("rm -rf"), e: text.indexOf("rm -rf") + 6, t: "危险", n: "r4" };
+    const outside = { s: 0, e: 4, t: "开头", n: "r5" };
+    const model = foldScript(text, calls, [danger, outside], { warnMarks: [danger, outside] });
+    assert.deepEqual(model.ruleOwner, [0, -1]);
+    assert.deepEqual(model.ruleVisible, [1]);
+    assert.deepEqual(model.visibleOrder, [1]);
+  });
+
+  it("clipMarks 按区间裁剪平移（浮层与可视片段共用）", () => {
+    const marks = [{ s: 10, e: 20, t: "a", n: "x" }, { s: 30, e: 40, t: "b", n: "y" }];
+    const clipped = clipMarks(marks, 15, 35);
+    assert.deepEqual(clipped, [
+      { s: 0, e: 5, t: "a", n: "x", index: 0 },
+      { s: 15, e: 20, t: "b", n: "y", index: 1 },
+    ]);
   });
 
   it("chipIndexOfMark 给导航用：没被折住的返回 -1", () => {

@@ -51,6 +51,21 @@ export function normalizeFoldCalls(script, editCalls) {
 }
 
 /**
+ * 把一批 mark 裁到 [from, to) 并平移成片段内坐标（可视片段与浮层共用一份逻辑）。
+ * 一并带上 index（在原数组里的位置）：导航要按它找元素，别靠坐标反查。
+ */
+export function clipMarks(marks, from, to) {
+  const list = Array.isArray(marks) ? marks : [];
+  const local = [];
+  list.forEach((mark, index) => {
+    if (!mark || typeof mark.s !== "number" || typeof mark.e !== "number") return;
+    if (mark.e <= from || mark.s >= to) return;
+    local.push({ ...mark, s: Math.max(mark.s, from) - from, e: Math.min(mark.e, to) - from, index });
+  });
+  return local;
+}
+
+/**
  * 生成预览片段。
  *
  * marks 用全局坐标（跟 highlights.js 的 { s, e, t, n } 一致）；返回的每个 text
@@ -88,13 +103,13 @@ export function foldScript(script, editCalls, marks = [], options = {}) {
   });
 
   const segments = [];
+  // 文档顺序上"露在可视片段里"的 mark（按全局序号）：导航按这个找元素
+  const visibleOrder = [];
   const pushText = (from, to) => {
     if (to <= from) return;
-    const local = [];
-    for (const mark of markList) {
-      if (!mark || typeof mark.s !== "number" || typeof mark.e !== "number") continue;
-      if (mark.e <= from || mark.s >= to) continue;
-      local.push({ ...mark, s: Math.max(mark.s, from) - from, e: Math.min(mark.e, to) - from });
+    const local = clipMarks(markList, from, to);
+    for (const clipped of local) {
+      if (!visibleOrder.includes(clipped.index)) visibleOrder.push(clipped.index);
     }
     segments.push({ kind: "text", text: text.slice(from, to), start: from, end: to, marks: local });
   };
@@ -107,7 +122,17 @@ export function foldScript(script, editCalls, marks = [], options = {}) {
   });
   pushText(cursor, text.length);
 
-  return { segments, chips, markOwner };
+  // 规则标记的导航视图：被折住的要弹对应芯片，露着的才滚动定位
+  const ruleOwner = warnMarks.map((ruleMark) => {
+    const globalIndex = markList.indexOf(ruleMark);
+    return globalIndex >= 0 ? markOwner[globalIndex] : -1;
+  });
+  const ruleVisible = warnMarks
+    .map((ruleMark, index) => ({ index, globalIndex: markList.indexOf(ruleMark) }))
+    .filter((entry) => entry.globalIndex >= 0 && visibleOrder.includes(entry.globalIndex))
+    .map((entry) => entry.index);
+
+  return { segments, chips, markOwner, visibleOrder, ruleOwner, ruleVisible };
 }
 
 /** 哪个芯片盖住了这条 mark（导航跳到被折住的高亮时，用它找该弹哪颗） */

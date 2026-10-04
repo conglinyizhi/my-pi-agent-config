@@ -12,8 +12,8 @@
       :highlights="highlights"
       :env-notes="envNotes"
       :var-renders="varRenders"
+      :edit-calls="editCalls"
       :current="cur"
-      :fold="isScript"
       @update:current="cur = $event"
     />
 
@@ -120,6 +120,8 @@ const kind = ref("");
 const subject = ref("");
 /** 结构化影响面（pi 侧算好）：工具 / 路径 / 命令 / 看不清的地方 */
 const scriptEffects = ref(null);
+/** 要折成芯片的调用（影响面里带过来的显示层事实） */
+const editCalls = ref([]);
 const permission = ref("");
 const writePaths = ref([]);
 const justification = ref("");
@@ -252,6 +254,7 @@ onMounted(async () => {
   kind.value = data.kind || "audit";
   subject.value = data.subject || "";
   scriptEffects.value = data.scriptEffects || null;
+  editCalls.value = data.scriptEffects?.editCalls || [];
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
   justification.value = data.justification || "";
