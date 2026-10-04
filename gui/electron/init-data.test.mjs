@@ -19,8 +19,8 @@ describe("argv 解析", () => {
 		assert.equal(parsed.requestFile, "");
 	});
 
-	it("四个窗口的配置齐备", () => {
-		for (const name of ["gate", "editor", "subagents", "routing"]) {
+	it("五个窗口的配置齐备", () => {
+		for (const name of ["gate", "editor", "subagents", "routing", "review"]) {
 			const config = WINDOW_CONFIGS[name];
 			assert.ok(config, name);
 			assert.ok(config.title.length > 0 && config.width > 0 && config.minWidth <= config.width, name);
@@ -60,6 +60,32 @@ describe("initData 映射", () => {
 		assert.deepEqual(buildInitData("subagents", { workers: [1] }, {}).workers, [1]);
 		assert.deepEqual(buildInitData("routing", { todos: [2] }, {}).todos, [2]);
 		assert.deepEqual(buildInitData("editor", { clipHistory: [3] }, {}).clipHistory, [3]);
+	});
+
+	it("review：设置快照 / 维度元信息 / 取值范围 / 路径 / key 状态都铺给前端", () => {
+		const request = {
+			settings: { llm: { mode: "auto" }, classifier: { model: "m" }, dimensions: [], warnings: [] },
+			specs: [{ id: "elevation", label: "提权", type: "choice", supportsBelow: true }],
+			limits: { step: 0.05, aboveMin: 0.05 },
+			paths: { extensionsToml: "/tmp/extensions.toml", dimensionsToml: "/tmp/review-dimensions.toml" },
+			keyConfigured: true,
+		};
+		const data = buildInitData("review", request, { responseFile: "/tmp/resp.json" });
+		assert.equal(data.responseFile, "/tmp/resp.json");
+		assert.equal(data.settings.llm.mode, "auto");
+		assert.equal(data.specs[0].label, "提权");
+		assert.equal(data.limits.step, 0.05);
+		assert.equal(data.paths.dimensionsToml, "/tmp/review-dimensions.toml");
+		assert.equal(data.keyConfigured, true);
+		// review 窗口不该拿到 gate 那套字段（它有自己的视图）
+		assert.equal(data.command, undefined);
+	});
+
+	it("review：缺字段保持缺，不补默认值", () => {
+		const data = buildInitData("review", {}, {});
+		assert.equal(data.settings, undefined);
+		assert.equal(data.keyConfigured, undefined);
+		assert.ok("settings" in data, "键要在，值可以是 undefined");
 	});
 
 	it("未知窗口名按 gate 处理，请求不是对象也不炸", () => {

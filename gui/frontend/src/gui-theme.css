@@ -3,6 +3,7 @@
 
 /* gui-theme.css — 所有 GUI 窗口共享的样式
    四个视图（gate / editor / subagents / routing）各自 import 一次，Vite 打包时去重。
+   review（审核设置）也不例外：每个视图自己 import，不靠全局样式入口。
 */
 /* 中文字形按简体（zh-CN）走：Chromium 靠 html lang 与字体栈挑 CJK 变体，
    只写 sans-serif 时容易落到日文字形上（MiSans 已在系统里）。 */

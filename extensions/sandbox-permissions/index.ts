@@ -110,7 +110,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// GUI 的目录授权是另一路；本命令是 TUI 回退时唯一能管理副工作区的手段，
 	// 只用 ctx.ui（notify/select/input/confirm），不依赖 GUI 窗口。
 	pi.registerCommand("sandbox:review", {
-		description: "审核维度阈值（分类模型后端）：above/below 与动作（提示/忽略）",
+		description: "审核工作流设置：开设置窗改总开关/档位/后端/超时/缓存/分类器与八个维度的阈值；无图形时回退 TUI 面板。用法 /sandbox:review [key]",
 		handler: (args, ctx) => reviewCommandHandler(args, ctx),
 	});
 

@@ -45,6 +45,16 @@ export function createWailsPlatform() {
       updateReason: UpdateReason,
       deleteReason: DeleteReason,
     },
+    // 审核设置只在 Electron 宿主实现（写盘要过 scripts/review-settings-cli.ts）。
+    // Wails 宿主已归档，这里给一个明说不支持的桩，而不是静默给空值。
+    review: {
+      async load() {
+        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui）" };
+      },
+      async save() {
+        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui）" };
+      },
+    },
     subagents: {
       getStatus: GetSubagentStatus,
       getDiagnostics: GetSubagentDiagnostics,

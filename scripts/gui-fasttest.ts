@@ -290,6 +290,12 @@ const tests: Array<{ name: string; windowName: string; request: unknown }> = [
     windowName: "editor",
     request: { clipHistory: [], file: null },
   },
+  {
+    // 不带 settings：让窗口自己走一次 review:load（顺手验一遍 CLI 桥在真宿主里通不通）
+    name: "review",
+    windowName: "review",
+    request: {},
+  },
 ];
 
 async function runGui(name: string, windowName: string, request: unknown): Promise<string> {

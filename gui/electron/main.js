@@ -12,6 +12,7 @@
 // 一律降级成"能跑但不生效"，不做假的成功返回。
 
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +22,8 @@ import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 前端产物：gui/frontend（Vue 工程，与引擎无关；两个引擎共用一份 dist） */
 const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
+/** 审核设置的 JSON 桥（主进程是纯 JS，读不了 .ts，也绝不在主进程重写 TOML 逻辑） */
+const REVIEW_CLI = resolve(HERE, "..", "..", "scripts", "review-settings-cli.ts");
 /** subagent 状态快照：与 Go 侧同一路径 */
 const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
 
@@ -53,6 +56,57 @@ function readStatus() {
 		return readFileSync(STATUS_PATH, "utf8");
 	} catch {
 		return "{}";
+	}
+}
+
+// ── 审核设置：走 CLI 桥（scripts/review-settings-cli.ts）──
+// Electron 的主进程是纯 JS，不能 import 仓里的 .ts；TOML 读写也就不能在这里重写一份。
+// 桥约定：stdout 一行 JSON，退出码 0 成功 / 1 校验失败（未落盘）/ 2 用法或 IO 问题。
+
+let nodeBin = null;
+
+/** node 解释器：优先 PI_NODE_BIN，其次 PATH 里的 node，最后两个常见绝对路径 */
+function resolveNodeBin() {
+	if (nodeBin) return nodeBin;
+	const candidates = [process.env.PI_NODE_BIN, "node", "/usr/bin/node", "/usr/local/bin/node"].filter(Boolean);
+	for (const candidate of candidates) {
+		try {
+			const probe = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 5000 });
+			if (probe.status === 0 && String(probe.stdout ?? "").startsWith("v")) {
+				nodeBin = candidate;
+				return candidate;
+			}
+		} catch {
+			// 换下一个候选
+		}
+	}
+	// 都探不到也返回第一个候选：真正的错误（ENOENT）在调用处报出来，比这里静默吞掉好
+	nodeBin = candidates[0] ?? "node";
+	return nodeBin;
+}
+
+function runReviewCli(args, input = "") {
+	if (!existsSync(REVIEW_CLI)) {
+		return { ok: false, error: `找不到审核设置的桥脚本：${REVIEW_CLI}` };
+	}
+	const result = spawnSync(resolveNodeBin(), ["--experimental-strip-types", REVIEW_CLI, ...args], {
+		input,
+		encoding: "utf8",
+		timeout: 20_000,
+		maxBuffer: 4 * 1024 * 1024,
+	});
+	if (result.error) {
+		return { ok: false, error: `桥脚本起不来：${result.error.message}` };
+	}
+	const stdout = String(result.stdout ?? "").trim();
+	if (!stdout) {
+		const stderr = String(result.stderr ?? "").trim().split("\n")[0] ?? "";
+		return { ok: false, error: `桥脚本没有输出${stderr ? `：${stderr}` : ""}` };
+	}
+	try {
+		return JSON.parse(stdout.split("\n").at(-1));
+	} catch {
+		return { ok: false, error: `桥脚本输出不是 JSON：${stdout.slice(0, 200)}` };
 	}
 }
 
@@ -128,6 +182,12 @@ function registerIpc(request) {
 		clipboard.writeText(String(text ?? ""));
 		return true;
 	});
+
+	// ── 审核设置（review 窗口）──
+	// 读：每次都现读文件（改完即生效，设置窗自己也会再拉一次）。
+	// 写：patch → 桥脚本；校验不过时原样把 issues 交给前端展示，文件没被动过。
+	handle("review:load", () => runReviewCli(["get"]));
+	handle("review:save", (patch) => runReviewCli(["set"], JSON.stringify(patch ?? {})));
 
 	// ── 以下四组是 Go 侧还没搬过来的能力 ──
 	// 宁可明确降级（空结果 + 警告一次），也不假装成功：假的成功会让人以为数据存下来了

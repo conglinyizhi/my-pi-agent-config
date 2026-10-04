@@ -54,6 +54,17 @@ sandbox-permissions/
 ├── gate.ts              # 危险命令审批（LLM 预审 + GUI 审计 + TUI 回退）
 ├── llm-review.ts        # LLM 预审层（调 LLM API 审核命令质量/安全）
 ├── llm-review.test.ts
+├── review-dimensions.ts       # 八个审核维度的定义 / 阈值 / 合成（纯逻辑）
+├── review-dimensions.test.ts
+├── review-dimensions.toml     # 维度阈值（/sandbox:review 维护；独立文件，不动 extensions.toml）
+├── review-classifier.ts       # 分类模型后端（问题拼装 + 阈值判定）
+├── review-classifier.test.ts
+├── classifier-client.ts       # 分类器 HTTP 客户端（纯传输层）
+├── classifier-key.ts          # 分类模型 API key（auth.json 的 siliconflow-cn）
+├── review-command.ts          # /sandbox:review：设置窗优先，TUI 面板兜底
+├── review-command.test.ts
+├── review-gui.ts              # 设置窗（windowName = review）的预检与请求组装
+├── review-gui.test.ts
 ├── review-system-prompt.txt  # 审核主体 system prompt（纯文本）
 ├── review-examples.txt       # 常见误判样本（容易误报的命令，独立存放）
 ├── review-pool.toml          # 审核模型池（个人依赖，gitignore）
@@ -303,6 +314,22 @@ worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTr
 ### GUI 联动（wails-gui 权限闸门窗口）
 
 LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块，包括 verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的看法（`opinion`，已规整为 ≤ 3 条短句）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
+
+### 审核设置窗（windowName = `review`，`/sandbox:review`）
+
+`/sandbox:review` 有图形时打开 Electron 设置窗（窗口表见 `gui/electron/init-data.js`）：总开关、档位
+`auto`/`strict`、后端 `chat`/`classifier`/`chain`、超时与缓存、分类器端点与模型、八个维度的 `above`/`below`/`action`
+都在一处改，存盘即生效（下一次审核就按新值走，不用 reload）。窗口不可用（无启动器 / 无 electron / 前端未构建 /
+无 DISPLAY）时回退原有 TUI 面板；`/sandbox:review key` 仍走输入框录入 key（key 值不进窗口）。
+
+读写单点是 `lib/review-settings.ts`（扩展与 CLI 共用）：
+
+- `extensions.toml` **绝不整文件重写**：`replaceTomlKey()` 按键原地替换，只换值，行尾注释 / 其它段 / 空白逐字保留；
+  找不到键就拒绝写入。落盘一律 tmp + rename（原子替换）。
+- 八个维度仍写 `review-dimensions.toml`，格式与 `formatDimensionsToml()` 不变。
+- 非法输入（mode/backend 枚举、数值区间、base_url 必须 http(s)、noul 维度的 below 不适用）整批拒绝且不落盘。
+- Electron 主进程是纯 JS，读写经 `scripts/review-settings-cli.ts`（`get` / `set`，输入输出都是 JSON）桥接，
+  主进程里不重写任何 TOML 逻辑。
 
 ### 审批附言（三个窗口通用）
 

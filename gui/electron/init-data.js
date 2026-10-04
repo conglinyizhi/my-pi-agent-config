@@ -10,6 +10,8 @@ export const WINDOW_CONFIGS = {
 	gate: { title: "权限闸门 · 命令审批", width: 1280, height: 900, minWidth: 960, minHeight: 640 },
 	subagents: { title: "Subagent 详情 · 三叉戟", width: 1280, height: 860, minWidth: 900, minHeight: 600 },
 	routing: { title: "TODO 调度 · 三叉戟", width: 1000, height: 720, minWidth: 800, minHeight: 540 },
+	// 审核工作流设置：字段多（三组数值 + 八个维度 × 四列），给得比 gate 窄一点但够高
+	review: { title: "审核工作流设置 · pi", width: 1080, height: 860, minWidth: 880, minHeight: 600 },
 };
 
 /** 未知窗口名时的兜底 */
@@ -34,6 +36,14 @@ export function buildInitData(windowName, request = {}, options = {}) {
 			break;
 		case "editor":
 			base.clipHistory = req.clipHistory;
+			break;
+		case "review":
+			// 审核设置：设置快照 + 维度元信息 + 取值范围 + 配置文件路径（都是首屏就要用的）
+			base.settings = req.settings;
+			base.specs = req.specs;
+			base.limits = req.limits;
+			base.paths = req.paths;
+			base.keyConfigured = req.keyConfigured;
 			break;
 		default: {
 			// gate：审批窗把请求原样铺开，字段名与前端 props 一一对应

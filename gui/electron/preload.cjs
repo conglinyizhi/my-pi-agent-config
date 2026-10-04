@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld("piGui", {
 		updateReason: (oldContent, newContent) => call("reasons:update", oldContent, newContent),
 		deleteReason: (content) => call("reasons:delete", content),
 	},
+	review: {
+		load: () => call("review:load"),
+		save: (patch) => call("review:save", patch),
+	},
 	subagents: {
 		getStatus: () => call("subagents:status"),
 		getDiagnostics: () => call("subagents:diagnostics"),

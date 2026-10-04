@@ -34,7 +34,7 @@ gui/
         ├── platform/    ← 平台接口与各宿主的 adapter（electron / browser / detect）
         ├── domain/      ← 不依赖 Vue、DOM、宿主的纯逻辑（node --test 直接测）
         ├── components/  ← 领域展示组件
-        └── views/       ← 窗口页面编排
+        └── views/       ← 窗口页面编排（gate / editor / subagents / routing / review）
 ```
 
 Wails 那一套（Go 宿主、旧二进制、当时的规范）已归档：`archive/wails-gui/` 与 `archive/gui-standards-wails/`。

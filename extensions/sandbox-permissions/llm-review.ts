@@ -137,7 +137,8 @@ const DEFAULT_CONFIG: LlmReviewConfig = {
 // ═══════════════════════════════════════════════════
 
 const EXTENSIONS_TOML_PATH = join(getAgentDir(), "extensions.toml");
-const CONFIG_SECTION = "sandbox-llm-review";
+/** 本段在 extensions.toml 里的名字；导出给设置窗/CLI 复用（lib/review-settings.ts） */
+export const LLM_REVIEW_SECTION = "sandbox-llm-review";
 /** 独立存放的审核 system prompt（纯文本；改完即生效，下次审核现读） */
 const REVIEW_PROMPT_PATH = join(getAgentDir(), "extensions", "sandbox-permissions", "review-system-prompt.txt");
 /** 常见误判样本（容易误报的命令），独立存放便于不断追加案例 */
@@ -207,7 +208,7 @@ function loadReviewPool(): ModelRef[] | undefined {
 export function loadLlmReviewConfig(): LlmReviewConfig {
 	try {
 		const doc = parseToml(readFileSync(EXTENSIONS_TOML_PATH, "utf8")) as Record<string, unknown>;
-		const cfg = normalizeConfig(doc[CONFIG_SECTION]);
+		const cfg = normalizeConfig(doc[LLM_REVIEW_SECTION]);
 		// 审核模型池独立存放（个人依赖，不入库）；外部文件优先，缺省回退 extensions.toml 内联 models
 		const pool = loadReviewPool();
 		if (pool && pool.length > 0) cfg.models = pool;

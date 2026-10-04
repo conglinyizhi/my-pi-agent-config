@@ -16,6 +16,7 @@ function stubApi() {
       session: { getWindowName: record("windowName"), getInitData: record("initData"), markReady: record("markReady"), submit: record("submit"), close: record("close") },
       capabilities: { openFile: record("openFile"), copyText: record("copyText") },
       gate: { loadReasons: record("loadReasons"), saveReason: record("saveReason"), updateReason: record("updateReason"), deleteReason: record("deleteReason") },
+      review: { load: record("reviewLoad"), save: record("reviewSave") },
       subagents: { getStatus: record("getStatus"), getDiagnostics: record("getDiagnostics"), getDiagnostic: record("getDiagnostic"), deleteDiagnostic: record("deleteDiagnostic"), queueSupplement: record("queueSupplement"), withdrawSupplement: record("withdrawSupplement"), mergeSupplements: record("mergeSupplements") },
     },
   };
@@ -40,6 +41,18 @@ describe("Electron 平台适配器", () => {
     await platform.gate.loadReasons();
     await platform.subagents.getStatus();
     assert.deepEqual(calls.map((c) => c[0]), ["copyText", "loadReasons", "getStatus"]);
+  });
+
+  it("审核设置：load 透传，save 把 patch 原样交给主进程", async () => {
+    const { api, calls } = stubApi();
+    const platform = createElectronPlatform(api);
+    await platform.review.load();
+    const patch = { llm: { mode: "strict" }, dimensions: [{ id: "elevation", above: 0.65 }] };
+    await platform.review.save(patch);
+    assert.deepEqual(calls, [
+      ["reviewLoad"],
+      ["reviewSave", patch],
+    ]);
   });
 });
 
