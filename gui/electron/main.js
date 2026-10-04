@@ -65,6 +65,8 @@ function createWindow() {
 		minWidth: config.minWidth,
 		minHeight: config.minHeight,
 		title: config.title,
+		// X11 直接读窗口属性；Wayland 下这个不生效，图标靠 desktop 条目（gui/install-desktop.sh）
+		icon: join(HERE, "..", "icons", "pi-gui.png"),
 		backgroundColor: "#1a1a2e",
 		autoHideMenuBar: true,
 		webPreferences: {

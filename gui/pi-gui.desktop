@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=pi GUI
+Comment=pi 的窗口宿主：审批闸门、提示词编辑、subagent 详情、TODO 调度
+Exec=%h/.pi/agent/bin/gui %U
+Icon=pi-gui
+Terminal=false
+NoDisplay=true
+StartupWMClass=pi-gui
+Categories=Utility;
+Keywords=pi;approval;gate;
