@@ -33,26 +33,39 @@ export function thresholdLabel(row) {
  *
  * 约定（提督定的）：颜色只标「这条越线了」，不拿颜色暗示风险方向或大小；
  * 数值本身就是信息，风险高低由数字和条宽表达。
+ *
+ * disabled 行（本次场景下不启用的维度，如 PTC 下的 scripted_edit）：没问过就没有数值，
+ * 不画条也不给数字——0.00 会被读成「问过、无风险」，那不是事实。
  */
 export function weightRows(dimensions) {
 	if (!Array.isArray(dimensions)) return [];
-	return dimensions.map((row, index) => ({
-		key: typeof row.id === "string" && row.id ? row.id : `dim-${index}`,
-		label: typeof row.label === "string" && row.label ? row.label : row.id || "?",
-		type: row.type || "",
-		risk: fmt(row.risk),
-		riskWidth: riskWidth(row.risk),
-		// 只有越线才给强调色；条本身统一用中性色
-		flagged: row.triggered === true,
-		confidence: fmtConfidence(row.confidence),
-		threshold: thresholdLabel(row),
-		raw: typeof row.raw === "string" ? row.raw : "",
-		reason: typeof row.reason === "string" ? row.reason : "",
-	}));
+	return dimensions.map((row, index) => {
+		const disabled = row.disabled === true;
+		return {
+			key: typeof row.id === "string" && row.id ? row.id : `dim-${index}`,
+			label: typeof row.label === "string" && row.label ? row.label : row.id || "?",
+			type: row.type || "",
+			risk: disabled ? "—" : fmt(row.risk),
+			riskWidth: disabled ? 0 : riskWidth(row.risk),
+			// 只有越线才给强调色；条本身统一用中性色。禁用的维度没问过，谈不上越线
+			flagged: !disabled && row.triggered === true,
+			confidence: disabled ? "—" : fmtConfidence(row.confidence),
+			threshold: thresholdLabel(row),
+			raw: disabled ? "" : typeof row.raw === "string" ? row.raw : "",
+			reason: typeof row.reason === "string" ? row.reason : "",
+			disabled,
+			// 行尾说明：没有 note 时也给一句，不让行看起来像坏数据
+			disabledNote: disabled
+				? typeof row.disabledNote === "string" && row.disabledNote
+					? row.disabledNote
+					: "本场景不适用"
+				: "",
+		};
+	});
 }
 
-/** 命中条数（标题里显示「N 项越线」） */
+/** 命中条数（标题里显示「N 项越线」）：本次没启用的维度不算在里 */
 export function flaggedCount(dimensions) {
 	if (!Array.isArray(dimensions)) return 0;
-	return dimensions.filter((row) => row && row.triggered === true).length;
+	return dimensions.filter((row) => row && row.triggered === true && row.disabled !== true).length;
 }

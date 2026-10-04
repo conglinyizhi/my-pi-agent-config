@@ -129,6 +129,84 @@ describe("reviewViaClassifier", () => {
 	});
 });
 
+describe("场景：PTC 脚本审核（scripted_edit 不启用）", () => {
+	const config = { ...defaultClassifierConfig(), apiKey: "test-key" };
+	const PTC_INPUT = { ...BASE_INPUT, scenario: "ptc" as const };
+
+	it("scripted_edit 不进分类器请求，其余七维照问", async () => {
+		let seen: Record<string, unknown> | undefined;
+		await reviewViaClassifier(PTC_INPUT, config, {
+			classifyOptions: {
+				fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+					seen = JSON.parse(String(init?.body));
+					return resp({ answers: calmAnswers() });
+				}) as unknown as typeof fetch,
+			},
+		});
+		const questions = seen?.questions as Record<string, unknown>;
+		assert.equal(Object.keys(questions).length, 7);
+		assert.equal("scripted_edit" in questions, false);
+		assert.ok("oddity" in questions);
+		assert.ok("preshell_trust" in questions);
+	});
+
+	it("服务端即使多回一个 scripted_edit 高风险答案，也不计入判定", async () => {
+		const answers = { ...calmAnswers(), scripted_edit: { type: "noul", noul: 0.99 } };
+		const result = await reviewViaClassifier(PTC_INPUT, config, {
+			classifyOptions: { fetchImpl: (async () => resp({ answers })) as unknown as typeof fetch },
+		});
+		// 该维度没问过：不能用它的概率把 verdict 拉成 risky
+		assert.equal(result.verdict, "safe");
+		assert.ok(result.reason.includes("7 个维度"), result.reason);
+	});
+
+	it("负载里带禁用标记：行附在末尾，说明指向 PTC 场景", async () => {
+		const answers = { ...calmAnswers() };
+		answers.elevation = { type: "choice", choice: "privileged-change", probabilities: { none: 0.05, "user-elevation": 0.15, "privileged-change": 0.8 }, confidence: 0.9 };
+		const result = await reviewViaClassifier(PTC_INPUT, config, {
+			classifyOptions: { fetchImpl: (async () => resp({ answers })) as unknown as typeof fetch },
+		});
+		assert.equal(result.verdict, "risky");
+		// 提问过的七维照旧参与（提权在最前，按风险降序）
+		assert.equal(result.dimensions?.filter((d) => !d.disabled).length, 7);
+		assert.equal(result.dimensions?.[0].id, "elevation");
+		const last = result.dimensions?.[result.dimensions.length - 1];
+		assert.equal(last?.id, "scripted_edit");
+		assert.equal(last?.disabled, true);
+		assert.ok(last?.disabledNote?.includes("PTC"), last?.disabledNote);
+		// 没问过就不谎报触发（否则前端会把它当越线行标底色）
+		assert.equal(last?.triggered, false);
+		assert.equal(last?.reason, "");
+	});
+
+	it("bash 场景（缺省）与现有行为一致：八维全问、没有禁用行", async () => {
+		let seen: Record<string, unknown> | undefined;
+		const result = await reviewViaClassifier(BASE_INPUT, config, {
+			classifyOptions: {
+				fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+					seen = JSON.parse(String(init?.body));
+					return resp({ answers: calmAnswers() });
+				}) as unknown as typeof fetch,
+			},
+		});
+		assert.equal(Object.keys(seen?.questions as Record<string, unknown>).length, 8);
+		assert.equal(result.verdict, "safe");
+		assert.equal(result.dimensions?.length, 8);
+		assert.equal(result.dimensions?.some((d) => d.disabled === true), false);
+	});
+
+	it("PTC 场景下所有维度都被配置关掉 → 仍是 error（不静默放行）", async () => {
+		const disabled = {
+			...config,
+			dimensions: config.dimensions.map((d) => ({ ...d, enabled: false })),
+		};
+		const result = await reviewViaClassifier(PTC_INPUT, disabled, {
+			classifyOptions: { fetchImpl: (async () => resp({ answers: calmAnswers() })) as unknown as typeof fetch },
+		});
+		assert.equal(result.verdict, "error");
+	});
+});
+
 describe("normalizeDimensions", () => {
 	it("缺失配置 → 默认八项（0.5 / review）", () => {
 		const dims = normalizeDimensions(undefined);

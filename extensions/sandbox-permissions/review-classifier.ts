@@ -2,7 +2,10 @@
 //
 // 与 chat 后端的区别：
 //   chat：     命令+规则塞进 prompt，模型吐 verdict（safe/risky/dangerous）
-//   classifier：一次请求问八个原子问题，拿回类型化答案 + 概率，**代码**按阈值决定要不要打扰用户
+//   classifier：一次请求问若干原子问题（默认八个），拿回类型化答案 + 概率，**代码**按阈值决定要不要打扰用户
+//
+// 场景：审的是什么决定哪几个维度有意义。bash 命令审核问满八维；PTC（run_code）
+// 审的本来就是一段脚本，scripted_edit 不提问也不计入判定（见 review-dimensions 的 SCENARIOS）。
 //
 // 两条硬约束写在类型里：
 //   1. 结果只可能是 safe（放行）或 risky（弹窗），**没有 dangerous/block**——
@@ -23,10 +26,13 @@ import {
 	DIMENSIONS,
 	defaultDimensionConfigs,
 	dimensionReportDetailed,
+	disabledDimensionIds,
+	disabledReportRows,
 	evaluateAll,
 	synthesize,
 	type DimensionConfig,
 	type DimensionVerdict,
+	type ReviewScenario,
 } from "./review-dimensions.ts";
 import type { ReviewResult } from "./llm-review.ts";
 
@@ -142,6 +148,11 @@ export interface ClassifierReviewInput {
 	 */
 	advisorReview?: ReviewResult;
 	matchedRules?: string[];
+	/**
+	 * 本次审核场景：缺省 bash。ptc（run_code 脚本审核）下 scripted_edit 不提问、不参与判定，
+	 * 仅在权重表里以禁用态占一行（见 review-dimensions 的 SCENARIOS）。
+	 */
+	scenario?: ReviewScenario;
 }
 
 /** 命中维度 → 给人看的理由（分类模型不产文本，这句必须由代码拼） */
@@ -162,7 +173,13 @@ export async function reviewViaClassifier(
 	config: ClassifierConfig,
 	options: { signal?: AbortSignal; classifyOptions?: ClassifyOptions } = {},
 ): Promise<ReviewResult> {
-	const dims = config.dimensions.filter((d) => d.enabled && d.action !== "ignore");
+	const scenario = input.scenario ?? "bash";
+	// 场景禁用的维度直接不进候选：既不写进 questions，也不参与 evaluateAll——
+	// 于是它不会因概率噪声触发弹窗，判定里也不会因为它越线。
+	const offInScenario = disabledDimensionIds(scenario);
+	const dims = config.dimensions.filter(
+		(d) => d.enabled && d.action !== "ignore" && !offInScenario.includes(d.id),
+	);
 	if (dims.length === 0) {
 		return { verdict: "error", reason: "所有审核维度都被禁用", suggestion: "" };
 	}
@@ -199,8 +216,12 @@ export async function reviewViaClassifier(
 	}
 
 	const result = synthesize(verdicts);
-	// 权重表：两种分支都带（safe 在 strict 模式下同样弹窗；出问题时最该看的就是当时的数）
-	const dimensions = dimensionReportDetailed(outcome.answers, verdicts);
+	// 权重表：两种分支都带（safe 在 strict 模式下同样弹窗；出问题时最该看的就是当时的数）。
+	// 场景禁用的维度附在末尾（前端灰显）——没问过的行不该混进按风险降序的那批里。
+	const dimensions = [
+		...dimensionReportDetailed(outcome.answers, verdicts),
+		...disabledReportRows(config.dimensions, scenario),
+	];
 	if (result.outcome === "safe") {
 		return {
 			verdict: "safe",

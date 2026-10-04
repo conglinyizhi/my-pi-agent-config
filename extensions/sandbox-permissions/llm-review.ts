@@ -24,7 +24,8 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
 import { callZenChat } from "../opencode-free/zen-client.ts";
-import { loadClassifierConfig, reviewViaClassifier } from "./review-classifier.ts";
+import { loadClassifierConfig, reviewViaClassifier, type ClassifierReviewInput } from "./review-classifier.ts";
+import type { ReviewScenario } from "./review-dimensions.ts";
 import { loadTrustedProgramDirs } from "./trusted.ts";
 import { formatFacts, type PreshellFacts } from "../../lib/preshell.ts";
 import { lastUserRequest } from "../../lib/last-user-request.ts";
@@ -69,6 +70,24 @@ export type ReviewDimensionRow = import("./review-dimensions.ts").DimensionRepor
 export interface ModelRef {
 	provider: string;
 	model: string;
+}
+
+/**
+ * 一次审核的调用选项（与配置无关的那点上下文）。
+ *
+ * facts 是命令的事实层（preshell）结果：带上它，审核模型看的是「碰了哪些路径、
+ * 跑了什么程序、哪里看不懂」，而不是一条命令原文；拿不到时把原因一并给它，
+ * 让它知道影响面不完整，而不是被读成「什么都没碰」。
+ */
+export interface ReviewCallOptions {
+	facts?: PreshellFacts;
+	factsUnavailable?: string;
+	/**
+	 * 本次审核场景：缺省 bash（命令审批）。
+	 * ptc = run_code 脚本审核，该场景下 scripted_edit 不提问、不参与判定
+	 * （见 review-dimensions 的 SCENARIOS）。
+	 */
+	scenario?: ReviewScenario;
 }
 
 export interface LlmReviewConfig {
@@ -472,9 +491,13 @@ function pickModels(
  * 执行一次 LLM 审核。
  * 失败一律返回 verdict=error（含禁用/无模型/超时/网络/解析失败），调用方必须回退弹窗。
  *
- * facts 是命令的事实层（preshell）结果：带上它，审核模型看的是「碰了哪些路径、
- * 跑了什么程序、哪里看不懂」，而不是一条命令原文；拿不到时把原因一并给它，
- * 让它知道影响面不完整，而不是被读成「什么都没碰」。
+ * options 是本次调用的那点上下文（见 ReviewCallOptions）：
+ *   - facts：命令的事实层（preshell）结果。带上它，审核模型看的是「碰了哪些路径、
+ *     跑了什么程序、哪里看不懂」，而不是一条命令原文；拿不到时把原因一并给它，
+ *     让它知道影响面不完整，而不是被读成「什么都没碰」。
+ *   - scenario：审核场景。PTC 脚本审核传 scenario="ptc"，分类器据此过滤掉
+ *     没有信息量的维度（scripted_edit）。classifier 与 chain 两条支路都经
+ *     buildClassifierReviewInput 送下去，别在这里另开一条路。
  */
 export async function reviewCommand(
 	_pi: ExtensionAPI,
@@ -484,7 +507,7 @@ export async function reviewCommand(
 	signal: AbortSignal | undefined,
 	cache: ReviewCache,
 	config?: LlmReviewConfig,
-	facts?: { facts?: PreshellFacts; factsUnavailable?: string },
+	options?: ReviewCallOptions,
 ): Promise<ReviewResult> {
 	const cfg = config ?? loadLlmReviewConfig();
 	if (!cfg.enabled) return { verdict: "error", reason: "llm review disabled", suggestion: "" };
@@ -498,15 +521,15 @@ export async function reviewCommand(
 	// 所以这条链路必须真的接上，不能留空。
 	const userRequest = sessionUserRequest(ctx);
 
-	const runClassifier = () => runClassifierReview(ctx, command, rules, signal, facts, userRequest);
+	const runClassifier = () => runClassifierReview(ctx, command, rules, signal, options, userRequest);
 
 	let result: ReviewResult;
 	if (cfg.backend === "classifier") {
 		result = await runClassifier();
 	} else if (cfg.backend === "chain") {
-		result = await runChainedReview(ctx, command, rules, signal, cfg, facts, userRequest);
+		result = await runChainedReview(ctx, command, rules, signal, cfg, options, userRequest);
 	} else {
-		result = await runChatReview(ctx, command, rules, signal, cfg, facts, userRequest);
+		result = await runChatReview(ctx, command, rules, signal, cfg, options, userRequest);
 	}
 
 	// 只缓存有效结论（error 是瞬态的：无 key / 超时 / 限流，下次重试）
@@ -531,7 +554,7 @@ async function runChatReview(
 	rules: TokenRule[],
 	signal: AbortSignal | undefined,
 	cfg: LlmReviewConfig,
-	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	options: ReviewCallOptions | undefined,
 	userRequest: string | undefined,
 ): Promise<ReviewResult> {
 	const { models, source } = pickModels(ctx, cfg);
@@ -547,7 +570,7 @@ async function runChatReview(
 	if (systemPrompt === null) {
 		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
 	}
-	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, facts?.facts, facts?.factsUnavailable, userRequest);
+	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, options?.facts, options?.factsUnavailable, userRequest);
 
 	// ModelRegistry 的 complete 在各版本 pi 上都有，但类型声明滞后过；用窄接口断言，
 	// 运行时行为以实际 pi 版本为准。
@@ -638,28 +661,55 @@ async function runChatReview(
 	};
 }
 
+/**
+ * 分类器送审输入（纯函数，可单测）。
+ *
+ * 场景在这里落成 input.scenario：分类器据它决定哪些维度不提问（PTC 的 scripted_edit）。
+ * 两条支路（classifier 与 chain）都走这一处，避免只改一半——那会让串联模式下的
+ * PTC 审核又去问一遍脚本改写。
+ */
+export function buildClassifierReviewInput(args: {
+	command: string;
+	cwd: string;
+	rules: TokenRule[];
+	userRequest?: string;
+	advisor?: ReviewResult;
+	options?: ReviewCallOptions;
+}): ClassifierReviewInput {
+	const options = args.options;
+	return {
+		command: args.command,
+		cwd: args.cwd,
+		preshellText: options?.facts ? formatFacts(options.facts) : undefined,
+		preshellUnavailable: options?.factsUnavailable,
+		matchedRules: args.rules.map((r) => r.name).filter(Boolean),
+		userRequestExcerpt: args.userRequest,
+		// chat 的意见作为参考材料进 state（不参与判决）：
+		// 分类器是判决者，chat 只是多一双眼睛。见 runChainedReview 的说明。
+		advisorReview: args.advisor,
+		scenario: options?.scenario ?? "bash",
+	};
+}
+
 /** 跑分类器那一路（chain 与 classifier 共用） */
 async function runClassifierReview(
 	ctx: ExtensionContext,
 	command: string,
 	rules: TokenRule[],
 	signal: AbortSignal | undefined,
-	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	options: ReviewCallOptions | undefined,
 	userRequest: string | undefined,
 	advisor?: ReviewResult,
 ): Promise<ReviewResult> {
 	return reviewViaClassifier(
-		{
+		buildClassifierReviewInput({
 			command,
 			cwd: ctx.cwd ?? process.cwd(),
-			preshellText: facts?.facts ? formatFacts(facts.facts) : undefined,
-			preshellUnavailable: facts?.factsUnavailable,
-			matchedRules: rules.map((r) => r.name).filter(Boolean),
-			userRequestExcerpt: userRequest,
-			// chat 的意见作为参考材料进 state（不参与判决）：
-			// 分类器是判决者，chat 只是多一双眼睛。见 runChainedReview 的说明。
-			advisorReview: advisor,
-		},
+			rules,
+			userRequest,
+			advisor,
+			options,
+		}),
 		loadClassifierConfig(),
 		{ signal },
 	);
@@ -680,13 +730,13 @@ async function runChainedReview(
 	rules: TokenRule[],
 	signal: AbortSignal | undefined,
 	cfg: LlmReviewConfig,
-	facts: { facts?: PreshellFacts; factsUnavailable?: string } | undefined,
+	options: ReviewCallOptions | undefined,
 	userRequest: string | undefined,
 ): Promise<ReviewResult> {
 	// advisor 失败就当作没有参考意见：分类器本来就不依赖它
-	const advisor = await runChatReview(ctx, command, rules, signal, cfg, facts, userRequest);
+	const advisor = await runChatReview(ctx, command, rules, signal, cfg, options, userRequest);
 
-	const classifier = await runClassifierReview(ctx, command, rules, signal, facts, userRequest, advisor);
+	const classifier = await runClassifierReview(ctx, command, rules, signal, options, userRequest, advisor);
 
 	// 分类器的判决就是最终判决。chat 的意见挂上去供弹窗展示，但不改变 verdict。
 	const merged: ReviewResult = { ...classifier, chatReview: toAdvisorNote(advisor, classifier.verdict) };

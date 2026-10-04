@@ -152,6 +152,66 @@ export function dimensionById(id: string): DimensionSpec | undefined {
 	return DIMENSIONS.find((d) => d.id === id);
 }
 
+// ═══════════════════════════════════════════════════
+// 场景：同一批维度，在不同场景里问法不同
+// ═══════════════════════════════════════════════════
+
+/**
+ * 审核场景。
+ *
+ * bash：审一条 shell 命令（gate / sandbox-allow / capability 那条链）。
+ * ptc：审一段 run_code 脚本——受审对象本身就是脚本，于是
+ *      「这条命令是否用脚本改写文件」这个问题没有信息量：问了只是噪音，
+ *      它的概率还会随模型抖动，白白把阈值碰响。
+ *
+ * 处理方式是「该场景下不启用」，不是「这个维度不存在」：定义留在 DIMENSIONS 里，
+ * 换回 bash 场景照旧提问与判定，审批窗里也仍有这一行（禁用态）。
+ */
+export type ReviewScenario = "bash" | "ptc";
+
+/** 场景元信息 */
+export interface ScenarioSpec {
+	id: ReviewScenario;
+	/** 面板/审批窗里显示的场景名 */
+	label: string;
+	/** 该场景下不提问、不参与风险判定的维度 id（定义保留，只是不启用） */
+	disabled: string[];
+	/** disabled 维度在审批窗行尾的说明；没有禁用项时为空串 */
+	disabledNote: string;
+}
+
+export const SCENARIOS: Record<ReviewScenario, ScenarioSpec> = {
+	bash: {
+		id: "bash",
+		label: "bash 命令",
+		disabled: [],
+		disabledNote: "",
+	},
+	ptc: {
+		id: "ptc",
+		label: "PTC 脚本",
+		// PTC 审的就是一段脚本，脚本改写这一维恒真/无区分度：不提问也不计入判定。
+		// 阈值与 enabled 都不动（那是配置，不是场景），只在这里声明场景不适用。
+		disabled: ["scripted_edit"],
+		disabledNote: "PTC 场景不适用（本次审的就是脚本）",
+	},
+};
+
+/** 取场景定义；未知场景按 bash 处理（宁可多问，不要少问） */
+export function scenarioSpec(scenario: ReviewScenario = "bash"): ScenarioSpec {
+	return SCENARIOS[scenario] ?? SCENARIOS.bash;
+}
+
+/** 该场景下不启用的维度 id 列表 */
+export function disabledDimensionIds(scenario: ReviewScenario = "bash"): string[] {
+	return scenarioSpec(scenario).disabled;
+}
+
+/** 这个维度在该场景下是否不启用 */
+export function isDimensionDisabledInScenario(id: string, scenario: ReviewScenario = "bash"): boolean {
+	return disabledDimensionIds(scenario).includes(id);
+}
+
 /** 单个维度的阈值配置（对应 extensions.toml 的 [[sandbox-review-classifier.dimension]]） */
 export interface DimensionConfig {
 	id: string;
@@ -372,6 +432,13 @@ export interface DimensionReportRow {
 	choice?: string;
 	score?: number;
 	noul?: number;
+	/**
+	 * 本次场景下该维度被禁用：没提问、没参与判定。
+	 * 行仍要出来——但要让人一眼看出「这次没问」，而不是以为它得了 0 分。
+	 */
+	disabled?: boolean;
+	/** 禁用说明（中文；仅 disabled=true 时带） */
+	disabledNote?: string;
 }
 
 /**
@@ -401,6 +468,45 @@ function rowOf(verdict: DimensionVerdict): DimensionReportRow {
 	};
 	if (answer.confidence !== undefined) row.confidence = answer.confidence;
 	return row;
+}
+
+/**
+ * 场景禁用的维度 → 审批窗的灰化行。
+ *
+ * 为什么还要给行：定义没删（也不该删，换场景还要用），人被问到时得看得见
+ * 「这一维这次没参与」，而不是以为模型漏答，或把占位的 0 读成「问过、无风险」。
+ * 配置里本来就关掉/忽略的维度不出行——那种情况不展示是既有行为，与场景无关。
+ *
+ * risk 固定 0：没问就没有风险值，占位而已，前端按 disabled 渲染成「—」。
+ */
+export function disabledReportRows(
+	configs: DimensionConfig[],
+	scenario: ReviewScenario = "bash",
+): DimensionReportRow[] {
+	const spec = scenarioSpec(scenario);
+	if (spec.disabled.length === 0) return [];
+	const byId = new Map(configs.map((c) => [c.id, c]));
+	const rows: DimensionReportRow[] = [];
+	for (const id of spec.disabled) {
+		const dim = dimensionById(id);
+		const config = byId.get(id);
+		if (!dim || !config) continue;
+		if (!config.enabled || config.action === "ignore") continue;
+		rows.push({
+			id: dim.id,
+			label: dim.label,
+			type: dim.type,
+			risk: 0,
+			raw: "",
+			triggered: false,
+			reason: "",
+			above: config.above,
+			below: config.below,
+			disabled: true,
+			disabledNote: spec.disabledNote,
+		});
+	}
+	return rows;
 }
 
 /**

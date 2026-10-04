@@ -73,15 +73,19 @@
           v-for="row in weightRows"
           :key="row.key"
           class="weight-row"
-          :class="{ flagged: row.flagged }"
-          :title="row.reason || `阈值 ${row.threshold}`"
+          :class="{ flagged: row.flagged, disabled: row.disabled }"
+          :title="rowTitle(row)"
         >
           <span class="weight-label">{{ row.label }}</span>
-          <span class="weight-bar"><span class="weight-fill" :style="{ width: `${row.riskWidth}%` }" /></span>
-          <span class="weight-risk">{{ row.risk }}</span>
-          <span class="weight-conf">置信 {{ row.confidence }}</span>
-          <span class="weight-threshold">{{ row.threshold }}</span>
-          <span v-if="row.raw" class="weight-raw">{{ row.raw }}</span>
+          <!-- 本次场景不启用的维度（如 PTC 下的「脚本改写」）：没问过，就不摆数字 -->
+          <span v-if="row.disabled" class="weight-disabled">{{ row.disabledNote }}</span>
+          <template v-else>
+            <span class="weight-bar"><span class="weight-fill" :style="{ width: `${row.riskWidth}%` }" /></span>
+            <span class="weight-risk">{{ row.risk }}</span>
+            <span class="weight-conf">置信 {{ row.confidence }}</span>
+            <span class="weight-threshold">{{ row.threshold }}</span>
+            <span v-if="row.raw" class="weight-raw">{{ row.raw }}</span>
+          </template>
         </div>
       </div>
     </div>
@@ -253,6 +257,11 @@ const showRules = ref(false);
 // 分类模型权重表（chat 后端不产这个字段，缺就空表 → 整块不渲染）
 const weightRows = computed(() => buildWeightRows(props.review?.dimensions));
 const flaggedCount = computed(() => countFlagged(props.review?.dimensions));
+// 行悬停提示：禁用的行说明它为什么这次没参与，其余行给触发原因或阈值
+function rowTitle(row) {
+  if (row.disabled) return row.disabledNote;
+  return row.reason || `阈值 ${row.threshold}`;
+}
 // 串联模式下对话模型的结论（单跑 chat 时不渲染：那时 review 本身就是它的意见）
 const chatMeta = computed(() => {
   const verdict = props.review?.chatReview?.verdict;
@@ -386,6 +395,10 @@ function removeWorkspace(path) {
 .weight-head { font-size: 11px; color: #666; margin-bottom: 4px; }
 .weight-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 3px; font-size: 11.5px; line-height: 1.6; flex-wrap: wrap; }
 .weight-row.flagged { background: #2a1a0a; box-shadow: inset 2px 0 0 #e67e22; }
+/* 本次场景不启用的维度：不是「无风险」，是这次没问——整体压暗，只用主题里的次要色 */
+.weight-row.disabled { opacity: 0.5; }
+.weight-row.disabled .weight-label { color: var(--text-muted); }
+.weight-disabled { flex: 1 1 160px; min-width: 0; color: var(--text-muted); font-style: italic; }
 .weight-label { flex: 0 0 68px; color: #a9b1d6; }
 .weight-row.flagged .weight-label { color: #f0c674; }
 .weight-bar { flex: 0 0 90px; height: 6px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 3px; overflow: hidden; }

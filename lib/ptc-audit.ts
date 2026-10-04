@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { processSingleton } from "./process-singleton.ts";
-import { resolveApprovalChannel, type ScriptEffectsPayload } from "./approval-channel.ts";
+import { resolveApprovalChannel, type ApprovalChannel, type ScriptEffectsPayload } from "./approval-channel.ts";
 import type { ScriptScan } from "./ptc-analyze.ts";
 import { compareCalls, compareLine, type DryRunResult } from "./ptc-dryrun.ts";
 import {
@@ -165,6 +165,17 @@ export interface PtcAuditOutcome {
 	review?: ReviewResult;
 }
 
+/**
+ * 可注入的两个接点（给测试用）：
+ *  - reviewCommand：预审链（分类器 + chat）。注进来才能断言「送下去的是 PTC 场景」，
+ *    否则这条调用会读真配置、发真请求。
+ *  - channel：人工闸门。注进来才能在不弹窗的前提下走完「预审不过 → 回退人审」。
+ */
+export interface PtcAuditDependencies {
+	reviewCommand?: typeof defaultReviewCommand;
+	channel?: ApprovalChannel;
+}
+
 let reviewCacheForPtc: ReviewCache | undefined;
 function ptcReviewCache(): ReviewCache {
 	reviewCacheForPtc ??= createReviewCache();
@@ -194,14 +205,19 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 /**
  * 事前审核一段脚本。判定口径与 bash 那条链一致：
  * 预审判 safe 且档位是 auto 就直接放行；其余交人工闸门。
+ *
+ * 送审时标明场景为 ptc：分类器不再问 scripted_edit（审的就是脚本，问了没信息量），
+ * 也不拿它计入判定；审批窗里该行以禁用态展示。见 review-dimensions 的 SCENARIOS。
  */
 export async function approvePtcScript(options: {
 	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	input: PtcAuditInput;
 	signal?: AbortSignal;
+	deps?: PtcAuditDependencies;
 }): Promise<PtcAuditOutcome> {
 	const { pi, ctx, input, signal } = options;
+	const deps = options.deps ?? {};
 	const subject = buildPtcAuditSubject(input);
 	const digest = ptcScriptDigest(input.script);
 	const config = loadLlmReviewConfig();
@@ -209,7 +225,17 @@ export async function approvePtcScript(options: {
 
 	if (config.enabled) {
 		try {
-			review = await defaultReviewCommand(pi, ctx, subject, [], signal, ptcReviewCache(), config);
+			review = await (deps.reviewCommand ?? defaultReviewCommand)(
+				pi,
+				ctx,
+				subject,
+				[],
+				signal,
+				ptcReviewCache(),
+				config,
+				// 场景交给审核链：审的本来就是脚本，「这条命令是否用脚本改写文件」不提问、不判定
+				{ scenario: "ptc" },
+			);
 		} catch {
 			review = undefined;
 		}
@@ -219,7 +245,7 @@ export async function approvePtcScript(options: {
 		}
 	}
 
-		const channel = resolveApprovalChannel();
+	const channel = deps.channel ?? resolveApprovalChannel();
 	// 给审批窗的是**结构化**的一份：command 放脚本原文（窗口当代码块渲染），
 	// 理由与影响面各走各的字段；送审给模型的仍是上面那段带解释的 subject。
 	const decision = await channel(

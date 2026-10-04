@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	approvePtcScript,
 	beginPtcScope,
 	buildPtcAuditSubject,
 	clearNestedCalls,
@@ -239,5 +240,39 @@ describe("批准作用域", () => {
 			assert.ok(SELF_EVIDENT_TOOLS.has(name), name);
 		}
 		assert.ok(!SELF_EVIDENT_TOOLS.has("mcp__notes__write_note"));
+	});
+});
+
+describe("approvePtcScript 送审", () => {
+	// 两个接点都注进来：不打真网络、不弹真窗，只断言「送下去的是什么」
+	function stubDeps(calls: unknown[][]) {
+		return {
+			reviewCommand: (async (...args: unknown[]) => {
+				calls.push(args);
+				return { verdict: "safe" as const, reason: "无风险", suggestion: "" };
+			}) as never,
+			channel: (async () => ({ action: "allow" as const })) as never,
+		};
+	}
+
+	it("送审时标明场景是 ptc（分类器据此不再问 scripted_edit）", async () => {
+		const calls: unknown[][] = [];
+		const outcome = await approvePtcScript({
+			pi: { appendEntry: () => {} } as never,
+			ctx: {} as never,
+			input: { script: "await bash('rm -rf /tmp/x')", reason: "清理临时目录", tools: [] },
+			deps: stubDeps(calls),
+		});
+		assert.equal(calls.length, 1, "预审应该只跑一次");
+		const args = calls[0];
+		// 第 8 个参数（0 起数）是调用选项：场景与事实层走这里
+		const options = args[7] as { scenario?: string };
+		assert.equal(options?.scenario, "ptc");
+		// 送审材料仍是有解释的那一段（不是裸脚本），理由在里面
+		const subject = String(args[2]);
+		assert.ok(subject.includes("【run_code 事前审核】"), subject.slice(0, 60));
+		assert.ok(subject.includes("清理临时目录"));
+		assert.ok(subject.includes("await bash('rm -rf /tmp/x')"));
+		assert.equal(typeof outcome.approved, "boolean");
 	});
 });

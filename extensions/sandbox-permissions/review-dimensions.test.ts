@@ -11,9 +11,13 @@ import {
 	dimensionById,
 	dimensionReport,
 	dimensionReportDetailed,
+	disabledDimensionIds,
+	disabledReportRows,
 	evaluateAll,
 	evaluateDimension,
+	isDimensionDisabledInScenario,
 	normalizeAnswer,
+	scenarioSpec,
 	synthesize,
 	type RawAnswer,
 } from "./review-dimensions.ts";
@@ -253,5 +257,60 @@ describe("dimensionReport", () => {
 	it("空判定集 → 空表（不崩，前端按不渲染处理）", () => {
 		assert.deepEqual(dimensionReport([]), []);
 		assert.deepEqual(dimensionReportDetailed({}, []), []);
+	});
+});
+
+describe("场景禁用维度", () => {
+	it("bash 场景不禁用任何维度（现有链行为不变）", () => {
+		assert.deepEqual(disabledDimensionIds("bash"), []);
+		assert.equal(isDimensionDisabledInScenario("scripted_edit", "bash"), false);
+	});
+
+	it("ptc 场景只禁用 scripted_edit，维度定义仍在（不是删了它）", () => {
+		assert.deepEqual(disabledDimensionIds("ptc"), ["scripted_edit"]);
+		assert.equal(isDimensionDisabledInScenario("scripted_edit", "ptc"), true);
+		assert.equal(isDimensionDisabledInScenario("oddity", "ptc"), false);
+		// 定义保留：label / type / instructions 一个没少
+		assert.equal(scriptedEdit.label, "脚本改写");
+		assert.equal(scriptedEdit.type, "noul");
+		assert.ok(scriptedEdit.instructions.length > 0);
+		assert.ok(DIMENSIONS.some((d) => d.id === "scripted_edit"));
+	});
+
+	it("scenarioSpec：缺省/未知场景都按 bash 处理（宁可多问，不要少问）", () => {
+		assert.equal(scenarioSpec().id, "bash");
+		assert.equal(scenarioSpec("ptc").label, "PTC 脚本");
+		assert.equal(scenarioSpec("no-such-scene" as never).id, "bash");
+	});
+
+	it("disabledReportRows：带禁用标记与说明，且不谎报风险值/命中", () => {
+		const rows = disabledReportRows(defaultDimensionConfigs(), "ptc");
+		assert.equal(rows.length, 1);
+		const row = rows[0];
+		assert.equal(row.id, "scripted_edit");
+		assert.equal(row.label, "脚本改写");
+		assert.equal(row.disabled, true);
+		assert.ok(row.disabledNote?.includes("PTC"), row.disabledNote);
+		// 没问过：不假装触发过，也不给概率/原始取值
+		assert.equal(row.triggered, false);
+		assert.equal(row.reason, "");
+		assert.equal(row.raw, "");
+		assert.equal(row.probabilities, undefined);
+		assert.equal(row.noul, undefined);
+		// 阈值来自配置原值（面板上怎么配的就怎么显示），不影响判定
+		assert.equal(row.above, DEFAULT_THRESHOLD);
+		assert.equal(row.below, null);
+	});
+
+	it("disabledReportRows：bash 场景不出行；配置里已关的维度也不出行", () => {
+		assert.deepEqual(disabledReportRows(defaultDimensionConfigs(), "bash"), []);
+		const off = defaultDimensionConfigs().map((d) =>
+			d.id === "scripted_edit" ? { ...d, enabled: false } : d,
+		);
+		assert.deepEqual(disabledReportRows(off, "ptc"), []);
+		const ignored = defaultDimensionConfigs().map((d) =>
+			d.id === "scripted_edit" ? { ...d, action: "ignore" as const } : d,
+		);
+		assert.deepEqual(disabledReportRows(ignored, "ptc"), []);
 	});
 });

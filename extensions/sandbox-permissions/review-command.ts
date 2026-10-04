@@ -140,6 +140,8 @@ export async function reviewCommandHandler(args: string, ctx: ExtensionCommandCo
 					+ theme.fg("dim", `  后端 ${cfg.model} · key ${readKeyFromAuth() ? "已配置" : "未配置（/sandbox:review key）"}`),
 			);
 			lines.push(theme.fg("dim", "above = 风险高于它提示 · below = 置信度低于它提示（- 表示该维度没有置信度）"));
+			// 场景不影响本面板的配置值：PTC 场景只是不问 scripted_edit（审批窗里灰显）
+			lines.push(theme.fg("dim", "PTC（run_code）脚本审核不问 scripted_edit，该行在审批窗中灰显"));
 			lines.push("");
 			dims.forEach((d, i) => {
 				const s = spec(d.id);

@@ -96,6 +96,61 @@ describe("weightRows", () => {
 	});
 });
 
+describe("场景禁用行（PTC 下的 scripted_edit）", () => {
+	const disabledRow = (over = {}) =>
+		row({
+			id: "scripted_edit",
+			label: "脚本改写",
+			type: "noul",
+			risk: 0,
+			confidence: undefined,
+			below: null,
+			triggered: false,
+			reason: "",
+			raw: "",
+			disabled: true,
+			disabledNote: "PTC 场景不适用（本次审的就是脚本）",
+			...over,
+		});
+
+	it("不摆数字：风险/置信给破折号，条宽归零", () => {
+		const [r] = weightRows([disabledRow()]);
+		assert.equal(r.disabled, true);
+		// 0.00 会被读成「问过、无风险」，那不是事实
+		assert.equal(r.risk, "—");
+		assert.equal(r.confidence, "—");
+		assert.equal(r.riskWidth, 0);
+		assert.equal(r.raw, "");
+	});
+
+	it("带出禁用说明，供行尾与悬停用", () => {
+		const [r] = weightRows([disabledRow()]);
+		assert.equal(r.disabledNote, "PTC 场景不适用（本次审的就是脚本）");
+		assert.equal(r.label, "脚本改写");
+	});
+
+	it("禁用行不给 flagged（底色只表示越线，没问过就谈不上越线）", () => {
+		const [r] = weightRows([disabledRow({ triggered: true, reason: "脏数据" })]);
+		assert.equal(r.flagged, false);
+	});
+
+	it("缺 disabledNote 时兜底一句，不让行看起来像坏数据", () => {
+		const [r] = weightRows([disabledRow({ disabledNote: undefined })]);
+		assert.equal(r.disabledNote, "本场景不适用");
+	});
+
+	it("正常行不带禁用信息（不影响既有渲染）", () => {
+		const [r] = weightRows([row()]);
+		assert.equal(r.disabled, false);
+		assert.equal(r.disabledNote, "");
+		assert.equal(r.risk, "0.95");
+	});
+
+	it("flaggedCount 不把禁用行算进越线数", () => {
+		assert.equal(flaggedCount([disabledRow({ triggered: true }), row()]), 1);
+	});
+});
+
 describe("flaggedCount", () => {
 	it("只数 triggered=true 的", () => {
 		assert.equal(flaggedCount([row(), row({ triggered: false })]), 1);

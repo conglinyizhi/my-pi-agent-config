@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { factsFromReport } from "../../lib/preshell.ts";
 import {
+	buildClassifierReviewInput,
 	buildReviewPrompt,
 	createReviewCache,
 	extractReviewResult,
@@ -371,6 +372,63 @@ describe("reviewCommand 失败拼装", () => {
 		assert.equal(r.reason.split("\n").length, 2);
 		assert.ok(!r.reason.includes("；"));
 		assert.ok(r.reason.split("\n")[1].includes("ds-b"));
+	});
+});
+
+describe("buildClassifierReviewInput（分类器送审输入）", () => {
+	it("缺省场景是 bash，事实层与命中规则原样带下去（bash 链行为不变）", () => {
+		const input = buildClassifierReviewInput({
+			command: "rm -rf /var/tmp/build",
+			cwd: "/home/tester/proj",
+			rules: [rule("rm -rf", ["rm", "-rf"]), rule("no-match")],
+			userRequest: "清理构建残留",
+			options: { factsUnavailable: "preshell 未安装" },
+		});
+		assert.equal(input.scenario, "bash");
+		assert.equal(input.command, "rm -rf /var/tmp/build");
+		assert.equal(input.cwd, "/home/tester/proj");
+		assert.deepEqual(input.matchedRules, ["rm -rf", "no-match"]);
+		assert.equal(input.userRequestExcerpt, "清理构建残留");
+		assert.equal(input.preshellText, undefined);
+		assert.equal(input.preshellUnavailable, "preshell 未安装");
+	});
+
+	it("PTC 脚本审核：scenario=ptc 送到分类器（否则它会多问一遭「是否脚本改写」）", () => {
+		const input = buildClassifierReviewInput({
+			command: "await bash('rm -rf /tmp/x')",
+			cwd: "/home/tester/proj",
+			rules: [],
+			options: { scenario: "ptc" },
+		});
+		assert.equal(input.scenario, "ptc");
+		assert.deepEqual(input.matchedRules, []);
+		assert.equal(input.preshellText, undefined);
+	});
+
+	it("有 facts 时转成事实层文本（与审批窗同一口径）", () => {
+		const facts = factsFromReport(
+			{
+				status: "Complete",
+				impact: {
+					effects: [{ kind: "Read", target: "/etc/hosts", modeled: true, line: 1 }],
+					write_roots: [],
+					uncertain: false,
+					effects_dropped: 0,
+					vars: [],
+					cwd: "/tmp",
+				},
+				issues: [],
+				issues_dropped: 0,
+			},
+			{ cwd: "/tmp" },
+		);
+		const input = buildClassifierReviewInput({
+			command: "cat /etc/hosts",
+			cwd: "/tmp",
+			rules: [],
+			options: { facts },
+		});
+		assert.ok(input.preshellText?.includes("/etc/hosts"), input.preshellText);
 	});
 });
 
