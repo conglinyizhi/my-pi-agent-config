@@ -15,6 +15,9 @@
       <section class="diagnostics-panel">
         <header><strong>本地诊断档案</strong><button @click="diagnosticsOpen = false">关闭</button></header>
         <p>永久保留在本机；包含可见轨迹与 prompt 重建输入，不包含隐藏 reasoning。</p>
+        <p class="status-file-line" :class="{ warn: !!statusWarn }" data-name="status-file">
+          状态快照：{{ actualStatusPath || "（还没读到）" }}<span v-if="statusWarn"> · {{ statusWarn }}</span>
+        </p>
         <input v-model="diagnosticQuery" class="diagnostic-search" placeholder="筛选 batch ID / 模型…" />
         <div v-for="entry in filteredDiagnostics" :key="entry.batchId" class="diagnostic-item">
           <button class="diagnostic-row" @click="openDiagnostic(entry.batchId)"><span>{{ entry.batchId }}</span><span>{{ entry.model }} · {{ entry.workers }} worker · {{ fmt(entry.updatedAt) }}</span></button>
@@ -549,12 +552,25 @@ function detailTitle(ev) {
   return `生命周期 · ${lifecycleLabel(ev.state)}`;
 }
 
+// ── 状态快照 ──
+// 本窗只看自己那条会话的快照（拉窗时带过来的 statusPath）；读到别的文件时
+// 进度会"看着像卡住"，所以实际路径与回退都要露出来。
+const requestedStatusPath = ref("");
+const actualStatusPath = ref("");
+const statusWarn = ref("");
+
 // ── 轮询 ──
 // selection 归一化与 timeline 自动跟随判定均来自纯模块 subagent-navigation.js；
 // 这里只保留 DOM 相关副作用（unbind / restore scroll / follow / measure）。
 async function poll() {
   try {
-    const raw = await platform.subagents.getStatus();
+    const res = await platform.subagents.getStatus(requestedStatusPath.value || undefined);
+    // 两种形态都吃：字符串（浏览器 mock / 旧宿主）与 { path, content, requested, fellBack }
+    const raw = typeof res === "string" ? res : res?.content;
+    if (res && typeof res === "object") {
+      actualStatusPath.value = res.path || "";
+      statusWarn.value = res.fellBack ? `指定的快照读不到（${res.requested}），已回退` : "";
+    }
     const data = JSON.parse(raw);
     if (!Array.isArray(data.workers)) return;
 
@@ -627,6 +643,7 @@ async function deleteDiagnostic(batchId) {
 onMounted(async () => {
   const init = await platform.session.getInitData();
   workers.value = init.workers || [];
+  requestedStatusPath.value = init.statusPath || "";
   ready.value = true;
   await platform.session.markReady();
   await nextTick();
@@ -649,6 +666,8 @@ onUnmounted(() => {
 .diagnostics-panel { width: min(900px, 92vw); max-height: 82vh; overflow: auto; background: #1a1a2e; border: 1px solid #3a3a5a; border-radius: 8px; padding: 14px; }
 .diagnostics-panel header { display: flex; justify-content: space-between; align-items: center; }
 .diagnostics-panel p { color: #888; font-size: 11px; }
+.status-file-line { font-size: 11px; color: #565f89; word-break: break-all; margin: 2px 0 6px; }
+.status-file-line.warn { color: #e6a23c; }
 .diagnostic-search { width: 100%; margin: 4px 0 8px; padding: 7px 8px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 4px; color: #c0caf5; font-size: 11px; }
 .diagnostic-item { display: flex; gap: 6px; margin: 4px 0; }
 .diagnostic-row { flex: 1; display: flex; justify-content: space-between; gap: 12px; text-align: left; padding: 8px; background: #0d0d1a; color: #c0caf5; border: 1px solid #2a2a4a; border-radius: 4px; cursor: pointer; font-size: 11px; }

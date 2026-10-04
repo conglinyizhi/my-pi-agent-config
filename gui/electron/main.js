@@ -18,14 +18,15 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
+import { readStatusSnapshot } from "./status-file.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 前端产物：gui/frontend（Vue 工程，与引擎无关；两个引擎共用一份 dist） */
 const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 /** 审核设置的 JSON 桥（主进程是纯 JS，读不了 .ts，也绝不在主进程重写 TOML 逻辑） */
 const REVIEW_CLI = resolve(HERE, "..", "..", "scripts", "review-settings-cli.ts");
-/** subagent 状态快照：与 Go 侧同一路径 */
-const STATUS_PATH = join(homedir(), ".pi", "subagent-status.json");
+// subagent 状态快照的取数在 status-file.js（纯模块、有单测）：多会话并存时，
+// 看板窗读的必须是它自己被指定的那份快照，不是全局那一份。
 
 const argv = parseArgv(process.argv);
 const known = WINDOW_CONFIGS[argv.windowName] !== undefined;
@@ -48,14 +49,6 @@ function readRequest() {
 	} catch (error) {
 		process.stderr.write(`[gui] 读不到请求文件 ${requestFile}：${error.message}\n`);
 		return {};
-	}
-}
-
-function readStatus() {
-	try {
-		return readFileSync(STATUS_PATH, "utf8");
-	} catch {
-		return "{}";
 	}
 }
 
@@ -323,9 +316,10 @@ function registerIpc(request) {
 		notPorted("reasons 库（/sandbox:reasons 的读写）");
 		return false;
 	});
-	handle("subagents:status", () => {
-		// 状态快照可以直接给；补件队列的富化还没搬
-		return readStatus();
+	handle("subagents:status", (requestedPath) => {
+		// 状态快照可以直接给；补件队列的富化还没搬。
+		// 带上实际路径与回退标记：前端要能看出读的是不是指定的那份。
+		return readStatusSnapshot(requestedPath);
 	});
 	handle("subagents:diagnostics", () => {
 		notPorted("subagent 诊断文件列举");

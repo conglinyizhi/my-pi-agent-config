@@ -34,7 +34,7 @@ export function createElectronPlatform(api = globalThis.window?.piGui) {
       save: (patch) => api.review.save(patch),
     },
     subagents: {
-      getStatus: () => api.subagents.getStatus(),
+      getStatus: (statusPath) => api.subagents.getStatus(statusPath),
       getDiagnostics: () => api.subagents.getDiagnostics(),
       getDiagnostic: (file) => api.subagents.getDiagnostic(file),
       deleteDiagnostic: (file) => api.subagents.deleteDiagnostic(file),

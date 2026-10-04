@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld("piGui", {
 		save: (patch) => call("review:save", patch),
 	},
 	subagents: {
-		getStatus: () => call("subagents:status"),
+		getStatus: (statusPath) => call("subagents:status", statusPath),
 		getDiagnostics: () => call("subagents:diagnostics"),
 		getDiagnostic: (file) => call("subagents:diagnostic", file),
 		deleteDiagnostic: (file) => call("subagents:diagnostic:delete", file),

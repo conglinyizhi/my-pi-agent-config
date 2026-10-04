@@ -30,6 +30,8 @@ export function buildInitData(windowName, request = {}, options = {}) {
 	switch (windowName) {
 		case "subagents":
 			base.workers = req.workers;
+			// 本次会话的状态快照路径：看板窗轮询时要原样带回来，否则会读错会话
+			base.statusPath = req.statusPath;
 			break;
 		case "routing":
 			base.todos = req.todos;
