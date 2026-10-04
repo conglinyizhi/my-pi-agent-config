@@ -155,6 +155,26 @@ describe("预览上限", () => {
 	});
 });
 
+describe("展示文本优先", () => {
+	it("有 displayScan 时折叠区间落在展示文本上", async () => {
+		// 展示文本（重排过的）比原文短，区间只对展示文本成立
+		const display = "tools.write({ path: \"/tmp/a.js\", content: \"x\" });";
+		const effects = scriptEffectsOf({
+			script: `   ${display}`,
+			reason: "测试",
+			tools: [],
+			scan: await scanScript(`   ${display}`),
+			display,
+			displayScan: await scanScript(display),
+			cwd: CWD,
+			home: HOME,
+		});
+		const call = effects.editCalls?.[0];
+		assert.ok(call);
+		assert.equal(display.slice(call.startOffset, call.endOffset).startsWith("tools.write("), true);
+	});
+});
+
 describe("接进影响面载荷", () => {
 	it("scriptEffectsOf 带上 editCalls，既有字段一个不少", async () => {
 		const source = `tools.write({ path: "${AGENT}/a.js", content: "x" });`;

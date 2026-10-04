@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ptcCodeDigest, ptcReasonLedger } from "../../lib/ptc-reason.ts";
 import { scanScript } from "../../lib/ptc-analyze.ts";
+import { formatScriptForDisplay } from "../../lib/script-format.ts";
 import { makeProgressContext } from "../../lib/ptc-progress.ts";
 import { runDryRun } from "../../lib/ptc-dryrun.ts";
 import { yoloEnabled } from "../sandbox-permissions/yolo.ts";
@@ -187,6 +188,13 @@ export function registerRunCode(
 				ctx,
 			});
 
+			// 展示用重排：审核窗里读得清结构；执行与送审仍是上面那份原文。
+			// 重排只改排版，折叠芯片的区间因此要按重排后的文本来算（否则会对不上）。
+			const display = await formatScriptForDisplay(code);
+			const displayInput = display.formatted
+				? { display: display.text, displayScan: await scanScript(display.text) }
+				: {};
+
 			// 事前审核：过了才执行；没过整段不执行，返回编译失败式的错误。
 			// yolo 与 bash-guard 保持一致：跳过整条审批链。
 			if (!yoloEnabled()) {
@@ -202,6 +210,7 @@ export function registerRunCode(
 						dry,
 						cwd: ctx.cwd,
 						home: process.env.HOME,
+						...displayInput,
 					},
 					signal,
 				});

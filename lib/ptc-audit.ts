@@ -62,6 +62,13 @@ export interface PtcAuditInput {
 	scan?: ScriptScan;
 	/** 干跑预演结果；没跑或没跑成时不带 */
 	dry?: DryRunResult;
+	/**
+	 * 展示用文本（重排过缩进与换行的脚本）。只给审核窗看：送审与批准绑定走的
+	 * 仍是 script（原文），所以展示排版不会影响批的是哪一段。
+	 */
+	display?: string;
+	/** 展示文本的扫描结果：折叠芯片的区间要落在被显示的那份文本上 */
+	displayScan?: ScriptScan;
 	/** 当前工作目录：算折叠芯片的显示路径用（$PWD 那条）。缺省就不缩 */
 	cwd?: string;
 	/** 家目录：同上（~ 那条）。缺省就不缩 */
@@ -111,7 +118,8 @@ function previewFieldsOf(call: LiteralCall): Partial<FoldCallPayload> {
 /** 把扫描到的调用整理成折叠芯片（白名单外的丢掉：它们照旧亮原文） */
 export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 	const out: FoldCallPayload[] = [];
-	for (const call of input.scan?.calls ?? []) {
+	// 区间必须落在被显示的那份文本上：有展示文本就按它的扫描结果来
+	for (const call of (input.displayScan ?? input.scan)?.calls ?? []) {
 		const kind: FoldCallPayload["kind"] | undefined = FOLD_FILE_TOOLS.has(call.tool)
 			? "file"
 			: FOLD_SHELL_TOOLS.has(call.tool) ? "shell" : undefined;
@@ -362,7 +370,8 @@ export async function approvePtcScript(options: {
 	const decision = await channel(
 		{
 			kind: "audit",
-			command: input.script,
+			// 审核窗显示重排后的文本；送审材料与 digest 都是另一条路（原文）
+			command: input.display ?? input.script,
 			reason: input.reason,
 			subject: "script",
 			scriptEffects: scriptEffectsOf(input),
