@@ -133,7 +133,7 @@ planMb = 512
 # ─────────────────────────────────────────────────────────────
 [sandbox-llm-review]
 enabled = true # 总开关；false = 回到纯规则弹窗流程
-mode = "strict"  # auto=判安全直接放行；strict=仅给意见仍弹窗
+mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
 backend = "chain" # chat=只跑对话模型；classifier=只跑分类模型；chain=两边都跑，意见合并（任一判风险就弹窗）
 # 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
 # 用 /provider:fast-put / /provider:fast-pop 管理
