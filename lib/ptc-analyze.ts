@@ -26,9 +26,12 @@ export interface LiteralCall {
 	/** 源码位置（1 起），报错与审批卡都用它 */
 	line: number;
 	column: number;
-	/** 调用表达式的字符区间（0 起，半开）：前端把这一段原文换成芯片 */
+	/** 调用表达式的字符区间（0 起，半开）：整个调用，含函数名 */
 	startOffset: number;
 	endOffset: number;
+	/** 实参区间（不含外面的括号）：审核窗的芯片只包这一截，函数名与括号留在代码里 */
+	argsStartOffset?: number;
+	argsEndOffset?: number;
 	/** 调用结束位置（1 起）：展示"第 n..m 行"用 */
 	endLine: number;
 	endColumn: number;
@@ -126,6 +129,13 @@ export async function scanScript(source: string): Promise<ScriptScan> {
 					const endOffset = node.getEnd();
 					const endAt = file.getLineAndCharacterOfPosition(endOffset);
 					const span = { startOffset, endOffset, endLine: endAt.line + 1, endColumn: endAt.character + 1 };
+					// 芯片只包实参：括号本身留在代码里（没有实参的调用就不折了）
+					const argsSpan = node.arguments.length > 0
+						? {
+							argsStartOffset: node.arguments[0].getStart(file),
+							argsEndOffset: node.arguments[node.arguments.length - 1].getEnd(),
+						}
+						: {};
 					const args: Record<string, string> = {};
 					let unresolvedArgs = false;
 					const first = node.arguments[0];
@@ -155,7 +165,7 @@ export async function scanScript(source: string): Promise<ScriptScan> {
 						unresolvedArgs = true;
 					}
 
-					calls.push({ tool: called.tool, args, ...(unresolvedArgs ? { unresolvedArgs: true } : {}), ...at, ...span });
+					calls.push({ tool: called.tool, args, ...(unresolvedArgs ? { unresolvedArgs: true } : {}), ...at, ...span, ...argsSpan });
 					if (unresolvedArgs) {
 						opaque.push(`${at.line}:${at.column} ${called.tool} 的参数里有非字面量，值只能运行时才知道`);
 					}

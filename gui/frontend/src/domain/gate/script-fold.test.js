@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chipIndexOfMark, clipMarks, foldScript, normalizeFoldCalls } from "./script-fold.js";
+import { callTitle, chipIndexOfMark, clipMarks, foldScript, normalizeFoldCalls } from "./script-fold.js";
 
 const call = (over = {}) => ({
   tool: "write",
@@ -31,7 +31,7 @@ describe("折出片段", () => {
     assert.equal(model.segments.length, 3);
     assert.equal(model.segments[0].text, "const a = ");
     assert.equal(model.segments[1].kind, "chip");
-    assert.equal(model.segments[1].chip.label, "tools.write($PWD/x)");
+    assert.equal(model.segments[1].chip.label, "$PWD/x");
     assert.equal(model.segments[2].text, ";");
   });
 
@@ -41,20 +41,22 @@ describe("折出片段", () => {
     const end = text.indexOf("})") + 2;
     const model = foldScript(text, [call({ startOffset: start, endOffset: end, displayPath: "$PWD/x" })], []);
     const joined = model.segments.map((segment) => (segment.kind === "chip" ? `<${segment.chip.label}>` : segment.text)).join("");
-    assert.equal(joined, "const a = await <tools.write($PWD/x)>;\ndone");
+    assert.equal(joined, "const a = await <$PWD/x>;\ndone");
   });
 
   it("bash 芯片是 shell 档，带 cwd 一路写进标签", () => {
     const text = 'tools.bash({ command: "git status", cwd: "/w" });';
     const model = foldScript(text, [call({ tool: "bash", kind: "shell", startOffset: 0, endOffset: 44, displayPath: "$PWD" })], []);
     assert.equal(model.chips[0].tone, "shell");
-    assert.equal(model.chips[0].label, "tools.bash($$SHELL$$, cwd=$PWD)");
+    assert.equal(model.chips[0].label, "$$SHELL$$, cwd=$PWD");
+    assert.equal(callTitle(model.chips[0].call), "tools.bash");
   });
 
   it("没有路径的调用标签给省略号，不编一个路径出来", () => {
     const text = "tools.apply_patch({ patch })";
     const model = foldScript(text, [call({ tool: "apply_patch", startOffset: 0, endOffset: text.length })], []);
-    assert.equal(model.chips[0].label, "tools.apply_patch(…)");
+    assert.equal(model.chips[0].label, "…");
+    assert.equal(callTitle(model.chips[0].call), "tools.apply_patch");
   });
 
   it("看不清的调用 literal 为假，UI 可以据此标出来", () => {

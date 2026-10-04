@@ -128,13 +128,18 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 			? FILE_PATH_FIELDS.map((field) => call.args[field]).find((value) => value !== undefined)
 			: call.args.cwd;
 		const body = kind === "file" ? call.args.content : call.args.command;
+		// 芯片只盖实参：函数名与括号照旧在代码里。拿不到实参区间就不折——
+		// 折整个调用会把函数名也吃掉，那与"只包变量部分"不是一回事。
+		const startOffset = call.argsStartOffset;
+		const endOffset = call.argsEndOffset;
+		if (startOffset === undefined || endOffset === undefined || endOffset <= startOffset) continue;
 		out.push({
 			tool: call.tool,
 			kind,
 			...(raw !== undefined ? { displayPath: displayPath(raw, { home: input.home, cwd: input.cwd }) } : {}),
 			literal: call.unresolvedArgs !== true,
-			startOffset: call.startOffset,
-			endOffset: call.endOffset,
+			startOffset,
+			endOffset,
 			line: call.line,
 			endLine: call.endLine,
 			...(body !== undefined

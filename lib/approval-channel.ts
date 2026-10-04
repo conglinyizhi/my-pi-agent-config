@@ -70,7 +70,7 @@ export interface FoldCallPayload {
 	displayPath?: string;
 	/** 关键字段是不是字面量；false 时芯片上要标"看不清" */
 	literal: boolean;
-	/** 调用在脚本里的字符区间（0 起，半开） */
+	/** 芯片盖住的区间（0 起，半开）：实参括号那一截，函数名留在代码里 */
 	startOffset: number;
 	endOffset: number;
 	/** 起始行 / 结束行（1 起） */

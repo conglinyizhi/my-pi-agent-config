@@ -5,21 +5,24 @@
 // 前端不猜：拿不到记录就一行不折，原文照出。
 
 /**
- * 芯片的落点标签：文件编辑给路径，bash 给 $$SHELL$$（那是"这里是一段可执行 shell"）。
- * 工具名补回 tools. 前缀：pi 侧记录的是裸名（write / bash），而脚本里写的是 tools.write。
+ * 调用的显示名。pi 侧记的是裸名（write / bash），脚本里写的是 tools.write，
+ * 这里补回前缀——折叠之后函数名照旧在代码里，浮层标题用它交代"这是哪一次调用"。
  */
-function qualify(tool) {
-  const name = typeof tool === "string" && tool !== "" ? tool : "?";
+export function callTitle(call) {
+  const name = typeof call?.tool === "string" && call.tool !== "" ? call.tool : "?";
   return name.includes(".") ? name : `tools.${name}`;
 }
 
+/**
+ * 芯片里的字：只写实参那一截（函数名留在代码里，不用重复）。
+ * 文件编辑摆路径，bash 摆 $$SHELL$$（"这里是一段可执行 shell"）。
+ */
 function labelOf(call) {
   const path = typeof call.displayPath === "string" && call.displayPath !== "" ? call.displayPath : "…";
-  const name = qualify(call.tool);
   if (call.kind === "shell") {
-    return call.displayPath ? `${name}($$SHELL$$, cwd=${call.displayPath})` : `${name}($$SHELL$$)`;
+    return call.displayPath ? `$$SHELL$$, cwd=${call.displayPath}` : "$$SHELL$$";
   }
-  return `${name}(${path})`;
+  return path;
 }
 
 /**

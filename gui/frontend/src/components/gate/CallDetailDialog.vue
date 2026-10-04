@@ -4,7 +4,7 @@
     <section class="dlg" data-name="call-detail" role="dialog" aria-modal="true">
       <header class="dlg-head">
         <div class="dlg-title">
-          <span class="dlg-tool">{{ chip.label }}</span>
+          <span class="dlg-tool">{{ callTitle(chip.call) }}</span>
           <span class="dlg-kind" :class="`kind-${chip.tone}`">{{ chip.tone === "shell" ? "可执行 shell" : "文件编辑" }}</span>
           <span v-if="!chip.literal" class="dlg-vague">参数不是字面量</span>
         </div>
@@ -13,6 +13,7 @@
 
       <div class="dlg-meta">
         <span>{{ lineLabel }}</span>
+        <span v-if="chip.label">{{ chip.label }}</span>
         <span v-if="sizeLabel">{{ sizeLabel }}</span>
         <span v-if="body.kind === 'source' && !chip.literal">这一处看不到内容，原文照摆</span>
       </div>
@@ -50,7 +51,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { watch } from "vue";
-import { clipMarks } from "../../domain/gate/script-fold.js";
+import { callTitle, clipMarks } from "../../domain/gate/script-fold.js";
 import { renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { clipTokens, colorTokens, composeCodeHtml } from "../../domain/gate/code-color.js";
 

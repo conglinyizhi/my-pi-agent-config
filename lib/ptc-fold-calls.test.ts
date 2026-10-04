@@ -78,9 +78,11 @@ describe("区间与规模", () => {
 		const source = `const w = await tools.write({ path: "/tmp/a.js", content: "hi" });`;
 		const calls = await fold(source);
 		const write = pick(calls, "write");
+		// 芯片只盖实参：左边是 ( 、右边是 )，函数名留在代码里
 		const sliced = source.slice(write.startOffset, write.endOffset);
-		assert.ok(sliced.startsWith("tools.write("), sliced);
-		assert.ok(sliced.endsWith(")"), sliced);
+		assert.equal(source[write.startOffset - 1], "(");
+		assert.equal(source[write.endOffset], ")");
+		assert.equal(sliced, '{ path: "/tmp/a.js", content: "hi" }');
 		assert.equal(write.line, 1);
 		assert.equal(write.endLine, 1);
 	});
@@ -155,6 +157,13 @@ describe("预览上限", () => {
 	});
 });
 
+describe("没有实参的调用", () => {
+	it("没有实参就不折（没东西可看，也没有变量部分可包）", async () => {
+		const calls = await fold(`tools.bash();`);
+		assert.deepEqual(calls, []);
+	});
+});
+
 describe("展示文本优先", () => {
 	it("有 displayScan 时折叠区间落在展示文本上", async () => {
 		// 展示文本（重排过的）比原文短，区间只对展示文本成立
@@ -171,7 +180,9 @@ describe("展示文本优先", () => {
 		});
 		const call = effects.editCalls?.[0];
 		assert.ok(call);
-		assert.equal(display.slice(call.startOffset, call.endOffset).startsWith("tools.write("), true);
+		assert.equal(call.literal, true);
+		// 区间必须落在被显示的那份文本上（原文前面多了三个空格，切出来就对不上）
+		assert.equal(display.slice(call.startOffset, call.endOffset), '{ path: "/tmp/a.js", content: "x" }');
 	});
 });
 
