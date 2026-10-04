@@ -185,6 +185,8 @@
 
 这两条是本机实测过的教训：一个探针脚本里的 `find … | head -1` 选中了正在写的会话日志并把它删了，那段历史没能恢复
 
+- **改可执行文件别用 be-* 系列**：better-edit-tools 走原子写（tmp + rename），重建文件时把权限位清成 644。`scripts/sandbox-shell.mjs` 被改一次就等于整个 bash 通道 EACCES（pi 的 bash 直接 spawn 它，连修它的命令都跑不了，只能请提督在自己的终端 chmod）。改 `scripts/` 下的可执行文件与 `scripts/vendor/` 里的二进制后，一律确认权限位还在
+
 ## 权限与沙箱
 
 沙箱默认只读，工作区外的写都要过提督的闸门。这不是障碍，是编制。
