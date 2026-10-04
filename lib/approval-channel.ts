@@ -81,8 +81,14 @@ export interface FoldCallPayload {
 	lines?: number;
 	/** write：被写入的正文预览（有界） */
 	contentPreview?: string;
-	/** edit：旧文与新文预览 */
+	/** edit / str_replace_editor：旧文与新文预览 */
 	replacement?: { old: string; new: string; truncated: boolean };
+	/** apply_patch / patch：补丁正文（原样带给浮层按 +/- 摆，不重造 patch） */
+	patchText?: string;
+	/** 工具自己的动作名：str_replace_editor 的 command、edit 的模式等 */
+	mode?: string;
+	/** 补丁正文里认出来的目标文件（缩短后） */
+	paths?: string[];
 	/** 预览被截断过 */
 	truncated?: boolean;
 }
@@ -107,6 +113,38 @@ export interface ScriptEffectsPayload {
 	dryRunStatus?: string;
 	/** 折叠芯片：只收会改状态的调用（白名单外的调用亮原文，折叠不用来藏风险） */
 	editCalls?: FoldCallPayload[];
+	/** 同一文件多处改动合并出来的净变化（推演，不是磁盘上的真身） */
+	mergedChanges?: MergedFilePayload[];
+}
+
+/** 合并视图里的一行：与 lib/text-diff.ts 的 DiffRow 同形（那边是 pi 侧的实现） */
+export interface MergedDiffRow {
+	kind: "same" | "add" | "del";
+	text: string;
+	oldLine?: number;
+	newLine?: number;
+	/** 行内改动区间（字符坐标，半开） */
+	intra?: Array<{ s: number; e: number }>;
+}
+
+export type MergedDiffBlock =
+	| { type: "rows"; rows: MergedDiffRow[] }
+	| { type: "gap"; count: number };
+
+/** 一个文件的合并结果：改前改后差在哪、以及这次推演可信到什么程度 */
+export interface MergedFilePayload {
+	/** 显示用路径（已缩短） */
+	path: string;
+	ops: number;
+	/** merged = 推演得通；chain-broken = 中途断了；unknown-base = 基准内容不知道 */
+	status: "merged" | "chain-broken" | "unknown-base";
+	reason?: string;
+	added: number;
+	removed: number;
+	blocks: MergedDiffBlock[];
+	truncated?: boolean;
+	/** 改前按空文件算（文件此前可能本来就有内容） */
+	baseAssumedEmpty?: boolean;
 }
 
 export interface AuditApprovalRequest extends ApprovalRequestBase {

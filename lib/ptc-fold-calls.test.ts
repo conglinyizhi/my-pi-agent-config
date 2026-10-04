@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { scanScript } from "./ptc-analyze.ts";
-import { foldCallsOf, scriptEffectsOf } from "./ptc-audit.ts";
+import { foldCallsOf, patchPathsOf, scriptEffectsOf } from "./ptc-audit.ts";
 import type { FoldCallPayload } from "./approval-channel.ts";
 
 const HOME = "/home/clyzhi";
@@ -216,3 +216,79 @@ describe("接进影响面载荷", () => {
 		assert.equal("editCalls" in effects, false);
 	});
 });
+
+describe("str_replace_editor 的字段映射", () => {
+	it("old_str/new_str 变成新旧文，command 带成 mode", async () => {
+		const source = 'tools.str_replace_editor({ command: "str_replace", path: "/tmp/a.js", old_str: "before", new_str: "after" });';
+		const call = pick(await fold(source), "str_replace_editor");
+		assert.deepEqual(call.replacement, { old: "before", new: "after", truncated: false });
+		assert.equal(call.mode, "str_replace");
+	});
+
+	it("file_text 当作正文预览", async () => {
+		const source = 'tools.str_replace_editor({ command: "create", path: "/tmp/a.js", file_text: "hello" });';
+		const call = pick(await fold(source), "str_replace_editor");
+		assert.equal(call.contentPreview, "hello");
+		assert.equal(call.mode, "create");
+	});
+});
+
+describe("补丁类工具", () => {
+	it("补丁正文原样带出，并从正文里认出目标文件", async () => {
+		const patch = "*** Update File: /home/clyzhi/.pi/agent/lib/x.ts" + String.fromCharCode(10) + "@@" + String.fromCharCode(10) + "-old" + String.fromCharCode(10) + "+new";
+		const source = "tools.apply_patch({ patch: " + JSON.stringify(patch) + " });";
+		const call = pick(await fold(source), "apply_patch");
+		assert.equal(call.patchText, patch);
+		assert.equal(call.displayPath, "$PWD/lib/x.ts");
+		assert.deepEqual(call.paths, ["$PWD/lib/x.ts"]);
+	});
+
+	it("统一 diff 头里的 a/ b/ 前缀与 /dev/null 都处理掉", () => {
+		const patch = "--- a/src/x.ts" + String.fromCharCode(10) + "+++ b/src/x.ts";
+		assert.deepEqual(patchPathsOf(patch), ["src/x.ts"]);
+		assert.deepEqual(patchPathsOf("--- /dev/null"), []);
+	});
+
+	it("认不出路径时芯片标签给省略号，不编", async () => {
+		const source = 'tools.patch({ patch: "@@" });';
+		const call = pick(await fold(source), "patch");
+		assert.equal(call.displayPath, undefined);
+		assert.equal(call.patchText, "@@");
+	});
+});
+
+describe("合并视图进载荷", () => {
+	it("同文件两次改动合一份，路径缩短，并标出改前是按空文件算的", async () => {
+		const source = [
+			'tools.write({ path: "/home/clyzhi/.pi/agent/a.js", content: "one" });',
+			'tools.edit({ path: "/home/clyzhi/.pi/agent/a.js", old: "one", new: "ONE" });',
+		].join(String.fromCharCode(10));
+		const effects = scriptEffectsOf({
+			script: source,
+			reason: "测试",
+			tools: [],
+			scan: await scanScript(source),
+			cwd: CWD,
+			home: HOME,
+		});
+		assert.equal(effects.mergedChanges?.length, 1);
+		assert.equal(effects.mergedChanges?.[0].path, "$PWD/a.js");
+		assert.equal(effects.mergedChanges?.[0].status, "merged");
+		assert.equal(effects.mergedChanges?.[0].baseAssumedEmpty, true);
+		assert.equal(effects.mergedChanges?.[0].ops, 2);
+	});
+
+	it("没有可推演的改动时不带这个字段", async () => {
+		const source = 'tools.read({ path: "/tmp/a.js" });';
+		const effects = scriptEffectsOf({
+			script: source,
+			reason: "测试",
+			tools: [],
+			scan: await scanScript(source),
+			cwd: CWD,
+			home: HOME,
+		});
+		assert.equal("mergedChanges" in effects, false);
+	});
+});
+

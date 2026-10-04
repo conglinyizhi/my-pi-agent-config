@@ -103,14 +103,24 @@ describe("断链要明说", () => {
 		assert.match(merged[0].reason ?? "", /不重造 patch/);
 	});
 
-	it("补丁认不出改的是哪个文件时，合并结果标存疑", async () => {
+	it("补丁认得出文件、但不碰这个文件时，合并结果不受影响", async () => {
 		const source = [
 			'tools.write({ path: "/tmp/a.txt", content: "one" });',
 			'tools.apply_patch({ patch: "*** Update File: /somewhere/else.txt\\n@@\\n-x\\n+y\\n" });',
 		].join(NL);
 		const merged = await merge(source);
+		assert.equal(merged[0].status, "merged");
+		assert.equal(merged[0].reason, undefined);
+	});
+
+	it("补丁连文件头都没有时，合并结果一律标存疑", async () => {
+		const source = [
+			'tools.write({ path: "/tmp/a.txt", content: "one" });',
+			'tools.apply_patch({ patch: "@@ -1 +1 @@\\n-x\\n+y\\n" });',
+		].join(NL);
+		const merged = await merge(source);
 		assert.equal(merged[0].status, "chain-broken");
-		assert.match(merged[0].reason ?? "", /认不出它改的是哪些文件/);
+		assert.match(merged[0].reason ?? "", /认不出改的是哪些文件/);
 	});
 
 	it("路径不是字面量就不参与合并", async () => {

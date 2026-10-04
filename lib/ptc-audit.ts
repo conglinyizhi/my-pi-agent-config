@@ -14,7 +14,15 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { processSingleton } from "./process-singleton.ts";
-import { resolveApprovalChannel, type ApprovalChannel, type FoldCallPayload, type ScriptEffectsPayload } from "./approval-channel.ts";
+import {
+	resolveApprovalChannel,
+	type ApprovalChannel,
+	type FoldCallPayload,
+	type MergedFilePayload,
+	type ScriptEffectsPayload,
+} from "./approval-channel.ts";
+import { mergeFileChanges } from "./script-changes.ts";
+import { patchPathsOf } from "./patch-paths.ts";
 import type { LiteralCall, ScriptScan } from "./ptc-analyze.ts";
 import { displayPath } from "./path-display.ts";
 import { compareCalls, compareLine, type DryRunResult } from "./ptc-dryrun.ts";
@@ -82,7 +90,7 @@ export interface PtcAuditInput {
  * 白名单外的调用（自定义工具、MCP 挂上来的、subagent……）一律亮原文：
  * 不认识的动作不折，否则折叠就成了藏风险。
  */
-const FOLD_FILE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "apply_patch", "str_replace_editor"]);
+const FOLD_FILE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "apply_patch", "patch", "str_replace_editor"]);
 const FOLD_SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "bash_background"]);
 
 /** 文件工具的路径字段（apply_patch 交的是补丁正文，没有单一路径，就没有 displayPath） */
@@ -90,6 +98,12 @@ const FILE_PATH_FIELDS: readonly string[] = ["path", "file", "to"];
 
 /** 正文预览上限：显示层，够看清意图即可，别把浮层塞爆 */
 const PREVIEW_MAX = 4000;
+
+/** 补丁正文上限：比正文宽一些（补丁自带上下文行，截太狠就看不出改了哪几处） */
+const PATCH_MAX = 8000;
+
+/** 补丁正文里认文件：实现放在中立模块，合并视图那边也要用同一套 */
+export { patchPathsOf } from "./patch-paths.ts";
 
 function clipPreview(text: string): { text: string; truncated: boolean } {
 	return text.length <= PREVIEW_MAX
@@ -103,14 +117,35 @@ function clipPreview(text: string): { text: string; truncated: boolean } {
  * 命令与路径不进预览——前端按区间切原文就行，没必要在载荷里再存一份。
  */
 function previewFieldsOf(call: LiteralCall): Partial<FoldCallPayload> {
-	if (call.tool === "edit" && call.args.old !== undefined && call.args.new !== undefined) {
-		const old = clipPreview(call.args.old);
-		const next = clipPreview(call.args.new);
+	const args: Record<string, string> = call.args ?? {};
+	const pick = (...keys: string[]): string | undefined => {
+		for (const key of keys) {
+			const value = args[key];
+			if (typeof value === "string") return value;
+		}
+		return undefined;
+	};
+	// 局部替换：edit 用 old/new，str_replace_editor 用 old_str/new_str
+	const oldText = pick("old", "old_str", "oldText");
+	const newText = pick("new", "new_str", "newText");
+	if (oldText !== undefined && newText !== undefined) {
+		const old = clipPreview(oldText);
+		const next = clipPreview(newText);
 		return { replacement: { old: old.text, new: next.text, truncated: old.truncated || next.truncated } };
 	}
-	if (call.args.content !== undefined) {
-		const content = clipPreview(call.args.content);
-		return { contentPreview: content.text, ...(content.truncated ? { truncated: true } : {}) };
+	// 整份写入：write 的 content，str_replace_editor 的 file_text
+	const content = pick("content", "file_text");
+	if (content !== undefined) {
+		const clipped = clipPreview(content);
+		return { contentPreview: clipped.text, ...(clipped.truncated ? { truncated: true } : {}) };
+	}
+	// 补丁正文：原样带给浮层，按 +/- 摆出来（不在这里重造 patch）
+	const patchText = pick("patch", "input", "diff");
+	if (patchText !== undefined) {
+		const clipped = patchText.length <= PATCH_MAX
+			? { text: patchText, truncated: false }
+			: { text: patchText.slice(0, PATCH_MAX), truncated: true };
+		return { patchText: clipped.text, ...(clipped.truncated ? { truncated: true } : {}) };
 	}
 	return {};
 }
@@ -124,8 +159,11 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 			? "file"
 			: FOLD_SHELL_TOOLS.has(call.tool) ? "shell" : undefined;
 		if (kind === undefined) continue;
+		const patchText = call.args.patch ?? call.args.input ?? call.args.diff;
+		const patchPaths = patchText !== undefined ? patchPathsOf(patchText) : [];
 		const raw = kind === "file"
 			? FILE_PATH_FIELDS.map((field) => call.args[field]).find((value) => value !== undefined)
+				?? patchPaths[0]
 			: call.args.cwd;
 		const body = kind === "file" ? call.args.content : call.args.command;
 		// 芯片只盖实参：函数名与括号照旧在代码里。拿不到实参区间就不折——
@@ -144,6 +182,13 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 			endLine: call.endLine,
 			...(body !== undefined
 				? { bytes: Buffer.byteLength(body, "utf8"), lines: body.split("\n").length }
+				: {}),
+			...(() => {
+				const mode = call.args.command;
+				return typeof mode === "string" && mode !== "" ? { mode } : {};
+			})(),
+			...(patchPaths.length > 0
+				? { paths: patchPaths.slice(0, 8).map((path) => displayPath(path, { home: input.home, cwd: input.cwd })) }
 				: {}),
 			...previewFieldsOf(call),
 		});
@@ -271,10 +316,26 @@ function ptcReviewCache(): ReviewCache {
 	return reviewCacheForPtc;
 }
 
+/**
+ * 同一文件多处改动的合并视图。
+ *
+ * 只喂显示层：它是对字面量的推演，不是磁盘上的文件（基准可能本来就是空的），
+ * 状态与原因照实带给窗口，别让人把推演当成事实。
+ */
+export function mergedChangesOf(input: PtcAuditInput): MergedFilePayload[] {
+	const calls = (input.displayScan ?? input.scan)?.calls ?? [];
+	return mergeFileChanges(calls).map((entry) => ({
+		...entry,
+		path: displayPath(entry.path, { home: input.home, cwd: input.cwd }),
+	}));
+}
+
 /** 从扫描与干跑结果整理出给审批窗的结构化影响面 */
 export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 	const scan = input.scan;
 	const editCalls = foldCallsOf(input);
+	// 合并视图与折叠芯片看同一份调用（区间都落在被显示的那份文本上）
+	const mergedChanges = mergedChangesOf(input);
 	const dryRunCalls: string[] = [];
 	if (input.dry) {
 		const counts = new Map<string, number>();
@@ -289,8 +350,9 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 		...(scan?.parseError ? { parseError: scan.parseError } : {}),
 		digestShort: ptcScriptDigest(input.script).slice(0, 12),
 		...(input.dry ? { dryRunStatus: input.dry.status, dryRunCalls } : {}),
-		// 折叠芯片：显示层字段，送审文本（subject）一个字节都不动
+		// 折叠芯片与合并视图：显示层字段，送审文本（subject）一个字节都不动
 		...(editCalls.length > 0 ? { editCalls } : {}),
+		...(mergedChanges.length > 0 ? { mergedChanges } : {}),
 	};
 }
 

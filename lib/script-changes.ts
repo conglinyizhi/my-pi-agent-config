@@ -12,6 +12,7 @@
 // 断链不是失败：每处调用照旧能单独点开看原文，合并视图只是额外一屏。
 
 import { collapseContext, lineDiff, type DiffBlock } from "./text-diff.ts";
+import { patchPathsOf } from "./patch-paths.ts";
 import type { LiteralCall } from "./ptc-analyze.ts";
 
 export type MergedStatus = "merged" | "chain-broken" | "unknown-base";
@@ -116,20 +117,23 @@ export function mergeFileChanges(calls: LiteralCall[], maxFiles = 20): MergedFil
 		else groups.set(path, [op]);
 	}
 
-	/** 补丁正文里出现了这个路径，就认它改的是这个文件 */
-	const patchFor = (path: string): ChangeOp | undefined =>
-		patches.find((patch) => typeof patch.patch === "string" && patch.patch.includes(path));
+	// 补丁能不能认领文件，分两种情况：认得出来就只影响它点到的那几个；
+	// 完全认不出来（没有文件头）就只能让所有合并结果都存疑——
+	// 合并视图自称"净变化"，不能漏掉一处没并进来的改动。
+	const located = patches
+		.map((patch) => ({ patch, paths: patchPathsOf(patch.patch ?? "") }))
+		.filter((entry) => entry.paths.length > 0);
+	const blind = patches.filter((patch) => patchPathsOf(patch.patch ?? "").length === 0);
 
 	const out: MergedFileChange[] = [];
 	for (const [path, ops] of groups) {
-		const hit = patchFor(path);
-		// 认不出补丁改的是哪个文件时，凡是合并了文件的地方都要存疑：
-		// 合并视图自称"净变化"，就不能漏掉一处没并进来的改动
+		const hit = located.find((entry) => entry.paths.includes(path))?.patch;
+		const blindNote = blind.length > 0
+			? `脚本里还有 ${blind.length} 处补丁认不出改的是哪些文件，这份净变化可能不全`
+			: undefined;
 		const reason = hit
 			? `第 ${hit.line} 行 ${hit.tool}：补丁也改这个文件，合并视图不重造 patch`
-			: patches.length > 0
-				? `脚本里还有 ${patches.length} 处 apply_patch，认不出它改的是哪些文件，这份净变化可能不全`
-				: undefined;
+			: blindNote;
 		out.push(mergeOne(path, ops, reason));
 		if (out.length >= maxFiles) break;
 	}
