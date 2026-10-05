@@ -99,7 +99,8 @@ async function getPayload(dir: string, id: string) {
 /** 存源码：先越界检查，再写盘，最后把校验结果回报（坏文件不退，人自己看） */
 async function savePayload(dir: string, id: string, content?: string) {
 	if (content === undefined) return { ok: false, error: "save 需要内容（--file 或 patch.content）" };
-	const path = join(dir, `${id}.ts`);
+	const path = await savePath(dir, id);
+	if (typeof path !== "string") return { ok: false, error: path.error };
 	const violations = await checkFlowSource(content, path);
 	if (violations.length > 0) return { ok: false, error: formatViolations(violations, path) };
 	writeFileSync(path, content, { mode: 0o600 });
@@ -113,8 +114,9 @@ async function savePayload(dir: string, id: string, content?: string) {
  * 改动引入越界检查问题（理论上不该）就拒绝落盘。
  */
 async function editEdgePayload(dir: string, id: string, patch: Record<string, unknown>) {
-	const path = join(dir, `${id}.ts`);
-	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const found = await flowFilePath(dir, id);
+	if ("error" in found) return { ok: false, error: found.error };
+	const path = found.path;
 	const source = readFileSync(path, "utf8");
 	const request: EdgeEditRequest = {
 		source,
@@ -141,8 +143,9 @@ async function editEdgePayload(dir: string, id: string, patch: Record<string, un
  * 与 save / edit-edge 同一条纪律：宁可整段不动，也不落一份校验不过的源码。
  */
 async function addNodePayload(dir: string, id: string, patch: Record<string, unknown>) {
-	const path = join(dir, `${id}.ts`);
-	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const found = await flowFilePath(dir, id);
+	if ("error" in found) return { ok: false, error: found.error };
+	const path = found.path;
 	const source = readFileSync(path, "utf8");
 	const connect = patch.connect as { nodeId?: unknown; kind?: unknown; label?: unknown } | undefined;
 	const result = await addNodeToSource({
@@ -173,10 +176,40 @@ async function addNodePayload(dir: string, id: string, patch: Record<string, unk
 	return { ok: true, changed: true, problems: "error" in loaded ? [loaded.error] : [] };
 }
 
+/**
+ * 找这份流程的文件。
+ * 内置流程（bash-pre 这些）没有文件，得说清楚；回一句"没有这份流程文件"会让人以为文件丢了（踩过）。
+ */
+function builtinRefusal(id: string): string {
+	return `${id} 是内置流程（实现在 lib/review-flow/flows/ 里），没有可以就地改的文件。要改就照它新建一份自己的流程，改完在窗口里切过去`;
+}
+
+async function isBuiltinId(dir: string, id: string): Promise<boolean> {
+	if (existsSync(join(dir, `${id}.ts`))) return false;
+	const item = (await inspectFlows(dir)).find((flow) => flow.id === id);
+	return item?.active === "builtin";
+}
+
+async function flowFilePath(dir: string, id: string): Promise<{ path: string } | { error: string }> {
+	const path = join(dir, `${id}.ts`);
+	if (existsSync(path)) return { path };
+	if (await isBuiltinId(dir, id)) return { error: builtinRefusal(id) };
+	return { error: `没有这份流程文件：${path}` };
+}
+
+/** 保存可以新建文件；只有内置流程那个 id 不让占，否则按一下保存就把内置的顶掉了 */
+async function savePath(dir: string, id: string): Promise<string | { error: string }> {
+	const path = join(dir, `${id}.ts`);
+	if (existsSync(path)) return path;
+	if (await isBuiltinId(dir, id)) return { error: builtinRefusal(id) };
+	return path;
+}
+
 /** 删一条边：断开是合法中间态（先断再连），所以这里不拦校验，坏在哪图上自己看得见 */
 async function removeEdgePayload(dir: string, id: string, patch: Record<string, unknown>) {
-	const path = join(dir, `${id}.ts`);
-	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const found = await flowFilePath(dir, id);
+	if ("error" in found) return { ok: false, error: found.error };
+	const path = found.path;
 	const result = await removeEdgeInSource({
 		source: readFileSync(path, "utf8"),
 		fileName: path,

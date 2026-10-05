@@ -27,8 +27,10 @@
 
 		<main class="canvas">
 			<div class="canvas-tools">
-				<button data-name="toggle-edit" @click="toggleMode">{{ mode === "graph" ? "编辑源码" : "回到图" }}</button>
-				<button data-name="add-node" @click="openAdd">加节点</button>
+				<button data-name="toggle-edit" :disabled="isBuiltin" :title="builtinHint" @click="toggleMode">
+					{{ mode === "graph" ? "编辑源码" : "回到图" }}
+				</button>
+				<button data-name="add-node" :disabled="isBuiltin" :title="builtinHint" @click="openAdd">加节点</button>
 				<span v-if="wireMsg" class="wire-msg" :class="{ bad: wireBad }">{{ wireMsg }}</span>
 				<span v-if="dirty" class="dirty">未保存</span>
 				<span v-if="saveMsg" class="save-msg" :class="{ bad: saveBad }">{{ saveMsg }}</span>
@@ -165,7 +167,13 @@ const KIND_LABEL = {
 const graph = computed(() => detail.value?.graph ?? null);
 const problems = computed(() => detail.value?.problems ?? []);
 const selectedSource = computed(() => detail.value?.source ?? "");
-const activeLabel = computed(() => (flows.value.find((f) => f.id === selectedId.value)?.active === "authored" ? "你写的那条" : "内置那条"));
+const activeLabel = computed(() => (isBuiltin.value ? "内置那条" : "你写的那条"));
+
+/** 内置流程没有源文件：能就地改的只有自己写的那几条 */
+const isBuiltin = computed(() => flows.value.find((f) => f.id === selectedId.value)?.active !== "authored");
+const builtinHint = computed(() =>
+	isBuiltin.value ? "内置流程没有可改的文件（实现在 lib/review-flow/flows/ 里），要改就先照它新建一份" : "",
+);
 const selectedProblem = computed(() => (dir.value === "" ? "" : "这条流程没有图：先看右边的问题"));
 
 const EDGE_KIND_LABEL = { next: "下一步", branch: "分支", error: "出错", timeout: "超时", empty: "拿不准" };

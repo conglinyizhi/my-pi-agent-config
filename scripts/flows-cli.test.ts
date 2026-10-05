@@ -159,3 +159,25 @@ describe("图上加节点（走命令行桥）", () => {
 	});
 });
 
+
+describe("内置流程不能就地改", () => {
+	it("加节点：说清楚它是内置的，不是文件丢了", () => {
+		const root = dir();
+		const result = run(["add-node", "bash-pre", "--node", "x", "--kind", "custom", "--dir", root]);
+		assert.notEqual(result.status, 0);
+		const error = JSON.parse(result.stdout).error;
+		assert.match(error, /内置流程/);
+		assert.equal(error.includes("没有这份流程文件"), false);
+	});
+
+	it("保存：不偷偷按保存把内置流程顶掉", () => {
+		const root = dir();
+		const content = join(root, "content.ts");
+		writeFileSync(content, 'export default (kit) => kit.flow({ id: "bash-pre", nodes: [kit.node("gate", { id: "g", next: "allow" })] });');
+		const result = run(["save", "bash-pre", "--file", content, "--dir", root]);
+		assert.notEqual(result.status, 0);
+		assert.match(JSON.parse(result.stdout).error, /内置流程/);
+		assert.equal(existsSync(join(root, "bash-pre.ts")), false);
+	});
+});
+
