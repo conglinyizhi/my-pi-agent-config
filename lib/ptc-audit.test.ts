@@ -94,7 +94,9 @@ describe("工具面（送审材料）", () => {
 		assert.ok(summary.includes("/etc/x"));
 		assert.ok(summary.includes('"ls"'));
 		assert.ok(summary.includes("看不清的地方"));
-		assert.ok(summary.includes("12:5"));
+		// 行号不摆：扫描那份文本与代码区显示那份不是同一份，摆出来会指错行
+		assert.equal(summary.includes("12:5"), false);
+		assert.ok(summary.includes("read 的参数里有非字面量"));
 	});
 
 	it("没给扫描结果时摘要为空（退回工具全集）", () => {

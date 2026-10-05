@@ -165,19 +165,9 @@ const title = computed(() =>
 // 「同文件改动合并」按提督说的删了：日常用不到，占地方
 
 /** 出问题的行号：静态扫描里"看不清"的条目以 `行:列` 开头，取出来给代码区行号栏标黄 */
-const issueLines = computed(() => {
-	const display = String(cmd.value ?? "").split("\n");
-	const lines = new Set();
-	for (const item of scriptEffects.value?.opaque ?? []) {
-		const match = /^\s*(\d+):/.exec(String(item));
-		if (!match) continue;
-		const no = Number(match[1]);
-		// 空行不标：行号对不上时第一个露馅的就是"标了个空白行"（踩过）
-		if (!display[no - 1]?.trim()) continue;
-		lines.add(no);
-	}
-	return [...lines];
-});
+// 代码区不再按扫描的行号标黄：扫描那份文本与显示那份不是同一份，标出来经常是错行
+// （踩过：标在空白行上）。等两边的行号口径统一了再打开。
+const issueLines = computed(() => []);
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写",

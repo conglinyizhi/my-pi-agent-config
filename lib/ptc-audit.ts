@@ -333,6 +333,11 @@ export function describeTools(tools: PtcToolInfo[], used?: string[]): string {
  * 光给行号没法定位——代码区是按重排后的文本渲染的，用户手里没有行号可数。
  * 行号按显示文本算（与 displayScan 同源），所以片段取 display 的第 N 行。
  */
+/** 去掉开头的 行:列 —— 保留原文其余部分 */
+function withoutPosition(item: string): string {
+	return item.replace(/^\s*\d+:\d+\s*/, "");
+}
+
 function snippetOf(item: string, display: string | undefined): string {
 	if (!display) return "";
 	const match = /^\s*(\d+):\d+\s/.exec(item);
@@ -353,7 +358,9 @@ export function scanSummary(scan: ScriptScan | undefined, display?: string): str
 	if (scan.commands.length > 0) lines.push(`命令字面量：${scan.commands.map((cmd) => JSON.stringify(cmd)).join("、")}`);
 	if (scan.opaque.length > 0) {
 		lines.push("看不清的地方（值由运行时决定，可能比上面列的多）：");
-		for (const item of scan.opaque) lines.push(`  ${item}${snippetOf(item, display)}`);
+		// 不带行号：扫描那份文本与代码区显示的那份不是同一份，行号摆在一起只会互相拆台
+		// （踩过：写着 37:7，用户看到的第 37 行是空的）。只留能对号入座的代码片段。
+		for (const item of scan.opaque) lines.push(`  ${withoutPosition(item)}${snippetOf(item, display)}`);
 	}
 	return lines.join("\n");
 }
