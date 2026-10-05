@@ -1,7 +1,6 @@
 ---
 name: gui-standards
 description: pi 扩展 GUI 开发规范——Electron 宿主 + windowName 路由 + 文件 JSON 协议；加窗口、接平台能力、开 devtools、出问题往哪查
-disable-model-invocation: true
 ---
 
 # GUI 开发规范（Electron）
