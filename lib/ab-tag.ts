@@ -11,13 +11,46 @@
 // 更新只有两条路：强制切，或攒满阈值自动切。
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 /** 攒到这个数就自动切 */
 export const PROMOTE_THRESHOLD = 5;
 
 /** 产品线：两条线坏起来的样子不一样（gui 看得见、audit 静默），所以类型上分开 */
 export type AbComponent = "gui" | "audit";
+export const AB_COMPONENTS: readonly AbComponent[] = ["gui", "audit"];
+
+/** 产物清单：换了 tag 就要跟着变，薄壳拿 ref+builtAt 当缓存令牌 */
+export interface BuildManifest {
+	/** 构建来源的 git ref（tag 名或 sha） */
+	ref?: string;
+	sha?: string;
+	/** 构建时工作区是否脏（脏的产物事后复现不出来） */
+	dirty?: boolean;
+	builtAt?: string;
+	/** 该组件的协议能力摘要 */
+	spec?: string;
+	protocol?: number;
+	windows?: string[];
+}
+
+/** 产线目录（去尾斜杠） */
+export function componentPath(runtimeRoot: string, component: AbComponent): string {
+	return `${String(runtimeRoot).replace(/\/+$/, "")}/${component}`;
+}
+
+export function formatManifest(manifest: BuildManifest): string {
+	return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/** 运行时根必须是个正经目录名：给到 / 或者空就当出错 */
+export function assertRuntimeRoot(root: string): string {
+	const resolved = resolve(root);
+	if (resolved === "/" || basename(resolved) === "") {
+		throw new Error(`运行时根不合法：${root}`);
+	}
+	return resolved;
+}
 
 export interface AbState {
 	/** 当前生效的 tag（短 sha） */

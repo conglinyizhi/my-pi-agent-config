@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { formatManifest, type SlotManifest, componentPath, slotPath, type AbComponent, type AbSlot } from "../lib/ab-slots.ts";
+import { componentPath, formatManifest, type AbComponent, type BuildManifest } from "../lib/ab-tag.ts";
 import { archivePathsOf, flattenShellsInSlot, planPack } from "../lib/ab-pack.ts";
 import { assertRuntimeRoot } from "../lib/ab-store.ts";
 
