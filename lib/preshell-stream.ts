@@ -33,6 +33,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { processSingleton } from "./process-singleton.ts";
 import {
 	DEFAULT_TIMEOUT_MS,
 	RECOMMENDED_VERSION,
@@ -94,7 +95,13 @@ const CLOSE_GRACE_MS = 500;
 // streamSupported 留着给「起进程之前先看一眼」的调用方（scripts/preshell-shadow.ts），
 // 它拿 --help 的文本探，代价是多一次 spawn。
 
-const streamSupportCache = new Map<string, boolean>();
+/**
+ * --stream 支持探测缓存。
+ *
+ * 跨实例共享（走 processSingleton）：A/B 更新之后，槽里那份 lib 与仓库那份会同时活着，
+ * 它们问的是同一批二进制，各记一份缓存既浪费也会让"探测过没"这件事对不上。
+ */
+const streamSupportCache = processSingleton<Map<string, boolean>>("preshell-stream-support", () => new Map());
 
 /** 测试用：清掉 --stream 支持探测缓存 */
 export function resetStreamSupportCache(): void {
@@ -119,13 +126,26 @@ export function streamSupported(bin: string, timeoutMs = DEFAULT_TIMEOUT_MS): bo
 
 // ── 子进程不许拖住宿主 ──
 
-const live = new Set<ChildProcess>();
-let exitHookInstalled = false;
+/**
+ * 在跑的子进程集合。
+ *
+ * **必须跨实例共享**：槽里那份与仓库那份各记一份的话，清场时会漏掉另一实例启的进程，
+ * 留下一堆没人喂 stdin 的孤儿。这正是 A/B 更新（两份 lib 同时活着）暴露出来的真问题。
+ */
+const live = processSingleton<Set<ChildProcess>>("preshell-stream-live", () => new Set());
+
+/** 退出钩子的安装状态：同样跨实例，避免两份 lib 各装一遍 */
+const exitHook = processSingleton<{ installed: boolean }>("preshell-stream-exit-hook", () => ({ installed: false }));
+
+/** 仅供测试：当前在册的子进程集合（跨实例应当是同一个对象） */
+export function liveChildren(): Set<ChildProcess> {
+	return live;
+}
 
 /** 宿主进程走了就把子进程带走：不然会留下一堆没人喂 stdin 的孤儿 */
 function installExitHook(): void {
-	if (exitHookInstalled) return;
-	exitHookInstalled = true;
+	if (exitHook.installed) return;
+	exitHook.installed = true;
 	process.once("exit", () => {
 		for (const child of live) {
 			try {

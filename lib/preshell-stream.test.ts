@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
 	openPreshellStream,
+	liveChildren,
 	resetStreamSupportCache,
 	streamSupported,
 	type PreshellStream,
@@ -380,3 +381,12 @@ describe("preshell-stream：能力与契约探测", () => {
 		await client.close();
 	});
 });
+
+describe("两份 lib 同时活着（A/B 更新之后会真的同时存在）", () => {
+	it("在跑的子进程集合跨实例是同一份：清场不会漏掉另一实例启的进程", async () => {
+		// 同一个文件用不同查询串再 import 一次 = 第二个模块实例（换槽时的真实情形）
+		const second = (await import("./preshell-stream.ts?dup=1")) as typeof import("./preshell-stream.ts");
+		assert.equal(liveChildren(), second.liveChildren(), "两实例必须操作同一个集合");
+	});
+});
+
