@@ -199,3 +199,73 @@ export async function editEdgeInSource(request: EdgeEditRequest): Promise<EdgeEd
 	}
 	return { ok: true, source: out, changed: true };
 }
+
+export interface EdgeRemoveRequest {
+	source: string;
+	nodeId: string;
+	kind: EdgeEditRequest["kind"];
+	/** kind=branch 时删哪个出口 */
+	label?: string;
+	fileName?: string;
+}
+
+/**
+ * 删一条边。属性独占一行就整行删掉，写在行内就只摘掉它和附带的那一个逗号。
+ * 找不到就 changed:false——删一条本来就没有的边不算错。
+ */
+export async function removeEdgeInSource(request: EdgeRemoveRequest): Promise<EdgeEditResult> {
+	const ts = await typescript();
+	const fileName = request.fileName ?? "flow.ts";
+	const sf = ts.createSourceFile(fileName, request.source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+	const target = findNodeTarget(ts, sf, request.nodeId);
+	if (!target) return { ok: false, error: `找不到节点 ${request.nodeId}` };
+	if (target.kind === "options-not-literal") return { ok: false, error: `${request.nodeId} 的选项不是字面量，改不了` };
+	const object = target.kind === "object" ? target.object : undefined;
+	if (!object) return { ok: false, error: `${request.nodeId} 还没写选项，没有边可删` };
+
+	let range: TS.Node | undefined;
+	if (request.kind === "branch") {
+		const branches = propertyOf(ts, object, "branches");
+		const branchesValue = branches?.initializer;
+		if (!branchesValue || !ts.isObjectLiteralExpression(branchesValue)) {
+			return { ok: true, changed: false };
+		}
+		const label = request.label ?? "";
+		range = branchesValue.properties.find((prop) => {
+			if (!ts.isPropertyAssignment(prop)) return false;
+			const name = prop.name;
+			const key = ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
+			return key === label;
+		});
+	} else {
+		range = propertyOf(ts, object, FIELD_OF[request.kind]);
+	}
+	if (!range) return { ok: true, changed: false, source: request.source };
+
+	const start = range.getStart(sf);
+	const end = range.getEnd();
+	const lineStart = sf.text.lastIndexOf("\n", start) + 1;
+	const lineEnd = sf.text.indexOf("\n", end);
+	const beforeOnLine = sf.text.slice(lineStart, start);
+	const afterOnLine = lineEnd < 0 ? sf.text.slice(end) : sf.text.slice(end, lineEnd);
+	let cutStart = start;
+	let cutEnd = end;
+	if (/^[ \t]*$/.test(beforeOnLine) && /^[ \t]*,?[ \t]*$/.test(afterOnLine) && lineEnd >= 0) {
+		// 独行：连这一行的缩进和换行一起删
+		cutStart = lineStart;
+		cutEnd = lineEnd + 1;
+	} else {
+		const after = sf.text.slice(end);
+		const comma = /^[ \t]*,/.exec(after);
+		if (comma) {
+			cutEnd = end + comma[0].length;
+		} else {
+			const beforeText = sf.text.slice(0, start);
+			const prevComma = /,[ \t]*$/.exec(beforeText);
+			if (prevComma) cutStart = start - prevComma[0].length;
+		}
+	}
+	const source = request.source.slice(0, cutStart) + request.source.slice(cutEnd);
+	return { ok: true, changed: true, source };
+}
+

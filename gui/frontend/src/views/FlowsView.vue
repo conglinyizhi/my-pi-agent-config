@@ -98,6 +98,7 @@
 					<select v-model="edgeDialog.to" data-name="edge-target">
 						<option v-for="target in edgeDialog.candidates" :key="target" :value="target">{{ target }}</option>
 					</select>
+					<button data-name="edge-remove" :disabled="edgeSaving" title="断开这条边（先断再连）" @click="removeEdge">断开</button>
 					<button data-name="edge-apply" :disabled="edgeSaving || edgeDialog.to === edgeDialog.from" @click="applyEdge">
 						{{ edgeSaving ? "保存中…" : "应用" }}
 					</button>
@@ -273,6 +274,33 @@ async function onConnect(connection) {
 	const payload = await platform.flows.list();
 	flows.value = payload?.flows ?? flows.value;
 	await select(selectedId.value);
+}
+
+/** 断开：删掉这个出口。断开后新目标可以回图上拉线去连 */
+async function removeEdge() {
+	const dialog = edgeDialog.value;
+	if (!dialog || !selectedId.value) return;
+	edgeSaving.value = true;
+	edgeMsg.value = "";
+	try {
+		const result = await platform.flows.removeEdge({
+			id: selectedId.value,
+			nodeId: dialog.nodeId,
+			kind: dialog.kind,
+			...(dialog.label ? { label: dialog.label } : {}),
+		});
+		if (!result?.ok) {
+			edgeBad.value = true;
+			edgeMsg.value = result?.error ?? "断不开";
+			return;
+		}
+		edgeDialog.value = null;
+		const payload = await platform.flows.list();
+		flows.value = payload?.flows ?? flows.value;
+		await select(selectedId.value);
+	} finally {
+		edgeSaving.value = false;
+	}
 }
 
 async function applyEdge() {

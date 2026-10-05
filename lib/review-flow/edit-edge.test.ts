@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { editEdgeInSource } from "./edit-edge.ts";
+import { editEdgeInSource, removeEdgeInSource } from "./edit-edge.ts";
 import { loadFlowFile } from "./load.ts";
 import { validateFlow } from "./validate.ts";
 
@@ -100,3 +100,38 @@ describe("图上改边", () => {
 		assert.match(result.error ?? "", /找不到节点/);
 	});
 });
+
+describe("删一条边", () => {
+	it("删掉独行的 next：整行一起走，不留空行", async () => {
+		const source = [
+			"export default (kit) => kit.flow({",
+			'\tid: "f",',
+			"\tnodes: [",
+			'\t\tkit.node("chatreview", { id: "chat", next: "gate" }),',
+			"\t],",
+			"});",
+		].join("\n");
+		const result = await removeEdgeInSource({ source, nodeId: "chat", kind: "next" });
+		assert.equal(result.ok, true, result.error);
+		assert.equal(result.changed, true);
+		assert.equal((result.source ?? "").includes("next"), false);
+		assert.match(result.source ?? "", /kit\.node\("chatreview", \{ id: "chat" \}\),/);
+	});
+
+	it("删分支里的一个出口，别的留着", async () => {
+		const source = 'export default (kit) => kit.flow({ id: "f", nodes: [kit.custom("c", async () => ({}), { branches: { yes: "a", no: "b" } })] });';
+		const result = await removeEdgeInSource({ source, nodeId: "c", kind: "branch", label: "yes" });
+		assert.equal(result.ok, true, result.error);
+		assert.match(result.source ?? "", /no: "b"/);
+		assert.equal((result.source ?? "").includes("yes"), false);
+	});
+
+	it("本来就没有这条边：不动，也不算错", async () => {
+		const source = 'export default (kit) => kit.flow({ id: "f", nodes: [kit.node("gate", { id: "g" })] });';
+		const result = await removeEdgeInSource({ source, nodeId: "g", kind: "next" });
+		assert.equal(result.ok, true);
+		assert.equal(result.changed, false);
+		assert.equal(result.source, source);
+	});
+});
+

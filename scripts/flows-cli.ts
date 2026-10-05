@@ -47,7 +47,7 @@ function parseArgs(argv: string[]): { command: string; id?: string; options: Opt
 		if (arg === "--connect") { options.connect = argv[++index]; continue; }
 		if (arg === "--json") { options.json = true; continue; }
 		if (command === "") { command = arg; continue; }
-		if (id === undefined && (command === "get" || command === "save" || command === "edit-edge" || command === "add-node")) { id = arg; continue; }
+		if (id === undefined && ["get", "save", "edit-edge", "remove-edge", "add-node"].includes(command)) { id = arg; continue; }
 	}
 	return { command, ...(id ? { id } : {}), options };
 }
@@ -184,6 +184,11 @@ async function handleRequest(cmd: string, patch: Record<string, unknown> | undef
 		if (!id) return { ok: false, error: "add-node 需要 id" };
 		return addNodePayload(dir, id, patch ?? {});
 	}
+	if (cmd === "remove-edge") {
+		const id = typeof patch?.id === "string" ? patch.id : undefined;
+		if (!id) return { ok: false, error: "remove-edge 需要 id" };
+		return removeEdgePayload(dir, id, patch ?? {});
+	}
 	if (cmd === "edit-edge") {
 		const id = typeof patch?.id === "string" ? patch.id : undefined;
 		if (!id) return { ok: false, error: "edit-edge 需要 id" };
@@ -244,6 +249,16 @@ async function main(): Promise<void> {
 	if (command === "serve") { serveStdio(options.dir); return; }
 	if (command === "list") { process.stdout.write(JSON.stringify(await listPayload(options.dir), null, 1) + "\n"); return; }
 	if (command === "get" && id) { process.stdout.write(JSON.stringify(await getPayload(options.dir, id), null, 1) + "\n"); return; }
+	if (command === "remove-edge" && id) {
+		const result = await removeEdgePayload(options.dir, id, {
+			nodeId: options.node ?? "",
+			kind: options.kind ?? "next",
+			...(options.label ? { label: options.label } : {}),
+		});
+		process.stdout.write(JSON.stringify(result, null, 1) + "\n");
+		if (!result.ok) process.exitCode = 1;
+		return;
+	}
 	if (command === "add-node" && id) {
 		const result = await addNodePayload(options.dir, id, {
 			nodeId: options.node ?? "",
