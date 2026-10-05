@@ -67,6 +67,39 @@ Wails 那一套（Go 宿主、旧二进制、当时的规范）已归档：`arch
 - 受限环境（容器 / 沙箱）里 Chromium 需要 `/dev/shm`，起不来时报 "Failed to move to new namespace"，
   这种场合加 `PI_GUI_ELECTRON_ARGS=--no-sandbox`（正常桌面会话不需要）
 
+## 协议自报（加窗口或加字段时必须同步）
+
+`gui/electron/init-data.js` 里有三样东西是给外面看的契约：
+
+- `WINDOW_CONFIGS`：窗口清单（标题、默认尺寸）
+- `SUPPORTED_FEATURES`：这个构建**真的会渲染**的请求字段（`scriptEffects` / `editCalls` / `mergedChanges` …）
+- `PROTOCOL_VERSION`：只在破坏性字段变更时 +1
+
+自报的入口是 `bin/gui.sh --spec`（用 node 问 init-data.js，**不拉 Electron**），
+pi 侧靠它探测能力、缺能力就降级，**不比对版本号**（比对版本号会让它自己变成新的单点）。
+所以：加了窗口就进 `WINDOW_CONFIGS`，加了会被渲染的字段就进 `SUPPORTED_FEATURES`，
+否则 pi 会认为这套 GUI 不认那个字段而走降级路径。
+
+## A/B 更新（GUI 是可切换的组件）
+
+GUI 与审核链各有一套四槽（stable / previous / dev / head），命令入口是 Makefile：
+
+```sh
+make ab-status                       # 两个组件现在各跑哪一版
+make ab-pack COMPONENT=gui          # 从 HEAD 构建 GUI 到 dev 槽（前端产物取自当前工作区）
+make ab-switch COMPONENT=gui SLOT=dev
+make gui-canary                     # 起一个合成闸门窗，看它到底能不能起来
+make ab-rollback COMPONENT=gui      # 应急回退（纯 shell，Electron 起不来也能用）
+make ab-detach COMPONENT=gui        # 摘掉 current：回到仓库版本（开发时最常用）
+```
+
+改动 GUI 之后要知道的三件事：
+
+1. **换槽即生效**（GUI 不同于审核链，不需要 reload）：窗口每次启动读 `current` 软链
+2. **崩溃现场**在 `~/.pi/runtime/gui/crash/<时间戳>/`：`request.json` + `stderr.txt` + `scene.json`，
+   只留最近十份。「起不来但没有转储」先看启动器路径在不在，而不是怀疑 Electron
+3. **自检不进晋升连胜**：`make gui-canary` 成功只清连续失败，失败才累进看门狗（到门槛自动回退）
+
 ## 构建与验证
 
 - 前端：`cd gui/frontend && node_modules/.bin/vite build`。产物用 `file://` 直接加载，
@@ -74,6 +107,7 @@ Wails 那一套（Go 宿主、旧二进制、当时的规范）已归档：`arch
 - 前端纯逻辑：`node --test src/domain/**/*.test.js`、`node --test src/platform/electron.test.js`
 - 宿主字段映射：`node --test gui/electron/init-data.test.mjs`
 - 端到端：`scripts/gui-fasttest.ts`（拉起窗口并断言渲染就绪）
+- 只验"能不能起来"：`make gui-canary`（起一个合成闸门窗、判定后自动关掉；比全窗口快得多）
 
 ## 约定
 
@@ -83,7 +117,10 @@ Wails 那一套（Go 宿主、旧二进制、当时的规范）已归档：`arch
 
 ## 出问题先看哪里
 
-1. 起不来：`guiBinaryCandidates()` 的两个候选位有没有可执行的 `bin/gui`；PATH 里有没有 `electron`
+0. **先跑 `make gui-canary`**：它直接回答"窗到底起不起得来"，比逐个窗口试快
+1. 起不来：`guiBinaryCandidates()` 的两个候选位有没有可执行的 `bin/gui.sh`（仓里还留着一个
+   指向它的兼容软链 `bin/gui`，给写死旧名字的地方用）；PATH 里有没有 `electron`
 2. 白屏：`gui/frontend/dist/index.html` 是否构建过
 3. 起得来但没反应：devtools 里看 `pi-gui:*` 的 IPC 有没有报错
 4. 回退终端审批的原因与修复步骤：`lib/gui-diagnosis.ts` 会按真实缺项给命令（不看模板）
+5. 症状与止血命令的速查：`docs/ab-update-firstaid.md`（含"没有转储的那种起不来"）
