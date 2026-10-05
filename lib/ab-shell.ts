@@ -9,7 +9,8 @@
 // 换了软链还是旧模块；必须把随槽变化的令牌拼进查询串，换槽才真的换实现。
 
 import { existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { activeDir, readManifestOf, tokenOf } from "./ab-tag.ts";
 import { pathToFileURL } from "node:url";
 import { componentInitialized, currentSlot, readManifest } from "./ab-store.ts";
 import { slotPath, slotToken, type AbComponent } from "./ab-slots.ts";
@@ -71,11 +72,16 @@ export async function loadSlotExtension<T>(
 	if (!componentInitialized(runtimeRoot, component)) {
 		return await fallback("这个组件的运行时目录还没初始化");
 	}
-	const active = currentSlot(runtimeRoot, component);
-	if (!active) {
-		return await fallback("current 软链没设置或指不到有效槽");
+	// 新模型：一条产品线一个 tag，生效的是 tag/dir 指的那份。
+	// 旧四槽（current 软链）在新状态没立起来时兜底，第 3 批删掉。
+	const dir = activeDir(join(runtimeRoot, component));
+	const legacySlot = dir === "" ? currentSlot(runtimeRoot, component) : undefined;
+	const active = dir ? basename(dir) : legacySlot ? String(legacySlot) : "";
+	const activePath = dir || (legacySlot ? slotPath(runtimeRoot, component, legacySlot) : "");
+	if (!activePath) {
+		return await fallback("既没有 tag 状态，也没有可用的 current 软链");
 	}
-	const slotFile = join(slotPath(runtimeRoot, component, active), "extensions", options.extension, "index.ts");
+	const slotFile = join(activePath, "extensions", options.extension, "index.ts");
 	if (!existsSync(slotFile)) {
 		return await fallback(`槽 ${active} 里没有 extensions/${options.extension}/index.ts`);
 	}
@@ -90,7 +96,7 @@ export async function loadSlotExtension<T>(
 		}
 	}
 
-	const token = slotToken(readManifest(runtimeRoot, component, active));
+	const token = tokenOf(readManifestOf(activePath), active);
 	const url = `${pathToFileURL(slotFile).href}?slot=${token}`;
 	try {
 		const loaded = (await import(url)) as T;

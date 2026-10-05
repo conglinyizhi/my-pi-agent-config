@@ -22,12 +22,24 @@ agent_dir=$(cd "$(dirname "$0")/.." && pwd)
 gui_root=${PI_RUNTIME_ROOT:-$HOME/.pi/runtime}/gui
 gui_entry=$agent_dir/gui/electron/main.js
 gui_init=$agent_dir/gui/electron/init-data.js
-if [ -e "$gui_root/current" ]; then
+# 新模型优先：一条产品线一个 tag，生效的是 tag/dir 指的那份
+gui_dir=""
+if [ -s "$gui_root/tag" ] && [ -s "$gui_root/dir" ]; then
+  sub=$(head -1 "$gui_root/dir")
+  if [ -n "$sub" ] && [ -f "$gui_root/$sub/gui/electron/main.js" ]; then
+    gui_dir="$gui_root/$sub"
+  fi
+fi
+# 旧四槽（current 软链）兜底，第 3 批删
+if [ -z "$gui_dir" ] && [ -e "$gui_root/current" ]; then
   slot=$(readlink -f "$gui_root/current" 2>/dev/null || true)
   if [ -n "$slot" ] && [ -f "$slot/gui/electron/main.js" ]; then
-    gui_entry=$slot/gui/electron/main.js
-    gui_init=$slot/gui/electron/init-data.js
+    gui_dir="$slot"
   fi
+fi
+if [ -n "$gui_dir" ]; then
+  gui_entry=$gui_dir/gui/electron/main.js
+  gui_init=$gui_dir/gui/electron/init-data.js
 fi
 
 # --spec：自报能力（协议版本 / 窗口清单 / 认得哪些字段）。

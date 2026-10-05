@@ -109,6 +109,29 @@ export function bumpClean(root: string, threshold = PROMOTE_THRESHOLD): { count:
 	return { count: next, promote: next >= threshold };
 }
 
+/** 生效产物所在目录（绝对路径）；状态没立起来就给空串，调用方自己回退 */
+export function activeDir(root: string): string {
+	const state = stateOf(root);
+	if (state.tag === "" || state.dir === "") return "";
+	return join(root, state.dir);
+}
+
+/** 读某份产物的 manifest；读不到给 undefined */
+export function readManifestOf(dir: string): Record<string, unknown> | undefined {
+	try {
+		return JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+/** 换版缓存令牌：sha + builtAt；缺了就用目录名兜底 */
+export function tokenOf(manifest: Record<string, unknown> | undefined, fallback: string): string {
+	const sha = typeof manifest?.sha === "string" ? manifest.sha : fallback;
+	const builtAt = typeof manifest?.builtAt === "string" ? manifest.builtAt : "";
+	return `${sha}@${builtAt}`;
+}
+
 export function appendLog(root: string, entry: PromoteEvent): void {
 	mkdirSync(root, { recursive: true });
 	const line = JSON.stringify({ at: new Date().toISOString(), ...entry });
