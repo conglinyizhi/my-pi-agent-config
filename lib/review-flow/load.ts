@@ -33,6 +33,42 @@ export function flowsDir(explicit?: string): string {
 	return explicit ?? process.env.PI_REVIEW_FLOWS_DIR ?? join(homedir(), ".pi", "agent", "review-flows");
 }
 
+/** kit 扩展的文件名：作者自己的 SDK 从这儿进来 */
+export const KIT_FILE = "kit.ts";
+
+/**
+ * 装载作者自己的 SDK，并挂到 kit 上交给流程用。
+ *
+ * 这个文件**不受流程的越界检查约束**：它是宿主侧的代码（你自己写、你自己信），
+ * 而流程是单文件的判定脚本。分界线在这里：能力从 kit 进来，流程只管判定。
+ *
+ * 形状：export default (kit) => ({ ...kit, my: { ... } })
+ */
+export async function loadKitExtra(dir = flowsDir()): Promise<{ kit: ReturnType<typeof createKit>; source?: string }> {
+	const path = join(dir, KIT_FILE);
+	if (!existsSync(path)) return { kit: createKit() };
+	try {
+		const url = `${pathToFileURL(path).href}?v=${Date.now()}`;
+		const mod = (await import(url)) as { default?: unknown };
+		if (typeof mod.default !== "function") return { kit: createKit(), source: path };
+		const base = createKit();
+		const extended = (mod.default as (kit: unknown) => unknown)(base);
+		if (!extended || typeof extended !== "object") return { kit: base, source: path };
+		return { kit: extended as ReturnType<typeof createKit>, source: path };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		appendCrashReport({
+			at: new Date().toISOString(),
+			component: "audit",
+			stage: "加载审核流程",
+			summary: `kit 扩展没加载上，流程只能用内置节点：${message}`,
+			module: path,
+			hint: `改好 ${path} 后 /reload；不影响内置节点`,
+		});
+		return { kit: createKit(), source: path };
+	}
+}
+
 /** 目录里有哪些流程文件（文件名去掉扩展名就是流程 id） */
 export function listFlowFiles(dir: string): Array<{ id: string; path: string }> {
 	if (!existsSync(dir)) return [];
@@ -40,14 +76,19 @@ export function listFlowFiles(dir: string): Array<{ id: string; path: string }> 
 	for (const name of readdirSync(dir)) {
 		if (!/\.(ts|js|mts|mjs)$/.test(name)) continue;
 		if (name.startsWith("_") || name.endsWith(".d.ts")) continue;
+		// kit.ts 是"sdk 注入"那个文件，不是流程
+		if (name === KIT_FILE) continue;
 		out.push({ id: name.replace(/\.(ts|js|mts|mjs)$/, ""), path: join(dir, name) });
 	}
 	return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** 把作者给的默认导出收成 { flow, nodes } */
-export function normalizeExport(exported: unknown): { flow: Flow; nodes: Record<string, NodeImpl> } | { error: string } {
-	const value = typeof exported === "function" ? (exported as (kit: unknown) => unknown)(createKit()) : exported;
+export function normalizeExport(
+	exported: unknown,
+	kit: unknown = createKit(),
+): { flow: Flow; nodes: Record<string, NodeImpl> } | { error: string } {
+	const value = typeof exported === "function" ? (exported as (kit: unknown) => unknown)(kit) : exported;
 	if (!value || typeof value !== "object") return { error: "默认导出既不是函数也不是对象" };
 	const record = value as { flow?: unknown; nodes?: unknown };
 	if (!record.flow || typeof record.flow !== "object") return { error: "没有 flow 字段（用 kit.flow({...}) 收口）" };
@@ -58,7 +99,11 @@ export function normalizeExport(exported: unknown): { flow: Flow; nodes: Record<
 }
 
 /** 加载一个流程文件；任何问题都返回 error，不抛 */
-export async function loadFlowFile(id: string, path: string): Promise<LoadedFlow | { error: string; id: string; source: string }> {
+export async function loadFlowFile(
+	id: string,
+	path: string,
+	kit?: unknown,
+): Promise<LoadedFlow | { error: string; id: string; source: string }> {
 	try {
 		// 先看源码，再决定要不要执行它：越界的文件根本不会被 import 进来
 		const source = readFileSync(path, "utf8");
@@ -70,7 +115,7 @@ export async function loadFlowFile(id: string, path: string): Promise<LoadedFlow
 		// 带令牌是防缓存：同一个路径改完再加载要拿到新的那份。
 		const url = `${pathToFileURL(path).href}?v=${Date.now()}`;
 		const mod = (await import(url)) as { default?: unknown };
-		const normalized = normalizeExport(mod.default);
+		const normalized = normalizeExport(mod.default, kit);
 		if ("error" in normalized) return { error: normalized.error, id, source: path };
 		const problems = validateFlow(normalized.flow);
 		if (problems.length > 0) return { error: describeProblems(normalized.flow.id, problems), id, source: path };
@@ -106,8 +151,10 @@ export function resetFlowCache(): void {
 export async function loadFlows(dir = flowsDir()): Promise<{ flows: Map<string, LoadedFlow>; problems: Array<{ id: string; source: string; error: string }> }> {
 	const flows = new Map<string, LoadedFlow>();
 	const problems: Array<{ id: string; source: string; error: string }> = [];
+	// 先装作者的 SDK（kit 扩展），流程拿到的是扩展后的那一份
+	const { kit } = await loadKitExtra(dir);
 	for (const { id, path } of listFlowFiles(dir)) {
-		const loaded = await loadFlowFile(id, path);
+		const loaded = await loadFlowFile(id, path, kit);
 		if ("error" in loaded) {
 			problems.push({ id, source: path, error: loaded.error });
 			appendCrashReport({

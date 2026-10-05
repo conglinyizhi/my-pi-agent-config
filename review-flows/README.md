@@ -90,3 +90,42 @@ type-only 会被整段擦掉，运行期没有任何耦合，编辑器照样有�
 以及把"越界"变成一句明话：*流程只做判定；要碰原生接口，就别写成流程*。
 
 真要跑别人的流程，得靠隔离（worker + Node 的 permission model），那是另一件事。
+
+## 用你自己的 SDK
+
+流程本身是单文件（不能 import 别的东西），所以**你自己的代码从宿主侧注入**。放一个
+`review-flows/kit.ts`：
+
+```ts
+export default (kit) => ({
+	...kit,
+	my: {
+		decide: (command) => (String(command).startsWith("rm") ? "deny" : "allow"),
+		askMyModel: async (text) => myClient.judge(text),   // 网络调用也行：它是宿主侧代码
+	},
+});
+```
+
+流程里就用 `kit.my`：
+
+```ts
+export default (kit: MyKit) => kit.flow({
+	id: "bash-pre",
+	nodes: [
+		kit.custom("judge", async (ctx) => {
+			const verdict = kit.my.decide(String(ctx.input.command));
+			return { status: "ok", terminal: verdict, verdict };
+		}),
+	],
+});
+```
+
+三条要点：
+
+- **`kit.ts` 不受流程那条越界检查的约束**：它是你自己写、你自己信的宿主侧代码，想 import 什么
+  都行（包括原生模块、你的私库、npm 包）。分界线在这里：**能力从 kit 进来，流程只管判定**
+- 类型提示：流程里写 `import type { MyKit } from "./kit.ts"`（type-only，允许），自己定义
+  `type MyKit = ReviewKit & { my: { … } }`
+- `kit.ts` 加载失败 → 只用内置节点 + 一条崩溃报告，不影响内置流程
+
+要给别人用、或者要权限边界的东西，写成 **pi 扩展**（那边有真正的加载器与生命周期）。
