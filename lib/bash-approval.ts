@@ -133,7 +133,11 @@ function bashAuditPayload(record: BashAuditRecord, outcome: "approved" | "denied
 	};
 }
 
-async function humanConfirm(
+/**
+ * 问人这一步。导出给审核流 SDK：流程里的 gate 节点就是它，
+ * 省得把请求怎么构造再抄一份（抄了就会漂）。
+ */
+export async function humanConfirm(
 	ctx: ExtensionContext,
 	context: ApprovalRequestContext,
 	deps: BashApprovalDependencies,

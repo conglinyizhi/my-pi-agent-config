@@ -539,7 +539,7 @@ export async function reviewCommand(
 }
 
 /** 从会话里取用户最近一条请求（拿不到就是 undefined，审核侧自行降级） */
-function sessionUserRequest(ctx: ExtensionContext): string | undefined {
+export function sessionUserRequest(ctx: ExtensionContext): string | undefined {
 	try {
 		const entries = ctx.sessionManager?.getEntries?.() ?? [];
 		return lastUserRequest(entries as never);
@@ -692,8 +692,13 @@ export function buildClassifierReviewInput(args: {
 	};
 }
 
-/** 跑分类器那一路（chain 与 classifier 共用） */
-async function runClassifierReview(
+/**
+ * 跑分类器那一路（chain 与 classifier 共用）。
+ *
+ * 导出给审核流 SDK：chain 的真实语义是"chat 先给意见、分类器拿它当参考做判决"，
+ * 所以流程里的 classifier 节点必须能把 advisor 传下去，不能只调 backend=classifier 那条。
+ */
+export async function runClassifierReview(
 	ctx: ExtensionContext,
 	command: string,
 	rules: TokenRule[],
