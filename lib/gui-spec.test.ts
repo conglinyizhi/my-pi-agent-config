@@ -2,7 +2,10 @@
 // 跑法：node --test --experimental-strip-types lib/gui-spec.test.ts
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { compareSpecs, parseSpecOutput, specFromManifest, EXPECTED_PROTOCOL, REQUIRED_WINDOWS } from "./gui-spec.ts";
 
 const GOOD = { protocol: EXPECTED_PROTOCOL, windows: ["gate", "review", "editor"], features: ["scriptEffects", "editCalls"] };
@@ -64,3 +67,17 @@ describe("从 manifest 读", () => {
 		assert.equal(specFromManifest(undefined), undefined);
 	});
 });
+
+describe("bin/gui --spec 的端到端", () => {
+	it("启动器直接吐一行可解析的 spec（不拉 Electron，所以无需图形环境）", () => {
+		const repo = dirname(dirname(fileURLToPath(import.meta.url))); // lib/ 的上两级就是仓根
+		const run = spawnSync(join(repo, "bin", "gui"), ["--spec"], { encoding: "utf8", timeout: 20_000 });
+		assert.equal(run.status, 0, run.stderr);
+		const spec = parseSpecOutput(run.stdout ?? "");
+		assert.ok(spec, "输出里应该有一行可解析的 spec");
+		assert.equal(spec?.protocol, EXPECTED_PROTOCOL);
+		assert.ok(spec?.windows.includes("gate"));
+		assert.deepEqual(compareSpecs(spec).notices, [], "这个 GUI 该是兼容的");
+	});
+});
+

@@ -15,6 +15,13 @@
 set -e
 
 agent_dir=$(cd "$(dirname "$0")/.." && pwd)
+
+# --spec：自报能力（协议版本 / 窗口清单 / 认得哪些字段）。
+# 刻意不拉起 Electron：只是为了问 init-data.js 一句话，起 Electron 又慢又多一条崩溃路径。
+if [ "${1:-}" = "--spec" ]; then
+  exec node --input-type=module -e "import('$agent_dir/gui/electron/init-data.js').then((m) => console.log(JSON.stringify(m.buildSpec())))"
+fi
+
 electron_bin=${PI_GUI_ELECTRON:-electron}
 
 # app_id 与 gui/pi-gui.desktop 同名，图标才认得出来（KDE Wayland 按 app_id 找 desktop 文件）
