@@ -172,3 +172,16 @@ describe("displayPath", () => {
 		assert.equal(displayPath("/etc/hosts"), "/etc/hosts");
 	});
 });
+import { frontendDistCandidates } from "./gui-diagnosis.ts";
+
+describe("开窗前置：前端产物在哪找", () => {
+	it("审核侧扩展装进槽里时，也认仓库与 gui 组件槽两处产物", () => {
+		const candidates = frontendDistCandidates("/home/u", "/home/u/.pi/runtime/audit/dev");
+		assert.deepEqual(candidates, [
+			"/home/u/.pi/runtime/audit/dev/gui/frontend/dist/index.html",
+			"/home/u/.pi/agent/gui/frontend/dist/index.html",
+			"/home/u/.pi/runtime/gui/current/gui/frontend/dist/index.html",
+		]);
+	});
+});
+

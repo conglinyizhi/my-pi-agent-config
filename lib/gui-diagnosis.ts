@@ -122,6 +122,26 @@ function hubUnitActive(): boolean | null {
 	}
 }
 
+/**
+ * 前端产物可能在几处，逐个看：
+ *   1. 扩展自己那棵树里的 gui/frontend/dist（在仓库里跑时就是它）
+ *   2. 仓库的固定位置——审核侧扩展被装进 audit 槽后，槽里**不带 gui/**，
+ *      这时候 REPO_ROOT 指的是槽，光看第一条会把"装好了"误判成"没建前端"
+ *   3. 装好的 gui 组件槽（A/B 的 current 软链）
+ */
+export function frontendDistCandidates(home: string, repoRoot: string): string[] {
+	const suffix = path.join("gui", "frontend", "dist", "index.html");
+	return [
+		path.join(repoRoot, suffix),
+		path.join(home, ".pi", "agent", suffix),
+		path.join(home, ".pi", "runtime", "gui", "current", suffix),
+	];
+}
+
+function hasFrontendDist(): boolean {
+	return frontendDistCandidates(os.homedir(), REPO_ROOT).some((p) => fileExists(p));
+}
+
 /** electron 在不在：优先看 PI_GUI_ELECTRON 指的路径，其次 PATH */
 function hasElectron(): boolean {
 	const override = process.env.PI_GUI_ELECTRON;
@@ -156,7 +176,7 @@ export function collectGuiDiagnosis(checkCommands = true): GuiDiagnosis {
 		hasHubSocket: fs.existsSync(path.join(os.homedir(), ".pi", "agent", "run", "hub.sock")),
 		hubUnitActive: checkCommands ? hubUnitActive() : null,
 		hasElectron: hasElectron(),
-		hasFrontendDist: fileExists(path.join(REPO_ROOT, "gui", "frontend", "dist", "index.html")),
+		hasFrontendDist: hasFrontendDist(),
 		hasDisplayEnv: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
 	};
 }
@@ -167,7 +187,7 @@ export function guiFallbackReasonText(reason: GuiFallbackReason, d: GuiDiagnosis
 		case "no-binary":
 			return "没找到 GUI 启动器（bin/gui.sh），图形审批窗起不来";
 		case "spawn-failed":
-			return "bin/gui.sh 在，但进程起不来（没装 electron，或脚本不可执行）";
+			return "bin/gui.sh 在，但开窗前置没齐：没装 electron、前端产物还没构建，或者当前会话没有显示环境";
 		case "timeout":
 			return "图形窗没有在时限内给出结果（窗口没显示或卡住了）";
 		case "exited":

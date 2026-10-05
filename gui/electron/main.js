@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
 import { buildEditorCommand, detectEditors } from "./editor-open.js";
+import { resolveCliPath } from "./cli-path.js";
 import { createServeBridge } from "./serve-bridge.js";
 import { readStatusSnapshot } from "./status-file.js";
 
@@ -26,9 +27,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** 前端产物：gui/frontend（Vue 工程，与引擎无关；两个引擎共用一份 dist） */
 const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 /** 审核设置的 JSON 桥（主进程是纯 JS，读不了 .ts，也绝不在主进程重写 TOML 逻辑） */
-const REVIEW_CLI = resolve(HERE, "..", "..", "scripts", "review-settings-cli.ts");
+const REVIEW_CLI = resolveCliPath("review-settings-cli.ts", { here: HERE });
 /** 审核流程的 JSON 桥（数据层：图、体检、存盘） */
-const FLOWS_CLI = resolve(HERE, "..", "..", "scripts", "flows-cli.ts");
+const FLOWS_CLI = resolveCliPath("flows-cli.ts", { here: HERE });
 // subagent 状态快照的取数在 status-file.js（纯模块、有单测）：多会话并存时，
 // 看板窗读的必须是它自己被指定的那份快照，不是全局那一份。
 
