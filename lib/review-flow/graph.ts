@@ -26,6 +26,8 @@ export interface GraphNode {
 	outputs: Array<{ label: string; to: string }>;
 	/** 终端的决定 */
 	terminal?: Terminal;
+	/** 自己给决定的节点（terminal / gate / custom）：图上画成虚线出口，不画具体边 */
+	givesOwnDecision?: boolean;
 	settings?: Record<string, unknown>;
 }
 
@@ -111,6 +113,7 @@ export function graphOf(flow: Flow): FlowGraph {
 			lane,
 			inputs: [...(node.after ?? [])],
 			outputs: edgesOutOf(node).map((edge) => ({ label: edge.label, to: edge.to })),
+			...(node.kind === "terminal" || node.kind === "gate" || node.kind === "custom" ? { givesOwnDecision: true } : {}),
 			...(node.settings ? { settings: node.settings } : {}),
 		};
 	});

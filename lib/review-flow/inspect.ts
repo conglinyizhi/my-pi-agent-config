@@ -58,11 +58,12 @@ export async function inspectFlows(dir = flowsDir()): Promise<FlowStatus[]> {
 
 	for (const flow of builtinPreFlows()) {
 		if (taken.has(flow.id)) continue;
-		const problems = describeProblems(flow.id, validateFlow(flow));
+		// 注意：describeProblems 有没有问题都会给标题行，所以要按校验结果判空
+		const checked = validateFlow(flow);
 		out.push({
 			id: flow.id,
 			active: "builtin",
-			problems: problems === "" ? [] : [problems],
+			problems: checked.length > 0 ? [describeProblems(flow.id, checked)] : [],
 			flow,
 			graph: graphOf(flow),
 			builtin: true,
