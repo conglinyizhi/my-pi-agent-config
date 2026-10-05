@@ -197,11 +197,22 @@ watch(() => props.highlights, scroll, { deep: true });
    根是 display:contents，所以这条直接参与 .app 的 flex 布局。 */
 .cmd-wrap { flex: 1 1 auto; min-height: 42vh; position: relative; display: flex; }
 .fold-legend { padding: 4px 16px 8px; font-size: 11px; color: #777; }
-.code-line { display: flex; gap: 10px; }
-.code-no { flex: 0 0 auto; width: 2.2em; text-align: right; color: #414a5c; user-select: none; }
+/* 行号栏是一条自己的灰带（贴左边缘），和代码里的规则高亮区别开；
+   行号与代码之间留 10px 灰区 */
+.code-line { display: flex; gap: 0; }
+.code-no {
+  flex: 0 0 auto;
+  width: 2.6em;
+  padding: 0 10px 0 0;
+  text-align: right;
+  color: #4a5364;
+  user-select: none;
+  background: #0f1319;
+  border-right: 1px solid #1d2431;
+}
 .code-no-bad { color: #e6a23c; font-weight: 600; }
-.code-text { flex: 1 1 auto; min-width: 0; }
-.cmd-area { flex: 1; margin: 0; padding: 12px; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
+.code-text { flex: 1 1 auto; min-width: 0; padding: 0 12px 0 10px; }
+.cmd-area { flex: 1; margin: 0; padding: 10px 0; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
 /* 芯片：灰=改文件，橙=可执行 shell。字号跟着正文走，别在 <pre> 里跳出来 */
 .fold-chip { font-family: inherit; font-size: inherit; line-height: inherit; padding: 0 6px; margin: 0 1px; border-radius: 3px; border: 1px solid; cursor: pointer; vertical-align: baseline; }
 .fold-chip.chip-file { color: #b9c0d0; background: #2a2a3d55; border-color: #555a6b; }

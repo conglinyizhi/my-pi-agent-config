@@ -28,6 +28,13 @@ describe("切行", () => {
 		assert.deepEqual(lines[1].parts[0].tokens, [{ s: 0, e: 1, color: "#000" }]);
 	});
 
+	it("marks 是片段内坐标，切行后按行内偏移留下", () => {
+		// 折叠模型交出来的 marks 已经平移到片段内，不能再加整段起点
+		const lines = splitLines([text("ab\ncd", 10, [{ s: 1, e: 2, tone: "env", t: "赋值" }])], []);
+		assert.deepEqual(lines[0].parts[0].marks, [{ s: 1, e: 2, tone: "env", t: "赋值" }]);
+		assert.deepEqual(lines[1].parts[0].marks, []);
+	});
+
 	it("空行不塞空片段，但行号照占", () => {
 		const lines = splitLines([text("a\n\nb", 0)], []);
 		assert.equal(lines.length, 3);

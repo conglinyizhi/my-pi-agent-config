@@ -38,13 +38,14 @@ export function splitLines(segments, tokens) {
 				lines.push(current);
 			}
 			if (part.length > 0) {
+				// 两套坐标：tokens 是整段文本上的（要加 base），marks 已被折叠模型平移到片段内
 				const from = base + offset;
 				const to = from + part.length;
 				current.parts.push({
 					kind: "text",
 					text: part,
 					tokens: clip(tokens, from, to),
-					marks: clip(segment?.marks, from, to),
+					marks: clip(segment?.marks, offset, offset + part.length),
 				});
 			}
 			offset += part.length + 1;

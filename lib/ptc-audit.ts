@@ -358,6 +358,9 @@ export function mergedChangesOf(input: PtcAuditInput): MergedFilePayload[] {
 /** 从扫描与干跑结果整理出给审批窗的结构化影响面 */
 export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 	const scan = input.scan;
+	// 带行号的东西（"看不清"那些）要按显示文本那份扫描算：代码区显示的是重排后的文本，
+	// 拿源码行号去标会标到另一行（踩过：12 行空白被标黄）
+	const located = input.displayScan ?? input.scan;
 	const editCalls = foldCallsOf(input);
 	// 合并视图与折叠芯片看同一份调用（区间都落在被显示的那份文本上）
 	const mergedChanges = mergedChangesOf(input);
@@ -372,7 +375,7 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 		paths: scan?.paths ?? [],
 		commands: scan?.commands ?? [],
 		// 每条"看不清"附上那一行的代码片段：窗口里只有重排后的文本，光给行号定位不了
-		opaque: (scan?.opaque ?? []).map((item) => `${item}${snippetOf(item, input.display)}`),
+		opaque: (located?.opaque ?? []).map((item) => `${item}${snippetOf(item, input.display)}`),
 		...(scan?.parseError ? { parseError: scan.parseError } : {}),
 		digestShort: ptcScriptDigest(input.script).slice(0, 12),
 		...(input.dry ? { dryRunStatus: input.dry.status, dryRunCalls } : {}),

@@ -166,10 +166,15 @@ const title = computed(() =>
 
 /** 出问题的行号：静态扫描里"看不清"的条目以 `行:列` 开头，取出来给代码区行号栏标黄 */
 const issueLines = computed(() => {
+	const display = String(cmd.value ?? "").split("\n");
 	const lines = new Set();
 	for (const item of scriptEffects.value?.opaque ?? []) {
 		const match = /^\s*(\d+):/.exec(String(item));
-		if (match) lines.add(Number(match[1]));
+		if (!match) continue;
+		const no = Number(match[1]);
+		// 空行不标：行号对不上时第一个露馅的就是"标了个空白行"（踩过）
+		if (!display[no - 1]?.trim()) continue;
+		lines.add(no);
 	}
 	return [...lines];
 });

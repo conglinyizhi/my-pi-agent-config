@@ -52,7 +52,7 @@
     <div v-if="!isSandboxAllow && !isCapability && review?.chatReview" class="model-card" data-model="chat">
       <div class="model-head">
         🤖 LLM 审核
-        <span v-if="chatMeta" class="verdict-badge" :class="chatMeta.cls">{{ chatMeta.label }}</span>
+        <span v-if="chatMeta" class="dot" :class="dotClass(chatMeta, true)" :title="chatMeta.label"></span>
       </div>
       <div v-if="review.chatReview" class="chat-review">
         <div class="chat-reason">{{ review.chatReview.reason }}</div>
@@ -64,7 +64,7 @@
     <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
       <div class="model-head">
         📊 System One 决策模型意见
-        <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
+        <span class="dot" :class="dotClass(verdictMeta, false)" :title="verdictMeta.label"></span>
         <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
           {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
         </span>
@@ -275,6 +275,17 @@ const chatMeta = computed(() => {
   if (verdict === "dangerous") return { label: "🔴 危险", cls: "c-dangerous" };
   return { label: "❌ 未出结论", cls: "c-error" };
 });
+/**
+ * 判定的圆点：绿=安全、黄=要留意、红=严重。
+ * 红只给 LLM 那一路——分类器太容易喊危险，一律标红会把注意力耗光。
+ */
+function dotClass(meta, allowRed) {
+  const cls = meta?.cls ?? "";
+  if (cls.includes("dangerous")) return allowRed ? "dot-red" : "dot-yellow";
+  if (cls.includes("risky")) return "dot-yellow";
+  if (cls.includes("safe")) return "dot-green";
+  return "dot-grey";
+}
 const decisionSummary = computed(() => gateDecisionSummary({
   kind: props.isCapability ? "capability" : props.isSandboxAllow ? "sandbox-allow" : "audit",
   permission: props.permission,
@@ -396,6 +407,12 @@ function removeWorkspace(path) {
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 /* 权重表：条宽表达数值，底色只表达“越线”。不给命令文本上色。 */
 .weight-count { font-size: 11px; color: #888; margin-left: auto; }
+/* 判定用一个小圆点：绿=安全、黄=要留意、红=严重（红只限 LLM 那一路） */
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: auto; }
+.dot-green { background: #4ec9b0; }
+.dot-yellow { background: #e6a23c; }
+.dot-red { background: #ff6b6b; }
+.dot-grey { background: #6b7280; }
 .count-ok { color: #7bd88f; }
 .count-warn { color: #e6a23c; }
 .weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
