@@ -64,16 +64,15 @@ describe("reviewViaClassifier", () => {
 		assert.ok(result.dimensions?.[0].probabilities?.["privileged-change"] === 0.8);
 	});
 
-	it("置信度低于 below → 也触发（模型没把握时宁可信其有）", async () => {
+	// 2026-10-05 提督改的规矩：置信低于门槛一律不采信（早先是反的：没把握也提醒）
+	it("置信度低于门槛 → 该维不采信，不给结论", async () => {
 		const answers = { ...calmAnswers() };
-		// 风险值低（高风险档合计 0.2），但 confidence 0.2 < 0.5
+		// 风险值低（高风险档合计 0.2），且 confidence 0.2 < 0.5：这一维整个不算数
 		answers.intent = { type: "choice", choice: "necessary-step", probabilities: { "explicitly-requested": 0.4, "necessary-step": 0.4, inferable: 0.1, unrelated: 0.1 }, confidence: 0.2 };
 		const result = await reviewViaClassifier(BASE_INPUT, config, {
 			classifyOptions: { fetchImpl: (async () => resp({ answers })) as unknown as typeof fetch },
 		});
-		assert.equal(result.verdict, "risky");
-		assert.ok(result.reason.includes("符合意图"));
-		assert.ok(result.reason.includes("置信度"));
+		assert.equal(result.verdict, "safe", "没把握的维度不该把人叫来");
 	});
 
 	it("整体可疑（oddity）高分 → risky，理由里带档位文字", async () => {

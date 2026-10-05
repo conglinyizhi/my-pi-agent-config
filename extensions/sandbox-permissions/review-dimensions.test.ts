@@ -79,16 +79,42 @@ describe("evaluateDimension", () => {
 		assert.ok(verdict.reason.includes("风险 0.90"));
 	});
 
-	it("风险不高但置信度低于 below → 也触发（宁可信其有）", () => {
+	// 2026-10-05 提督改的规矩：置信低于门槛**一律不采信**（早先是反的：没把握也提醒）
+	it("置信度低于门槛 → 不采信、不触发", () => {
+		const lowConf = { ...config, above: 0.1 };
 		const answer = normalizeAnswer(elevation, {
 			type: "choice",
-			choice: "none",
-			probabilities: { none: 0.55, "user-elevation": 0.25, "privileged-change": 0.2 },
+			choice: "privileged-change",
+			probabilities: { none: 0.1, "user-elevation": 0.2, "privileged-change": 0.7 },
 			confidence: 0.3,
 		});
-		const verdict = evaluateDimension(elevation, answer, config);
-		assert.equal(verdict.triggered, true);
-		assert.ok(verdict.reason.includes("置信度"));
+		const verdict = evaluateDimension(elevation, answer, lowConf);
+		assert.equal(verdict.triggered, false, "风险再高，模型没把握也不采信");
+		assert.equal(verdict.untrusted, true);
+	});
+
+	it("置信度够、风险够 → 照旧触发", () => {
+		const answer = normalizeAnswer(elevation, {
+			type: "choice",
+			choice: "privileged-change",
+			probabilities: { none: 0.1, "user-elevation": 0.2, "privileged-change": 0.7 },
+			confidence: 0.6,
+		});
+		assert.equal(evaluateDimension(elevation, answer, config).triggered, true);
+	});
+
+	it("解析可信只做展示：风险再高也不作为审批卡点", () => {
+		const preshell = dimensionById("preshell_trust")!;
+		const answer = normalizeAnswer(preshell, {
+			type: "choice",
+			choice: "opaque",
+			probabilities: { trustworthy: 0.05, "blind-spots": 0.15, opaque: 0.8 },
+			confidence: 0.9,
+		});
+		const verdict = evaluateDimension(preshell, answer, { id: "preshell_trust", enabled: true, above: 0.5, below: 0.5, action: "review" });
+		assert.equal(verdict.triggered, false, "它不该把人叫来审批");
+		assert.equal(verdict.advisoryOnly, true, "但要在窗口里看得见");
+		assert.ok((verdict.reason ?? "").includes("仅展示"));
 	});
 
 	it("两条线都没过 → 不触发", () => {
@@ -334,13 +360,16 @@ describe("规则按维忽略（/sandbox 规则表的 then = \"ignore\"）", () =
 		assert.equal(oddity.ignoredBy, "太低");
 	});
 
-	it("置信低于 0.2 直接作废；0.4 的警报留着（这才是这条规则的意义）", () => {
-		const rules = [{ id: "r2", dimension: "oddity", confidenceBelow: 0.2, then: "ignore" }] as never;
-		const low = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.1) }, configs, rules));
-		assert.equal(low.triggered, false, "置信 0.1 该被忽略");
-		const mid = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.4) }, configs, rules));
-		assert.equal(mid.triggered, true, "置信 0.4 仍要提醒（宁可信其有）");
-	});
+	// 判定层现在自带"置信低于 below 就不采信"，所以这条规则要在更低的门槛下才看得出效果
+	it("规则可以比判定层的门槛更严：低于它就作废", () => {
+		const lowFloor = configs.map((c) => (c.id === "oddity" ? { ...c, below: 0.02 } : c));
+		const rules = [{ id: "r2", dimension: "oddity", confidenceBelow: 0.6, then: "ignore" }] as never;
+		const low = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.4) }, lowFloor, rules));
+		assert.equal(low.triggered, false, "规则比判定层更严，置信 0.4 也被作废");
+		assert.equal(low.ignoredBy !== undefined || low.untrusted === true, true);
+		const without = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.4) }, lowFloor, []));
+		assert.equal(without.triggered, true, "没有规则时 0.4 是采信的");
+	})
 
 	it("口语别名也认：需要用户关注", () => {
 		const rules = [{ id: "r3", dimension: "需要用户关注", confidenceBelow: 0.2, then: "ignore" }] as never;

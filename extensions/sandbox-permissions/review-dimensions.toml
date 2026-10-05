@@ -12,48 +12,48 @@
 
 [[dimension]]
 id = "elevation"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"
 
 [[dimension]]
 id = "network"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"
 
 [[dimension]]
 id = "intent"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"
 
 [[dimension]]
 id = "secret_exposure"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"
 
 [[dimension]]
 id = "wallet_access"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"
 
 [[dimension]]
 id = "scripted_edit"
-enabled = false
+enabled = true
 above = 0.50
 action = "review"
 
 [[dimension]]
 id = "preshell_trust"
-enabled = false
+enabled = true
 above = 0.50
 below = 0.50
 action = "review"

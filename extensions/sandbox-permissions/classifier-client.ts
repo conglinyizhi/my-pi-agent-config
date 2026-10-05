@@ -57,7 +57,7 @@ export interface ReviewStateInput {
 	/** 拿不到 facts 时的原因（让模型知道影响面不完整） */
 	preshellUnavailable?: string;
 	cwd: string;
-	/** 用户最近请求的片段（判断「符合意图」需要） */
+	/** 用户最近请求的片段（判断「意图违背」需要） */
 	userRequestExcerpt?: string;
 	/**
 	 * 对话模型的参考意见（chain 后端给）。明确标为「参考」：
