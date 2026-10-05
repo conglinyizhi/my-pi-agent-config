@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { makeProgressContext, progressLine } from "./ptc-progress.ts";
+import { heartbeatLine, makeProgressContext, progressLine, type ProgressTimers } from "./ptc-progress.ts";
 
 describe("progressLine", () => {
 	it("取 content 里的 text 压成一行", () => {
@@ -113,3 +113,31 @@ describe("makeProgressContext", () => {
 		assert.deepEqual(lines, []);
 	});
 });
+
+describe("内层调用的心跳", () => {
+	it("心跳行写清工具与已用秒数", () => {
+		assert.match(heartbeatLine("bash", 12345), /⏳ bash 已 12s/);
+	});
+
+	it("调用期间按间隔报心跳，结束就停", async () => {
+		const lines = [];
+		let tick: any = null;
+		let resolveCall: any;
+		const now = () => 1000;
+		const ctx = {
+			executeTool: (_name: string, _args: unknown) => new Promise((resolve) => { resolveCall = resolve; }),
+		};
+		const timers = {
+			setInterval: (fn: () => void) => { tick = fn; return 1; },
+			clearInterval: () => { tick = null; },
+		} as unknown as ProgressTimers;
+		const wrapped = makeProgressContext(ctx, (line) => lines.push(line), now, timers);
+		const pending = wrapped.executeTool("bash", {});
+		tick();
+		assert.equal(lines.length, 1, "开了心跳就报一次");
+		resolveCall("ok");
+		await pending;
+		assert.equal(tick, null, "结束之后定时器要停掉");
+	});
+});
+

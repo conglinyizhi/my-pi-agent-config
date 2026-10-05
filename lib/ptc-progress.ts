@@ -12,6 +12,24 @@
 const MIN_INTERVAL_MS = 250;
 const MAX_LINE = 160;
 
+/**
+ * 心跳间隔。工具自己不推任何东西时（bash 在跑、任何工具在等审批窗），
+ * 这行是唯一的活口——没有它，"等审批"与"死了"长得一模一样（踩过：
+ * 提督看着一个静音条目以为卡住了，直接中止了脚本）。
+ */
+const HEARTBEAT_MS = 5000;
+
+/** 心跳行：工具名 + 已用秒数。等审批与执行中都长这样，但至少证明它活着 */
+export function heartbeatLine(tool: string, ms: number): string {
+	return `⏳ ${tool} 已 ${Math.round(ms / 1000)}s（还没结束：执行中，或在等审批）`;
+}
+
+/** 定时器可注入：单测里换成手摇的假表，不然要真等五秒 */
+export interface ProgressTimers {
+	setInterval?: (fn: () => void, ms: number) => unknown;
+	clearInterval?: (handle: unknown) => void;
+}
+
 /** 内层工具的部分结果：形状随工具而异，只认 content 里的 text */
 interface NestedPartial {
 	content?: unknown;
@@ -44,7 +62,10 @@ export function makeProgressContext<T extends object>(
 	ctx: T,
 	sink: (line: string) => void,
 	now: () => number = Date.now,
+	timers: ProgressTimers = {},
 ): T {
+	const startTimer = timers.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
+	const stopTimer = timers.clearInterval ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>));
 	// 底层没有出口就别包：硬造一个 executeTool 会让「这个 ctx 能不能派调用」失真
 	// （测试拿它分辨干跑与真跑；引擎在同样情形下也该照旧报自己的错）
 	const base = ctx as unknown as { executeTool?: (n: string, a: unknown, o?: unknown) => Promise<unknown> };
@@ -58,6 +79,9 @@ export function makeProgressContext<T extends object>(
 	Object.defineProperties(wrapped, {
 		executeTool: {
 			value: async (name: string, args: unknown, options?: Record<string, unknown>): Promise<unknown> => {
+				const startedAt = now();
+				// 心跳：从调用发出那一刻起就报时长，不管是卡在审批还是卡在跑
+				const ticker = startTimer(() => sink(heartbeatLine(name, now() - startedAt)), HEARTBEAT_MS);
 				const inner = options?.onUpdate;
 				const onUpdate = (partial: unknown): void => {
 					if (typeof inner === "function") (inner as (p: unknown) => void)(partial);
@@ -69,7 +93,12 @@ export function makeProgressContext<T extends object>(
 					lastLine = line;
 					sink(line);
 				};
-				return direct(name, args, { ...(options ?? {}), onUpdate });
+				try {
+					return await direct(name, args, { ...(options ?? {}), onUpdate });
+				} finally {
+					// 结束就停心跳：完成行由引擎自己那一条（带真实耗时）负责，这里不重复
+					stopTimer(ticker);
+				}
 			},
 			enumerable: true,
 			configurable: true,
