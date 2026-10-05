@@ -33,6 +33,8 @@ const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 const REVIEW_CLI = resolveCliPath("review-settings-cli.ts", { here: HERE });
 /** 审核流程的 JSON 桥（数据层：图、体检、存盘） */
 const FLOWS_CLI = resolveCliPath("flows-cli.ts", { here: HERE });
+/** 审核规则表的 JSON 桥（数据层：读、序列化、校验、存盘） */
+const RULES_CLI = resolveCliPath("review-rules-cli.ts", { here: HERE });
 // subagent 状态快照的取数在 status-file.js（纯模块、有单测）：多会话并存时，
 // 看板窗读的必须是它自己被指定的那份快照，不是全局那一份。
 
@@ -108,6 +110,14 @@ function reviewRequest(cmd, patch) {
 function stopReviewServe() {
 	reviewBridge.stop();
 }
+
+/** 审核规则表的桥：get / save（数据层在 scripts/review-rules-cli.ts） */
+const rulesBridge = createServeBridge({
+	cliPath: RULES_CLI,
+	nodeBin: resolveNodeBin(),
+	// 一次性回落只够跑 get：save 要带补丁文件，回落路径给不了（常驻桥才是正路）
+	oneShotArgs: (cmd) => [cmd],
+});
 
 /** 审核流程的桥：list / get / save（数据层在 scripts/flows-cli.ts） */
 const flowsBridge = createServeBridge({
@@ -222,6 +232,8 @@ function registerIpc(request) {
 	// ── 审核流程（flows 窗口）──
 	// 读：列流程与体检结果；选中一条再取它的图与源码（图可能不小，分开取）。
 	// 写：save 先过越界检查再落盘，校验结果原样交给前端展示。
+	handle("rules:get", () => rulesBridge.request("get"));
+	handle("rules:save", (patch) => rulesBridge.request("save", patch ?? {}));
 	handle("flows:list", () => flowsBridge.request("list"));
 	handle("flows:get", (id) => flowsBridge.request("get", { id }));
 	handle("flows:save", (patch) => flowsBridge.request("save", patch ?? {}));

@@ -1,5 +1,10 @@
 <template>
-	<div class="flows">
+	<div class="flows" :class="{ 'rules-mode': page === 'rules' }">
+		<nav class="tabs">
+			<button :class="{ on: page === 'flows' }" @click="page = 'flows'">流程</button>
+			<button :class="{ on: page === 'rules' }" @click="page = 'rules'">规则表</button>
+		</nav>
+		<RulesForm v-if="page === 'rules'" class="rules-page" />
 		<aside class="list">
 			<header>
 				<span>审核流程</span>
@@ -113,6 +118,7 @@ import "@vue-flow/core/dist/theme-default.css";
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
 import { Handle, Position, VueFlow } from "@vue-flow/core";
+import RulesForm from "../components/flows/RulesForm.vue";
 import { layoutGraph } from "../domain/flows/graph-layout.js";
 import { usePlatform } from "../platform/index.js";
 
@@ -141,6 +147,9 @@ const activeLabel = computed(() => (flows.value.find((f) => f.id === selectedId.
 const selectedProblem = computed(() => (dir.value === "" ? "" : "这条流程没有图：先看右边的问题"));
 
 const EDGE_KIND_LABEL = { next: "下一步", branch: "分支", error: "出错", timeout: "超时", empty: "拿不准" };
+
+/** 这扇窗的两页：流程（默认）与规则表 */
+const page = ref("flows");
 
 const mode = ref("graph");
 const edgeDialog = ref(null);
@@ -286,6 +295,12 @@ onMounted(async () => {
 
 <style scoped>
 .flows { display: flex; height: 100vh; background: #171a21; color: #d7dbe0; font: 13px/1.5 system-ui, sans-serif; }
+/* 页签：两页共用这扇窗，规则表那页盖住流程那页（不拆现有的三栏结构） */
+.tabs { display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; border-right: 1px solid #262b35; }
+.tabs button { background: transparent; color: #8a93a3; border: 1px solid transparent; border-radius: 4px; padding: 3px 8px; cursor: pointer; font: inherit; }
+.tabs button.on { background: #232c3d; color: #d7dbe0; border-color: #39414f; }
+.rules-page { flex: 1; overflow: auto; }
+.flows.rules-mode > *:not(.tabs):not(.rules-page) { display: none; }
 .list { width: 240px; border-right: 1px solid #262b35; overflow: auto; }
 .list header { padding: 12px; border-bottom: 1px solid #262b35; display: flex; flex-direction: column; gap: 4px; }
 .list .dir { color: #7c8494; font-size: 11px; word-break: break-all; }

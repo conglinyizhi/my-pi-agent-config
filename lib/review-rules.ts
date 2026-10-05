@@ -7,7 +7,7 @@
 // 为什么用命名的条件而不是表达式：表达式要一门方言 + 一个求值器，等于把"两套语义"
 // 引进来（这是提督明确不要的）。命名条件集合有限、能被表单勾出来、也审得清。
 
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify } from "smol-toml";
 
 /** 规则能用的动作 */
 export type RuleAction = "allow" | "ask" | "deny";
@@ -137,3 +137,40 @@ export function matchesRule(rule: ReviewRule, facts: RuleFacts): boolean {
 export function firstMatchingRule(rules: readonly ReviewRule[], facts: RuleFacts): ReviewRule | undefined {
 	return rules.find((rule) => matchesRule(rule, facts));
 }
+
+/** 规则表放在维度配置旁边：改阈值与改规则是同一件事的两半，别分两个地方找 */
+export const RULES_FILE = "extensions/sandbox-permissions/review-rules.toml";
+
+/** 规则表路径：显式给目录就用它（测试与 CLI 用），否则取仓库根下的固定位置 */
+export function rulesPath(repoRoot: string): string {
+	return repoRoot.replace(/\/+$/, "") + "/" + RULES_FILE;
+}
+
+/** 字段名映射：界面用驼峰，toml 用下划线。就这一处，别的地方不许再写一遍 */
+const TO_TOML: Array<[keyof ReviewRule, string]> = [
+	["verdict", "verdict"],
+	["allTriggeredBelowConfidence", "all_triggered_below_confidence"],
+	["noTriggeredDimensions", "no_triggered_dimensions"],
+	["ruleName", "rule_name"],
+	["commandContains", "command_contains"],
+	["then", "then"],
+	["note", "note"],
+];
+
+/** 规则数组 → toml 文本。写出来的东西必须能被 parseReviewRules 原样读回来 */
+export function stringifyReviewRules(rules: readonly ReviewRule[]): string {
+	const rows = rules.map((rule) => {
+		const row: Record<string, unknown> = { id: rule.id };
+		for (const key of Object.keys(rule) as Array<keyof ReviewRule>) {
+			if (key === "id") continue;
+			const value = rule[key];
+			if (value === undefined) continue;
+			const name = TO_TOML.find(([from]) => from === key)?.[1];
+			if (name === undefined) continue;
+			row[name] = value;
+		}
+		return row;
+	});
+	return rows.length === 0 ? "" : stringify({ rule: rows });
+}
+
