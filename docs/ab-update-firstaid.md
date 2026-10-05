@@ -1,12 +1,13 @@
 # A/B 更新急救卡
 
-> 一分钟版：图形界面起不来就 `bin/ab-rollback gui`；审核判定不对劲就 `bin/ab-rollback audit` 再 `/reload`。
+> 一分钟版：图形界面起不来就 `make ab-rollback COMPONENT=gui`；审核判定不对劲就 `make ab-rollback` 再 `/reload`。
+> 忘了有哪些命令就跑 `make help`（那是稳定入口，命令名不会漂）。
 > 来龙去脉在 `docs/plans/2026-10-05-ab-update.md`，这里只讲怎么止血。
 
 ## 现在在跑哪一版
 
 ```sh
-bin/ab-slot status
+make ab-status
 ```
 
 打印两个组件（gui / audit）、四个槽（stable / previous / dev / head）、current 指向谁、
@@ -16,12 +17,12 @@ bin/ab-slot status
 
 | 症状 | 一步 |
 |---|---|
-| 图形界面起不来、反复崩 | `bin/ab-rollback gui` |
-| 审核判定明显不对劲（全拒、全放、老是超时） | `bin/ab-rollback audit`，然后 `/reload` |
-| 不知道坏在哪一步 | `bin/ab-slot log audit` 看晋升、回退、看门狗与计数的流水 |
+| 图形界面起不来、反复崩 | `make ab-rollback COMPONENT=gui` |
+| 审核判定明显不对劲（全拒、全放、老是超时） | `make ab-rollback`，然后 `/reload` |
+| 不知道坏在哪一步 | `make ab-log` 看晋升、回退、看门狗与计数的流水 |
 
-`bin/ab-rollback` 是一段**纯 shell**：不依赖 node、不依赖 Electron、不依赖任何扩展。
-Electron 完全起不来时它也能用（这就是它为什么故意写得这么笨）。
+回退最终落到 `bin/ab-rollback`：一段**纯 shell**，不依赖 node、不依赖 Electron、不依赖任何扩展。
+Electron 完全起不来时它也能用（这就是它为什么故意写得这么笨）；`make ab-rollback` 只是给它套了个名字。
 
 ## 图形界面全废时的兜底通道
 
@@ -46,7 +47,7 @@ Electron 完全起不来时它也能用（这就是它为什么故意写得这�
 ## 回到开发态
 
 ```sh
-bin/ab-slot switch audit dev     # 指向 dev 槽
+make ab-switch SLOT=dev          # 指向 dev 槽
 rm ~/.pi/runtime/audit/current   # 或者干脆删掉 current：等于用仓库那份
 ```
 
@@ -59,11 +60,11 @@ rm ~/.pi/runtime/audit/current   # 或者干脆删掉 current：等于用仓库�
 ## 常用动作
 
 ```sh
-bin/ab-pack audit --slot dev            # 从 HEAD 构建到 dev（改完先提交再打包，否则槽里是上一版）
-bin/ab-slot switch audit dev            # 指到 dev
-bin/ab-slot note audit clean            # 手工记一次干净往返（平时闸门会自动记）
-bin/ab-slot promote audit               # 手工晋升；攒够五次干净会自动晋升
-bin/ab-slot rollback audit --reason 说明  # 等价于 ab-rollback，但带一条理由进日志
+make ab-pack                    # 从 HEAD 构建到 dev（改完先提交再打包，否则槽里是上一版）
+make ab-switch                  # 指到 dev
+make ab-note OUTCOME=clean      # 手工记一次干净往返（平时闸门会自动记）
+make ab-promote                 # 手工晋升；攒够五次干净会自动晋升
+make smoke                      # 壳的三条路径灰盒验收（会起真 pi）
 ```
 
 ## 想改动这一套本身
