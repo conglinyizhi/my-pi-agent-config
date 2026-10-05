@@ -22,6 +22,12 @@ export function createElectronPlatform(api = globalThis.window?.piGui) {
       openFile: (file, line) => api.capabilities.openFile(file, line),
       copyText: (text) => api.capabilities.copyText(text),
     },
+    editor: {
+      // 本机可用的编辑器（带能力标记）；主进程探不出来时给空数组
+      list: () => api.editor.list(),
+      // 打开文件/差异/补丁：命令由主进程拼，前端只递目标
+      open: (payload) => api.editor.open(payload),
+    },
     gate: {
       loadReasons: () => api.gate.loadReasons(),
       saveReason: (content) => api.gate.saveReason(content),

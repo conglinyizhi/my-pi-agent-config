@@ -68,6 +68,10 @@ export interface FoldCallPayload {
 	kind: "file" | "shell";
 	/** file：目标路径；shell：cwd。都按 ~ / $PWD 缩过；没有就是 undefined */
 	displayPath?: string;
+	/** 目标文件的真实路径（不缩短）："在编辑器打开"要用它，缩短过的打不开 */
+	absPath?: string;
+	/** 补丁类工具：补丁正文里认出来的真实路径（可能不止一个） */
+	absPaths?: string[];
 	/** 关键字段是不是字面量；false 时芯片上要标"看不清" */
 	literal: boolean;
 	/** 芯片盖住的区间（0 起，半开）：实参括号那一截，函数名留在代码里 */
@@ -135,6 +139,8 @@ export type MergedDiffBlock =
 export interface MergedFilePayload {
 	/** 显示用路径（已缩短） */
 	path: string;
+	/** 真实路径："在编辑器打开"要用它 */
+	absPath: string;
 	ops: number;
 	/** merged = 推演得通；chain-broken = 中途断了；unknown-base = 基准内容不知道 */
 	status: "merged" | "chain-broken" | "unknown-base";

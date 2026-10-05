@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld("piGui", {
 		load: () => call("review:load"),
 		save: (patch) => call("review:save", patch),
 	},
+	editor: {
+		list: () => call("editor:list"),
+		open: (payload) => call("editor:open", payload),
+	},
 	subagents: {
 		getStatus: (statusPath) => call("subagents:status", statusPath),
 		getDiagnostics: () => call("subagents:diagnostics"),

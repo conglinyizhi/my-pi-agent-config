@@ -8,7 +8,10 @@
           <span class="dlg-kind" :class="`kind-${chip.tone}`">{{ chip.tone === "shell" ? "可执行 shell" : "文件编辑" }}</span>
           <span v-if="!chip.literal" class="dlg-vague">参数不是字面量</span>
         </div>
-        <button data-name="call-detail-close" class="dlg-close" @click="$emit('close')">关闭 ✕</button>
+        <div class="dlg-actions">
+          <OpenInEditorMenu :request="editorRequest" />
+          <button data-name="call-detail-close" class="dlg-close" @click="$emit('close')">关闭 ✕</button>
+        </div>
       </header>
 
       <div class="dlg-meta">
@@ -70,6 +73,7 @@ import { blocksOfRows } from "../../domain/gate/diff-render.js";
 import { patchCounts, patchToRows } from "../../domain/gate/patch-rows.js";
 import { collapseContext, lineDiff } from "../../../../../lib/text-diff.ts";
 import DiffView from "./DiffView.vue";
+import OpenInEditorMenu from "./OpenInEditorMenu.vue";
 
 const props = defineProps({
   /** 折叠模型里的一颗芯片（含 pi 侧给的事实） */
@@ -106,6 +110,17 @@ const diffBlocks = computed(() => {
   const result = lineDiff(body.value.old, body.value.new);
   if (result.status === "too-large") return [];
   return collapseContext(result.rows, 3);
+});
+
+/** 交给编辑器看的东西：有绝对路径就打开文件，有新旧文就看差异，有补丁就开补丁 */
+const editorRequest = computed(() => {
+  const call = props.chip?.call ?? {};
+  return {
+    ...(call.absPath ? { path: call.absPath } : call.paths?.length ? { path: call.paths[0] } : {}),
+    ...(typeof call.line === "number" ? { line: call.line } : {}),
+    ...(call.replacement ? { left: call.replacement.old, right: call.replacement.new } : {}),
+    ...(typeof call.patchText === "string" ? { patchText: call.patchText } : {}),
+  };
 });
 
 const patchBlocks = computed(() => (body.value.kind === "patch" ? blocksOfRows(patchToRows(body.value.text)) : []));
@@ -206,6 +221,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 .dlg-kind.kind-file { color: #b0b7c8; border-color: #555a6b; }
 .dlg-kind.kind-shell { color: #e6a23c; border-color: #e6a23c66; background: #3a2a1233; }
 .dlg-vague { font-size: 11px; color: #e6a23c; }
+.dlg-actions { display: flex; align-items: center; gap: 10px; }
 .dlg-close { padding: 4px 12px; font-size: 12px; color: #ccd; background: #1f1f38; border: 1px solid #2a2a4a; border-radius: 4px; cursor: pointer; }
 .dlg-close:hover { color: #fff; border-color: #4ec9b055; }
 .dlg-meta { display: flex; gap: 14px; padding: 6px 16px; font-size: 11px; color: #888; border-bottom: 1px solid #1f1f38; }

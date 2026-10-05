@@ -174,7 +174,7 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 		out.push({
 			tool: call.tool,
 			kind,
-			...(raw !== undefined ? { displayPath: displayPath(raw, { home: input.home, cwd: input.cwd }) } : {}),
+			...(raw !== undefined ? { displayPath: displayPath(raw, { home: input.home, cwd: input.cwd }), absPath: raw } : {}),
 			literal: call.unresolvedArgs !== true,
 			startOffset,
 			endOffset,
@@ -188,7 +188,10 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 				return typeof mode === "string" && mode !== "" ? { mode } : {};
 			})(),
 			...(patchPaths.length > 0
-				? { paths: patchPaths.slice(0, 8).map((path) => displayPath(path, { home: input.home, cwd: input.cwd })) }
+				? {
+					absPaths: patchPaths.slice(0, 8),
+					paths: patchPaths.slice(0, 8).map((path) => displayPath(path, { home: input.home, cwd: input.cwd })),
+				}
 				: {}),
 			...previewFieldsOf(call),
 		});
@@ -327,6 +330,7 @@ export function mergedChangesOf(input: PtcAuditInput): MergedFilePayload[] {
 	return mergeFileChanges(calls).map((entry) => ({
 		...entry,
 		path: displayPath(entry.path, { home: input.home, cwd: input.cwd }),
+		absPath: entry.path,
 	}));
 }
 

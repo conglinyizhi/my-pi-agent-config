@@ -240,6 +240,9 @@ describe("补丁类工具", () => {
 		const call = pick(await fold(source), "apply_patch");
 		assert.equal(call.patchText, patch);
 		assert.equal(call.displayPath, "$PWD/lib/x.ts");
+		// 绝对路径要一起带着：缩短过的路径打不开文件，也没法丢给编辑器
+		assert.equal(call.absPath, "/home/clyzhi/.pi/agent/lib/x.ts");
+		assert.deepEqual(call.absPaths, ["/home/clyzhi/.pi/agent/lib/x.ts"]);
 		assert.deepEqual(call.paths, ["$PWD/lib/x.ts"]);
 	});
 
@@ -274,6 +277,7 @@ describe("合并视图进载荷", () => {
 		assert.equal(effects.mergedChanges?.length, 1);
 		assert.equal(effects.mergedChanges?.[0].path, "$PWD/a.js");
 		assert.equal(effects.mergedChanges?.[0].status, "merged");
+		assert.equal(effects.mergedChanges?.[0].absPath, "/home/clyzhi/.pi/agent/a.js");
 		assert.equal(effects.mergedChanges?.[0].baseAssumedEmpty, true);
 		assert.equal(effects.mergedChanges?.[0].ops, 2);
 	});

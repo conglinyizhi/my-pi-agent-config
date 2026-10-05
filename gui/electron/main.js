@@ -13,11 +13,12 @@
 
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
+import { buildEditorCommand, detectEditors } from "./editor-open.js";
 import { readStatusSnapshot } from "./status-file.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -287,6 +288,12 @@ function registerIpc(request) {
 		return true;
 	});
 	handle("openFile", (file) => shell.openPath(String(file ?? "")));
+
+	// ── 把文件/差异丢给本机编辑器 ──
+	// 审核窗只负责显示，真要读代码还是去编辑器。命令在 editor-open.js 里拼好，
+	// 这里只管探测、写临时文件、spawn（数组参数，不经 shell）。
+	handle("editor:list", () => detectEditors(hasBinary));
+	handle("editor:open", ({ editorId, target } = {}) => openTargetInEditor(editorId, target));
 	handle("copyText", (text) => {
 		clipboard.writeText(String(text ?? ""));
 		return true;
@@ -361,3 +368,61 @@ app.whenReady().then(() => {
 	registerIpc(readRequest());
 	createWindow();
 });
+
+/** PATH 里找可执行文件（不 shell out：这个探测要快，也不受 PATH 里怪东西影响） */
+function hasBinary(name) {
+	if (!name) return false;
+	const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+	for (const dir of dirs) {
+		try {
+			accessSync(join(dir, name), constants.X_OK);
+			return true;
+		} catch {
+			// 继续找下一个目录
+		}
+	}
+	return false;
+}
+
+/**
+ * 打开目标：文件（可带行号）、两份文本的差异、或一份补丁。
+ *
+ * 文本内容也走这条：要交给编辑器看差异，就得先落成文件。落盘一律 0600，
+ * 放在 tmpdir 下每次独立的小目录——审核窗里的内容是脚本给的，不该长期留着。
+ */
+function openTargetInEditor(editorId, target) {
+	const editor = detectEditors(hasBinary).find((entry) => entry.id === editorId);
+	if (!editor) return { ok: false, error: "这个编辑器本机没有（或已经不在 PATH 里）" };
+	const kind = target?.kind;
+	let request;
+	try {
+		if (kind === "diff") {
+			const dir = mkdtempSync(join(tmpdir(), "pi-guard-diff-"));
+			const left = join(dir, "a-old.txt");
+			const right = join(dir, "b-new.txt");
+			writeFileSync(left, String(target.left ?? ""), { mode: 0o600 });
+			writeFileSync(right, String(target.right ?? ""), { mode: 0o600 });
+			request = { kind: "diff", left, right };
+		} else if (kind === "patch") {
+			const dir = mkdtempSync(join(tmpdir(), "pi-guard-patch-"));
+			const file = join(dir, "change.patch");
+			writeFileSync(file, String(target.patchText ?? ""), { mode: 0o600 });
+			request = { kind: "open", path: file };
+		} else {
+			request = { kind: "open", path: String(target?.path ?? ""), line: target?.line };
+		}
+	} catch (error) {
+		return { ok: false, error: `临时文件写不出去：${error?.message ?? error}` };
+	}
+	const command = buildEditorCommand(editor, request);
+	if (command.error) return { ok: false, error: command.error };
+	try {
+		const child = spawn(command.bin, command.args, { detached: true, stdio: "ignore" });
+		child.on("error", () => {}); // 起不来也不该把主进程带走
+		child.unref();
+	} catch (error) {
+		return { ok: false, error: `起不来：${error?.message ?? error}` };
+	}
+	return { ok: true, editor: { id: editor.id, label: editor.label }, argv: [command.bin, ...command.args] };
+}
+

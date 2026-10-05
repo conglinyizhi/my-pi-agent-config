@@ -32,6 +32,7 @@
           <span v-if="entry.added || entry.removed" class="merged-count">+{{ entry.added }} / -{{ entry.removed }}</span>
           <span v-if="entry.baseAssumedEmpty" class="merged-note">改前按空文件算</span>
           <span v-if="entry.truncated" class="merged-note">只摆了前一段</span>
+          <OpenInEditorMenu label="打开" :request="{ path: entry.absPath }" />
         </div>
         <div v-if="entry.reason" class="merged-reason">{{ entry.reason }}</div>
         <DiffView v-if="entry.blocks && entry.blocks.length" :blocks="entry.blocks" />
@@ -129,6 +130,7 @@ import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
 import GateCommandPreview from "../components/gate/GateCommandPreview.vue";
 import DiffView from "../components/gate/DiffView.vue";
+import OpenInEditorMenu from "../components/gate/OpenInEditorMenu.vue";
 
 const platform = usePlatform();
 
