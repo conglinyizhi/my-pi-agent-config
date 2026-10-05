@@ -346,7 +346,16 @@ onMounted(async () => {
 .app.has-review :deep(.model-card) { align-self: stretch; overflow: visible; }
 .app.has-review :deep(.model-card[data-model="chat"]) { grid-area: 2 / 2 / 3 / 3; }
 .app.has-review :deep(.model-card[data-model="system1"]) { grid-area: 3 / 2 / 4 / 3; }
-.app.has-review :deep(.model-head) { font-size: 11px; color: #8ea2c8; display: flex; align-items: center; gap: 6px; }
+.app.has-review :deep(.model-head) {
+  font-size: 11px;
+  color: #8ea2c8;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+/* 维度计数单独一行、贴右：栏窄的时候挤在同一行会把「越线」断成两半 */
+.app.has-review :deep(.weight-count) { flex-basis: 100%; text-align: right; margin-left: 0; }
 /* 底栏：整宽，占自己一行。不 sticky——它一浮起来就会盖住下面那块 */
 .app :deep(.actions),
 .app.has-review :deep(.actions) {

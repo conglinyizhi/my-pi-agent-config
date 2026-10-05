@@ -46,34 +46,32 @@
 
     <!-- 两个角色分两张卡：上=大模型（文本）那一路，中=System One 分类器那一路。
          以前挤在一块里，右栏看上去只有一个"云端模型"的角色。 -->
-    <div v-if="!isSandboxAllow && !isCapability && review" class="review-block model-card" data-model="chat">
-      <div class="review-header model-head">
+    <!-- LLM 卡：只放大模型那一路自己的结论。
+         顶层 review.verdict 是**分类器**的（合并节点以分类器为准，大模型只是顾问），
+         挂在 System One 卡上才不会让人以为"一个模型审出两个意见"。 -->
+    <div v-if="!isSandboxAllow && !isCapability && review?.chatReview" class="model-card" data-model="chat">
+      <div class="model-head">
         🤖 LLM 审核
-        <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
+        <span v-if="chatMeta" class="verdict-badge" :class="chatMeta.cls">{{ chatMeta.label }}</span>
       </div>
-      <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
-      <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
-      <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
-
-      <!-- 串联模式：对话模型那边的意见单独列，能分清哪边说了什么 -->
       <div v-if="review.chatReview" class="chat-review">
-        <div class="chat-review-head">
-          对话模型意见
-          <span class="chat-badge" :class="chatMeta.cls">{{ chatMeta.label }}</span>
-        </div>
         <div class="chat-reason">{{ review.chatReview.reason }}</div>
         <div v-if="review.chatReview.suggestion" class="chat-suggestion">💡 {{ review.chatReview.suggestion }}</div>
         <div v-if="review.chatReview.opinion" class="chat-opinion">{{ review.chatReview.opinion }}</div>
       </div>
     </div>
 
-    <div v-if="!isSandboxAllow && !isCapability && weightRows.length" class="model-card" data-model="system1">
+    <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
       <div class="model-head">
         📊 System One 决策模型意见
-        <span class="weight-count">
+        <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
+        <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
           {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
         </span>
       </div>
+      <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
+      <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
+      <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
       <div class="weight-table" data-name="dimension-weights">
         <div
           v-for="row in weightRows"
@@ -398,6 +396,8 @@ function removeWorkspace(path) {
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 /* 权重表：条宽表达数值，底色只表达“越线”。不给命令文本上色。 */
 .weight-count { font-size: 11px; color: #888; margin-left: auto; }
+.count-ok { color: #7bd88f; }
+.count-warn { color: #e6a23c; }
 .weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
 .weight-head { font-size: 11px; color: #666; margin-bottom: 4px; }
 .weight-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 3px; font-size: 11.5px; line-height: 1.6; flex-wrap: wrap; }
@@ -433,7 +433,8 @@ function removeWorkspace(path) {
 .weight-threshold { flex: 0 0 100px; color: #666; font-family: monospace; }
 .weight-raw { flex: 1 1 160px; min-width: 0; color: #999; word-break: break-word; }
 /* 串联模式下对话模型的独立意见块 */
-.chat-review { margin-top: 8px; padding: 6px 10px; background: #10101f; border-left: 2px solid #7aa2f7; border-radius: 3px; }
+/* 平铺：判定在卡头上，这一段不再套盒子 */
+.chat-review { margin-top: 6px; padding: 0; background: transparent; border: 0; border-radius: 0; }
 .chat-review-head { font-size: 11.5px; color: #7aa2f7; display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
 .chat-badge { font-size: 10.5px; padding: 0 6px; border-radius: 3px; }
 .chat-badge.c-safe { color: #7ee787; background: #12261a; border: 1px solid #7ee78744; }
