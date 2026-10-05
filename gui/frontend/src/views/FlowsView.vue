@@ -279,6 +279,8 @@ onMounted(async () => {
 	dir.value = payload?.dir ?? "";
 	const first = flows.value.find((f) => f.source) ?? flows.value[0];
 	if (first) await select(first.id);
+	// 告诉启动方"渲染好了"：写 .ready 侧文件。等握手的调用方（含测试）靠它判完成
+	await platform.session.markReady();
 });
 </script>
 
