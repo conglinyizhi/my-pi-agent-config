@@ -233,8 +233,23 @@ export function describeTools(tools: PtcToolInfo[], used?: string[]): string {
 	return sections.join("\n\n");
 }
 
+/**
+ * 把一条"看不清"对到具体那一行：附上该行的代码片段。
+ * 光给行号没法定位——代码区是按重排后的文本渲染的，用户手里没有行号可数。
+ * 行号按显示文本算（与 displayScan 同源），所以片段取 display 的第 N 行。
+ */
+function snippetOf(item: string, display: string | undefined): string {
+	if (!display) return "";
+	const match = /^\s*(\d+):\d+\s/.exec(item);
+	if (!match) return "";
+	const source = display.split("\n")[Number(match[1]) - 1];
+	const trimmed = source?.trim() ?? "";
+	if (!trimmed) return "";
+	return `\n      ↳ ${trimmed.length > 90 ? `${trimmed.slice(0, 90)}…` : trimmed}`;
+}
+
 /** 静态扫描那一段：用到的工具、字面量路径与命令、以及"看不清"的地方 */
-export function scanSummary(scan: ScriptScan | undefined): string {
+export function scanSummary(scan: ScriptScan | undefined, display?: string): string {
 	if (scan === undefined) return "";
 	const lines: string[] = ["【静态扫描（只认字面量）】"];
 	if (scan.parseError) lines.push(`脚本没解析干净：${scan.parseError}`);
@@ -243,7 +258,7 @@ export function scanSummary(scan: ScriptScan | undefined): string {
 	if (scan.commands.length > 0) lines.push(`命令字面量：${scan.commands.map((cmd) => JSON.stringify(cmd)).join("、")}`);
 	if (scan.opaque.length > 0) {
 		lines.push("看不清的地方（值由运行时决定，可能比上面列的多）：");
-		for (const item of scan.opaque) lines.push(`  ${item}`);
+		for (const item of scan.opaque) lines.push(`  ${item}${snippetOf(item, display)}`);
 	}
 	return lines.join("\n");
 }
@@ -272,7 +287,7 @@ export function buildPtcAuditSubject(input: PtcAuditInput): string {
 		"",
 		describeTools(input.tools, input.scan?.tools),
 		"",
-		scanSummary(input.scan),
+		scanSummary(input.scan, input.display),
 		dryRunSummary(input.dry),
 		"",
 		"脚本原文：",

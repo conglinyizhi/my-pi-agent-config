@@ -75,7 +75,6 @@
         </span>
       </div>
       <div class="weight-table" data-name="dimension-weights">
-        <div class="weight-head">条宽即风险值；越线行标底色</div>
         <div
           v-for="row in weightRows"
           :key="row.key"
@@ -398,7 +397,7 @@ function removeWorkspace(path) {
 .review-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 /* 权重表：条宽表达数值，底色只表达“越线”。不给命令文本上色。 */
-.weight-count { font-size: 11px; color: #888; }
+.weight-count { font-size: 11px; color: #888; margin-left: auto; }
 .weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
 .weight-head { font-size: 11px; color: #666; margin-bottom: 4px; }
 .weight-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 3px; font-size: 11.5px; line-height: 1.6; flex-wrap: wrap; }

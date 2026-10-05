@@ -41,7 +41,7 @@ describe("fmt / fmtConfidence", () => {
 	it("两位小数，缺值给占位", () => {
 		assert.equal(fmt(0.9), "0.90");
 		assert.equal(fmt(undefined), "—");
-		assert.equal(fmtConfidence(0.55), "0.55");
+		assert.equal(fmtConfidence(0.55), "55%");
 	});
 
 	it("没有置信度的维度（noul）显示「无」", () => {

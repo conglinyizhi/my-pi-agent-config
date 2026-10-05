@@ -29,7 +29,6 @@
         <span class="effect-label">{{ section.label }}</span>
         <span class="effect-items">{{ section.items.join("、") }}</span>
       </div>
-      <div v-if="effectsDigest" class="effects-digest">{{ effectsDigest }}</div>
     </div>
 
     <div v-if="varRows.length" data-name="var-table" class="var-table">
@@ -165,7 +164,6 @@ const title = computed(() =>
 // 「同文件改动合并」按提督说的删了：日常用不到，占地方
 
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
-const effectsDigest = computed(() => digestLine(scriptEffects.value));
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写",
 );
@@ -311,16 +309,16 @@ onMounted(async () => {
   align-content: start;
   overflow: hidden;
 }
-/* 块默认整宽；下面按设计图给五块钉死位置：
-   第 1 行 header 整宽，第 2-3 行左=代码区、右=LLM 意见 / System One 决策，
-   第 4 行左=图例、右=判定摘要，之后静态扫描结果与底栏整宽。 */
+/* 平铺：块不铺底、不浮起，只用发丝线分界，全部落在同一个面上。
+   块默认整宽；第 1 行 header 整宽，第 2-3 行左=代码区、右=LLM 意见 / System One 决策，
+   之后静态扫描结果与底栏整宽。 */
 .app.has-review > *,
 .app :deep(.gate-fragment > *) {
   grid-column: 1 / -1;
-  background: #191d25;
-  border: 1px solid #262b35;
-  border-radius: 6px;
-  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid #232833;
+  border-radius: 3px;
+  padding: 5px 9px;
 }
 .app.has-review :deep(.decision-summary) { grid-area: 4 / 2 / 5 / 3; align-self: start; padding: 6px 10px 6px 8px; border-left-width: 3px; }
 .app :deep(.decision-summary.decision-deny) { border-left-color: #ff6b6b; }
@@ -383,7 +381,7 @@ onMounted(async () => {
 }
 .app.has-review :deep(.weight-row.flagged)::after { background: #e6a23c; }
 .app.has-review :deep(.weight-row.disabled)::after { background: transparent; }
-.app.has-review :deep(.weight-label) { min-width: 92px; }
+.app.has-review :deep(.weight-label) { min-width: 92px; padding-left: 6px; }
 .app.has-review :deep(.weight-conf) { margin-left: auto; color: #9aa3b2; }
 /* 名称 + 置信度就够；条宽已经画在底边，阈值与原始值进 title */
 .app.has-review :deep(.weight-bar),

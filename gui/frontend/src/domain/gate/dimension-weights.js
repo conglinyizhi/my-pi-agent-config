@@ -15,10 +15,10 @@ export function fmt(value) {
 	return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 }
 
-/** 置信度显示：两位小数；undefined 表示该维度没有置信度（noul），显示「无」 */
+/** 置信度显示成百分比（0.6 → 60%）；没有置信度（模型没给）显示「无」 */
 export function fmtConfidence(confidence) {
 	if (typeof confidence !== "number" || !Number.isFinite(confidence)) return "无";
-	return confidence.toFixed(2);
+	return `${Math.round(confidence * 100)}%`;
 }
 
 /** 生效阈值说明：above 一定有；below 为 null 表示该维度不支持 */
