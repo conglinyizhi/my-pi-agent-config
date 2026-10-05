@@ -23,7 +23,7 @@ RT ?= $(HOME)/.pi/runtime
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
         require-component ab-status ab-pack ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-firstaid \
-        smoke
+        gui-canary smoke
 
 help: ## 列出所有目标
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -97,6 +97,9 @@ test-lib: ## lib 下其余测试（文件多，撞内存墙就再拆一组）
 test: test-ab test-ptc test-sandbox test-gui test-lib ## 全部测试（按组串行）
 
 # ── 灰盒验收 ──
+
+gui-canary: ## GUI 启动自检（会弹一个闸门窗，判定后自动关掉）
+	scripts/gui-canary.sh
 
 smoke: ## 壳的三条路径真验（会起真 pi、会花一次极小的模型调用）
 	scripts/ab-smoke.sh

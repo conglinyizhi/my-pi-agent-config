@@ -22,6 +22,7 @@ make ab-status
 | **图形界面/审批窗起不来，但没有崩溃转储** | 先看 `bin/gui.sh` 与软链 `bin/gui` 在不在（旧代码与旧桌面条目找的是不带 .sh 的名字） |
 | 审核判定明显不对劲（全拒、全放、老是超时） | `make ab-rollback COMPONENT=audit`，然后 `/reload` |
 | 不知道坏在哪一步 | `make ab-log COMPONENT=audit` 看流水 |
+| 想确认 GUI 到底起不起得来 | `make gui-canary`（弹一个合成闸门窗，判定后自动关掉） |
 
 回退最终落到 `bin/ab-rollback.sh`：一段**纯 shell**，不依赖 node、不依赖 Electron、不依赖任何扩展。
 Electron 完全起不来时它也能用（这就是它为什么故意写得这么笨）；`make ab-rollback` 只是给它套了个名字。
@@ -41,6 +42,9 @@ Electron 完全起不来时它也能用（这就是它为什么故意写得这�
 ```
 
 ## 没有转储的那种"起不来"
+
+怀疑 GUI 起不来时，先跑 `make gui-canary`：它起一个合成闸门窗、等前端挂载完成的信号，
+然后判定并自动收掉那个窗。结果会记进引擎（不进晋升连胜，连续失败到门槛会触发自动回退）。
 
 崩溃转储（coredump）是 Electron 崩了才有的。**脚本本身不存在**时它连 Electron 都走不到，
 所以"起不来 + 没有任何转储"要先怀疑启动器路径，而不是 Electron。
