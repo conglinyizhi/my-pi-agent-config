@@ -307,7 +307,8 @@ onMounted(async () => {
   grid-auto-rows: min-content;
   grid-auto-flow: row dense;
   align-content: start;
-  overflow: hidden;
+  /* 放不下时宁可整页滚一点，也不让块被底栏压住（sticky 那版就是压住了内容） */
+  overflow: auto;
 }
 /* 平铺：块不铺底、不浮起，只用发丝线分界，全部落在同一个面上。
    块默认整宽；第 1 行 header 整宽，第 2-3 行左=代码区、右=LLM 意见 / System One 决策，
@@ -334,7 +335,7 @@ onMounted(async () => {
   grid-area: 2 / 1 / 4 / 2;
   background: #0d1014;
   padding: 0;
-  min-height: 0;
+  min-height: 110px;
   overflow: auto;
 }
 .app.has-review :deep(.fold-legend) {
@@ -346,12 +347,10 @@ onMounted(async () => {
 .app.has-review :deep(.model-card[data-model="chat"]) { grid-area: 2 / 2 / 3 / 3; }
 .app.has-review :deep(.model-card[data-model="system1"]) { grid-area: 3 / 2 / 4 / 3; }
 .app.has-review :deep(.model-head) { font-size: 11px; color: #8ea2c8; display: flex; align-items: center; gap: 6px; }
-/* 底栏：整宽，钉在下沿 */
+/* 底栏：整宽，占自己一行。不 sticky——它一浮起来就会盖住下面那块 */
 .app :deep(.actions),
 .app.has-review :deep(.actions) {
   grid-column: 1 / -1;
-  position: sticky;
-  bottom: 0;
   background: #151922;
   border-color: #2b3140;
 }
@@ -388,10 +387,11 @@ onMounted(async () => {
 .app.has-review :deep(.weight-risk),
 .app.has-review :deep(.weight-threshold),
 .app.has-review :deep(.weight-raw) { display: none; }
-/* 静态扫描结果按内容走，不设内部滚动（设计图要求：除代码区外别出竖滚动条） */
-.app.has-review > .merged,
-.app.has-review > .effects,
-.app.has-review > .var-table { max-height: none; overflow: visible; }
+/* 解析结果给一个宽松上限：正常窗口下按内容走（不滚），只有窗口很矮时才自己滚，
+   这样底栏不会被推到屏幕外——按钮够得着比"绝对不滚"更重要 */
+.app.has-review > .merged { max-height: 22vh; overflow: auto; }
+.app.has-review > .effects { max-height: 26vh; overflow: auto; }
+.app.has-review > .var-table { max-height: 18vh; overflow: auto; }
 /* System One 决策区：名称在左、数值在右，行间发丝线 */
 .app.has-review :deep(.weight-row) { border-top: 1px solid #232833; padding: 3px 0; font-size: 11.5px; }
 .app.has-review :deep(.weight-row:first-of-type) { border-top: 0; }
