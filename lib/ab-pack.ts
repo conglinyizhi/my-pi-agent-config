@@ -16,6 +16,9 @@ import { AB_COMPONENTS, AB_SLOTS, type AbComponent, type AbSlot, type SlotManife
 /** 构建允许落在哪些槽 */
 export const BUILDABLE_SLOTS: readonly AbSlot[] = ["dev", "head"];
 
+/** 只有自举能把基线槽（stable/previous）铺出来；平时它们由晋升与回退动 */
+export const BOOTSTRAP_SLOTS: readonly AbSlot[] = ["stable", "previous"];
+
 export interface PackOptions {
 	component: AbComponent;
 	/** 构建来源：tag、sha 或 HEAD */
@@ -29,6 +32,8 @@ export interface PackOptions {
 	/** gui 组件才有的协议信息（从槽内自报里读） */
 	protocol?: number;
 	windows?: string[];
+	/** 自举：允许落 stable/previous，用来给"从零开始"铺一条可回退的基线 */
+	bootstrap?: boolean;
 }
 
 export interface PackPlan {
@@ -45,8 +50,11 @@ export function planPack(options: PackOptions): PackPlan {
 	if (!AB_SLOTS.includes(options.slot)) {
 		return { ok: false, reason: `槽名必须是 ${AB_SLOTS.join(" | ")}` };
 	}
-	if (!BUILDABLE_SLOTS.includes(options.slot)) {
-		const allowed = BUILDABLE_SLOTS.join(" / ");
+	const buildable: readonly AbSlot[] = options.bootstrap
+		? [...BUILDABLE_SLOTS, ...BOOTSTRAP_SLOTS]
+		: BUILDABLE_SLOTS;
+	if (!buildable.includes(options.slot)) {
+		const allowed = buildable.join(" / ");
 		return { ok: false, reason: `${options.slot} 只由晋升与回退动，构建只能落 ${allowed}` };
 	}
 	const ref = options.ref.trim() === "" ? "HEAD" : options.ref.trim();

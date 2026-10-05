@@ -26,6 +26,8 @@ interface Options {
 	ref: string;
 	slot: AbSlot;
 	json: boolean;
+	/** 自举：允许落 stable/previous，给"从零开始"铺一条可回退的基线 */
+	bootstrap: boolean;
 }
 
 function parseArgs(argv: string[]): { component?: string; options: Options } {
@@ -34,6 +36,7 @@ function parseArgs(argv: string[]): { component?: string; options: Options } {
 		ref: "HEAD",
 		slot: "dev",
 		json: false,
+		bootstrap: false,
 	};
 	let component: string | undefined;
 	for (let index = 0; index < argv.length; index += 1) {
@@ -42,6 +45,7 @@ function parseArgs(argv: string[]): { component?: string; options: Options } {
 		if (arg === "--ref") { options.ref = argv[++index] ?? options.ref; continue; }
 		if (arg === "--slot") { options.slot = (argv[++index] ?? options.slot) as AbSlot; continue; }
 		if (arg === "--json") { options.json = true; continue; }
+		if (arg === "--bootstrap") { options.bootstrap = true; continue; }
 		if (!component) component = arg;
 	}
 	return { component, options };
@@ -90,7 +94,7 @@ function specOfSlot(slotDir: string): { protocol?: number; windows?: string[] } 
 function main(argv: string[]): number {
 	const { component, options } = parseArgs(argv);
 	if (!component) {
-		console.error("用法：ab-pack <audit|gui> [--ref <tag|sha|HEAD>] [--slot dev|head] [--runtime-root <dir>] [--json]");
+		console.error("用法：ab-pack <audit|gui> [--ref <tag|sha|HEAD>] [--slot dev|head] [--bootstrap] [--runtime-root <dir>] [--json]");
 		return 2;
 	}
 	const runtimeRoot = assertRuntimeRoot(options.runtimeRoot);
@@ -111,6 +115,7 @@ function main(argv: string[]): number {
 		slot: options.slot,
 		dirty,
 		at,
+		bootstrap: options.bootstrap,
 		...(sha ? { sha } : {}),
 	});
 	if (!plan.ok || !plan.manifest) {

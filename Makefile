@@ -22,7 +22,7 @@ RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        require-component ab-status ab-pack ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-firstaid \
+        require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-firstaid \
         gui-canary smoke
 
 help: ## 列出所有目标
@@ -44,6 +44,11 @@ ab-status: ## 看两个组件在跑哪一版（读类，不用给 COMPONENT）
 
 ab-pack: require-component ## 从 git ref 构建到槽（必给 COMPONENT，SLOT=dev|head）
 	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
+
+ab-bootstrap: require-component ## 自举：把当前 HEAD 同时铺成 stable 与 previous（从零开始的那条回退路）
+	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot stable --bootstrap --runtime-root $(RT)
+	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot previous --bootstrap --runtime-root $(RT)
+	@printf '已自举 %s：stable 与 previous 都是 %s\n' "$(COMPONENT)" "$(REF)"
 
 ab-switch: require-component ## 把 current 指向某个槽（必给 COMPONENT，SLOT=dev）
 	bin/ab-slot.sh switch $(COMPONENT) $(SLOT) --runtime-root $(RT)

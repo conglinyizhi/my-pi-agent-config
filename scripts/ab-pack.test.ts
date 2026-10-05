@@ -77,3 +77,28 @@ describe("槽要能拿到宿主的依赖", () => {
 	});
 });
 
+
+describe("自举基线槽", () => {
+	it("不带 --bootstrap 时 stable 仍然拒绝构建", () => {
+		const root = tmpRoot();
+		const result = run(["audit", "--slot", "stable", "--runtime-root", root]);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /晋升与回退/);
+		assert.equal(existsSync(join(root, "audit", "stable")), false);
+	});
+
+	it("带 --bootstrap 就能把 HEAD 铺成 stable", () => {
+		const root = tmpRoot();
+		const result = run(["audit", "--slot", "stable", "--bootstrap", "--runtime-root", root]);
+		assert.equal(result.status, 0, result.stderr);
+		const manifest = JSON.parse(readFileSync(join(root, "audit", "stable", "manifest.json"), "utf8"));
+		assert.equal(manifest.ref, "HEAD");
+	});
+
+	it("previous 同样只在自举时能写", () => {
+		const root = tmpRoot();
+		assert.notEqual(run(["audit", "--slot", "previous", "--runtime-root", root]).status, 0);
+		assert.equal(run(["audit", "--slot", "previous", "--bootstrap", "--runtime-root", root]).status, 0);
+	});
+});
+
