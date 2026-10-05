@@ -107,3 +107,20 @@ describe("槽里那份起不来就退回仓库", () => {
 		assert.match(readFileSync(join(root, "audit", "notice.txt"), "utf8"), /加载失败/);
 	});
 });
+
+describe("自加载护栏", () => {
+	it("槽里那份就是壳本身时退回仓库，不递归", async () => {
+		const root = setup();
+		pointCurrent(root, "dev");
+		const slotFile = join(root, "audit", "dev", "extensions", "demo", "index.ts");
+		const outcome = await loadSlotExtension("audit", {
+			extension: "demo",
+			fallback,
+			runtimeRoot: root,
+			selfPath: slotFile, // 模拟：壳自己就是槽里那个文件
+		});
+		assert.equal(outcome.source, "repo");
+		assert.match(String(outcome.reason), /就是壳本身/);
+	});
+});
+

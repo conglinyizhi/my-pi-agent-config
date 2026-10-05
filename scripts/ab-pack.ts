@@ -18,7 +18,7 @@ import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { formatManifest, type SlotManifest, componentPath, slotPath, type AbComponent, type AbSlot } from "../lib/ab-slots.ts";
-import { archivePathsOf, planPack } from "../lib/ab-pack.ts";
+import { archivePathsOf, flattenShellsInSlot, planPack } from "../lib/ab-pack.ts";
 import { assertRuntimeRoot } from "../lib/ab-store.ts";
 
 interface Options {
@@ -129,6 +129,8 @@ function main(argv: string[]): number {
 		rmSync(target, { recursive: true, force: true });
 		mkdirSync(target, { recursive: true });
 		extract(repo, options.ref, archivePathsOf(component as AbComponent), target);
+		// 槽里的入口不能是壳：摊平成对 impl 的重导出，否则壳加载壳会无限递归
+		const flattened = component === "audit" ? flattenShellsInSlot(target) : [];
 		if (component === "gui") {
 			const dist = join(repo, "gui", "frontend", "dist");
 			if (existsSync(dist)) cpSync(dist, join(target, "gui", "frontend", "dist"), { recursive: true });
@@ -142,6 +144,7 @@ function main(argv: string[]): number {
 			console.log(`已构建：${component} -> ${options.slot}`);
 			console.log(`  来源：${options.ref}${sha ? ` (${sha})` : ""}${dirty ? "（脏工作区）" : ""}`);
 			console.log(`  目录：${target}`);
+			if (flattened.length > 0) console.log(`  已摊平入口：${flattened.join("、")}`);
 		}
 		return 0;
 	} catch (error) {

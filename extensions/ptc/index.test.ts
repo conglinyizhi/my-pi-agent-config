@@ -18,7 +18,8 @@ import {
 import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { resetProcessSingleton } from "../../lib/process-singleton.ts";
 import { buildRunCodeDefinition, hostPackageRoot, loadHostCodemode, RUN_CODE_SCHEMA, type HostCodemodeModule } from "./host.ts";
-import { readPtcSettings, registerRunCode } from "./index.ts";
+// 实现已挪到 impl.ts：入口 index.ts 只是壳体，这里测的是实现本身
+import { readPtcSettings, registerRunCode } from "./impl.ts";
 import { clearNestedCalls, clearPtcAudits, clearPtcScopes, ptcScopeForNestedCall, recentPtcAudits } from "../../lib/ptc-audit.ts";
 
 describe("执行理由的消毒", () => {

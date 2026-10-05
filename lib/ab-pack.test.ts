@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { archivePathsOf, canPromote, planPack } from "./ab-pack.ts";
+import { existsSync as existsSyncForTest, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { archivePathsOf, canPromote, flattenShellsInSlot, planPack } from "./ab-pack.ts";
 
 const AT = "2026-10-05T10:00:00.000Z";
 const base = { component: "audit" as const, ref: "HEAD", slot: "dev" as const, dirty: false, at: AT };
@@ -69,3 +72,21 @@ describe("取哪些路径", () => {
 		assert.deepEqual(archivePathsOf("gui"), ["gui"]);
 	});
 });
+
+describe("槽里摊平壳入口", () => {
+	it("像壳的入口摊平成重导出，别的入口不碰", () => {
+		const root = mkdtempSync(join(tmpdir(), "ab-pack-flat-"));
+		const shellDir = join(root, "extensions", "ptc");
+		mkdirSync(shellDir, { recursive: true });
+		writeFileSync(join(shellDir, "impl.ts"), "export default function factory() {}\n", "utf8");
+		writeFileSync(join(shellDir, "index.ts"), "import { loadSlotExtension } from \"../../lib/ab-shell.ts\";\nexport default 1;\n", "utf8");
+		const plainDir = join(root, "extensions", "plain");
+		mkdirSync(plainDir, { recursive: true });
+		writeFileSync(join(plainDir, "index.ts"), "export default function factory() {}\n", "utf8");
+		const flattened = flattenShellsInSlot(root, ["ptc", "plain", "missing"]);
+		assert.deepEqual(flattened, ["ptc"]);
+		assert.equal(readFileSync(join(shellDir, "index.ts"), "utf8"), 'export { default } from "./impl.ts";\n');
+		assert.match(readFileSync(join(plainDir, "index.ts"), "utf8"), /export default function factory/, "不是壳就别动它");
+	});
+});
+

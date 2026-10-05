@@ -9,6 +9,8 @@
 //   2. 脏工作区可以构建到 dev/head（狗粮本来就要试未提交的东西），但 manifest 记 dirty，
 //      而脏的产物不允许晋升（除非 --force，且留痕）
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { AB_COMPONENTS, AB_SLOTS, type AbComponent, type AbSlot, type SlotManifest } from "./ab-slots.ts";
 
 /** 构建允许落在哪些槽 */
@@ -75,4 +77,31 @@ export function canPromote(manifest: SlotManifest | undefined, options: { force?
 /** 槽里需要从 ref 取哪些路径：audit 要源码（jiti 直接跑 ts），gui 要窗口产物 */
 export function archivePathsOf(component: AbComponent): string[] {
 	return component === "audit" ? ["lib", "extensions"] : ["gui"];
+}
+
+/** 会把仓库入口做成壳的扩展：这些入口在槽里必须摊平 */
+export const SHELLED_ENTRIES: readonly string[] = ["ptc", "sandbox-permissions"];
+
+/**
+ * 把槽里的壳入口摊平成对 impl 的重导出。
+ *
+ * 不摊平会无限递归：壳解析到槽 → 槽里的 index.ts 又是同一个壳 → 壳加载壳。
+ * 只在确实看着像壳（提到 loadSlotExtension）且同目录有 impl.ts 时才动，别的入口不碰。
+ */
+export function flattenShellsInSlot(slotDir: string, entries: readonly string[] = SHELLED_ENTRIES): string[] {
+	const flattened: string[] = [];
+	for (const entry of entries) {
+		const dir = join(slotDir, "extensions", entry);
+		const impl = join(dir, "impl.ts");
+		const index = join(dir, "index.ts");
+		try {
+			if (!existsSync(impl) || !existsSync(index)) continue;
+			if (!readFileSync(index, "utf8").includes("loadSlotExtension")) continue;
+			writeFileSync(index, `export { default } from "./impl.ts";\n`, "utf8");
+			flattened.push(entry);
+		} catch {
+			// 摊平失败就留着原样：壳的自加载护栏会兜住（退回仓库实现，不递归）
+		}
+	}
+	return flattened;
 }

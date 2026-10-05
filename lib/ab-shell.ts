@@ -8,7 +8,7 @@
 // 令牌那一环是实测来的结论（2026-10-05 探针）：动态 import 同一个路径字符串会被 URL 缓存吃掉，
 // 换了软链还是旧模块；必须把随槽变化的令牌拼进查询串，换槽才真的换实现。
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { componentInitialized, currentSlot, readManifest } from "./ab-store.ts";
@@ -33,6 +33,13 @@ export interface SlotLoadOptions<T> {
 	fallback: () => Promise<T>;
 	/** 运行时根覆盖（测试用） */
 	runtimeRoot?: string;
+	/**
+	 * 调用方自己的文件路径（壳入口传 fileURLToPath(import.meta.url)）。
+	 *
+	 * 用来挡住一种会无限递归的情形：槽里那份**就是壳本身**（打包时没把入口摊平）。
+	 * 那种情况下再加载一次等于壳加载壳，会一直套下去。
+	 */
+	selfPath?: string;
 }
 
 /** 槽里那份能不能当扩展用：pi 要的是一个函数做 default */
@@ -70,6 +77,16 @@ export async function loadSlotExtension<T>(
 	const slotFile = join(slotPath(runtimeRoot, component, active), "extensions", options.extension, "index.ts");
 	if (!existsSync(slotFile)) {
 		return await fallback(`槽 ${active} 里没有 extensions/${options.extension}/index.ts`);
+	}
+
+	if (options.selfPath) {
+		try {
+			if (realpathSync(slotFile) === realpathSync(options.selfPath)) {
+				return await fallback(`槽 ${active} 里那份就是壳本身，已退回仓库实现`);
+			}
+		} catch {
+			// 比对不出结果就当不是壳，按正常路径继续
+		}
 	}
 
 	const token = slotToken(readManifest(runtimeRoot, component, active));
