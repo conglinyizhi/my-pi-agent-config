@@ -22,8 +22,8 @@ describe("脚本事前审核的呈现", () => {
     // commands 那一区已删：长命令不换行不着色，读不出东西，改在 shell 芯片弹窗里看
     assert.deepEqual(sections.map((s) => s.key), ["tools", "paths", "opaque"]);
     assert.deepEqual(sections[0].items, ["bash", "read"]);
-    assert.deepEqual(sections[2].items, ['"ls -l"']);
-    assert.equal(sections[3].warn, true);
+    assert.deepEqual(sections[2].items, ["3:1 bash 的参数里有非字面量"]);
+    assert.equal(sections[2].warn, true);
     assert.equal(sections[0].warn, false);
   });
 
