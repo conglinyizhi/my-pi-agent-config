@@ -311,50 +311,85 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* ── 版式：统一卡片 ─────────────────────────────────────────
+   一窗之内只用一套底色/描边/圆角，块与块之间留缝；色彩只用来标"这块是什么语气"，
+   不再让每块自己铺一层不同色调的底，那是之前看着乱的根源。
+   左主区放要横向空间的（指令、解析结果），右侧栏放模型审核。
+   没有模型意见的窗（sandbox-allow、capability）单列，卡片规则一样适用。 */
 .app {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  padding: 10px;
   height: 100vh;
   overflow: auto;
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #12141b;
+  color: #dfe3ea;
 }
-/* 有模型意见时排两栏：右列整根通到顶（header / 文本模型 / 分类），
-   左列是标题、判定摘要、指令、图例、解析结果、规则、路径……
-   两个子组件的根都是 display: contents，所以真正的格子是它们的孩子。
-   没有模型意见的窗（sandbox-allow、capability）保持单列。 */
 .app.has-review {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
   grid-auto-rows: min-content;
   grid-auto-flow: row dense;
   align-content: start;
 }
-.app.has-review > *,
-.app.has-review :deep(.gate-fragment > *) { grid-column: 1; }
-/* 左列前三块钉住：标题、判定摘要、指令 */
-.app.has-review :deep(.top-bar) { grid-column: 1; grid-row: 1; }
-.app.has-review :deep(.decision-summary) { grid-column: 1; grid-row: 2; }
-.app.has-review :deep(.cmd-wrap) { grid-column: 1; grid-row: 3; }
-/* 右列：模型审核摊平成三段，逐块落右列 */
+.app > *,
+.app :deep(.gate-fragment > *) {
+  grid-column: 1;
+  background: #1a1e28;
+  border: 1px solid #262b38;
+  border-radius: 10px;
+  padding: 10px 16px;
+}
+/* 判定摘要：语气靠左边一条色带，不铺整屏底 */
+.app :deep(.decision-summary) { padding: 10px 16px 10px 13px; border-left-width: 3px; }
+.app :deep(.decision-summary.decision-deny) { border-left-color: #ff6b6b; }
+.app :deep(.decision-summary.decision-warn) { border-left-color: #e6a23c; }
+.app :deep(.decision-summary.decision-allow) { border-left-color: #4ec9b0; }
+/* 左列只钉一块：判定摘要永远在头一格。
+   其余一律按文档顺序自动排——块是条件出现的，钉死行号一旦缺块就整条串位（踩过）。 */
+.app :deep(.decision-summary) { grid-row: 1; }
+/* 指令卡：标题 + 代码井 + 图例，三段拼成一张（接缝处不重复描边） */
+.app :deep(.top-bar) {
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+}
+.app :deep(.cmd-wrap) {
+  background: #0e1016;
+  border-left: 1px solid #262b38;
+  border-right: 1px solid #262b38;
+  border-radius: 0;
+  padding: 0;
+  min-height: 40vh;
+}
+.app :deep(.fold-legend) {
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  padding: 8px 16px 10px;
+}
+/* 右侧栏：模型审核从上到下一段到底，段内用发丝线分 */
 .app.has-review :deep(.review-block) { display: contents; }
-.app.has-review :deep(.review-header) { grid-column: 2; grid-row: 1; }
+.app.has-review :deep(.review-header) { grid-column: 2; grid-row: 1; border-radius: 10px 10px 0 0; }
 .app.has-review :deep(.review-reason),
 .app.has-review :deep(.review-suggestion),
 .app.has-review :deep(.review-opinion),
 .app.has-review :deep(.chat-review),
-.app.has-review :deep(.weight-table) { grid-column: 2; }
-.app.has-review :deep(.review-header),
-.app.has-review :deep(.review-reason),
-.app.has-review :deep(.review-suggestion),
-.app.has-review :deep(.review-opinion),
+.app.has-review :deep(.weight-table) {
+  grid-column: 2;
+  border-top: 0;
+  border-radius: 0;
+}
 .app.has-review :deep(.chat-review),
-.app.has-review :deep(.weight-table) { border-left: 1px solid #2a2a4a; padding: 6px 16px; }
-/* 段与段之间来一条线：header / 文本模型 / 分类 */
-.app.has-review :deep(.chat-review),
-.app.has-review :deep(.weight-table) { border-top: 1px solid #2a2a4a; }
-/* 底栏整宽 */
-.app.has-review :deep(.actions) { grid-column: 1 / -1; }
+.app.has-review :deep(.weight-table) { border-top: 1px solid #262b38; }
+/* 底栏：整宽，钉在窗口下沿 */
+.app :deep(.actions),
+.app.has-review :deep(.actions) {
+  grid-column: 1 / -1;
+  position: sticky;
+  bottom: 0;
+  background: #171b24;
+  border-color: #2b3140;
+}
 .var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
 .var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
