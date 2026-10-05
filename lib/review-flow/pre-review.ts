@@ -6,7 +6,9 @@
 
 import { autoApproveDecision, type BashPreReviewResult } from "../bash-approval.ts";
 import { reviewCacheKey, type LlmReviewConfig, type ReviewCache, type ReviewResult } from "../../extensions/sandbox-permissions/llm-review.ts";
-import { preReviewReviewId, runBashPreReviewFlow } from "./flows/bash.ts";
+import { bashFlowNodes, preReviewFlowId, preReviewReviewId, runBashPreReviewFlow } from "./flows/bash.ts";
+import { findFlow } from "./load.ts";
+import { runFlow } from "./runner.ts";
 import type { BashFlowInput, ReviewNodeDeps } from "./nodes.ts";
 
 export interface PreReviewOptions {
@@ -31,11 +33,13 @@ export async function preReviewViaFlow(options: PreReviewOptions): Promise<BashP
 	const hit = cache.get(key);
 	if (hit) return { config, review: hit, autoApproved: autoApproveDecision(hit, config) };
 
-	const result = await runBashPreReviewFlow(
-		input,
-		{ ...options.nodes, loadConfig: () => config },
-		config.backend,
-	);
+	const nodes = { ...options.nodes, loadConfig: () => config };
+	// 作者写了同名流程就用它（~/.pi/agent/review-flows/<id>.ts），否则内置那条。
+	// 走作者那条时，内置种类的节点实现照样能用，作者自己的节点按 id 覆盖。
+	const authored = await findFlow(preReviewFlowId(config.backend));
+	const result = authored
+		? await runFlow(authored.flow, input, { nodes: bashFlowNodes(nodes), byId: authored.nodes })
+		: await runBashPreReviewFlow(input, nodes, config.backend);
 	const review = result.outputs[preReviewReviewId(config.backend)] as ReviewResult | undefined;
 	// 只缓存有效结论（error 是瞬态的：没 key、超时、限流，下次重试）
 	if (review && review.verdict !== "error") cache.set(key, review);

@@ -27,9 +27,15 @@ function outEdgesOf(node: FlowNode): string[] {
 	return out;
 }
 
-/** 有没有写死终点的出边，或本身就是出口节点（gate 由人给决定，也算出口） */
+/**
+ * 有没有写死终点的出边，或本身就是出口节点。
+ *
+ * terminal 就是出口；gate 由人给决定；custom 是作者自己的节点，它可以在实现里直接返回
+ * terminal（允许这样，是因为运行时兜底是 fail-closed：既没给决定、也没有 next 时按拒绝收场，
+ * 不会静默挂住）。别的种类不行：它们必须显式写出往哪走。
+ */
 function hasTerminalEdge(node: FlowNode): boolean {
-	if (node.kind === "terminal" || node.kind === "gate") return true;
+	if (node.kind === "terminal" || node.kind === "gate" || node.kind === "custom") return true;
 	return [node.next, node.onError, node.onTimeout, node.onEmpty].some((edge) => isTerminal(edge));
 }
 

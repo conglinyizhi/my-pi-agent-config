@@ -85,6 +85,11 @@ export function preReviewReviewId(backend: "chat" | "classifier" | "chain"): str
 	return backend === "chat" ? "chat" : "merge";
 }
 
+/** 预审流程的 id：作者同名文件就覆盖它（文件名就是流程 id） */
+export function preReviewFlowId(backend: "chat" | "classifier" | "chain"): string {
+	return bashPreReviewFlowFor(backend).id;
+}
+
 /** 跑一次预审流程；决定 allow 就是自动放行 */
 export async function runBashPreReviewFlow(
 	input: BashFlowInput,

@@ -15,7 +15,9 @@ export type NodeKind =
 	| "merge"
 	| "gate"
 	| "autoapprove"
-	| "terminal";
+	| "terminal"
+	/** 作者自己的节点：实现随流程文件一起交（见 lib/review-flow/kit.ts） */
+	| "custom";
 
 /**
  * 节点级执行语义：

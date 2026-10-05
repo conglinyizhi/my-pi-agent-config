@@ -48,6 +48,8 @@ export type NodeImpl = (ctx: NodeRunContext) => Promise<NodeOutcome>;
 export interface RunnerDeps {
 	/** 按节点种类给实现；缺哪个种类就是那条流程用不了它 */
 	nodes: Partial<Record<NodeKind, NodeImpl>>;
+	/** 按节点 id 给实现，优先于按种类那份：作者自己的节点走这里 */
+	byId?: Record<string, NodeImpl>;
 	/** 测试可注入的时钟 */
 	now?: () => number;
 }
@@ -148,11 +150,11 @@ export async function runFlow(
 			if (outputs.has(dep)) upstream[dep] = outputs.get(dep);
 		}
 
-		const impl = deps.nodes[node.kind];
+		const impl = deps.byId?.[id] ?? deps.nodes[node.kind];
 		const at = now();
 		let outcome: NodeOutcome;
 		if (!impl) {
-			outcome = { status: "error", message: `没有 ${node.kind} 节点的实现` };
+			outcome = { status: "error", message: `没有 ${node.kind} 节点的实现（id：${id}）` };
 		} else {
 			const ctx: NodeRunContext = {
 				nodeId: id,
