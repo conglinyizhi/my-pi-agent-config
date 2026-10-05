@@ -19,6 +19,7 @@ import {
 	emptyStreak,
 	formatStreak,
 	formatManifest,
+	healthAfter,
 	isSlot,
 	parseManifest,
 	parseStreak,
@@ -226,6 +227,66 @@ export function noteRoundTrip(options: {
 		reason: decision.reason,
 		rolledBack,
 		watchdog: watchdog.reason,
+	};
+}
+
+export interface HealthResult {
+	ok: boolean;
+	failing: number;
+	rolledBack: boolean;
+	watchdog: string;
+	reason: string;
+}
+
+/**
+ * 记一次**自检**结果（GUI 起没起来、审核链转不转得动这类），与真实审核往返分开。
+ *
+ * 与 noteRoundTrip 的区别：成功不增加晋升连胜，失败照样累进看门狗的连续失败计数。
+ * 于是"机器自己敲的"不会把版本推上晋升，但"起不来"照样能把版本退回去。
+ */
+export function noteHealth(options: {
+	runtimeRoot: string;
+	component: AbComponent;
+	ok: boolean;
+	reason?: string;
+	failThreshold?: number;
+	at?: string;
+}): HealthResult {
+	const at = options.at ?? nowIso();
+	const next = healthAfter(readStreak(options.runtimeRoot, options.component), options.ok, {
+		now: at,
+		...(options.reason ? { reason: options.reason } : {}),
+	});
+	writeStreak(options.runtimeRoot, options.component, next);
+	appendLog(
+		options.runtimeRoot,
+		options.component,
+		JSON.stringify({ event: "health", ok: options.ok, failing: next.failing ?? 0, ...(options.reason ? { reason: options.reason } : {}) }),
+		at,
+	);
+	const watchdog = decideRollback(next, {
+		...(options.failThreshold !== undefined ? { threshold: options.failThreshold } : {}),
+		hasPrevious: existsSync(slotPath(options.runtimeRoot, options.component, "previous")),
+		currentIsPrevious: currentSlot(options.runtimeRoot, options.component) === "previous",
+	});
+	let rolledBack = false;
+	if (watchdog.action === "rollback") {
+		rollback(options.runtimeRoot, options.component, `自检连续失败：${watchdog.reason}`, at);
+		appendLog(
+			options.runtimeRoot,
+			options.component,
+			JSON.stringify({ event: "watchdog-rollback", reason: watchdog.reason, from: "health" }),
+			at,
+		);
+		writeStreak(options.runtimeRoot, options.component, { ...next, failing: 0 });
+		rolledBack = true;
+	}
+	return {
+		ok: options.ok,
+		failing: next.failing ?? 0,
+		rolledBack,
+		watchdog: watchdog.reason,
+		reason: options.reason ?? (options.ok ? "自检通过" : "自检失败"),
 	};
 }
 

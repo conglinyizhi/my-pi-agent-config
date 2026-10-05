@@ -11,6 +11,7 @@ import {
 	decideRollback,
 	emptyStreak,
 	formatManifest,
+	healthAfter,
 	formatStreak,
 	isComponent,
 	isSlot,
@@ -183,6 +184,28 @@ describe("看门狗判定", () => {
 	it("干净一次就把失败连胜清零", () => {
 		const state = streakAfter({ ...emptyStreak(), failing: 2 }, "clean");
 		assert.equal(state.failing, 0);
+	});
+});
+
+
+describe("自检计数（与真实往返分开）", () => {
+	it("成功不增加晋升连胜，只把连续失败清零", () => {
+		const state = healthAfter({ ...emptyStreak(), clean: 3, failing: 2 }, true);
+		assert.equal(state.clean, 3, "自检成功不该算成一次干净往返");
+		assert.equal(state.failing, 0);
+	});
+
+	it("失败累进连续失败与累计失败，并记原因", () => {
+		const state = healthAfter({ ...emptyStreak(), failing: 1, failures: 1 }, false, { reason: "窗口没起来" });
+		assert.equal(state.failing, 2);
+		assert.equal(state.failures, 2);
+		assert.equal(state.lastReason, "窗口没起来");
+		assert.equal(state.clean, 0);
+	});
+
+	it("自检连续失败到门槛照样能把版本退回去", () => {
+		const state = healthAfter({ ...emptyStreak(), failing: 2 }, false);
+		assert.equal(decideRollback(state, { threshold: 3, hasPrevious: true }).action, "rollback");
 	});
 });
 

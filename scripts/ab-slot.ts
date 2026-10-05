@@ -31,6 +31,7 @@ import {
 	appendLog,
 	assertRuntimeRoot,
 	atomicLink,
+	noteHealth,
 	noteRoundTrip,
 	nowIso,
 	promote,
@@ -49,6 +50,7 @@ interface Options {
 	force: boolean;
 	reason?: string;
 	tail: number;
+	failThreshold?: number;
 }
 
 export function parseArgs(argv: string[]): { command: string; positional: string[]; options: Options } {
@@ -70,6 +72,7 @@ export function parseArgs(argv: string[]): { command: string; positional: string
 		if (arg === "--force") { options.force = true; continue; }
 		if (arg === "--reason") { options.reason = argv[++index]; continue; }
 		if (arg === "--tail") { options.tail = Number(argv[++index] ?? options.tail); continue; }
+		if (arg === "--fail-threshold") { options.failThreshold = Number(argv[++index] ?? 0) || undefined; continue; }
 		positional.push(arg);
 	}
 	const [command = "", ...rest] = positional;
@@ -191,6 +194,25 @@ export function runAbSlot(argv: string[]): number {
 				{ ok: true, promoted: false, clean: result.clean },
 				options.json,
 				`已记录（${outcome}）：干净 ${result.clean}/${result.threshold}`,
+			);
+			return 0;
+		}
+		case "health": {
+			const component = requireComponent(positional[0]);
+			const verdict = positional[1];
+			if (verdict !== "ok" && verdict !== "fail") throw new Error("health 的第二个参数必须是 ok 或 fail");
+			const result = noteHealth({
+				runtimeRoot,
+				component,
+				ok: verdict === "ok",
+				...(options.reason ? { reason: options.reason } : {}),
+				...(options.failThreshold !== undefined ? { failThreshold: options.failThreshold } : {}),
+			});
+			const tail = result.rolledBack ? "，已达看门狗门槛：已自动回退到上一版" : `（连续失败 ${result.failing}）`;
+			print(
+				{ ok: true, health: result.ok, failing: result.failing, rolledBack: result.rolledBack },
+				options.json,
+				`已记录自检（${verdict}）${tail}`,
 			);
 			return 0;
 		}

@@ -177,6 +177,27 @@ export function decidePromotion(
 		: { action: "promote", reason: `已攒够 ${threshold} 次干净往返，自动晋升` };
 }
 
+/**
+ * 自检结果对计数的影响（与"真的一次审核往返"分开记）。
+ *
+ * 自检成功**不**增加 clean：晋升连胜要的是"人真的用过几次"，不是机器自己敲了几下。
+ * 自检失败**要**增加 failing：GUI 起不来就是起不来，看门狗该按它算账；成功则把连胜清零，
+ * 因为一个能起来的窗口说明这条链刚刚是活的。
+ */
+export function healthAfter(state: StreakState, ok: boolean, options: { now?: string; reason?: string } = {}): StreakState {
+	const at = options.now;
+	if (ok) {
+		return { ...state, failing: 0, ...(at ? { lastAt: at } : {}) };
+	}
+	return {
+		...state,
+		failing: (state.failing ?? 0) + 1,
+		failures: state.failures + 1,
+		...(at ? { lastAt: at } : {}),
+		...(options.reason ? { lastReason: options.reason } : {}),
+	};
+}
+
 export interface RollbackDecision {
 	action: "rollback" | "keep";
 	reason: string;
