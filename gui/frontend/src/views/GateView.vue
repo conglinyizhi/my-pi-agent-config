@@ -311,35 +311,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.app {
-  /* 排版：右上角放模型意见、右侧放分类器权重；指令与解析结果要横向空间，整宽在下面。
-     两个子组件的根都是 display: contents，所以真正的格子是它们的孩子，
-     默认整宽，只把那四块分到左右两列。 */
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-auto-rows: auto;
-  grid-auto-flow: row dense;
-  align-content: start;
-  gap: 0;
-  height: 100vh;
-  overflow: auto;
-  background: #1a1a2e;
-  color: #e0e0e0;
-}
-.app > * { grid-column: 1 / -1; }
-.app :deep(.gate-fragment > *) { grid-column: 1 / -1; }
-/* 云端模型审核那一段是个容器，让它也摊平，里面的块才能进网格 */
-.app :deep(.review-block) { display: contents; }
-/* 顶行两格：左标题、右对话模型意见；第二行：左判定摘要、右分类器权重。
-   脚本区显式钉在第 3 行——下面的解析结果与规则都整宽，靠自动流往后排。 */
-.app :deep(.top-bar) { grid-column: 1; grid-row: 1; }
-.app :deep(.chat-review) { grid-column: 2; grid-row: 1; }
-.app :deep(.decision-summary) { grid-column: 1; grid-row: 2; }
-.app :deep(.weight-table) { grid-column: 2; grid-row: 2; }
-.app :deep(.cmd-wrap) { grid-column: 1 / -1; grid-row: 3; }
-/* 右上角那两块自己收边：右边一列有边框分开 */
-.app :deep(.chat-review) { border-left: 1px solid #2a2a4a; padding: 8px 16px; }
-.app :deep(.weight-table) { border-left: 1px solid #2a2a4a; padding: 8px 16px; }
+.app { display: flex; flex-direction: column; height: 100vh; background: #1a1a2e; color: #e0e0e0; }
 .var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
 .var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
