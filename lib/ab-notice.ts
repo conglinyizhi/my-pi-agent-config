@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AB_COMPONENTS, type AbComponent } from "./ab-slots.ts";
+import { AB_COMPONENTS, type AbComponent } from "./ab-tag.ts";
 
 export function noticePath(runtimeRoot: string, component: AbComponent): string {
 	return join(runtimeRoot, component, "notice.txt");

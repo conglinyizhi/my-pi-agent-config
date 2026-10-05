@@ -23,10 +23,10 @@ function tmpRoot(): string {
 describe("构建 audit 槽", () => {
 	it("源码与 manifest 都落到槽里", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--ref", "HEAD", "--slot", "dev", "--runtime-root", root]);
+		const result = run(["audit", "--ref", "HEAD", "--dir", "dev", "--runtime-root", root]);
 		assert.equal(result.status, 0, result.stderr);
 		const slot = join(root, "audit", "dev");
-		assert.equal(existsSync(join(slot, "lib", "ab-slots.ts")), true);
+		assert.equal(existsSync(join(slot, "lib", "ab-tag.ts")), true);
 		assert.equal(existsSync(join(slot, "extensions", "sandbox-permissions", "index.ts")), true);
 		const manifest = JSON.parse(readFileSync(join(slot, "manifest.json"), "utf8"));
 		assert.equal(manifest.ref, "HEAD");
@@ -37,24 +37,23 @@ describe("构建 audit 槽", () => {
 
 	it("--json 给结构化结果", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--slot", "head", "--runtime-root", root, "--json"]);
+		const result = run(["audit", "--dir", "dev", "--runtime-root", root, "--json"]);
 		assert.equal(result.status, 0, result.stderr);
 		const parsed = JSON.parse(result.stdout);
 		assert.equal(parsed.ok, true);
-		assert.equal(parsed.slot, "head");
-		assert.equal(existsSync(join(root, "audit", "head", "manifest.json")), true);
+		assert.equal(existsSync(join(root, "audit", "dev", "manifest.json")), true, "缺省落暂存目录 dev");
 	});
 
 	it("拒绝往 stable 构建", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--slot", "stable", "--runtime-root", root]);
+		const result = run(["audit", "--dir", "stable", "--runtime-root", root]);
 		assert.equal(result.status, 1);
-		assert.match(result.stderr, /只由晋升与回退动/);
+		assert.match(result.stderr, /只能落暂存目录/);
 		assert.equal(existsSync(join(root, "audit", "stable")), false, "拒绝时不该动盘");
 	});
 
 	it("gui 从老 ref 构建时明说暂不支持，不假装支持", () => {
-		const result = run(["gui", "--ref", "HEAD~1", "--slot", "dev", "--runtime-root", tmpRoot()]);
+		const result = run(["gui", "--ref", "HEAD~1", "--dir", "dev", "--runtime-root", tmpRoot()]);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /暂不支持从老 ref 构建/);
 	});
@@ -69,7 +68,7 @@ describe("构建 audit 槽", () => {
 describe("槽要能拿到宿主的依赖", () => {
 	it("槽里带上 node_modules 软链（不然槽内那份 import 不到宿主 pi 的包）", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--slot", "dev", "--runtime-root", root]);
+		const result = run(["audit", "--dir", "dev", "--runtime-root", root]);
 		assert.equal(result.status, 0, result.stderr);
 		const link = join(root, "audit", "dev", "node_modules");
 		assert.equal(existsSync(link), true, "槽里该有 node_modules");
@@ -78,27 +77,15 @@ describe("槽要能拿到宿主的依赖", () => {
 });
 
 
-describe("自举基线槽", () => {
-	it("不带 --bootstrap 时 stable 仍然拒绝构建", () => {
+describe("自举已删", () => {
+	it("stable / previous 都拒绝构建（没有自举这条路了）", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--slot", "stable", "--runtime-root", root]);
-		assert.notEqual(result.status, 0);
-		assert.match(result.stderr, /晋升与回退/);
-		assert.equal(existsSync(join(root, "audit", "stable")), false);
-	});
-
-	it("带 --bootstrap 就能把 HEAD 铺成 stable", () => {
-		const root = tmpRoot();
-		const result = run(["audit", "--slot", "stable", "--bootstrap", "--runtime-root", root]);
-		assert.equal(result.status, 0, result.stderr);
-		const manifest = JSON.parse(readFileSync(join(root, "audit", "stable", "manifest.json"), "utf8"));
-		assert.equal(manifest.ref, "HEAD");
-	});
-
-	it("previous 同样只在自举时能写", () => {
-		const root = tmpRoot();
-		assert.notEqual(run(["audit", "--slot", "previous", "--runtime-root", root]).status, 0);
-		assert.equal(run(["audit", "--slot", "previous", "--bootstrap", "--runtime-root", root]).status, 0);
+		for (const dir of ["stable", "previous"]) {
+			const result = run(["audit", "--dir", dir, "--runtime-root", root]);
+			assert.notEqual(result.status, 0, dir);
+			assert.match(result.stderr, /只能落暂存目录/);
+			assert.equal(existsSync(join(root, "audit", dir)), false);
+		}
 	});
 });
 

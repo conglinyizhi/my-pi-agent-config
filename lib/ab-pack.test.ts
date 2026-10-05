@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { archivePathsOf, canPromote, flattenShellsInSlot, planPack } from "./ab-pack.ts";
 
 const AT = "2026-10-05T10:00:00.000Z";
-const base = { component: "audit" as const, ref: "HEAD", slot: "dev" as const, dirty: false, at: AT };
+const base = { component: "audit" as const, ref: "HEAD", dir: "dev", dirty: false, at: AT };
 
 describe("构建请求", () => {
 	it("正常请求给出 manifest", () => {
@@ -22,18 +22,17 @@ describe("构建请求", () => {
 		assert.equal(planPack({ ...base, ref: "  " }).manifest?.ref, "HEAD");
 	});
 
-	it("只允许构建到 dev 与 head：stable / previous 只由晋升与回退动", () => {
-		for (const slot of ["stable", "previous"] as const) {
-			const plan = planPack({ ...base, slot });
-			assert.equal(plan.ok, false, slot);
-			assert.match(String(plan.reason), /只由晋升与回退动/);
+	it("构建只能落暂存目录：别的名字都不是构建目标", () => {
+		for (const dir of ["stable", "previous", "head"]) {
+			const plan = planPack({ ...base, dir });
+			assert.equal(plan.ok, false, dir);
+			assert.match(String(plan.reason), /只能落暂存目录/);
 		}
-		assert.equal(planPack({ ...base, slot: "head" }).ok, true);
+		assert.equal(planPack({ ...base }).ok, true, "缺省就是暂存目录");
 	});
 
-	it("组件名与槽名都不认没见过的值", () => {
+	it("组件名不认没见过的值", () => {
 		assert.equal(planPack({ ...base, component: "gui2" as never }).ok, false);
-		assert.equal(planPack({ ...base, slot: "current" as never }).ok, false);
 	});
 
 	it("gui 带上协议信息，audit 不带", () => {

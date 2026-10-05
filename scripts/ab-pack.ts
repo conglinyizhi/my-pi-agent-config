@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/ab-pack.ts — 把一个 git ref 构建到槽里
 //
-//   ab-pack <组件> [--ref <tag|sha|HEAD>] [--slot dev|head] [--runtime-root <dir>] [--json]
+//   ab-pack <组件> [--ref <tag|sha|HEAD>] [--dir dev] [--runtime-root <dir>] [--json]
 //
 // 组件：
 //   audit  从 ref 取 lib/ 与 extensions/（jiti 直接跑 ts，不需要构建步骤）
@@ -19,33 +19,32 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { componentPath, formatManifest, type AbComponent, type BuildManifest } from "../lib/ab-tag.ts";
 import { archivePathsOf, flattenShellsInSlot, planPack } from "../lib/ab-pack.ts";
-import { assertRuntimeRoot } from "../lib/ab-store.ts";
+import { assertRuntimeRoot } from "../lib/ab-tag.ts";
 
 interface Options {
 	runtimeRoot: string;
 	ref: string;
-	slot: AbSlot;
+	dir: string;
 	json: boolean;
 	/** 自举：允许落 stable/previous，给"从零开始"铺一条可回退的基线 */
-	bootstrap: boolean;
+	/** 构建落点（缺省 dev） */
 }
 
 function parseArgs(argv: string[]): { component?: string; options: Options } {
 	const options: Options = {
 		runtimeRoot: join(homedir(), ".pi", "runtime"),
 		ref: "HEAD",
-		slot: "dev",
+		dir: "dev",
 		json: false,
-		bootstrap: false,
+
 	};
 	let component: string | undefined;
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--runtime-root") { options.runtimeRoot = argv[++index] ?? options.runtimeRoot; continue; }
 		if (arg === "--ref") { options.ref = argv[++index] ?? options.ref; continue; }
-		if (arg === "--slot") { options.slot = (argv[++index] ?? options.slot) as AbSlot; continue; }
+		if (arg === "--dir") { options.dir = argv[++index] ?? options.dir; continue; }
 		if (arg === "--json") { options.json = true; continue; }
-		if (arg === "--bootstrap") { options.bootstrap = true; continue; }
 		if (!component) component = arg;
 	}
 	return { component, options };
@@ -94,7 +93,7 @@ function specOfSlot(slotDir: string): { protocol?: number; windows?: string[] } 
 function main(argv: string[]): number {
 	const { component, options } = parseArgs(argv);
 	if (!component) {
-		console.error("用法：ab-pack <audit|gui> [--ref <tag|sha|HEAD>] [--slot dev|head] [--bootstrap] [--runtime-root <dir>] [--json]");
+		console.error("用法：ab-pack <audit|gui> [--ref <tag|sha|HEAD>] [--dir dev] [--runtime-root <dir>] [--json]");
 		return 2;
 	}
 	const runtimeRoot = assertRuntimeRoot(options.runtimeRoot);
@@ -112,10 +111,10 @@ function main(argv: string[]): number {
 	const plan = planPack({
 		component: component as AbComponent,
 		ref: options.ref,
-		slot: options.slot,
+		dir: options.dir,
 		dirty,
 		at,
-		bootstrap: options.bootstrap,
+
 		...(sha ? { sha } : {}),
 	});
 	if (!plan.ok || !plan.manifest) {
@@ -128,7 +127,7 @@ function main(argv: string[]): number {
 		return 1;
 	}
 
-	const target = slotPath(runtimeRoot, component as AbComponent, options.slot);
+	const target = join(componentPath(runtimeRoot, component as AbComponent), options.dir);
 	try {
 		mkdirSync(componentPath(runtimeRoot, component as AbComponent), { recursive: true });
 		rmSync(target, { recursive: true, force: true });
@@ -154,9 +153,9 @@ function main(argv: string[]): number {
 		const manifest: SlotManifest = { ...plan.manifest, ...spec };
 		writeFileSync(join(target, "manifest.json"), formatManifest(manifest), { mode: 0o600 });
 		if (options.json) {
-			console.log(JSON.stringify({ ok: true, component, slot: options.slot, target, manifest }, null, 2));
+			console.log(JSON.stringify({ ok: true, component, dir: options.dir, target, manifest }, null, 2));
 		} else {
-			console.log(`已构建：${component} -> ${options.slot}`);
+			console.log(`已构建：${component} -> ${options.dir}`);
 			console.log(`  来源：${options.ref}${sha ? ` (${sha})` : ""}${dirty ? "（脏工作区）" : ""}`);
 			console.log(`  目录：${target}`);
 			if (flattened.length > 0) console.log(`  已摊平入口：${flattened.join("、")}`);

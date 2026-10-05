@@ -1,29 +1,25 @@
-// lib/ab-pack.ts — 打包到槽：该做什么、允许做什么（纯函数）
+// lib/ab-pack.ts — 打包：该做什么、允许做什么（纯函数）
 //
-// 分工同 ab-slots 与 ab-store：这里只判"这一步合不合法、manifest 该写什么"，
-// 真正调 git / tar / vite 的活留给 scripts/ab-pack.ts。
+// 这里只判"这一步合不合法、manifest 该写什么"，真正调 git / tar / vite 的活留给
+// scripts/ab-pack.ts。
 //
-// 两条硬规矩（见 docs/plans/2026-10-05-ab-update.md）：
-//   1. 只往 dev / head 里构建：stable 与 previous 只由晋升与回退动，
-//      否则"回退目标"就不再可靠
-//   2. 脏工作区可以构建到 dev/head（狗粮本来就要试未提交的东西），但 manifest 记 dirty，
-//      而脏的产物不允许晋升（除非 --force，且留痕）
+// 压缩后的模型只有一条规矩：**构建只落暂存目录**（dev）。生效的版本由 tag 切换，
+// 回退目标是 prev-tag——不再有"哪个槽能构建"这套四槽词汇。
+// 脏工作区可以构建（狗粮本来就要试未提交的东西），但 manifest 记 dirty。
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AB_COMPONENTS, AB_SLOTS, type AbComponent, type AbSlot, type SlotManifest } from "./ab-slots.ts";
+import { AB_COMPONENTS, componentPath, formatManifest, type AbComponent, type BuildManifest } from "./ab-tag.ts";
 
-/** 构建允许落在哪些槽 */
-export const BUILDABLE_SLOTS: readonly AbSlot[] = ["dev", "head"];
-
-/** 只有自举能把基线槽（stable/previous）铺出来；平时它们由晋升与回退动 */
-export const BOOTSTRAP_SLOTS: readonly AbSlot[] = ["stable", "previous"];
+/** 唯一的构建落点：暂存目录。生效与否由 tag 决定 */
+export const BUILD_DIR = "dev";
 
 export interface PackOptions {
 	component: AbComponent;
 	/** 构建来源：tag、sha 或 HEAD */
 	ref: string;
-	slot: AbSlot;
+	/** 构建落点，缺省就是暂存目录 dev */
+	dir?: string;
 	/** 构建时工作区是否脏 */
 	dirty: boolean;
 	at: string;
@@ -32,14 +28,12 @@ export interface PackOptions {
 	/** gui 组件才有的协议信息（从槽内自报里读） */
 	protocol?: number;
 	windows?: string[];
-	/** 自举：允许落 stable/previous，用来给"从零开始"铺一条可回退的基线 */
-	bootstrap?: boolean;
 }
 
 export interface PackPlan {
 	ok: boolean;
 	reason?: string;
-	manifest?: SlotManifest;
+	manifest?: BuildManifest;
 }
 
 /** 校验一次构建请求；不合法时说明原因，不抛异常（CLI 负责打印） */
@@ -47,18 +41,15 @@ export function planPack(options: PackOptions): PackPlan {
 	if (!AB_COMPONENTS.includes(options.component)) {
 		return { ok: false, reason: `组件名必须是 ${AB_COMPONENTS.join(" | ")}` };
 	}
-	if (!AB_SLOTS.includes(options.slot)) {
-		return { ok: false, reason: `槽名必须是 ${AB_SLOTS.join(" | ")}` };
-	}
-	const buildable: readonly AbSlot[] = options.bootstrap
-		? [...BUILDABLE_SLOTS, ...BOOTSTRAP_SLOTS]
-		: BUILDABLE_SLOTS;
-	if (!buildable.includes(options.slot)) {
-		const allowed = buildable.join(" / ");
-		return { ok: false, reason: `${options.slot} 只由晋升与回退动，构建只能落 ${allowed}` };
+	const dir = options.dir ?? BUILD_DIR;
+	if (dir !== BUILD_DIR) {
+		return {
+			ok: false,
+			reason: `构建只能落暂存目录 ${BUILD_DIR}；要生效的版本就切 tag（make ab-update）`,
+		};
 	}
 	const ref = options.ref.trim() === "" ? "HEAD" : options.ref.trim();
-	const manifest: SlotManifest = {
+	const manifest: BuildManifest = {
 		ref,
 		...(options.sha ? { sha: options.sha } : {}),
 		dirty: options.dirty,
@@ -74,7 +65,7 @@ export function planPack(options: PackOptions): PackPlan {
 	*
 	* 脏的产物事后复现不出来，所以默认拒绝；要强推走 --force 并留痕。
 	*/
-export function canPromote(manifest: SlotManifest | undefined, options: { force?: boolean } = {}): { ok: boolean; reason: string } {
+export function canPromote(manifest: BuildManifest | undefined, options: { force?: boolean } = {}): { ok: boolean; reason: string } {
 	if (!manifest) return { ok: false, reason: "dev 槽里没有 manifest，像是没构建过" };
 	if (manifest.dirty && !options.force) {
 		return { ok: false, reason: "dev 是脏工作区构建的，复现不出来（要强推加 --force）" };

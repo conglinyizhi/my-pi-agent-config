@@ -39,41 +39,30 @@ require-component:
 		exit 2; \
 	}
 
-ab-status: ## 看两个组件在跑哪一版（读类，不用给 COMPONENT）
-	bin/ab-slot.sh status $(COMPONENT)
+ab-status: ## 两条产线各挂哪个 tag，带干净/失败计数（读类，不用给组件名）
+	@for c in gui audit; do \
+		printf '[%s] ' "$$c"; \
+		bin/ab.sh status --component $$c --runtime-root $(RT) | tr '\n' ' '; \
+		echo; \
+	done
 
-ab-pack: require-component ## 从 git ref 构建到槽（必给 COMPONENT，SLOT=dev|head）
-	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
+ab-tag: require-component ## 看这条产线挂在哪个 tag（必给 COMPONENT）
+	bin/ab.sh status --component $(COMPONENT) --runtime-root $(RT)
 
-ab-bootstrap: require-component ## 自举：把当前 HEAD 同时铺成 stable 与 previous（从零开始的那条回退路）
-	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot stable --bootstrap --runtime-root $(RT)
-	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot previous --bootstrap --runtime-root $(RT)
-	@printf '已自举 %s：stable 与 previous 都是 %s\n' "$(COMPONENT)" "$(REF)"
+ab-update: require-component ## 打一版：FORCE=1 直接生效，否则挂候选等 5 次干净往返
+	@bin/ab.sh update --component $(COMPONENT) --ref $(REF) --runtime-root $(RT) $(if $(FORCE),--force,)
 
-ab-switch: require-component ## 把 current 指向某个槽（必给 COMPONENT，SLOT=dev）
-	bin/ab-slot.sh switch $(COMPONENT) $(SLOT) --runtime-root $(RT)
+ab-clean: require-component ## 记一次干净授权往返；攒满 5 次自动切到候选
+	@bin/ab.sh clean --component $(COMPONENT) --runtime-root $(RT)
 
-ab-rollback: require-component ## 应急回退到上一个稳定槽（必给 COMPONENT；纯 shell）
-	bin/ab-rollback.sh $(COMPONENT)
-
-ab-detach: require-component ## 摘掉 current：回到仓库版本（临时开发用，不删任何槽）
-	@rm -f "$(RT)/$(COMPONENT)/current"
-	@printf '已摘掉 %s 的 current：从现在起用仓库那份实现（下一次 reload 生效）\n' "$(COMPONENT)"
-
-ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
-	bin/ab-slot.sh promote $(COMPONENT) --runtime-root $(RT)
+ab-rollback: require-component ## 退回 prev-tag（应急止血）
+	@bin/ab.sh rollback --component $(COMPONENT) --runtime-root $(RT)
 
 flows-check: ## 检查自写的审核流程（review-flows/*.ts 的类型与形状）
 	npx tsc -p review-flows
 
-ab-health: require-component ## 自检槽：成功只清连续失败，不加晋升连胜（必给 COMPONENT）
-	bin/ab-slot.sh health $(COMPONENT) --runtime-root $(RT)
-
-ab-note: require-component ## 手工记一次往返（必给 COMPONENT，OUTCOME=clean|failure）
-	bin/ab-slot.sh note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
-
-ab-log: require-component ## 看晋升、回退、看门狗与计数的流水（必给 COMPONENT）
-	bin/ab-slot.sh log $(COMPONENT) --runtime-root $(RT)
+ab-log: require-component ## 看流水：切换、回退、干净与失败计数（必给 COMPONENT）
+	@tail -n 30 "$(RT)/$(COMPONENT)/promote.log"
 
 ab-firstaid: ## 打印急救卡
 	@cat docs/ab-update-firstaid.md
@@ -106,21 +95,6 @@ test-lib: ## lib 下其余测试（文件多，撞内存墙就再拆一组）
 	node --test --experimental-strip-types lib/subagent-*.test.ts lib/bash-approval.test.ts lib/review-settings.test.ts lib/text-diff.test.ts lib/script-changes.test.ts lib/script-format.test.ts
 
 test: test-ab test-ptc test-sandbox test-gui test-lib ## 全部测试（按组串行）
-
-# ── 灰盒验收 ──
-
-gui-canary: ## GUI 启动自检（会弹一个闸门窗，判定后自动关掉）
-	scripts/gui-canary.sh
-
-# ── 新模型：一条产品线一个 tag（四槽那套在退场，见 docs/ab-update-firstaid.md）──
-ab-tag: require-component ## 看这条产品线挂在哪个 tag（新模型）
-	bin/ab.sh status --component $(COMPONENT) --runtime-root $(RT)
-
-ab-update: require-component ## 打一版：FORCE=1 直接生效，否则挂成候选等 5 次干净往返
-	@bin/ab.sh update --component $(COMPONENT) --ref $(REF) --runtime-root $(RT) $(if $(FORCE),--force,)
-
-ab-clean: require-component ## 记一次干净授权往返；攒满 5 次自动切到候选
-	@bin/ab.sh clean --component $(COMPONENT) --runtime-root $(RT)
 
 smoke: ## 壳的三条路径真验（会起真 pi、会花一次极小的模型调用）
 	scripts/ab-smoke.sh
