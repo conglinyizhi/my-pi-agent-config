@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { firstMatchingRule, parseReviewRules } from "./review-rules.ts";
+import { decideWithRules, firstMatchingRule, parseReviewRules } from "./review-rules.ts";
 
 const TOML = [
 	'[[rule]]',
@@ -105,3 +105,46 @@ describe("命中与取第一条", () => {
 		assert.equal(rule?.id, "low-confidence");
 	});
 });
+
+describe("规则与内置判据的合议", () => {
+	const { rules } = parseReviewRules([
+		'[[rule]]',
+		'id = "low-confidence"',
+		'verdict = "risky"',
+		"all_triggered_below_confidence = 0.5",
+		'then = "allow"',
+		"",
+		'[[rule]]',
+		'id = "never"',
+		'command_contains = "rm -rf /"',
+		'then = "deny"',
+	].join("\n"));
+
+	it("没有规则命中时，结论就是内置判据", () => {
+		const decision = decideWithRules({ builtinApprove: true, masterSwitchOn: true, facts: { verdict: "safe" }, rules: [] });
+		assert.equal(decision.by, "builtin");
+		assert.equal(decision.approve, true);
+	});
+
+	it("规则说放行、档位也是 auto，才真放行", () => {
+		const facts = { verdict: "risky" as const, dimensions: [{ triggered: true, confidence: 0 }] };
+		const decision = decideWithRules({ builtinApprove: false, masterSwitchOn: true, facts, rules });
+		assert.equal(decision.approve, true);
+		assert.equal(decision.by, "rule");
+		assert.match(decision.reason, /low-confidence/);
+	});
+
+	it("档位不是 auto 时，规则也放行不了（表单不是后门）", () => {
+		const facts = { verdict: "risky" as const, dimensions: [{ triggered: true, confidence: 0 }] };
+		const decision = decideWithRules({ builtinApprove: false, masterSwitchOn: false, facts, rules });
+		assert.equal(decision.approve, false);
+		assert.match(decision.reason, /档位不是 auto/);
+	});
+
+	it("规则说拒就拒，理由写明是哪一条", () => {
+		const decision = decideWithRules({ builtinApprove: true, masterSwitchOn: true, facts: { command: "sudo rm -rf /" }, rules });
+		assert.equal(decision.approve, false);
+		assert.equal(decision.rule?.id, "never");
+	});
+});
+

@@ -9,6 +9,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TokenRule } from "../sandbox-check.ts";
 import type { SandboxCheckResult } from "../sandbox-check.ts";
 import { autoApproveDecision, humanConfirm, type ApprovalRequestContext, type BashApprovalDependencies } from "../bash-approval.ts";
+import { decideWithRules, defaultRulesPath, loadReviewRules, type ReviewRule } from "../review-rules.ts";
+
+/** 规则表读不到或坏了 = 没有规则（照旧走内置判据），绝不抛 */
+const defaultLoadRules = () => loadReviewRules(defaultRulesPath());
 import {
 	createReviewCache,
 	loadLlmReviewConfig,
@@ -46,6 +50,8 @@ export interface ReviewNodeDeps {
 	reviewCache?: ReviewCache;
 	/** 交给 gate 节点的审批通道 */
 	approval?: BashApprovalDependencies;
+	/** 测试注入；默认从规则表位置读（读不到 = 没有规则） */
+	loadRules?: () => ReviewRule[];
 }
 
 function inputOf(ctx: NodeRunContext): BashFlowInput {
@@ -166,10 +172,30 @@ export function makeAutoApproveNode(deps: ReviewNodeDeps = {}): NodeImpl {
 		const from = typeof ctx.settings.from === "string" ? ctx.settings.from : "merge";
 		const merged = ctx.upstream[from] as ReviewResult | undefined;
 		const cfg = (deps.loadConfig ?? loadLlmReviewConfig)();
-		// 判据与旧链同一个函数：不各写一份，就不会漂
-		const autoApproved = autoApproveDecision(merged, cfg);
-		if (autoApproved) {
-			return { status: "ok", output: merged, terminal: "allow", verdict: "allow", reason: "预审判安全且档位是自动" };
+		// 判据与旧链同一个函数：不各写一份，就不会漂。规则只修正它，放行仍受总开关管
+		const rules = (deps.loadRules ?? defaultLoadRules)();
+		const decision = decideWithRules({
+			builtinApprove: autoApproveDecision(merged, cfg),
+			masterSwitchOn: cfg.mode === "auto",
+			facts: {
+				verdict: merged?.verdict,
+				dimensions: merged?.dimensions,
+				command: typeof ctx.settings.command === "string" ? ctx.settings.command : undefined,
+			},
+			rules,
+		});
+		if (decision.by === "rule" && decision.rule?.then === "deny") {
+			// 规则说直接拒：不走人工那一步
+			return { status: "ok", output: merged, terminal: "deny", verdict: "deny", reason: decision.reason };
+		}
+		if (decision.approve) {
+			return {
+				status: "ok",
+				output: merged,
+				terminal: "allow",
+				verdict: "allow",
+				reason: decision.by === "rule" ? decision.reason : "预审判安全且档位是自动",
+			};
 		}
 		const why = merged ? `判为 ${merged.verdict}` : "没有结论";
 		return { status: "abstain", reason: `${why}，需人工确认` };

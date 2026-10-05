@@ -7,6 +7,8 @@
 // 为什么用命名的条件而不是表达式：表达式要一门方言 + 一个求值器，等于把"两套语义"
 // 引进来（这是提督明确不要的）。命名条件集合有限、能被表单勾出来、也审得清。
 
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { parse as parseToml, stringify } from "smol-toml";
 
 /** 规则能用的动作 */
@@ -172,5 +174,83 @@ export function stringifyReviewRules(rules: readonly ReviewRule[]): string {
 		return row;
 	});
 	return rows.length === 0 ? "" : stringify({ rule: rows });
+}
+
+
+/**
+ * 默认判定与规则的合议结果。
+ *
+ * 规矩：规则只**修正**内置判据，不另起一套。放行永远受总开关管着——
+ * 档位不是 auto 时，规则写 allow 也不放行（否则表单就成了绕过总开关的后门）。
+ */
+export interface RuleDecision {
+	approve: boolean;
+	/** builtin = 内置判据说放行；rule = 规则改写了结论 */
+	by: "builtin" | "rule";
+	rule?: ReviewRule;
+	reason: string;
+}
+
+export function decideWithRules(input: {
+	builtinApprove: boolean;
+	masterSwitchOn: boolean;
+	facts: RuleFacts;
+	rules: readonly ReviewRule[];
+}): RuleDecision {
+	const rule = firstMatchingRule(input.rules, input.facts);
+	if (rule === undefined) {
+		return { approve: input.builtinApprove, by: "builtin", reason: "内置判据" };
+	}
+	const label = rule.note ? "规则 " + rule.id + "（" + rule.note + "）" : "规则 " + rule.id;
+	if (rule.then === "allow") {
+		if (!input.masterSwitchOn) {
+			return { approve: false, by: "rule", rule, reason: label + " 想放行，但档位不是 auto，仍然问人" };
+		}
+		return { approve: true, by: "rule", rule, reason: label + " 判为可放行" };
+	}
+	if (rule.then === "deny") {
+		return { approve: false, by: "rule", rule, reason: label + " 直接拒" };
+	}
+	return { approve: false, by: "rule", rule, reason: label + " 要求问人" };
+}
+
+/** 规则表的读取缓存：审核链每次判定都要用，文件没变就不重读 */
+let cachedRules: { path: string; mtimeMs: number; rules: ReviewRule[] } | undefined;
+
+export interface LoadRulesDeps {
+	read?: (path: string) => string | undefined;
+	mtime?: (path: string) => number;
+}
+
+export function loadReviewRules(path: string, deps: LoadRulesDeps = {}): ReviewRule[] {
+	const read = deps.read ?? ((p: string) => {
+		try {
+			return readFileSync(p, "utf8");
+		} catch {
+			return undefined;
+		}
+	});
+	const mtime = deps.mtime ?? ((p: string) => {
+		try {
+			return statSync(p).mtimeMs;
+		} catch {
+			return -1;
+		}
+	});
+	const stamp = mtime(path);
+	if (cachedRules && cachedRules.path === path && cachedRules.mtimeMs === stamp) return cachedRules.rules;
+	const text = read(path);
+	// 读不到、解析不过：一律当没有规则（照旧走内置判据）。这里绝不抛——
+	// 规则表坏了不该让整条审核链停摆，也不该悄悄变成「什么都放行」
+	const rules = text === undefined ? [] : parseReviewRules(text).rules;
+	cachedRules = { path, mtimeMs: stamp, rules };
+	return rules;
+}
+
+
+/** 默认规则表位置：PI_AGENT_DIR 优先，其次 ~/.pi/agent。CLI 与判定链共用这一处 */
+export function defaultRulesPath(env: Record<string, string | undefined> = process.env, home = homedir()): string {
+	const root = env.PI_AGENT_DIR && env.PI_AGENT_DIR.trim() !== "" ? env.PI_AGENT_DIR : home + "/.pi/agent";
+	return rulesPath(root);
 }
 

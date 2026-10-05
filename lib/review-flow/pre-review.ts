@@ -5,6 +5,7 @@
 // 问人仍是调用方那一步（approveBashCommand），所以这条流程里没有 gate 节点。
 
 import { autoApproveDecision, type BashPreReviewResult } from "../bash-approval.ts";
+import { decideWithRules, defaultRulesPath, loadReviewRules, type ReviewRule } from "../review-rules.ts";
 import { reviewCacheKey, type LlmReviewConfig, type ReviewCache, type ReviewResult } from "../../extensions/sandbox-permissions/llm-review.ts";
 import { bashFlowNodes, preReviewFlowId, preReviewReviewId, runBashPreReviewFlow } from "./flows/bash.ts";
 import { findFlow } from "./load.ts";
@@ -31,7 +32,20 @@ export async function preReviewViaFlow(options: PreReviewOptions): Promise<BashP
 
 	const key = reviewCacheKey(input.command, input.rules);
 	const hit = cache.get(key);
-	if (hit) return { config, review: hit, autoApproved: autoApproveDecision(hit, config) };
+	if (hit) {
+		// 缓存命中也要过规则：规则改了不必等缓存失效，否则开关会时灵时不灵
+		const decision = decideWithRules({
+			builtinApprove: autoApproveDecision(hit, config),
+			masterSwitchOn: config.mode === "auto",
+			facts: {
+				verdict: hit.verdict,
+				dimensions: hit.dimensions,
+				command: typeof (input as { command?: unknown }).command === "string" ? (input as { command: string }).command : undefined,
+			},
+			rules: (options.nodes?.loadRules ?? (() => loadReviewRules(defaultRulesPath())))(),
+		});
+		return { config, review: hit, autoApproved: decision.approve };
+	}
 
 	const nodes = { ...options.nodes, loadConfig: () => config };
 	// 作者写了同名流程就用它（~/.pi/agent/review-flows/<id>.ts），否则内置那条。

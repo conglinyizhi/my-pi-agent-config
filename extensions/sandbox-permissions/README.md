@@ -651,3 +651,32 @@ GUI 中的目录动作先暂存，随允许/拒绝一次提交：
 - 黑名单：guard 在 session_start 加载（reload 随扩展重载重新触发），添加后需 `/reload`
 - `trustedProgramDirs`：审核链每次读取（按文件 mtime + size 失效），写完即时生效，不用 `/reload`
 - `sandbox-paths.json` 已 gitignore（本机名单，与 `permission-gate-reasons.json` 同类）
+
+## 审核规则表（可视化表单那一层）
+
+维度阈值在 `review-dimensions.toml`；**条件规则**在 `review-rules.toml`（同目录，没有就是没配）。
+规则是数据不是代码：`[[rule]]` 一条，条件之间是「且」，**第一条命中的说了算**（顺序即优先级）。
+
+```toml
+[[rule]]
+id = "low-confidence"
+verdict = "risky"
+all_triggered_below_confidence = 0.5
+then = "allow"
+note = "模型没把握的越线不算数，别弹窗"
+```
+
+可选条件：`verdict`（可多值）、`all_triggered_below_confidence`、`no_triggered_dimensions`、
+`rule_name`、`command_contains`（子串，不做正则）。动作只有三个：
+
+- `allow`：**仍受总开关管**——档位不是 auto 就不放行，表单不是绕过开关的后门；
+- `ask`：照旧问人；
+- `deny`：直接拒，不走人工那一步。
+
+三条硬规矩：一条不合法**整组作废**（宁可不生效，也不半生效）；规则表读不到或解析不过，
+一律当「没有规则」，照旧走内置判据（`autoApproveDecision`）；判据仍然只有那一份，
+规则只修正它，不另起一套。
+
+改法：审核流程窗左上的「规则表」页（加/删/上下移、勾条件、选动作，保存前校验）；
+命令行走 `scripts/review-rules-cli.ts`（get / save / serve）。
+
