@@ -1,6 +1,7 @@
 # A/B 更新急救卡
 
-> 一分钟版：图形界面起不来就 `make ab-rollback COMPONENT=gui`；审核判定不对劲就 `make ab-rollback` 再 `/reload`。
+> 一分钟版：图形界面起不来就 `make ab-rollback COMPONENT=gui`；
+> 审核判定不对劲就 `make ab-rollback COMPONENT=audit` 再 `/reload`。
 > 忘了有哪些命令就跑 `make help`（那是稳定入口，命令名不会漂）。
 > 来龙去脉在 `docs/plans/2026-10-05-ab-update.md`，这里只讲怎么止血。
 
@@ -18,8 +19,8 @@ make ab-status
 | 症状 | 一步 |
 |---|---|
 | 图形界面起不来、反复崩 | `make ab-rollback COMPONENT=gui` |
-| 审核判定明显不对劲（全拒、全放、老是超时） | `make ab-rollback`，然后 `/reload` |
-| 不知道坏在哪一步 | `make ab-log` 看晋升、回退、看门狗与计数的流水 |
+| 审核判定明显不对劲（全拒、全放、老是超时） | `make ab-rollback COMPONENT=audit`，然后 `/reload` |
+| 不知道坏在哪一步 | `make ab-log COMPONENT=audit` 看流水 |
 
 回退最终落到 `bin/ab-rollback`：一段**纯 shell**，不依赖 node、不依赖 Electron、不依赖任何扩展。
 Electron 完全起不来时它也能用（这就是它为什么故意写得这么笨）；`make ab-rollback` 只是给它套了个名字。
@@ -37,6 +38,17 @@ Electron 完全起不来时它也能用（这就是它为什么故意写得这�
 ~/.pi/runtime/<组件>/promote.log       晋升、回退、看门狗、每次计数的流水
 ~/.pi/runtime/<组件>/streak.json       连续干净与连续失败的计数
 ```
+
+## 两个组件，别混
+
+`gui` 与 `audit` 是两套独立的两槽，**命令必须显式说动哪一个**。这是故意的：
+
+- `gui` 坏了你立刻看得见（窗口打不开）
+- `audit` 坏了是**静默的**（每次审计都超时、都拒绝，或者悄悄放行，界面看着还正常）
+
+所以最危险的误操作是：看到窗口不对，顺手退了一把 `audit` ——窗口一点没变，还悄悄换掉了一个
+你以为没动的版本。Makefile 因此**不给 COMPONENT 默认值**，缺了就报错并列出两个名字
+（`make ab-status` 是读类命令，例外：它两个都列）。别"顺手"把默认值加回去。
 
 ## 三个容易误判的点
 

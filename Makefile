@@ -11,15 +11,18 @@
 
 SHELL := /bin/sh
 
-# A/B 更新的可配项：make ab-pack SLOT=head REF=v1.2.0 COMPONENT=audit
-COMPONENT ?= audit
+# A/B 更新的可配项：make ab-pack COMPONENT=audit SLOT=head REF=v1.2.0
+#
+# COMPONENT **刻意不给默认值**：gui 与 audit 是一对最容易混的东西
+# （一个坏了看得见，一个坏了是静默的），省一次敲键盘换来的可能是退错对象。
+# 读类命令（ab-status）不需要它，会两个都列。
 SLOT ?= dev
 REF ?= HEAD
 RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        ab-status ab-pack ab-switch ab-rollback ab-promote ab-log ab-note ab-firstaid \
+        require-component ab-status ab-pack ab-switch ab-rollback ab-promote ab-log ab-note ab-firstaid \
         smoke
 
 help: ## 列出所有目标
@@ -28,25 +31,33 @@ help: ## 列出所有目标
 
 # ── A/B 更新（症状与止血见 docs/ab-update-firstaid.md） ──
 
-ab-status: ## 看两个组件在跑哪一版（四槽 + 计数 + 判定）
-	bin/ab-slot status
+require-component:
+	@test -n "$(COMPONENT)" || { \
+		printf '要动哪个组件？二选一（不给默认是故意的，这两个最容易混）：\n'; \
+		printf '  COMPONENT=gui    图形界面：坏了你立刻看得见\n'; \
+		printf '  COMPONENT=audit  审核链：坏了是静默的\n'; \
+		exit 2; \
+	}
 
-ab-pack: ## 从 git ref 构建到槽（SLOT=dev|head REF=HEAD COMPONENT=audit|gui）
+ab-status: ## 看两个组件在跑哪一版（读类，不用给 COMPONENT）
+	bin/ab-slot status $(COMPONENT)
+
+ab-pack: require-component ## 从 git ref 构建到槽（必给 COMPONENT，SLOT=dev|head）
 	bin/ab-pack $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
 
-ab-switch: ## 把 current 指向某个槽（SLOT=dev）
+ab-switch: require-component ## 把 current 指向某个槽（必给 COMPONENT，SLOT=dev）
 	bin/ab-slot switch $(COMPONENT) $(SLOT) --runtime-root $(RT)
 
-ab-rollback: ## 应急回退到上一个稳定槽（纯 shell，不依赖 node 与 Electron）
+ab-rollback: require-component ## 应急回退到上一个稳定槽（必给 COMPONENT；纯 shell）
 	bin/ab-rollback $(COMPONENT)
 
-ab-promote: ## 手工晋升 dev（攒够五次干净会自动晋升，这个用于提前）
+ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
 	bin/ab-slot promote $(COMPONENT) --runtime-root $(RT)
 
-ab-note: ## 手工记一次往返（OUTCOME=clean|failure）
+ab-note: require-component ## 手工记一次往返（必给 COMPONENT，OUTCOME=clean|failure）
 	bin/ab-slot note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
 
-ab-log: ## 看晋升、回退、看门狗与计数的流水
+ab-log: require-component ## 看晋升、回退、看门狗与计数的流水（必给 COMPONENT）
 	bin/ab-slot log $(COMPONENT) --runtime-root $(RT)
 
 ab-firstaid: ## 打印急救卡
