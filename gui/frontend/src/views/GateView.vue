@@ -187,7 +187,7 @@ const verdictMeta = computed(() => {
   if (verdict === "safe") return { label: "✅ 安全", cls: "v-safe" };
   if (verdict === "risky") return { label: "⚠️ 有风险", cls: "v-risky" };
   if (verdict === "dangerous") return { label: "🔴 危险", cls: "v-dangerous" };
-  return { label: "❌ 审核失败", cls: "v-error" };
+  return { label: "寄了", cls: "v-error" };
 });
 const highlights = computed(() => findHighlights(cmd.value, rules.value));
 // 变量表：known:false 的行显示原因而不是值

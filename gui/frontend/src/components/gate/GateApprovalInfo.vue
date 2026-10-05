@@ -64,8 +64,12 @@
     <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
       <div class="model-head" :class="'tone-' + toneOf(verdictMeta, false)">
         📊 System One 决策模型意见
-        <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
-          {{ `${flaggedCount}/${weightRows.length} 命中` }}
+        <!-- 没拿到维度就别说清一色：模型挂了的时候写"0 命中"是假的全清（踩过） -->
+        <span
+          class="weight-count"
+          :class="weightRows.length === 0 ? 'count-bad' : flaggedCount ? 'count-warn' : 'count-ok'"
+        >
+          {{ weightRows.length === 0 ? "寄了" : `${flaggedCount}/${weightRows.length} 命中` }}
         </span>
         <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
       </div>
@@ -273,13 +277,14 @@ const chatMeta = computed(() => {
   if (verdict === "safe") return { label: "✅ 安全", cls: "c-safe" };
   if (verdict === "risky") return { label: "⚠️ 有风险", cls: "c-risky" };
   if (verdict === "dangerous") return { label: "🔴 危险", cls: "c-dangerous" };
-  return { label: "❌ 未出结论", cls: "c-error" };
+  return { label: "寄了", cls: "c-error" };
 });
 /**
  * 判定的圆点：绿=安全、黄=要留意、红=严重。
  * 红只给 LLM 那一路——分类器太容易喊危险，一律标红会把注意力耗光。
  */
 function toneOf(meta, allowRed) {
+  // 两个来源的前缀不一样：chatMeta 是 c-*，verdictMeta 是 v-*（踩过：只认 c-* 时卡头一直不变色）
   const cls = meta?.cls ?? "";
   if (cls.includes("dangerous")) return allowRed ? "bad" : "warn";
   if (cls.includes("risky")) return "warn";
@@ -420,6 +425,7 @@ function removeWorkspace(path) {
 .tone-bad { color: #ff6b6b; }
 .tone-none { color: #8ea2c8; }
 .count-ok { color: #7bd88f; }
+.count-bad { color: #ff6b6b; }
 .count-warn { color: #e6a23c; }
 .weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
 .weight-head { font-size: 11px; color: #666; margin-bottom: 4px; }
