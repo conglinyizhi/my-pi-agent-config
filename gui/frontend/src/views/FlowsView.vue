@@ -29,6 +29,7 @@
 			<div class="canvas-tools">
 				<button data-name="toggle-edit" @click="toggleMode">{{ mode === "graph" ? "编辑源码" : "回到图" }}</button>
 				<button data-name="add-node" @click="openAdd">加节点</button>
+				<span v-if="wireMsg" class="wire-msg" :class="{ bad: wireBad }">{{ wireMsg }}</span>
 				<span v-if="dirty" class="dirty">未保存</span>
 				<span v-if="saveMsg" class="save-msg" :class="{ bad: saveBad }">{{ saveMsg }}</span>
 			</div>
@@ -37,6 +38,7 @@
 				v-model:nodes="nodes"
 				v-model:edges="edges"
 				@edge-click="onEdgeClick"
+				@connect="onConnect"
 				:fit-view-on-init="true"
 				:min-zoom="0.3"
 				:max-zoom="1.6"
@@ -74,23 +76,15 @@
 					<select v-model="addDialog.kind" data-name="node-kind">
 						<option v-for="kind in ADD_KINDS" :key="kind" :value="kind">{{ kind === "custom" ? "自定义 JS" : kind }}</option>
 					</select>
-					<select v-model="addDialog.before" data-name="node-before">
-						<option value="">（插在末尾）</option>
-						<option v-for="node in addTargets" :key="node" :value="node">插在 {{ node }} 之前</option>
-					</select>
 				</div>
 				<div class="edge-body">
-					<select v-model="addDialog.connect" data-name="node-connect">
-						<option value="">（不接边，校验会提示不可达）</option>
-						<option v-for="node in addTargets" :key="node" :value="node">把 {{ node }} 的 next 接到它</option>
-					</select>
 					<button data-name="add-apply" :disabled="addSaving || !addDialog.id.trim()" @click="applyAdd">
 						{{ addSaving ? "插入中…" : "插入" }}
 					</button>
 					<button @click="addDialog = null">取消</button>
 				</div>
 				<div v-if="addMsg" class="edge-msg" :class="{ bad: addBad }">{{ addMsg }}</div>
-				<p class="edge-hint">只往源码里插这一段；插完会整份校验，不过就整段不动</p>
+				<p class="edge-hint">新节点落在末尾、先不接边；拉线怎么走，图上拖就是（拉一条线就是一条 next）</p>
 			</div>
 
 			<div v-if="edgeDialog" class="edge-dialog" data-name="edge-dialog">
@@ -184,17 +178,15 @@ const ADD_KINDS = ["custom", "chatreview", "classifier", "merge", "autoapprove",
 const addDialog = ref(null);
 const addSaving = ref(false);
 const addMsg = ref("");
+const wireMsg = ref("");
+const wireBad = ref(false);
 const addBad = ref(false);
 
 /** 能插在谁前面 / 能把谁的 next 接过来：图上的节点 id */
-const addTargets = computed(() => nodes.value.map((node) => node.id).sort());
-
 function openAdd() {
 	addDialog.value = {
 		id: "新节点",
 		kind: "custom",
-		before: "",
-		connect: "",
 	};
 	addMsg.value = "";
 	addBad.value = false;
@@ -215,8 +207,6 @@ async function applyAdd() {
 			id: selectedId.value,
 			nodeId: dialog.id.trim(),
 			kind: dialog.kind,
-			...(dialog.before ? { before: dialog.before } : {}),
-			...(dialog.connect ? { connect: { nodeId: dialog.connect, kind: "next" } } : {}),
 		});
 		if (!result?.ok) {
 			addBad.value = true;
@@ -261,6 +251,28 @@ function onEdgeClick(payload) {
 	edgeDialog.value = { nodeId: self, kind, label, to: String(edge.target), from: String(edge.target), candidates };
 	edgeMsg.value = "";
 	edgeBad.value = false;
+}
+
+/**
+ * 图上直接拉一条线 = 一条 next。
+ * 别的出口（分支 yes/no、超时、空）靠点那条边改：拖一条线表达不了"这是哪个出口"。
+ */
+async function onConnect(connection) {
+	const from = connection?.source;
+	const to = connection?.target;
+	if (!from || !to || !selectedId.value || from === to) return;
+	wireMsg.value = "";
+	wireBad.value = false;
+	const result = await platform.flows.editEdge({ id: selectedId.value, nodeId: from, kind: "next", to });
+	if (!result?.ok) {
+		wireBad.value = true;
+		wireMsg.value = result?.error ?? "接不上";
+		return;
+	}
+	wireMsg.value = from + " → " + to;
+	const payload = await platform.flows.list();
+	flows.value = payload?.flows ?? flows.value;
+	await select(selectedId.value);
 }
 
 async function applyEdge() {
@@ -430,6 +442,16 @@ onMounted(async () => {
 .edge-body button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .edge-body button:disabled { opacity: 0.45; cursor: default; }
 .edge-msg { margin-top: 8px; color: #7bd88f; font-size: 12px; }
+.wire-msg {
+	margin-left: 10px;
+	font-size: 12px;
+	color: #79c0ff;
+}
+
+.wire-msg.bad {
+	color: #ff7b72;
+}
+
 .edge-msg.bad { color: #e6a23c; }
 .edge-hint { color: #69707d; font-size: 12px; margin: 8px 0 0; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #69707d; pointer-events: none; }
