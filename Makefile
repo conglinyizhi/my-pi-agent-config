@@ -1,0 +1,87 @@
+# pi-agent 的稳定入口
+#
+# 把常用动作固定成命令名，免得记一长串参数、也免得不同的人（或 agent）用不同姿势跑。
+# 这里只做调度：逻辑都在 scripts/ 与 lib/ 里，那边才有测试。
+#
+#   make            （等于 make help，列出全部目标）
+#   make check      类型检查
+#   make test       全部测试（按组串行，别一次塞太多）
+#
+# A/B 更新相关的命令与症状处理见 docs/ab-update-firstaid.md。
+
+SHELL := /bin/sh
+
+# A/B 更新的可配项：make ab-pack SLOT=head REF=v1.2.0 COMPONENT=audit
+COMPONENT ?= audit
+SLOT ?= dev
+REF ?= HEAD
+RT ?= $(HOME)/.pi/runtime
+
+.DEFAULT_GOAL := help
+.PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
+        ab-status ab-pack ab-switch ab-rollback ab-promote ab-log ab-note ab-firstaid \
+        smoke
+
+help: ## 列出所有目标
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
+		| awk 'BEGIN { FS = ":.*?## " } { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }'
+
+# ── A/B 更新（症状与止血见 docs/ab-update-firstaid.md） ──
+
+ab-status: ## 看两个组件在跑哪一版（四槽 + 计数 + 判定）
+	bin/ab-slot status
+
+ab-pack: ## 从 git ref 构建到槽（SLOT=dev|head REF=HEAD COMPONENT=audit|gui）
+	bin/ab-pack $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
+
+ab-switch: ## 把 current 指向某个槽（SLOT=dev）
+	bin/ab-slot switch $(COMPONENT) $(SLOT) --runtime-root $(RT)
+
+ab-rollback: ## 应急回退到上一个稳定槽（纯 shell，不依赖 node 与 Electron）
+	bin/ab-rollback $(COMPONENT)
+
+ab-promote: ## 手工晋升 dev（攒够五次干净会自动晋升，这个用于提前）
+	bin/ab-slot promote $(COMPONENT) --runtime-root $(RT)
+
+ab-note: ## 手工记一次往返（OUTCOME=clean|failure）
+	bin/ab-slot note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
+
+ab-log: ## 看晋升、回退、看门狗与计数的流水
+	bin/ab-slot log $(COMPONENT) --runtime-root $(RT)
+
+ab-firstaid: ## 打印急救卡
+	@cat docs/ab-update-firstaid.md
+
+# ── 检查 ──
+
+check: ## 类型检查（tsc --noEmit）
+	node_modules/.bin/tsc --noEmit -p tsconfig.json
+
+# 测试分组跑：一次塞太多会撞沙箱 1 GiB 内存墙（这是实测过的教训，别合并）
+
+test-ab: ## A/B 引擎、槽位、壳、能力探测
+	node --test --experimental-strip-types lib/ab-*.test.ts lib/gui-spec.test.ts lib/ab-notice.test.ts scripts/ab-*.test.ts
+
+test-ptc: ## PTC 扩展与脚本审核链
+	node --test --experimental-strip-types extensions/ptc/*.test.ts lib/ptc-*.test.ts
+
+test-sandbox: ## 沙箱扩展（23 个文件，分五批跑）
+	node --test --experimental-strip-types extensions/sandbox-permissions/guard.test.ts extensions/sandbox-permissions/allow.test.ts extensions/sandbox-permissions/helpers.test.ts extensions/sandbox-permissions/session-access.test.ts extensions/sandbox-permissions/yolo.test.ts
+	node --test --experimental-strip-types extensions/sandbox-permissions/rule-engine.test.ts extensions/sandbox-permissions/paths.test.ts extensions/sandbox-permissions/trusted.test.ts extensions/sandbox-permissions/render.test.ts
+	node --test --experimental-strip-types extensions/sandbox-permissions/review-settings.test.ts extensions/sandbox-permissions/review-gui.test.ts extensions/sandbox-permissions/review-command.test.ts extensions/sandbox-permissions/review-dimensions.test.ts extensions/sandbox-permissions/review-classifier.test.ts
+	node --test --experimental-strip-types extensions/sandbox-permissions/subagent-bash-guard.test.ts extensions/sandbox-permissions/network-policy.test.ts extensions/sandbox-permissions/network-command.test.ts extensions/sandbox-permissions/workspace-command.test.ts extensions/sandbox-permissions/paths-command.test.ts extensions/sandbox-permissions/inline-script.test.ts extensions/sandbox-permissions/classifier-client.test.ts extensions/sandbox-permissions/classifier-key.test.ts extensions/sandbox-permissions/paths-config.test.ts
+	node --test --experimental-strip-types extensions/sandbox-permissions/llm-review.test.ts
+
+test-gui: ## GUI 前端域逻辑与 Electron 侧模块
+	cd gui/frontend && node --test src/domain/gate/*.test.js src/domain/review/*.test.js
+	node --test gui/electron/*.test.mjs
+
+test-lib: ## lib 下其余测试（文件多，撞内存墙就再拆一组）
+	node --test --experimental-strip-types lib/subagent-*.test.ts lib/bash-approval.test.ts lib/review-settings.test.ts lib/text-diff.test.ts lib/script-changes.test.ts lib/script-format.test.ts
+
+test: test-ab test-ptc test-sandbox test-gui test-lib ## 全部测试（按组串行）
+
+# ── 灰盒验收 ──
+
+smoke: ## 壳的三条路径真验（会起真 pi、会花一次极小的模型调用）
+	scripts/ab-smoke.sh
