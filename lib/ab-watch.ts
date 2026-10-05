@@ -35,6 +35,19 @@ export function resolveRuntimeRoot(explicit?: string): string {
 }
 
 /**
+ * 观察层只在真跑的时候写状态：测试进程不许碰 ~/.pi/runtime。
+ *
+ * 踩过的坑（2026-10-05）：测试走审批路径时会记"干净往返"，攒够阈值就自动晋升，
+ * 而晋升会把 dev 挪成 stable、改写 current —— 跑一次测试就把槽搅乱了。
+ * Node 的测试运行器会设 NODE_TEST_CONTEXT，用它当闸门；测试想写就显式给
+ * runtimeRoot，或把 PI_RUNTIME_ROOT 指到临时目录（那说明它知道自己要写哪儿）。
+ */
+export function writeBlocked(explicitRuntimeRoot?: string): boolean {
+	if (explicitRuntimeRoot !== undefined || process.env.PI_RUNTIME_ROOT !== undefined) return false;
+	return process.env.NODE_TEST_CONTEXT !== undefined;
+}
+
+/**
 	* 记一次往返。调用点全在审核路径上，所以这里绝不抛异常。
 	*
 	* 运行时目录没初始化就直接跳过：不在别人机器上凭空造目录，也让这个引擎是"先建目录才生效"。
@@ -49,6 +62,10 @@ export function watchRoundTrip(options: {
 	autoPromote?: boolean;
 	at?: string;
 }): WatchResult {
+	// 测试进程默认不写状态（要写就显式给 runtimeRoot）
+	if (writeBlocked(options.runtimeRoot)) {
+		return { noted: false, skipped: "测试进程不写运行时状态" };
+	}
 	try {
 		const runtimeRoot = resolveRuntimeRoot(options.runtimeRoot);
 		if (!componentInitialized(runtimeRoot, options.component)) {
@@ -115,6 +132,10 @@ export function noteGateRoundTrip(options: {
 	autoPromote?: boolean;
 	at?: string;
 }): { gui: WatchResult; audit?: WatchResult; notices: Array<{ component: AbComponent; text: string }> } {
+	// 同 watchRoundTrip：测试进程默认不写状态
+	if (writeBlocked(options.runtimeRoot)) {
+		return { gui: { noted: false, skipped: "测试进程不写运行时状态" }, notices: [] };
+	}
 	const shared = {
 		...(options.runtimeRoot ? { runtimeRoot: options.runtimeRoot } : {}),
 		...(options.threshold !== undefined ? { threshold: options.threshold } : {}),

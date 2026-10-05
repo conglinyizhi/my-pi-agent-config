@@ -114,6 +114,12 @@ export function nowIso(): string {
 
 /** 晋升：dev 升 stable、旧 stable 落 previous、current 指 stable */
 export function promote(runtimeRoot: string, component: AbComponent, note: string, at = nowIso()): void {
+	// 没有 dev 就没有可晋升的东西。这条护栏是踩出来的：真放了 dev→stable 的移动，
+	// 而 dev 不在时第一步会把 stable 挪进 previous，current 随即悬空，槽看起来就"没了"。
+	if (!existsSync(slotPath(runtimeRoot, component, "dev"))) {
+		appendLog(runtimeRoot, component, JSON.stringify({ event: "promote-skip", reason: "没有 dev 槽可晋升" }), at);
+		return;
+	}
 	for (const action of planPromotion({ current: currentSlot(runtimeRoot, component), at, note })) {
 		if (action.kind === "move" && action.from && action.to) moveSlot(runtimeRoot, component, action.from, action.to);
 		if (action.kind === "link" && action.to) atomicLink(runtimeRoot, component, action.to);

@@ -17,7 +17,8 @@ import {
 
 function setup(): string {
 	const root = mkdtempSync(join(tmpdir(), "ab-watch-"));
-	for (const component of ["gui", "audit"]) mkdirSync(join(root, component), { recursive: true });
+	// 真跑的时候 dev 槽是存在的（dev 就是被晋升的那个）；不只是建组件目录
+	for (const component of ["gui", "audit"]) mkdirSync(join(root, component, "dev"), { recursive: true });
 	return root;
 }
 
@@ -59,6 +60,22 @@ describe("计数与自动晋升", () => {
 		assert.equal(last?.promoted, true);
 		assert.equal(last?.clean, 5);
 		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /"event":"promote"/);
+	});
+
+	it("没有 dev 可晋升时不晋升，也不动现有的 stable（踩过的坑）", () => {
+		const root = setup();
+		mkdirSync(join(root, "gui", "stable"), { recursive: true });
+		rmSync(join(root, "gui", "dev"), { recursive: true, force: true });
+		for (let index = 0; index < 5; index += 1) watchRoundTrip({ component: "gui", outcome: "clean", runtimeRoot: root, threshold: 5 });
+		assert.equal(existsSync(join(root, "gui", "stable")), true, "stable 不许被挪走");
+		assert.equal(existsSync(join(root, "gui", "dev")), false);
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /没有 dev 槽可晋升/);
+	});
+
+	it("测试进程不写运行时状态（不给 runtimeRoot 时）", () => {
+		const before = watchRoundTrip({ component: "gui", outcome: "clean" });
+		assert.equal(before.noted, false);
+		assert.match(before.skipped ?? "", /测试进程/);
 	});
 
 	it("失败清零，不晋升", () => {
