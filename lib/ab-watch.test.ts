@@ -2,7 +2,7 @@
 // 跑法：node --test --experimental-strip-types lib/ab-watch.test.ts
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -191,6 +191,62 @@ describe("提示落地", () => {
 		writeNotice(root, "gui", "gui 已自动晋升", "2026-10-05T10:00:00Z");
 		assert.match(readFileSync(join(root, "gui", "notice.txt"), "utf8"), /已自动晋升/);
 		writeNotice(join(root, "不存在"), "gui", "不该写进去");
+	});
+});
+
+
+describe("看门狗：连续失败自动回退", () => {
+	it("连续三次失败就退回 previous，并清掉连胜", () => {
+		const root = setup();
+		mkdirSync(join(root, "gui", "previous"), { recursive: true });
+		let last;
+		for (let index = 0; index < 3; index += 1) {
+			last = watchRoundTrip({ component: "gui", outcome: "failure", reason: "窗口被叉掉", runtimeRoot: root, failThreshold: 3 });
+		}
+		assert.equal(last?.rolledBack, true);
+		assert.equal(readlinkSync(join(root, "gui", "current")).split("/").pop(), "previous");
+		assert.equal(JSON.parse(readFileSync(join(root, "gui", "streak.json"), "utf8")).failing, 0);
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /watchdog-rollback/);
+	});
+
+	it("中间干净一次就重新数", () => {
+		const root = setup();
+		mkdirSync(join(root, "gui", "previous"), { recursive: true });
+		const options = { runtimeRoot: root, failThreshold: 3 } as const;
+		watchRoundTrip({ component: "gui", outcome: "failure", ...options });
+		watchRoundTrip({ component: "gui", outcome: "failure", ...options });
+		watchRoundTrip({ component: "gui", outcome: "clean", ...options });
+		watchRoundTrip({ component: "gui", outcome: "failure", ...options });
+		const last = watchRoundTrip({ component: "gui", outcome: "failure", ...options });
+		assert.equal(last.rolledBack, false, "只连续失败两次，不该回退");
+	});
+
+	it("没有 previous 槽时不退，只记账", () => {
+		const root = setup();
+		rmSync(join(root, "gui", "previous"), { recursive: true, force: true });
+		let last;
+		for (let index = 0; index < 4; index += 1) {
+			last = watchRoundTrip({ component: "gui", outcome: "failure", runtimeRoot: root, failThreshold: 3 });
+		}
+		assert.equal(last?.rolledBack, false);
+		assert.match(String(last?.watchdog), /没有可回退的槽/);
+	});
+
+	it("闸门往返里回退的提示排在晋升前面（回退更该被看见）", () => {
+		const root = setup();
+		mkdirSync(join(root, "gui", "previous"), { recursive: true });
+		mkdirSync(join(root, "audit", "previous"), { recursive: true });
+		let last;
+		for (let index = 0; index < 3; index += 1) {
+			last = noteGateRoundTrip({
+				windowResult: { ok: false, reason: "exited" },
+				review: { verdict: "safe" },
+				runtimeRoot: root,
+				failThreshold: 3,
+			});
+		}
+		const texts = (last?.notices ?? []).map((notice) => notice.text);
+		assert.ok(texts.some((text) => /自动回退/.test(text)), JSON.stringify(texts));
 	});
 });
 

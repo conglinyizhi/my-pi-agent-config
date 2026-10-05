@@ -10,8 +10,10 @@ import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, 
 import { basename, join, resolve } from "node:path";
 import {
 	AB_SLOTS,
+	DEFAULT_FAIL_THRESHOLD,
 	DEFAULT_THRESHOLD,
 	componentPath,
+	decideRollback,
 	currentLink,
 	decidePromotion,
 	emptyStreak,
@@ -133,6 +135,10 @@ export interface NoteResult {
 	action: "promote" | "notify" | "keep";
 	promoted: boolean;
 	reason: string;
+	/** 看门狗这一笔是否把 current 退回了上一版 */
+	rolledBack: boolean;
+	/** 看门狗的判定说明（没触发时也有，便于看清为什么没退） */
+	watchdog: string;
 }
 
 /**
@@ -146,6 +152,7 @@ export function noteRoundTrip(options: {
 	outcome: "clean" | "failure";
 	reason?: string;
 	threshold?: number;
+	failThreshold?: number;
 	autoPromote?: boolean;
 	at?: string;
 }): NoteResult {
@@ -165,13 +172,61 @@ export function noteRoundTrip(options: {
 	const decision = decidePromotion(next, { threshold, autoPromote: options.autoPromote });
 	if (decision.action === "promote") {
 		promote(options.runtimeRoot, options.component, decision.reason, at);
-		return { noted: true, clean: next.clean, threshold, action: "promote", promoted: true, reason: decision.reason };
+		return {
+			noted: true,
+			clean: next.clean,
+			threshold,
+			action: "promote",
+			promoted: true,
+			reason: decision.reason,
+			rolledBack: false,
+			watchdog: "刚晋升，看门狗不参与",
+		};
 	}
+
+	// 看门狗：连续失败到门槛就把 current 退回上一版。累加计数同时清零，
+	// 免得退过一次之后每一笔失败都再退一次。
+	const watchdog = decideRollback(next, {
+		...(options.failThreshold !== undefined ? { threshold: options.failThreshold } : {}),
+		hasPrevious: existsSync(slotPath(options.runtimeRoot, options.component, "previous")),
+		currentIsPrevious: currentSlot(options.runtimeRoot, options.component) === "previous",
+	});
+	let rolledBack = false;
+	if (watchdog.action === "rollback") {
+		rollback(options.runtimeRoot, options.component, watchdog.reason, at);
+		appendLog(
+			options.runtimeRoot,
+			options.component,
+			JSON.stringify({ event: "watchdog-rollback", reason: watchdog.reason }),
+			at,
+		);
+		writeStreak(options.runtimeRoot, options.component, { ...next, failing: 0 });
+		rolledBack = true;
+	}
+
 	if (decision.action === "notify") {
 		appendLog(options.runtimeRoot, options.component, JSON.stringify({ event: "promote-notice" }), at);
-		return { noted: true, clean: next.clean, threshold, action: "notify", promoted: false, reason: decision.reason };
+		return {
+			noted: true,
+			clean: next.clean,
+			threshold,
+			action: "notify",
+			promoted: false,
+			reason: decision.reason,
+			rolledBack,
+			watchdog: watchdog.reason,
+		};
 	}
-	return { noted: true, clean: next.clean, threshold, action: "keep", promoted: false, reason: decision.reason };
+	return {
+		noted: true,
+		clean: next.clean,
+		threshold,
+		action: "keep",
+		promoted: false,
+		reason: decision.reason,
+		rolledBack,
+		watchdog: watchdog.reason,
+	};
 }
 
 export interface SlotReport {

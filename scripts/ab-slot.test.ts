@@ -183,3 +183,16 @@ describe("状态", () => {
 		assert.match(result.stderr, /用法/);
 	});
 });
+
+describe("看门狗经 CLI 也生效", () => {
+	it("连记三次失败就把 current 退回 previous，并写进日志", () => {
+		const root = setup();
+		run(["switch", "audit", "dev", "--runtime-root", root]);
+		for (let index = 0; index < 3; index += 1) {
+			run(["note", "audit", "failure", "--reason", "链超时", "--runtime-root", root]);
+		}
+		assert.equal(currentTarget(root, "audit"), "previous");
+		assert.match(readFileSync(join(root, "audit", "promote.log"), "utf8"), /watchdog-rollback/);
+	});
+});
+

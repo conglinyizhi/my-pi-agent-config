@@ -22,6 +22,10 @@ export interface WatchResult {
 	clean?: number;
 	threshold?: number;
 	promoted?: boolean;
+	/** 看门狗这一笔是否把 current 退回了上一版 */
+	rolledBack?: boolean;
+	/** 看门狗的判定说明（没触发时也有） */
+	watchdog?: string;
 	action?: "promote" | "notify" | "keep";
 	reason?: string;
 }
@@ -41,6 +45,7 @@ export function watchRoundTrip(options: {
 	reason?: string;
 	runtimeRoot?: string;
 	threshold?: number;
+	failThreshold?: number;
 	autoPromote?: boolean;
 	at?: string;
 }): WatchResult {
@@ -55,6 +60,7 @@ export function watchRoundTrip(options: {
 			outcome: options.outcome,
 			...(options.reason ? { reason: options.reason } : {}),
 			...(options.threshold !== undefined ? { threshold: options.threshold } : {}),
+			...(options.failThreshold !== undefined ? { failThreshold: options.failThreshold } : {}),
 			...(options.autoPromote !== undefined ? { autoPromote: options.autoPromote } : {}),
 			...(options.at ? { at: options.at } : {}),
 		});
@@ -63,6 +69,8 @@ export function watchRoundTrip(options: {
 			clean: result.clean,
 			threshold: result.threshold,
 			promoted: result.promoted,
+			rolledBack: result.rolledBack,
+			watchdog: result.watchdog,
 			action: result.action,
 			reason: result.reason,
 		};
@@ -103,12 +111,14 @@ export function noteGateRoundTrip(options: {
 	review?: unknown;
 	runtimeRoot?: string;
 	threshold?: number;
+	failThreshold?: number;
 	autoPromote?: boolean;
 	at?: string;
 }): { gui: WatchResult; audit?: WatchResult; notices: Array<{ component: AbComponent; text: string }> } {
 	const shared = {
 		...(options.runtimeRoot ? { runtimeRoot: options.runtimeRoot } : {}),
 		...(options.threshold !== undefined ? { threshold: options.threshold } : {}),
+		...(options.failThreshold !== undefined ? { failThreshold: options.failThreshold } : {}),
 		...(options.autoPromote !== undefined ? { autoPromote: options.autoPromote } : {}),
 		...(options.at ? { at: options.at } : {}),
 	};
@@ -133,6 +143,8 @@ export function noteGateRoundTrip(options: {
 	const notices: Array<{ component: AbComponent; text: string }> = [];
 	for (const [label, result] of [["gui", gui], ["audit", audit]] as const) {
 		if (!result?.noted) continue;
+		// 回退比晋升更需要被看见：放前面，先报这个
+		if (result.rolledBack) notices.push({ component: label, text: `${label} 连续失败已达门槛，已自动回退到上一版` });
 		if (result.promoted) notices.push({ component: label, text: `${label} 已自动晋升（连续 ${result.clean} 次干净往返）` });
 		else if (result.action === "notify") notices.push({ component: label, text: `${label} 已攒够 ${result.threshold} 次干净往返，可以晋升` });
 	}

@@ -18,6 +18,9 @@ export const AB_SLOTS: readonly AbSlot[] = ["stable", "previous", "dev", "head"]
 /** 达标门槛：连续这么多次干净往返才允许晋升（提督 2026-10-05 定） */
 export const DEFAULT_THRESHOLD = 5;
 
+/** 看门狗门槛：连续这么多次失败就自动回退（连续比累计有意义：偶发一次不算毛） */
+export const DEFAULT_FAIL_THRESHOLD = 3;
+
 /** 默认运行时根目录（与 preshell 的 A/B 安装同一个地方） */
 export const DEFAULT_RUNTIME_ROOT = "~/.pi/runtime";
 
@@ -101,7 +104,10 @@ export function slotToken(manifest: SlotManifest | undefined): string {
 export interface StreakState {
 	/** 正在攒计数的是哪个槽 */
 	slot: AbSlot;
+	/** 连续干净次数：达标即晋升，任一次失败清零 */
 	clean: number;
+	/** 连续失败次数：看门狗按它判回退，任一次干净清零 */
+	failing?: number;
 	/** 累计失败次数（不清零，便于事后看这段有多毛） */
 	failures: number;
 	lastAt?: string;
@@ -109,7 +115,7 @@ export interface StreakState {
 }
 
 export function emptyStreak(slot: AbSlot = "dev"): StreakState {
-	return { slot, clean: 0, failures: 0 };
+	return { slot, clean: 0, failing: 0, failures: 0 };
 }
 
 export function parseStreak(text: string): StreakState {
@@ -119,6 +125,7 @@ export function parseStreak(text: string): StreakState {
 		return {
 			slot,
 			clean: typeof parsed.clean === "number" && parsed.clean >= 0 ? parsed.clean : 0,
+			failing: typeof parsed.failing === "number" && parsed.failing >= 0 ? parsed.failing : 0,
 			failures: typeof parsed.failures === "number" && parsed.failures >= 0 ? parsed.failures : 0,
 			...(typeof parsed.lastAt === "string" ? { lastAt: parsed.lastAt } : {}),
 			...(typeof parsed.lastReason === "string" ? { lastReason: parsed.lastReason } : {}),
@@ -140,11 +147,13 @@ export function streakAfter(
 ): StreakState {
 	const at = options.now;
 	if (outcome === "clean") {
-		return { ...state, clean: state.clean + 1, ...(at ? { lastAt: at } : {}) };
+		// 干净一次就把失败连胜清掉：偶发一次失败不该攒成回退理由
+		return { ...state, clean: state.clean + 1, failing: 0, ...(at ? { lastAt: at } : {}) };
 	}
 	return {
 		...state,
 		clean: 0,
+		failing: (state.failing ?? 0) + 1,
 		failures: state.failures + 1,
 		...(at ? { lastAt: at } : {}),
 		...(options.reason ? { lastReason: options.reason } : {}),
@@ -166,6 +175,30 @@ export function decidePromotion(
 	return options.autoPromote === false
 		? { action: "notify", reason: `已攒够 ${threshold} 次干净往返，等你点头晋升` }
 		: { action: "promote", reason: `已攒够 ${threshold} 次干净往返，自动晋升` };
+}
+
+export interface RollbackDecision {
+	action: "rollback" | "keep";
+	reason: string;
+}
+
+/**
+ * 看门狗的判定：连续失败到门槛就回退到 previous。
+ *
+ * 三条"不退"：没到门槛、已经在 previous 上（再退就是套娃）、压根没有 previous 槽。
+ * 用的都是连续失败数，不是累计：累计会把「三天前崩过两次、今天崩一次」也算成一串。
+ */
+export function decideRollback(
+	state: StreakState,
+	options: { threshold?: number; hasPrevious?: boolean; currentIsPrevious?: boolean } = {},
+): RollbackDecision {
+	const threshold = options.threshold ?? DEFAULT_FAIL_THRESHOLD;
+	const failing = state.failing ?? 0;
+	if (threshold <= 0) return { action: "keep", reason: "看门狗门槛非正数，不回退" };
+	if (failing < threshold) return { action: "keep", reason: `连续失败 ${failing}/${threshold}` };
+	if (options.currentIsPrevious) return { action: "keep", reason: "已经在 previous 上了，不再往下退" };
+	if (options.hasPrevious === false) return { action: "keep", reason: "没有可回退的槽" };
+	return { action: "rollback", reason: `连续失败 ${failing} 次，回退到 previous` };
 }
 
 export type SlotActionKind = "move" | "link" | "log";

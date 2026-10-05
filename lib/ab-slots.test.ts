@@ -8,6 +8,7 @@ import {
 	componentPath,
 	currentLink,
 	decidePromotion,
+	decideRollback,
 	emptyStreak,
 	formatManifest,
 	formatStreak,
@@ -140,3 +141,48 @@ describe("晋升与回退该做哪几步", () => {
 		assert.match(String(actions[1].text), /判断逻辑静默失效/);
 	});
 });
+
+describe("看门狗判定", () => {
+	it("连续失败到门槛就回退", () => {
+		const decision = decideRollback({ ...emptyStreak(), failing: 3 }, { threshold: 3, hasPrevious: true });
+		assert.equal(decision.action, "rollback");
+		assert.match(decision.reason, /连续失败 3 次/);
+	});
+
+	it("没到门槛不退", () => {
+		const decision = decideRollback({ ...emptyStreak(), failing: 2 }, { threshold: 3, hasPrevious: true });
+		assert.equal(decision.action, "keep");
+		assert.match(decision.reason, /2\/3/);
+	});
+
+	it("已经在 previous 上不再往下退（防套娃）", () => {
+		const decision = decideRollback({ ...emptyStreak(), failing: 9 }, { threshold: 3, hasPrevious: true, currentIsPrevious: true });
+		assert.equal(decision.action, "keep");
+		assert.match(decision.reason, /previous/);
+	});
+
+	it("没有 previous 槽时不退", () => {
+		const decision = decideRollback({ ...emptyStreak(), failing: 9 }, { threshold: 3, hasPrevious: false });
+		assert.equal(decision.action, "keep");
+		assert.match(decision.reason, /没有可回退的槽/);
+	});
+
+	it("门槛非正数直接不参与（防呆）", () => {
+		assert.equal(decideRollback({ ...emptyStreak(), failing: 9 }, { threshold: 0, hasPrevious: true }).action, "keep");
+	});
+
+	it("连续失败是连续数，不是累计数", () => {
+		let state = emptyStreak();
+		state = streakAfter(state, "failure");
+		state = streakAfter(state, "clean");
+		state = streakAfter(state, "failure");
+		assert.equal(state.failing, 1, "中间那次干净该把连胜清掉");
+		assert.equal(state.failures, 2, "累计数照旧留着");
+	});
+
+	it("干净一次就把失败连胜清零", () => {
+		const state = streakAfter({ ...emptyStreak(), failing: 2 }, "clean");
+		assert.equal(state.failing, 0);
+	});
+});
+
