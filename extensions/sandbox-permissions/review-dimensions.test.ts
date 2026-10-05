@@ -314,3 +314,52 @@ describe("场景禁用维度", () => {
 		assert.deepEqual(disabledReportRows(ignored, "ptc"), []);
 	});
 });
+
+describe("规则按维忽略（/sandbox 规则表的 then = \"ignore\"）", () => {
+	// oddity 是 score 型：risk = score / 4（五档），置信度由模型给
+	const oddityAnswer = (score: number, confidence: number): RawAnswer => ({ type: "score", score, confidence });
+	const configs = defaultDimensionConfigs();
+	const verdictOf = (verdicts: ReturnType<typeof evaluateAll>) => verdicts.find((v) => v.id === "oddity")!;
+
+	it("没有规则时，风险 0.75 照旧报警", () => {
+		const verdicts = evaluateAll({ oddity: oddityAnswer(3, 0.9) }, configs);
+		assert.equal(verdictOf(verdicts).triggered, true);
+	});
+
+	it("风险低于门槛就忽略（risk_below）", () => {
+		const rules = [{ id: "r1", dimension: "oddity", riskBelow: 0.8, then: "ignore", note: "太低" }] as never;
+		const verdicts = evaluateAll({ oddity: oddityAnswer(3, 0.9) }, configs, rules);
+		const oddity = verdictOf(verdicts);
+		assert.equal(oddity.triggered, false);
+		assert.equal(oddity.ignoredBy, "太低");
+	});
+
+	it("置信低于 0.2 直接作废；0.4 的警报留着（这才是这条规则的意义）", () => {
+		const rules = [{ id: "r2", dimension: "oddity", confidenceBelow: 0.2, then: "ignore" }] as never;
+		const low = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.1) }, configs, rules));
+		assert.equal(low.triggered, false, "置信 0.1 该被忽略");
+		const mid = verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.4) }, configs, rules));
+		assert.equal(mid.triggered, true, "置信 0.4 仍要提醒（宁可信其有）");
+	});
+
+	it("口语别名也认：需要用户关注", () => {
+		const rules = [{ id: "r3", dimension: "需要用户关注", confidenceBelow: 0.2, then: "ignore" }] as never;
+		assert.equal(verdictOf(evaluateAll({ oddity: oddityAnswer(3, 0.1) }, configs, rules)).triggered, false);
+	});
+
+	it("只影响指名的维度：别的高风险维度照旧把请求送去人工", () => {
+		const rules = [{ id: "r4", dimension: "oddity", confidenceBelow: 0.2, then: "ignore" }] as never;
+		const answers: Record<string, RawAnswer> = {
+			oddity: oddityAnswer(3, 0.1),
+			elevation: {
+				type: "choice",
+				choice: "privileged-change",
+				probabilities: { none: 0.05, "user-elevation": 0.15, "privileged-change": 0.8 },
+				confidence: 0.9,
+			},
+		};
+		const verdicts = evaluateAll(answers, configs, rules);
+		assert.equal(verdictOf(verdicts).triggered, false);
+		assert.equal(synthesize(verdicts).outcome, "review");
+	});
+});

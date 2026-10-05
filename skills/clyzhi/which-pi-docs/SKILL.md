@@ -101,6 +101,26 @@ done
 | 送审提示词 | `extensions/sandbox-permissions/review-system-prompt.txt` | 改完即生效，下次审核现读 |
 | 误判样本 | `extensions/sandbox-permissions/review-examples.txt` | 容易误报的命令，随用随加 |
 
+**规则表能写什么**（写歪了它整组作废，并把这张单子念给你听）：一行里的条件是「且」，行与行是「或」，先命中先算。
+
+| 条件 | 意思 |
+|---|---|
+| `verdict` | 结论等于其中之一（safe / risky / dangerous / error） |
+| `all_triggered_below_confidence` | 触发的那几维置信度全都低于它 |
+| `no_triggered_dimensions` | 没有任何维度越线 |
+| `rule_name` | 命令审计命中了这些规则名之一 |
+| `command_contains` | 命令里含这个子串（子串，不是正则） |
+| `dimension` | 只对某一维生效（id、面板显示名、口语别名都认） |
+| `risk_below` / `confidence_below` | 这一维的风险值 / 置信度低于它（配合 `then = "ignore"`） |
+
+`then` 有四种：
+
+- `ignore`：**只对某一维生效**，必须配 `dimension`——这一维的警报不算数，其余维度照旧说话；
+- `allow` / `ask` / `deny`：整条判定的处置，不配 `dimension`。`allow` 仍受总开关管（档位不是 auto 也放行不了），`deny` 直接拒。
+
+用口语描述规则时，对着上面两张单子挑词；挑不出来就把那句话原样给我，我翻成字段。现在装着两条：
+`oddity`（面板叫「整体可疑」，口语可以写「需要用户关注」）风险值 < 0.5 忽略；有值但置信 < 0.2 直接作废这条警报。
+
 可视化调：`/sandbox:gui`（审核工作流设置窗，别名 `/sandbox:review`；无图形时回退 TUI 面板）。
 规则表另有命令行入口：`node scripts/review-rules-cli.ts get` / `save --file <json>`。
 

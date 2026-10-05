@@ -9,6 +9,8 @@
 //   2. 分类器是试验品，**任何请求都不允许它直接 block**：它只决定「是否提示用户审核」。
 //   3. 阈值默认 0.5，方向分两种：above（风险高）与 below（模型没把握，宁可信其有）。
 
+import { dimensionIgnoredBy, type ReviewRule } from "../../lib/review-rules.ts";
+
 /** 分类模型支持的原语 */
 export type Primitive = "noul" | "choice" | "score";
 
@@ -150,6 +152,28 @@ export const DIMENSIONS: DimensionSpec[] = [
 /** 按 id 取维度定义 */
 export function dimensionById(id: string): DimensionSpec | undefined {
 	return DIMENSIONS.find((d) => d.id === id);
+}
+
+/**
+ * 规则表里指名这一维时可以怎么写：id、面板显示名，以及口语别名。
+ *
+ * 口语别名是给"直接用嘴描述规则"留的口子——写规则的人未必记得 id 叫 oddity、
+ * 面板上叫整体可疑，他可能就说"需要用户关注"。三个名字都认，谁都别背表。
+ */
+const DIMENSION_ALIASES: Record<string, string[]> = {
+	oddity: ["需要用户关注", "需要人看一眼", "该不该打扰用户"],
+	intent: ["符合要求", "意图"],
+	preshell_trust: ["解析结果可不可信"],
+	secret_exposure: ["机密", "泄密"],
+	wallet_access: ["钱包"],
+	elevation: ["提权", "sudo"],
+	network: ["联网", "外发"],
+	scripted_edit: ["脚本改写文件"],
+};
+
+/** 规则里能用来指名这一维的所有写法 */
+export function dimensionNames(id: string, label: string): string[] {
+	return [id, label, ...(DIMENSION_ALIASES[id] ?? [])];
 }
 
 // ═══════════════════════════════════════════════════
@@ -317,6 +341,8 @@ export interface DimensionVerdict {
 	triggered: boolean;
 	/** 触发原因（中文，可直接进弹窗理由） */
 	reason: string;
+	/** 被规则忽略时记下是哪条规则：判定链要能说明自己为什么没报警 */
+	ignoredBy?: string;
 	answer: DimensionAnswer;
 	config: DimensionConfig;
 }
@@ -384,6 +410,8 @@ export function synthesize(verdicts: DimensionVerdict[]): SynthesisResult {
 export function evaluateAll(
 	answers: Record<string, RawAnswer>,
 	configs: DimensionConfig[],
+	/** 规则表：目前只用来"忽略某一维的警报"（then = "ignore"）。不传就是没有规则 */
+	rules: readonly ReviewRule[] = [],
 ): DimensionVerdict[] {
 	const out: DimensionVerdict[] = [];
 	for (const config of configs) {
@@ -394,7 +422,17 @@ export function evaluateAll(
 			// 服务端漏答（协议上不该发生）：当作「没答案」跳过，不因此触发提示
 			continue;
 		}
-		out.push(evaluateDimension(spec, normalizeAnswer(spec, raw), config));
+		const verdict = evaluateDimension(spec, normalizeAnswer(spec, raw), config);
+		// 规则可以按维忽略：风险值/置信度低于门槛时这一维不算数，别的维度照旧说话
+		const ignore = dimensionIgnoredBy(
+			{
+				names: dimensionNames(config.id, spec.label),
+				risk: verdict.answer.risk,
+				confidence: verdict.answer.confidence,
+			},
+			rules,
+		);
+		out.push(ignore ? { ...verdict, triggered: false, ignoredBy: ignore.note ?? ignore.id, reason: "" } : verdict);
 	}
 	return out;
 }

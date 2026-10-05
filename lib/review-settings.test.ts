@@ -154,7 +154,8 @@ describe("loadReviewSettings", () => {
 			assert.ok(known.has(dim.id), `不认识的维度：${dim.id}`);
 			assert.equal(typeof dim.enabled, "boolean", dim.id);
 			assert.ok(dim.above >= 0 && dim.above <= 1, `${dim.id} 的 above 越界`);
-			assert.ok(dim.below >= 0 && dim.below <= 1, `${dim.id} 的 below 越界`);
+			// noul 没有置信度，below 允许是 null
+			assert.ok(dim.below === null || (dim.below >= 0 && dim.below <= 1), `${dim.id} 的 below 越界`);
 			assert.ok(dim.action === "review" || dim.action === "ignore", `${dim.id} 的 action 非法`);
 		}
 	});

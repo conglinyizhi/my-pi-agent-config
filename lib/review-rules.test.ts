@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decideWithRules, firstMatchingRule, parseReviewRules } from "./review-rules.ts";
+import { decideWithRules, dimensionIgnoredBy, firstMatchingRule, parseReviewRules } from "./review-rules.ts";
 
 const TOML = [
 	'[[rule]]',
@@ -148,3 +148,41 @@ describe("规则与内置判据的合议", () => {
 	});
 });
 
+
+describe("规则表的字段校验（口语写歪时要说话）", () => {
+	it("不认识的字段：整组作废，并列出能写的字段", () => {
+		const text = ['[[rule]]', 'id = "x"', 'when_risk_is_low = 0.5', 'then = "ignore"'].join("\n");
+		const parsed = parseReviewRules(text);
+		assert.equal(parsed.rules.length, 0);
+		const message = parsed.problems.join(" ");
+		assert.match(message, /不认识的字段 when_risk_is_low/);
+		assert.match(message, /dimension/);
+		assert.match(message, /risk_below/);
+	});
+
+	it("ignore 必须指名维度；指名了维度就不能用整条处置", () => {
+		const noDim = parseReviewRules(['[[rule]]', 'id = "a"', 'risk_below = 0.5', 'then = "ignore"'].join("\n"));
+		assert.match(noDim.problems.join(" "), /要配 dimension/);
+		const wrongThen = parseReviewRules(['[[rule]]', 'id = "b"', 'dimension = "oddity"', 'then = "allow"'].join("\n"));
+		assert.match(wrongThen.problems.join(" "), /只能用 then = "ignore"/);
+	});
+
+	it("门槛要写在 0..1；写对了就把两个字面量读回来", () => {
+		const bad = parseReviewRules(['[[rule]]', 'id = "c"', 'dimension = "oddity"', 'confidence_below = 2', 'then = "ignore"'].join("\n"));
+		assert.match(bad.problems.join(" "), /0\.\.1/);
+		const good = parseReviewRules(
+			['[[rule]]', 'id = "d"', 'dimension = "需要用户关注"', 'risk_below = 0.5', 'confidence_below = 0.2', 'then = "ignore"'].join("\n"),
+		);
+		assert.deepEqual(good.problems, []);
+		assert.equal(good.rules[0].riskBelow, 0.5);
+		assert.equal(good.rules[0].confidenceBelow, 0.2);
+		assert.equal(good.rules[0].dimension, "需要用户关注");
+	});
+
+	it("dimensionIgnoredBy：门槛缺值时不命中（有值才判）", () => {
+		const rules = [{ id: "r", dimension: "oddity", confidenceBelow: 0.2, then: "ignore" }] as never;
+		assert.equal(dimensionIgnoredBy({ names: ["oddity"], risk: 0.9 }, rules), undefined, "没有置信度就轮不到这条规则");
+		assert.equal(dimensionIgnoredBy({ names: ["oddity"], risk: 0.9, confidence: 0.05 }, rules)?.id, "r");
+		assert.equal(dimensionIgnoredBy({ names: ["network"], risk: 0.9, confidence: 0.05 }, rules), undefined);
+	});
+});

@@ -16,6 +16,7 @@
 // 理由（弹窗里给人看的那句话）由命中维度拼装：分类模型不产文本，理由必须来自代码。
 
 import { readFileSync } from "node:fs";
+import { defaultRulesPath, loadReviewRules } from "../../lib/review-rules.ts";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse as parseToml } from "smol-toml";
@@ -210,7 +211,8 @@ export async function reviewViaClassifier(
 		return { verdict: "error", reason: `分类模型审核失败：${outcome.error}`, suggestion: "" };
 	}
 
-	const verdicts = evaluateAll(outcome.answers, dims);
+	// 规则表在这一层读（按 mtime 缓存，改完即生效）：目前只用来"忽略某一维的警报"
+	const verdicts = evaluateAll(outcome.answers, dims, loadReviewRules(defaultRulesPath()));
 	if (verdicts.length === 0) {
 		return { verdict: "error", reason: "分类模型没有回答任何启用的维度", suggestion: "" };
 	}

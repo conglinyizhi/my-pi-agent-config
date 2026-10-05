@@ -11,15 +11,28 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { parse as parseToml, stringify } from "smol-toml";
 
-/** 规则能用的动作 */
-export type RuleAction = "allow" | "ask" | "deny";
+/**
+ * 规则能用的动作。
+ *
+ *   allow / ask / deny  整条判定的处置（配合 verdict、ruleName、commandContains 这些条件）
+ *   ignore              只对**某一维**的警报：这一维不算数，其余维度照旧说了算
+ *                       （必须配 dimension；这是提督要的"忽略这条警报"）
+ */
+export type RuleAction = "allow" | "ask" | "deny" | "ignore";
 
 /** 一次判定的事实：判定链在这些东西上做决定 */
 export interface RuleFacts {
 	/** 合并后的结论（分类器说了算） */
 	verdict?: "safe" | "risky" | "dangerous" | "error";
 	/** 分类器给的维度行（可能为空：模型没答上话） */
-	dimensions?: Array<{ id?: string; triggered?: boolean; confidence?: number; disabled?: boolean }>;
+	dimensions?: Array<{
+		id?: string;
+		label?: string;
+		triggered?: boolean;
+		risk?: number;
+		confidence?: number;
+		disabled?: boolean;
+	}>;
 	/** 命令审计命中的规则名 */
 	ruleNames?: string[];
 	/** 命令原文（只做子串匹配，不做正则——正则在这里是脚枪） */
@@ -39,6 +52,12 @@ export interface ReviewRule {
 	ruleName?: string[];
 	/** 命令里含这个子串 */
 	commandContains?: string;
+	/** 只对这一维生效（写 id 或显示名都认，比如 oddity / 需要用户关注） */
+	dimension?: string;
+	/** 这一维的风险值**低于**它（0..1）——配合 then = "ignore" */
+	riskBelow?: number;
+	/** 这一维的置信度**低于**它（0..1）——配合 then = "ignore" */
+	confidenceBelow?: number;
 	/** 命中之后 */
 	then: RuleAction;
 	/** 为什么留这条规则（表单里显示，也进流水） */
@@ -51,7 +70,22 @@ export interface ReviewRules {
 	problems: string[];
 }
 
-const ACTIONS: readonly RuleAction[] = ["allow", "ask", "deny"];
+const ACTIONS: readonly RuleAction[] = ["allow", "ask", "deny", "ignore"];
+
+/** toml 里允许出现的键。写错一个字母就报错：静默忽略会变成"没有条件的规则"，命中所有情况 */
+const ALLOWED_KEYS = [
+	"id",
+	"then",
+	"note",
+	"verdict",
+	"all_triggered_below_confidence",
+	"no_triggered_dimensions",
+	"rule_name",
+	"command_contains",
+	"dimension",
+	"risk_below",
+	"confidence_below",
+];
 const VERDICTS = ["safe", "risky", "dangerous", "error"] as const;
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -95,6 +129,31 @@ export function parseReviewRules(text: string): ReviewRules {
 		if (threshold !== undefined && (typeof threshold !== "number" || threshold < 0 || threshold > 1)) {
 			problems.push(`${at}：all_triggered_below_confidence 要是 0..1 的数`);
 		}
+		// 不认识的键要拦：静默忽略会造出"一条条件都没有的规则"，那是命中一切的规则
+		for (const key of Object.keys(row)) {
+			if (!ALLOWED_KEYS.includes(key)) {
+				problems.push(`${at}：不认识的字段 ${key}。能写的是 ${ALLOWED_KEYS.join(" / ")}`);
+			}
+		}
+		const dimension = typeof row.dimension === "string" && row.dimension.trim() !== "" ? row.dimension.trim() : undefined;
+		const riskBelow = row.risk_below;
+		if (riskBelow !== undefined && (typeof riskBelow !== "number" || riskBelow < 0 || riskBelow > 1)) {
+			problems.push(`${at}：risk_below 要是 0..1 的数`);
+		}
+		const confidenceBelow = row.confidence_below;
+		if (confidenceBelow !== undefined && (typeof confidenceBelow !== "number" || confidenceBelow < 0 || confidenceBelow > 1)) {
+			problems.push(`${at}：confidence_below 要是 0..1 的数`);
+		}
+		if (then === "ignore" && dimension === undefined) {
+			problems.push(`${at}：then = "ignore" 要配 dimension，写明忽略哪一维（比如 dimension = "oddity"）`);
+		}
+		if (dimension !== undefined && then !== "ignore") {
+			problems.push(
+				`${at}：带 dimension 的规则只能用 then = "ignore"；要整条放行/拒绝就别写 dimension，改用 verdict 或 command_contains`,
+			);
+		}
+		// 一条条件都没有的规则是合法的（"一律问人"这种兜底）；危险的是键写错，
+		// 那会被读成"没有条件"，所以未知键在上面已经拦下了。
 		rules.push({
 			id,
 			...(verdict ? { verdict: verdict as ReviewRule["verdict"] } : {}),
@@ -104,6 +163,9 @@ export function parseReviewRules(text: string): ReviewRules {
 			...(typeof row.command_contains === "string" && row.command_contains !== ""
 				? { commandContains: row.command_contains }
 				: {}),
+			...(dimension !== undefined ? { dimension } : {}),
+			...(typeof riskBelow === "number" ? { riskBelow } : {}),
+			...(typeof confidenceBelow === "number" ? { confidenceBelow } : {}),
 			then: (typeof then === "string" ? then : "ask") as RuleAction,
 			...(typeof row.note === "string" && row.note !== "" ? { note: row.note } : {}),
 		});
@@ -135,6 +197,28 @@ export function matchesRule(rule: ReviewRule, facts: RuleFacts): boolean {
 	return true;
 }
 
+/**
+ * 这一维要不要按规则**忽略**掉（只认 then = "ignore"）。
+ *
+ * 条件是「且」：dimension 指名哪一维（id 或显示名都认），riskBelow / confidenceBelow 是门槛。
+ * 门槛写着但这一维没给这个值（比如 noul 没有置信度）时不算命中——"有值才判"。
+ */
+export function dimensionIgnoredBy(
+	dim: { names?: string[]; risk?: number; confidence?: number },
+	rules: readonly ReviewRule[],
+): ReviewRule | undefined {
+	const names = dim.names ?? [];
+	return rules.find((rule) => {
+		if (rule.then !== "ignore" || rule.dimension === undefined) return false;
+		if (!names.includes(rule.dimension)) return false;
+		if (rule.riskBelow !== undefined && (dim.risk === undefined || dim.risk >= rule.riskBelow)) return false;
+		if (rule.confidenceBelow !== undefined && (dim.confidence === undefined || dim.confidence >= rule.confidenceBelow)) {
+			return false;
+		}
+		return true;
+	});
+}
+
 /** 第一条命中的规则说了算（顺序即优先级） */
 export function firstMatchingRule(rules: readonly ReviewRule[], facts: RuleFacts): ReviewRule | undefined {
 	return rules.find((rule) => matchesRule(rule, facts));
@@ -155,6 +239,9 @@ const TO_TOML: Array<[keyof ReviewRule, string]> = [
 	["noTriggeredDimensions", "no_triggered_dimensions"],
 	["ruleName", "rule_name"],
 	["commandContains", "command_contains"],
+	["dimension", "dimension"],
+	["riskBelow", "risk_below"],
+	["confidenceBelow", "confidence_below"],
 	["then", "then"],
 	["note", "note"],
 ];

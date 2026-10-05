@@ -1,0 +1,34 @@
+# 审核规则表：一行一条规则，条件之间是「且」，行与行是「或」（先命中先算）。
+#
+# 能写的字段：
+#   id / then / note
+#   verdict                         结论等于其中之一（safe / risky / dangerous / error）
+#   all_triggered_below_confidence  触发的那几维置信度全都低于它
+#   no_triggered_dimensions         没有任何维度越线
+#   rule_name                       命令审计命中了这些规则名之一
+#   command_contains                命令里含这个子串（只做子串，不做正则）
+#   dimension                       只对某一维生效（写 id、面板显示名或口语别名都认）
+#   risk_below / confidence_below   这一维的风险值 / 置信度低于它
+#
+# then = "ignore" 只对某一维生效，必须配 dimension：这一维不算数，别的维度照旧说话。
+# then = "allow" / "ask" / "deny" 是整条判定的处置，不要配 dimension。
+# allow 仍受总开关管（档位不是 auto 时规则也放行不了）；deny 直接拒。
+#
+# 字段名写错不会静默忽略：整组作废，并告诉你有哪些字段能写。
+# 用口语描述也行不通时就照上面这段话对照；实在拿不准问一句便是。
+
+# 「需要用户关注」（oddity）这一维：风险值不到 0.5 就别报警
+[[rule]]
+id = "oddity-low-risk-ignore"
+dimension = "oddity"   # 也可以写 整体可疑 / 需要用户关注
+risk_below = 0.5
+then = "ignore"
+note = "风险值 < 0.5，不值得打扰用户"
+
+# 有值但模型明显没把握（置信 < 0.2）：这条警报直接作废，参考其他维度
+[[rule]]
+id = "oddity-very-low-confidence-ignore"
+dimension = "oddity"
+confidence_below = 0.2
+then = "ignore"
+note = "置信 < 0.2，这条警报没有信息量，看其他维度"
