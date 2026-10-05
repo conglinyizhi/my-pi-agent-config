@@ -14,7 +14,7 @@
 //      保存走另一条路（Electron 主进程 → scripts/review-settings-cli.ts → lib/review-settings.ts），
 //      本文件不碰 TOML。
 
-import { collectGuiDiagnosis, type GuiDiagnosis, type GuiFallbackReason } from "../../lib/gui-diagnosis.ts";
+import { collectGuiDiagnosis, guiWindowUnavailableReason, type GuiDiagnosis, type GuiFallbackReason } from "../../lib/gui-diagnosis.ts";
 import { launchGuiWindow } from "../../lib/gui-runner.ts";
 import {
 	REVIEW_LIMITS,
@@ -44,12 +44,9 @@ export interface ReviewWindowRequest {
  * 预检：这台机器现在能不能开出图形窗。
  * null = 可以；否则给出回退原因（直接喂给 gui-diagnosis 的修法生成）。
  */
+/** 保留这个名字给测试与调用方；判定本体在 lib/gui-diagnosis.ts（两个窗口共用一条规则） */
 export function reviewGuiUnavailableReason(d: GuiDiagnosis): GuiFallbackReason | null {
-	if (!d.binary) return "no-binary";
-	// 壳脚本在、但 electron 或前端产物缺：窗口起不来 / 白屏
-	if (!d.hasElectron || !d.hasFrontendDist) return "spawn-failed";
-	if (!d.hasDisplayEnv) return "spawn-failed";
-	return null;
+	return guiWindowUnavailableReason(d);
 }
 
 /** 组请求：设置从单一读入口取，维度元信息与取值范围一并带上（前端不再复制一份常量） */

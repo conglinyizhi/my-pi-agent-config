@@ -39,6 +39,8 @@ export const WINDOW_CONFIGS = {
 	routing: { title: "TODO 调度 · 三叉戟", width: 1000, height: 720, minWidth: 800, minHeight: 540 },
 	// 审核工作流设置：字段多（三组数值 + 八个维度 × 四列），给得比 gate 窄一点但够高
 	review: { title: "审核工作流设置 · pi", width: 1080, height: 860, minWidth: 880, minHeight: 600 },
+	// 审核流程：左边列表、中间图、右边校验与轨迹，要宽
+	flows: { title: "审核流程 · pi", width: 1320, height: 900, minWidth: 1000, minHeight: 640 },
 };
 
 /** 未知窗口名时的兜底 */

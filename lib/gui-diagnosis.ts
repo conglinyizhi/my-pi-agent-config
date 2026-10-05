@@ -130,6 +130,17 @@ function hasElectron(): boolean {
 }
 
 /** 收集一次本机现状。checkCommands=false 时跳过 systemctl / pkg-config 这类子进程。 */
+/**
+ * 开窗的通用前置判定：壳脚本、electron、前端产物、显示环境四样缺一不可。
+ * 生成两个窗口（审核设置、审核流程）用的是同一条规则，所以只有这一份。
+ */
+export function guiWindowUnavailableReason(d: GuiDiagnosis): GuiFallbackReason | null {
+	if (!d.binary) return "no-binary";
+	if (!d.hasElectron || !d.hasFrontendDist) return "spawn-failed";
+	if (!d.hasDisplayEnv) return "spawn-failed";
+	return null;
+}
+
 export function collectGuiDiagnosis(checkCommands = true): GuiDiagnosis {
 	const candidates: GuiBinaryCandidate[] = guiBinaryCandidates().map((p) => ({
 		path: p,

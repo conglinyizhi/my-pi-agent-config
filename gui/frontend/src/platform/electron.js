@@ -35,6 +35,11 @@ export function createElectronPlatform(api = globalThis.window?.piGui) {
       deleteReason: (content) => api.gate.deleteReason(content),
     },
     // 审核设置：load = 读当前值（+维度元信息/取值范围），save = 提交 patch（后端校验并原子落盘）
+    flows: {
+      list: () => api.flows.list(),
+      get: (id) => api.flows.get(id),
+      save: (patch) => api.flows.save(patch),
+    },
     review: {
       load: () => api.review.load(),
       save: (patch) => api.review.save(patch),
