@@ -42,6 +42,12 @@ export default function skillVisibility(pi: ExtensionAPI): void {
 				? { ...skill, disableModelInvocation: true }
 				: skill,
 		);
+		// 让 pi 按结构化选项重渲染，别拿正则去改整段文本。
+		// 2026-10-05 实测：pi 1.0.2 把技能段包进了 <skills> 标签，老正则要求句子前正好两个换行，
+		// 于是静默失配（replaceSkillsSection 返回 undefined）→ 整个过滤被跳过，隐藏项照旧可见。
+		// 注释「Prompt options after before_agent_start mutations」说明原地改 options 是支持的。
+		event.systemPromptOptions.skills = filteredSkills;
+		// 文本路径留着：老版本 pi 没有分节渲染，这条路还能用（能用就用，不冲突）
 		const systemPrompt = replaceSkillsSection(event.systemPrompt, filteredSkills);
 		if (systemPrompt) return { systemPrompt };
 	});
