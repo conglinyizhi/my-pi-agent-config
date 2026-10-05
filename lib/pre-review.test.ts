@@ -97,6 +97,9 @@ describe("预审（直连）", () => {
 		assert.equal(result.review?.verdict, "safe");
 		assert.match(result.review?.reason ?? "", /分类器没给出结论/);
 		assert.equal(result.autoApproved, true, "对话模型判安全就该放行");
+		// 界面要能说清"这是替代判断"：挂上对话模型自己的话，并标明分类器没结论
+		assert.equal(result.review?.chatReview?.verdict, "safe");
+		assert.match(String(result.review?.classifierFailed ?? ""), /分类器超时/);
 	});
 
 	it("分类器超时且对话模型判风险：照样问人", async () => {

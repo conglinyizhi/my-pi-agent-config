@@ -220,6 +220,8 @@ export async function reviewViaClassifier(
 	const result = synthesize(verdicts);
 	// 权重表：两种分支都带（safe 在 strict 模式下同样弹窗；出问题时最该看的就是当时的数）。
 	// 场景禁用的维度附在末尾（前端灰显）——没问过的行不该混进按风险降序的那批里。
+	// 原样留一份发出去的请求：窗口里点 System One 那张卡就能看到
+	const promptDebug = `[state]\n${JSON.stringify(state, null, 1)}\n\n[questions]\n${JSON.stringify(questions, null, 1)}`;
 	const dimensions = [
 		...dimensionReportDetailed(outcome.answers, verdicts),
 		...disabledReportRows(config.dimensions, scenario),
@@ -230,6 +232,7 @@ export async function reviewViaClassifier(
 			reason: `${result.summary}（${verdicts.length} 个维度）`,
 			suggestion: "",
 			dimensions,
+			promptDebug: { classifier: promptDebug },
 		};
 	}
 
@@ -238,5 +241,6 @@ export async function reviewViaClassifier(
 		reason: formatHitReason(result.hit),
 		suggestion: "以上维度的判断超过阈值。分类模型精度有限，确认命令与你的意图一致再批准。",
 		dimensions,
+		promptDebug: { classifier: promptDebug },
 	};
 }

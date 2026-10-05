@@ -8,6 +8,7 @@ import { autoApproveDecision, type BashPreReviewResult } from "./bash-approval.t
 import { decideWithRules, defaultRulesPath, loadReviewRules } from "./review-rules.ts";
 import {
 	reviewCacheKey,
+	toAdvisorNote,
 	type LlmReviewConfig,
 	type ReviewCache,
 	type ReviewResult,
@@ -75,6 +76,11 @@ async function runChain(
 		return {
 			...chatReview,
 			reason: `分类器没给出结论（${merged.reason}），本次按对话模型判：${chatReview.reason}`,
+			// 把对话模型自己的话也挂到 chatReview：审批窗那张「LLM 审核」卡读的是这个字段，
+			// 不挂的话卡是空的（踩过：结论写着"按对话模型判"，那张卡却什么都没显示）
+			chatReview: toAdvisorNote(chatReview, chatReview.verdict),
+			// 给界面一个明说的机会：卡上不该写"寄了"，那是"分类器没结论、这是替代判断"
+			classifierFailed: merged.reason,
 		};
 	}
 	return merged;

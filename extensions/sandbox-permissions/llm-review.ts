@@ -53,6 +53,20 @@ export interface ReviewResult {
 	 * 结论单独放这里，而不是揉进 reason——审批窗要能分清「谁说的什么」，
 	 * 出问题时才好判断是哪一边在误报。
 	 */
+	/**
+	 * 分类器没给出结论时，记下它失败的原因。
+	 *
+	 * 有值就说明：这次结论来自对话模型（提督定的规矩），审批窗要照实写，
+	 * 不能因为"没有维度表"就打成「寄了」——那会让人以为整条链都没跑。
+	 */
+	classifierFailed?: string;
+	/**
+	 * 这次判定实际发出去的提示词（原样，给人看）。
+	 *
+	 * 提督 2026-10-05 要的：窗口里点两张卡分别看 System One 与 LLM 的原始提示词——
+	 * 模型行为迷惑的时候，只有把送进去的东西摊开才能判断是提示词的问题还是模型的问题。
+	 */
+	promptDebug?: { classifier?: string; chat?: string };
 	chatReview?: {
 		verdict: ReviewVerdict;
 		reason: string;
@@ -634,7 +648,10 @@ async function runChatReview(
 			}
 			const result = extractReviewResult(response.content);
 			if (result.verdict !== "error") {
-				return result;
+				return {
+					...result,
+					promptDebug: { chat: `[system]\n${system}\n\n[user]\n${user}` },
+				};
 			}
 			// 未调用审核工具（未给出结构化结论）的模型，把它的自由文本输出也附上，
 			// 供人工审核者在 GUI 里看到模型到底回了什么，而不是事后只看到一句空泛的失败原因

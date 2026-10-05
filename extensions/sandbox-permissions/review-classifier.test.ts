@@ -56,7 +56,7 @@ describe("reviewViaClassifier", () => {
 		});
 		assert.equal(result.verdict, "risky");
 		assert.ok(result.reason.includes("提权"));
-		assert.ok(result.reason.includes("0.95")); // 0.15 + 0.8
+		assert.ok(result.reason.includes("0.80")); // 只算 privileged-change，常规提权不计
 		assert.ok(!["dangerous", "blocked"].includes(result.verdict));
 		// 权重表：按风险降序，提权在最前，且带上概率（本机自用，不脱敏）
 		assert.equal(result.dimensions?.[0].id, "elevation");
@@ -251,7 +251,7 @@ describe("normalizeDimensions", () => {
 describe("formatHitReason", () => {
 	it("逐条列出命中维度，便于人工核对", () => {
 		const answers: Record<string, RawAnswer> = {
-			elevation: { type: "choice", choice: "user-elevation", probabilities: { none: 0.1, "user-elevation": 0.9, "privileged-change": 0 }, confidence: 0.9 },
+			elevation: { type: "choice", choice: "privileged-change", probabilities: { none: 0.1, "package-elevation": 0, "privileged-change": 0.9 }, confidence: 0.9 },
 		};
 		const verdicts = evaluateAll(answers, defaultClassifierConfig().dimensions);
 		const text = formatHitReason(synthesize(verdicts).hit);

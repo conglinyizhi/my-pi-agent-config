@@ -23,20 +23,22 @@ import {
 } from "./review-dimensions.ts";
 
 const elevation = dimensionById("elevation")!;
+const secretExposure = dimensionById("secret_exposure")!;
 const oddity = dimensionById("oddity")!;
 const scriptedEdit = dimensionById("scripted_edit")!;
 
 describe("normalizeAnswer", () => {
 	it("choice：风险值取高风险档概率之和，不是只看 selected", () => {
-		const answer = normalizeAnswer(elevation, {
+		// 用机密泄露这一维做例子：它现在有 two 档高风险（本地读 + 外发）
+		const answer = normalizeAnswer(secretExposure, {
 			type: "choice",
-			choice: "user-elevation",
-			probabilities: { none: 0.2, "user-elevation": 0.5, "privileged-change": 0.3 },
+			choice: "local-read",
+			probabilities: { none: 0.2, "local-read": 0.5, "possible-egress": 0.3 },
 			confidence: 0.62,
 		});
 		assert.equal(answer.risk, 0.8); // 0.5 + 0.3
 		assert.equal(answer.confidence, 0.62);
-		assert.ok(answer.raw.includes("user-elevation"));
+		assert.ok(answer.raw.includes("local-read"));
 	});
 
 	it("choice：概率缺失时风险为 0，不抛错", () => {
@@ -76,7 +78,8 @@ describe("evaluateDimension", () => {
 		});
 		const verdict = evaluateDimension(elevation, answer, config);
 		assert.equal(verdict.triggered, true);
-		assert.ok(verdict.reason.includes("风险 0.90"));
+		// 提权拆开之后，风险只算 privileged-change 那一档（0.7），常规提权不计
+		assert.ok(verdict.reason.includes("风险 0.70"));
 	});
 
 	// 2026-10-05 提督改的规矩：置信低于门槛**一律不采信**（早先是反的：没把握也提醒）
@@ -176,6 +179,7 @@ describe("synthesize", () => {
 		const answers: Record<string, RawAnswer> = {
 			elevation: { type: "choice", choice: "privileged-change", probabilities: { none: 0.1, "user-elevation": 0.3, "privileged-change": 0.6 }, confidence: 1 },
 			network: { type: "choice", choice: "upload", probabilities: { none: 0.05, "fetch-only": 0.25, upload: 0.7 }, confidence: 1 },
+			secret_exposure: { type: "choice", choice: "possible-egress", probabilities: { none: 0.05, "local-read": 0.05, "possible-egress": 0.9 }, confidence: 1 },
 			wallet_access: { type: "choice", choice: "direct-key-access", probabilities: { none: 0.02, "wallet-adjacent": 0.18, "direct-key-access": 0.8 }, confidence: 1 },
 			oddity: { type: "score", score: 4, confidence: 0.9 },
 		};
@@ -237,11 +241,12 @@ describe("dimensionReport", () => {
 		const rows = dimensionReport(verdicts);
 		assert.equal(rows.length, 3);
 		assert.equal(rows[0].id, "elevation");
-		assert.ok(Math.abs(rows[0].risk - 0.95) < 1e-9, `risk=${rows[0].risk}`);
+		// 提权拆开之后风险只算 privileged-change（0.8），常规提权那档不计
+		assert.ok(Math.abs(rows[0].risk - 0.8) < 1e-9, `risk=${rows[0].risk}`);
 		assert.equal(rows[0].triggered, true);
 		assert.equal(rows[0].above, DEFAULT_THRESHOLD);
 		assert.equal(rows[0].below, DEFAULT_THRESHOLD);
-		assert.ok(rows[0].reason.includes("0.95"));
+		assert.ok(rows[0].reason.includes("0.80"));
 		// 降序：后面的风险值不大于前面的
 		for (let i = 1; i < rows.length; i++) {
 			assert.ok(rows[i].risk <= rows[i - 1].risk);

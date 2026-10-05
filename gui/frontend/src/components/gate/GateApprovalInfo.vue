@@ -49,7 +49,13 @@
     <!-- LLM 卡：只放大模型那一路自己的结论。
          顶层 review.verdict 是**分类器**的（合并节点以分类器为准，大模型只是顾问），
          挂在 System One 卡上才不会让人以为"一个模型审出两个意见"。 -->
-    <div v-if="!isSandboxAllow && !isCapability && review?.chatReview" class="model-card" data-model="chat">
+    <div
+      v-if="!isSandboxAllow && !isCapability && review?.chatReview"
+      class="model-card clickable"
+      data-model="chat"
+      title="点一下看这次送给对话模型的原始提示词"
+      @click="openPrompt('chat')"
+    >
       <div class="model-head" :class="'tone-' + toneOf(chatMeta, true)">
         🤖 LLM 审核
         <span v-if="chatMeta" class="dot" :class="'dot-' + toneOf(chatMeta, true)" :title="chatMeta.label"></span>
@@ -62,7 +68,12 @@
     </div>
 
     <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
-      <div class="model-head" :class="'tone-' + toneOf(verdictMeta, false)">
+      <div
+        class="model-head clickable"
+        :class="'tone-' + toneOf(verdictMeta, false)"
+        title="点一下看这次送给分类器的原始提示词"
+        @click="openPrompt('classifier')"
+      >
         📊 System One 决策模型意见
         <!-- 没拿到维度就别说清一色：模型挂了的时候写"0 命中"是假的全清（踩过） -->
         <span
@@ -223,6 +234,21 @@
       <div v-if="scopeIssueCount" class="path-warn">⚠ {{ scopeIssueCount }} 行执行路径没通过护栅，先修正再点允许（后端也会再验一遍）。</div>
       <div class="paths-hint">执行范围改动随允许/拒绝一起提交，只认原始候选的父/子目录；灰色行是工作区或 /tmp 这类已经默认可写的目录，不能在这里取消。</div>
     </div>
+
+    <!-- 点卡片看原始提示词：拟态对话框（遮罩加面板），跟芯片弹窗一个语言 -->
+    <div v-if="promptOpen" class="pr-backdrop" data-name="prompt-dialog" @click.self="promptOpen = null">
+      <div class="pr-panel">
+        <div class="pr-head">
+          <span>
+            {{ promptOpen === "classifier"
+              ? "System One（分类器）这次收到的原始提示词"
+              : "LLM（对话模型）这次收到的原始提示词" }}
+          </span>
+          <button class="btn btn-cancel btn-sm" data-name="prompt-close" @click="promptOpen = null">关闭</button>
+        </div>
+        <pre class="pr-body">{{ promptText }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -263,6 +289,24 @@ const props = defineProps({
 
 const emit = defineEmits(["stage-path", "cancel-path", "edit-scope", "remove-scope", "add-scope", "add-workspace", "remove-workspace"]);
 const showRules = ref(false);
+
+/**
+ * 原始提示词弹窗（提督 2026-10-05 要的）。
+ *
+ * 模型行为迷惑时，唯一能分辨"是提示词的问题还是模型的问题"的办法，
+ * 就是把这次真正送进去的东西原样摊开。点哪张卡看哪一份。
+ */
+const promptOpen = ref(null);
+const promptText = computed(() => {
+  if (promptOpen.value === "chat") return props.review?.promptDebug?.chat ?? "";
+  if (promptOpen.value === "classifier") return props.review?.promptDebug?.classifier ?? "";
+  return "";
+});
+function openPrompt(kind) {
+  const text = kind === "chat" ? props.review?.promptDebug?.chat : props.review?.promptDebug?.classifier;
+  if (!text) return; // 没留到就别开个空窗
+  promptOpen.value = kind;
+}
 // 分类模型权重表（chat 后端不产这个字段，缺就空表 → 整块不渲染）
 const weightRows = computed(() => buildWeightRows(props.review?.dimensions));
 const flaggedCount = computed(() => countFlagged(props.review?.dimensions));
@@ -360,6 +404,16 @@ function removeWorkspace(path) {
 </script>
 
 <style scoped>
+/* 可点的卡片头：告诉人这里能点开看提示词 */
+.model-head.clickable,
+.model-card.clickable { cursor: pointer; }
+.model-head.clickable:hover,
+.model-card.clickable:hover { border-color: #4a5568; }
+/* 原始提示词弹窗：遮罩加面板，跟芯片弹窗同一套语言 */
+.pr-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.66); display: flex; align-items: center; justify-content: center; z-index: 60; }
+.pr-panel { background: #1f2531; border: 1px solid #39414f; border-radius: 8px; width: min(880px, 92vw); max-height: 82vh; display: flex; flex-direction: column; box-shadow: 0 12px 32px #000a; }
+.pr-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #2f3846; font-size: 13px; color: #cdd6e4; }
+.pr-body { margin: 0; padding: 12px 14px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #d6dee8; }
 .decision-summary { padding: 8px 16px; border-top: 1px solid #2a2a4a; display: flex; flex-direction: column; gap: 3px; font-size: 12px; line-height: 1.5; }
 .decision-summary strong { font-size: 11px; }
 .decision-info { background: #131328; color: #a9b1d6; }

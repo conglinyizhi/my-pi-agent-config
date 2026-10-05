@@ -194,6 +194,10 @@ export function makeMergeNode(): NodeImpl {
 		const merged: ReviewResult = {
 			...classifier,
 			...(chat ? { chatReview: toAdvisorNote(chat, classifier.verdict) } : {}),
+			// 两张卡的原始提示词都要留到最终结论上：窗口分别点开看 System One 与 LLM 送了什么
+			...(classifier.promptDebug || chat?.promptDebug
+				? { promptDebug: { ...classifier.promptDebug, ...chat?.promptDebug } }
+				: {}),
 		};
 		return {
 			status: "ok",

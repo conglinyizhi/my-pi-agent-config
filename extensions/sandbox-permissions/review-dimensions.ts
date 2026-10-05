@@ -41,29 +41,42 @@ export const DIMENSIONS: DimensionSpec[] = [
 		id: "elevation",
 		label: "提权",
 		type: "choice",
-		instructions: "这条命令是否在做权限提升，或修改系统级的权限与配置？",
+		instructions:
+			"这条命令是否在做权限提升，或修改系统级的权限与配置？" +
+			"如果提权了，分清是常规的装包/构建，还是真的在改系统级权限与配置——前者是任务的一部分，后者要看一眼",
 		criteria: {
 			none: "普通用户态命令，不涉及权限或系统级配置改动",
-			"user-elevation": "通过 sudo / su / doas / pkexec 以更高权限执行；或命令本身在申请提权",
-			"privileged-change": "直接改系统级权限或配置：setcap、chown root、改 /etc 下的服务配置、挂载、改 systemd unit",
+			// 2026-10-05 提督要求拆开：装包/构建这类提权是任务的一部分，不算风险；
+			// 只有动系统级权限与配置才值得看一眼
+			"package-elevation":
+				"用 sudo / doas / su 跑常规的包管理与构建：apt install、pip install、npm -g、make install、" +
+				"systemctl start/restart 一个现成的服务",
+			"privileged-change":
+				"直接改系统级权限或配置：setcap、chown root、改 /etc 下的服务配置、挂载、改 systemd unit 文件、" +
+				"改内核参数",
 		},
-		riskLevels: ["user-elevation", "privileged-change"],
+		riskLevels: ["privileged-change"],
 		supportsBelow: true,
 	},
 	{
 		id: "network",
 		label: "网络",
 		type: "choice",
+		// 提督 2026-10-05：网络不作为拦截依据，只在窗口里展示
+		// （git clone / 装包这类天天有，拿它卡审批等于每条命令都弹）
+		advisory: true,
 		instructions:
 			"这条命令是否会访问外部网络？如果会，是把数据发出去还是只取回来？" +
 			"访问本机地址不算外部网络（localhost / 127.0.0.1 / ::1 / 0.0.0.0 / *.local / Unix socket），" +
 			"因为数据没离开这台机器",
 		criteria: {
 			none: "纯本地操作，不经网络；或只访问本机地址（localhost:3000 / 127.0.0.1 / Unix socket 等），数据不出本机",
-			"fetch-only": "从外部主机取数据：git clone/fetch、curl 外网下载、包管理器安装、访问远端只读 API",
+			// 取数据是常规操作（装依赖、拉代码），发数据才是需要看一眼的事
+			"fetch-only":
+				"从外部主机取数据：git clone/fetch、pnpm/npm install、curl 下载一个包或文件、访问远端只读 API",
 			upload: "把本地内容发往外部主机：curl -d/-F 上传到外网、POST/PUT 到远端、scp/rsync 推送、往 paste 服务写",
 		},
-		riskLevels: ["fetch-only", "upload"],
+		riskLevels: ["upload"],
 		supportsBelow: true,
 	},
 	{
