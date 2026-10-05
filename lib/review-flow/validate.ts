@@ -2,11 +2,14 @@
 //
 // 硬约束 2：没有 terminal 可达的流程加载即失败，不许静默挂住。
 // 纯函数，无 IO：运行器与将来的声明式表示共用这一处校验。
+//
+// 控制流 = 边（next / onError / onTimeout / onEmpty）；数据流 = after。
+// 这里查的是控制流那张图能不能走到终点，以及数据依赖是不是真的在前面。
 
 import type { Flow, FlowNode, Terminal } from "./types.ts";
 
 export interface FlowProblem {
-	/** 出问题的节点（整条流程级别的问题用流程 id） */
+	/** 出问题的节点（整条流程级别的问题用空串） */
 	nodeId: string;
 	message: string;
 }
@@ -15,15 +18,19 @@ function isTerminal(value: string | undefined): value is Terminal {
 	return value === "allow" || value === "deny";
 }
 
-/** 一个节点可能去向哪些地方：依赖它的节点、失败边、超时边，以及流程出口 */
-function successorsOf(node: FlowNode, byId: Map<string, FlowNode>): string[] {
+/** 一个节点的出边：成功边、三条失败边 */
+function outEdgesOf(node: FlowNode): string[] {
 	const out: string[] = [];
-	for (const other of byId.values()) {
-		if ((other.after ?? []).includes(node.id)) out.push(other.id);
+	for (const edge of [node.next, node.onError, node.onTimeout, node.onEmpty]) {
+		if (edge && !isTerminal(edge)) out.push(edge);
 	}
-	if (node.onError) out.push(node.onError);
-	if (node.onTimeout) out.push(node.onTimeout);
 	return out;
+}
+
+/** 有没有写死终点的出边，或本身就是出口节点（gate 由人给决定，也算出口） */
+function hasTerminalEdge(node: FlowNode): boolean {
+	if (node.kind === "terminal" || node.kind === "gate") return true;
+	return [node.next, node.onError, node.onTimeout, node.onEmpty].some((edge) => isTerminal(edge));
 }
 
 /**
@@ -31,9 +38,11 @@ function successorsOf(node: FlowNode, byId: Map<string, FlowNode>): string[] {
  *
  * 检查项：
  *   1. id 不重复、不为空
- *   2. after / onError / onTimeout 指向存在的节点（或 allow / deny）
+ *   2. after 与四条边都指向存在的节点（或 allow / deny）
  *   3. 依赖不成环
- *   4. 每个节点都能走到一个终点（终点的来源：terminal 节点，或失败边写了 allow / deny）
+ *   4. 有入口（没人指向的节点），且每个节点都从某个入口可达
+ *   5. 每个节点都能走到终点
+ *   6. 数据依赖真的在控制流的上游（after 写的那个节点，得先跑得到）
  */
 export function validateFlow(flow: Flow): FlowProblem[] {
 	const problems: FlowProblem[] = [];
@@ -55,14 +64,15 @@ export function validateFlow(flow: Flow): FlowProblem[] {
 		for (const dep of node.after ?? []) {
 			if (!byId.has(dep)) problems.push({ nodeId: node.id, message: `after 指向不存在的节点：${dep}` });
 		}
-		for (const [field, edge] of [["onError", node.onError], ["onTimeout", node.onTimeout]] as const) {
+		for (const [field, edge] of [["next", node.next], ["onError", node.onError], ["onTimeout", node.onTimeout], ["onEmpty", node.onEmpty]] as const) {
 			if (edge && !isTerminal(edge) && !byId.has(edge)) {
 				problems.push({ nodeId: node.id, message: `${field} 指向不存在的节点：${edge}` });
 			}
 		}
 	}
+	if (problems.length > 0) return problems;
 
-	// 环：沿 after 走不回自己
+	// 依赖成环
 	const state = new Map<string, "visiting" | "done">();
 	const visit = (node: FlowNode, path: string[]): void => {
 		if (state.get(node.id) === "done") return;
@@ -79,19 +89,33 @@ export function validateFlow(flow: Flow): FlowProblem[] {
 	};
 	for (const node of byId.values()) visit(node, []);
 
-	// 终点可达：从每个节点出发，能不能走到 terminal（或写了 allow / deny 的边）
+	// 入口与可达
+	const inbound = new Set<string>();
+	for (const node of byId.values()) for (const edge of outEdgesOf(node)) inbound.add(edge);
+	const entries = [...byId.values()].filter((node) => !inbound.has(node.id));
+	if (entries.length === 0) {
+		problems.push({ nodeId: "", message: "没有入口：所有节点都被别的节点指着" });
+	}
+	const reachable = new Set<string>();
+	const queue = entries.map((node) => node.id);
+	while (queue.length > 0) {
+		const id = queue.shift() as string;
+		if (reachable.has(id) || !byId.has(id)) continue;
+		reachable.add(id);
+		queue.push(...outEdgesOf(byId.get(id) as FlowNode));
+	}
+	for (const node of byId.values()) {
+		if (!reachable.has(node.id)) problems.push({ nodeId: node.id, message: "从任何入口都走不到它" });
+	}
+
+	// 每个节点都能走到终点
 	const reachesTerminal = new Set<string>();
 	let changed = true;
 	while (changed) {
 		changed = false;
 		for (const node of byId.values()) {
 			if (reachesTerminal.has(node.id)) continue;
-			if (node.kind === "terminal" || isTerminal(node.onError) || isTerminal(node.onTimeout)) {
-				reachesTerminal.add(node.id);
-				changed = true;
-				continue;
-			}
-			if (successorsOf(node, byId).some((next) => reachesTerminal.has(next))) {
+			if (hasTerminalEdge(node) || outEdgesOf(node).some((next) => reachesTerminal.has(next))) {
 				reachesTerminal.add(node.id);
 				changed = true;
 			}
@@ -100,6 +124,32 @@ export function validateFlow(flow: Flow): FlowProblem[] {
 	for (const node of byId.values()) {
 		if (!reachesTerminal.has(node.id)) {
 			problems.push({ nodeId: node.id, message: "走不到任何终点：这条流程会静默挂住" });
+		}
+	}
+
+	// 数据依赖得在控制流的上游：B.after 含 A 时，从入口到 B 必须经过 A
+	const ancestors = (target: string): Set<string> => {
+		const seen = new Set<string>();
+		const stack = [...inboundTo(target)];
+		while (stack.length > 0) {
+			const id = stack.pop() as string;
+			if (seen.has(id) || !byId.has(id)) continue;
+			seen.add(id);
+			stack.push(...inboundTo(id));
+		}
+		return seen;
+	};
+	function inboundTo(target: string): string[] {
+		const sources: string[] = [];
+		for (const node of byId.values()) if (outEdgesOf(node).includes(target)) sources.push(node.id);
+		return sources;
+	}
+	for (const node of byId.values()) {
+		for (const dep of node.after ?? []) {
+			const before = ancestors(node.id);
+			if (!before.has(dep) && inbound.has(dep)) {
+				problems.push({ nodeId: node.id, message: `after 里的 ${dep} 在控制流上不一定先跑过` });
+			}
 		}
 	}
 

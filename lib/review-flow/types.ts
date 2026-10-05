@@ -28,18 +28,31 @@ export type NodeMode = "serial" | "parallel" | "cascade";
 /** 流程的出口。默认 fail = 拒绝（硬约束 3）：要放行必须在图上显式写 allow */
 export type Terminal = "allow" | "deny";
 
+/**
+ * 一个节点。两件事分开写：
+ *
+ *   数据流 after   我要用哪些节点的产物（拿得到就传进 ctx.upstream）
+ *   控制流 边      next / onError / onTimeout / onEmpty：往哪走
+ *
+ * 分开的理由：顺序不该由"谁依赖谁"推出来。自动放行的节点判不出来时才轮到人工闸门，
+ * 这一条是控制流，写成依赖会让闸门提前跑起来。
+ */
 export interface FlowNode {
 	id: string;
 	kind: NodeKind;
-	/** 依赖：这些节点都结束后才轮到自己；不给就是入口节点 */
+	/** 输入依赖：这些节点都跑过之后，它们的产物进 ctx.upstream */
 	after?: string[];
+	/** 成功之后去哪（节点 id，或 allow / deny）；不接就看它有没有下游 */
+	next?: string;
 	mode?: NodeMode;
 	/** 节点自己的参数（超时、阈值、合并策略……）：是数据，不是代码里的 if */
 	settings?: Record<string, unknown>;
 	/** 出错走哪条边（节点 id，或 allow / deny）；不接就走流程的 fail 出口 */
 	onError?: string;
-	/** 超时走哪条边；不接就走流程的 fail 出口 */
+	/** 超时走哪条边；不接就退到 onError */
 	onTimeout?: string;
+	/** 拿不到结论（弃权）走哪条边；不接就退到 onError */
+	onEmpty?: string;
 }
 
 export interface Flow {

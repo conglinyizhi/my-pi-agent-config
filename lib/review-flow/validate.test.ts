@@ -4,42 +4,50 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { describeProblems, validateFlow } from "./validate.ts";
-import type { Flow } from "./types.ts";
+import type { Flow, FlowNode } from "./types.ts";
 
-function flow(nodes: Flow["nodes"]): Flow {
-	return { id: "t", nodes };
+function flow(nodes: FlowNode[]): Flow {
+	return { id: "bash", nodes };
 }
 
+/** bash 那条链的真实形状：chat → 分类器 → 合并 → 自动放行，判不出来才轮到人 */
+const BASH_SHAPE: FlowNode[] = [
+	{ id: "chat", kind: "chatreview", next: "classify" },
+	{ id: "classify", kind: "classifier", after: ["chat"], next: "merge" },
+	{ id: "merge", kind: "merge", after: ["classify"], next: "auto" },
+	{ id: "auto", kind: "autoapprove", after: ["merge"], next: "allow", onEmpty: "gate" },
+	{ id: "gate", kind: "gate", after: ["merge"] },
+];
+
 describe("流程静态校验", () => {
-	it("每个节点都能走到终点就通过", () => {
+	it("bash 那个形状能过", () => {
+		assert.deepEqual(validateFlow(flow(BASH_SHAPE)), []);
+	});
+
+	it("自己成环、接不上入口的节点会被指出来", () => {
+		// 两个节点互相指着，谁也进不去：没有入口，也没有终点
 		const problems = validateFlow(flow([
-			{ id: "chat", kind: "chatreview" },
-			{ id: "merge", kind: "merge", after: ["chat"] },
-			{ id: "out", kind: "terminal", after: ["merge"] },
+			{ id: "a", kind: "merge", next: "b" },
+			{ id: "b", kind: "merge", next: "a" },
 		]));
-		assert.deepEqual(problems, []);
+		const text = problems.map((p) => p.message).join("\n");
+		assert.match(text, /没有入口/);
+		assert.match(text, /走不到/);
 	});
 
 	it("走不到终点的节点会被指出来（硬约束 2）", () => {
 		const problems = validateFlow(flow([
-			{ id: "chat", kind: "chatreview" },
-			{ id: "merge", kind: "merge", after: ["chat"] },
-			{ id: "out", kind: "terminal", after: ["merge"] },
-			{ id: "孤儿", kind: "rule" },
+			{ id: "a", kind: "rule", next: "b" },
+			{ id: "b", kind: "merge" },
 		]));
-		assert.equal(problems.length, 1);
-		assert.equal(problems[0]?.nodeId, "孤儿");
-		assert.match(problems[0]?.message ?? "", /走不到任何终点/);
-	});
-
-	it("失败边写了 allow / deny 也算终点", () => {
-		assert.deepEqual(validateFlow(flow([{ id: "chat", kind: "chatreview", onError: "deny" }])), []);
+		assert.equal(problems.length, 2);
+		assert.match(problems.map((p) => p.message).join("\n"), /走不到任何终点/);
 	});
 
 	it("id 重复会被指出来", () => {
 		const problems = validateFlow(flow([
-			{ id: "a", kind: "rule", onError: "deny" },
-			{ id: "a", kind: "rule", onError: "deny" },
+			{ id: "a", kind: "rule", next: "deny" },
+			{ id: "a", kind: "rule", next: "allow" },
 		]));
 		assert.equal(problems.length, 1);
 		assert.match(problems[0]?.message ?? "", /重复/);
@@ -47,20 +55,31 @@ describe("流程静态校验", () => {
 
 	it("边指向不存在的节点会被指出来", () => {
 		const problems = validateFlow(flow([
-			{ id: "chat", kind: "chatreview", after: ["没有这个"], onError: "deny" },
-			{ id: "out", kind: "terminal", after: ["chat"], onTimeout: "也没有这个" },
+			{ id: "a", kind: "rule", next: "没有这个" },
+			{ id: "b", kind: "rule", next: "deny", onTimeout: "也没有这个" },
 		]));
-		assert.equal(problems.length, 2);
-		assert.match(problems.map((p) => p.message).join("\n"), /after 指向不存在/);
-		assert.match(problems.map((p) => p.message).join("\n"), /onTimeout 指向不存在/);
+		const text = problems.map((p) => p.message).join("\n");
+		assert.match(text, /next 指向不存在/);
+		assert.match(text, /onTimeout 指向不存在/);
 	});
 
 	it("依赖成环会被指出来", () => {
 		const problems = validateFlow(flow([
-			{ id: "a", kind: "merge", after: ["b"], onError: "deny" },
-			{ id: "b", kind: "merge", after: ["a"], onError: "deny" },
+			{ id: "a", kind: "merge", after: ["b"], next: "deny" },
+			{ id: "b", kind: "merge", after: ["a"], next: "allow" },
 		]));
 		assert.match(problems.map((p) => p.message).join("\n"), /成环/);
+	});
+
+	it("数据依赖不在控制流上游会被指出来（闸门提前跑就是这么来的）", () => {
+		// mixer 想要 rule 的产物，但它走的是另一条支路：rule 在这条路上不一定跑过
+		const problems = validateFlow(flow([
+			{ id: "facts", kind: "facts", next: "rule" },
+			{ id: "rule", kind: "rule", after: ["facts"], next: "deny" },
+			{ id: "other", kind: "scan", next: "mixer" },
+			{ id: "mixer", kind: "merge", after: ["rule"], next: "allow" },
+		]));
+		assert.match(problems.map((p) => p.message).join("\n"), /不一定先跑过/);
 	});
 
 	it("报错文案带上流程名与节点名", () => {
