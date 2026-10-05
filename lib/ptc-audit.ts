@@ -371,7 +371,8 @@ export function scriptEffectsOf(input: PtcAuditInput): ScriptEffectsPayload {
 		tools: scan?.tools ?? [],
 		paths: scan?.paths ?? [],
 		commands: scan?.commands ?? [],
-		opaque: scan?.opaque ?? [],
+		// 每条"看不清"附上那一行的代码片段：窗口里只有重排后的文本，光给行号定位不了
+		opaque: (scan?.opaque ?? []).map((item) => `${item}${snippetOf(item, input.display)}`),
 		...(scan?.parseError ? { parseError: scan.parseError } : {}),
 		digestShort: ptcScriptDigest(input.script).slice(0, 12),
 		...(input.dry ? { dryRunStatus: input.dry.status, dryRunCalls } : {}),
