@@ -23,7 +23,7 @@ RT ?= $(HOME)/.pi/runtime
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
         require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-health ab-firstaid \
-        gui-canary smoke
+        gui-canary smoke flows-check
 
 help: ## 列出所有目标
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -62,6 +62,9 @@ ab-detach: require-component ## 摘掉 current：回到仓库版本（临时开�
 
 ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
 	bin/ab-slot.sh promote $(COMPONENT) --runtime-root $(RT)
+
+flows-check: ## 检查自写的审核流程（review-flows/*.ts 的类型与形状）
+	npx tsc -p review-flows
 
 ab-health: require-component ## 自检槽：成功只清连续失败，不加晋升连胜（必给 COMPONENT）
 	bin/ab-slot.sh health $(COMPONENT) --runtime-root $(RT)
