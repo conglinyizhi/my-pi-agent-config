@@ -94,7 +94,9 @@ make ab-detach COMPONENT=gui        # 摘掉 current：回到仓库版本（开�
 
 改动 GUI 之后要知道的三件事：
 
-1. **换槽即生效**（GUI 不同于审核链，不需要 reload）：窗口每次启动读 `current` 软链
+1. **换槽即生效**（GUI 不同于审核链，不需要 reload）：`bin/gui.sh` 每次启动都解析 `current` 软链
+   （槽在就用槽里的 `gui/electron/main.js` 与 `frontend/dist`，槽不在/指坏了就用仓库这份）；
+   `--spec` 也跟着槽走，报的必须是"实际会跑的那份"
 2. **崩溃现场**在 `~/.pi/runtime/gui/crash/<时间戳>/`：`request.json` + `stderr.txt` + `scene.json`，
    只留最近十份。「起不来但没有转储」先看启动器路径在不在，而不是怀疑 Electron
 3. **自检不进晋升连胜**：`make gui-canary` 成功只清连续失败，失败才累进看门狗（到门槛自动回退）

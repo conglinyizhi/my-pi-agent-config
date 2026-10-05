@@ -16,11 +16,26 @@ set -e
 
 agent_dir=$(cd "$(dirname "$0")/.." && pwd)
 
+# GUI 也是可切换的组件：槽在就用槽里那份。main.js 按自己的位置找 frontend/dist，
+# 所以槽是自包含的；槽不在、current 没指、或指到的地方不对，就用仓库这份——
+# 与审核侧薄壳同一套退路，切换与回退都不需要改这个文件。
+gui_root=${PI_RUNTIME_ROOT:-$HOME/.pi/runtime}/gui
+gui_entry=$agent_dir/gui/electron/main.js
+gui_init=$agent_dir/gui/electron/init-data.js
+if [ -e "$gui_root/current" ]; then
+  slot=$(readlink -f "$gui_root/current" 2>/dev/null || true)
+  if [ -n "$slot" ] && [ -f "$slot/gui/electron/main.js" ]; then
+    gui_entry=$slot/gui/electron/main.js
+    gui_init=$slot/gui/electron/init-data.js
+  fi
+fi
+
 # --spec：自报能力（协议版本 / 窗口清单 / 认得哪些字段）。
 # 刻意不拉起 Electron：只是为了问 init-data.js 一句话，起 Electron 又慢又多一条崩溃路径。
+# 问的是 gui_init：跟着槽走，报的必须是"实际会跑的那份"。
 if [ "${1:-}" = "--spec" ]; then
   # 用 stdout.write 而不是 console.log：这是程序输出（一行 JSON 给调用方解析），不是日志
-  exec node --input-type=module -e "import('$agent_dir/gui/electron/init-data.js').then((m) => process.stdout.write(JSON.stringify(m.buildSpec()) + String.fromCharCode(10)))"
+  exec node --input-type=module -e "import('$gui_init').then((m) => process.stdout.write(JSON.stringify(m.buildSpec()) + String.fromCharCode(10)))"
 fi
 
 electron_bin=${PI_GUI_ELECTRON:-electron}
@@ -28,4 +43,4 @@ electron_bin=${PI_GUI_ELECTRON:-electron}
 # app_id 与 gui/pi-gui.desktop 同名，图标才认得出来（KDE Wayland 按 app_id 找 desktop 文件）
 app_id=${PI_GUI_APP_ID:-pi-gui}
 
-exec "$electron_bin" ${PI_GUI_ELECTRON_ARGS:-} "--class=$app_id" "$agent_dir/gui/electron/main.js" "$@"
+exec "$electron_bin" ${PI_GUI_ELECTRON_ARGS:-} "--class=$app_id" "$gui_entry" "$@"
