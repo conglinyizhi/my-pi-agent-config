@@ -51,6 +51,27 @@ export interface GuiRunResult {
   data?: any;
   /** "spawn" 表示子进程没起来（spawn 同步抛错或 emit 'error'），可回退到别的审批通道 */
   reason?: "timeout" | "aborted" | "exited" | "unavailable" | "spawn";
+  /**
+   * 失败时的现场：退出码、信号，以及 stderr 开头一段。
+   *
+   * stderr 重定向到临时文件而不是管道：窗口进程是 detached 的，管道会把它和父进程的
+   * 生死绑在一起；落文件既能留现场，又不改变它的独立生命周期。上周那两次 SIGTRAP
+   * 只剩内核转储、连一行 stderr 都没有——这个字段就是为那种时候准备的。
+   */
+  exitCode?: number | null;
+  signal?: string | null;
+  stderr?: string;
+  stderrPath?: string;
+}
+
+/** 读 stderr 的开头一段：崩溃信息通常在最前面，尾部多是噪音 */
+function readStderrHead(file: string, limit = 4000): string {
+  try {
+    const text = fs.readFileSync(file, "utf-8");
+    return text.length > limit ? `${text.slice(0, limit)}\n…（更长，见 ${file}）` : text;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -171,21 +192,45 @@ export async function runGuiWindow(
       resolveResult(r);
     };
 
+    // stderr 落文件：失败时能读出开头一段现场
+    const stderrFile = path.join(tmpDir, "stderr.log");
+    let stderrFd: number | null = null;
+    try {
+      stderrFd = fs.openSync(stderrFile, "a", 0o600);
+    } catch {
+      stderrFd = null;
+    }
+    let exitInfo: { code?: number | null; signal?: string | null } = {};
+    /** 失败结果的统一形状：带上退出码、信号与 stderr 开头（读不到就不带） */
+    const failure = (reason: GuiRunResult["reason"]): GuiRunResult => {
+      // stderr 空的时候不带这两个字段：没拿到现场就别装作拿到了，
+      // 也让"干净失败"的结果形状保持和以前一致（既有断言都按那个形状写的）
+      const stderr = stderrFd !== null ? readStderrHead(stderrFile) : "";
+      return {
+        ok: false,
+        reason,
+        ...(exitInfo.code !== undefined ? { exitCode: exitInfo.code } : {}),
+        ...(exitInfo.signal !== undefined ? { signal: exitInfo.signal } : {}),
+        ...(stderr !== "" ? { stderrPath: stderrFile, stderr } : {}),
+      };
+    };
+
     let proc: ChildProcess;
     try {
       proc = (opts.spawnFn ?? spawn)(bin, [windowName, requestFile, responseFile], {
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", stderrFd ?? "ignore"],
         detached: true,
       });
     } catch {
       // spawn 同步抛错（参数非法之类）：按「进程起不来」处理，交给上层回退
+      if (stderrFd !== null) { try { fs.closeSync(stderrFd); } catch {} }
       return { ok: false, reason: "spawn" };
     }
 
     // 二进制存在但不可执行（EACCES）、路径失效（ENOENT）时 spawn 会 emit 'error'，
     // 无监听就是未捕获异常，会直接带走整个进程。这里按 reason:"spawn" 结算，不再等 close
     proc.on("error", () => {
-      finish({ ok: false, reason: "spawn" });
+      finish(failure("spawn"));
     });
 
     // 'error' 可能同步触发（注入场景），已结算就不要再挂定时器
@@ -194,7 +239,7 @@ export async function runGuiWindow(
     timeout = timeoutMs > 0
       ? setTimeout(() => {
           try { proc.kill("SIGTERM"); } catch {}
-          finish({ ok: false, reason: "timeout" });
+          finish(failure("timeout"));
         }, timeoutMs)
       : null; // 不设超时：一直等到响应或进程退出
 
@@ -207,7 +252,8 @@ export async function runGuiWindow(
       }
     }, 300);
 
-    proc.on("close", () => {
+    proc.on("close", (code, signal) => {
+      exitInfo = { code, signal };
       // 已按 spawn 失败结算：close 后再补读 response 没有意义
       if (settled) return;
       // 进程退出：兜底读一次（窗口可能已写响应并退出）
@@ -216,7 +262,7 @@ export async function runGuiWindow(
           const data = JSON.parse(fs.readFileSync(responseFile, "utf-8"));
           finish({ ok: true, data });
         } catch {
-          finish({ ok: false, reason: "exited" });
+          finish(failure("exited"));
         }
       }, 100);
     });
@@ -225,7 +271,7 @@ export async function runGuiWindow(
       const signal = opts.signal;
       const onAbort = () => {
         try { proc.kill("SIGTERM"); } catch {}
-        finish({ ok: false, reason: "aborted" });
+        finish(failure("aborted"));
       };
       if (signal.aborted) onAbort();
       else {

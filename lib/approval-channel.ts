@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runner.ts";
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { noteGateRoundTrip, resolveRuntimeRoot, writeNotice } from "./ab-watch.ts";
+import { saveCrashScene } from "./ab-crash.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
 import { createHubThenLocalChannel } from "./hub-channel.ts";
 import {
@@ -276,12 +277,26 @@ export interface GuiTuiApprovalOptions {
 export function createGuiTuiApprovalChannel(opts: GuiTuiApprovalOptions = {}): ApprovalChannel {
 	const runGui = opts.runGui ?? runGuiWindow;
 	return async (request, ctx) => {
-		const gui = await runGui("gate", toGuiPayload(request), { timeoutMs: GUI_TIMEOUT_MS, signal: request.signal });
+		const payload = toGuiPayload(request);
+		const gui = await runGui("gate", payload, { timeoutMs: GUI_TIMEOUT_MS, signal: request.signal });
 		// A/B 更新引擎的观察点：两个组件的干净往返都在这里记一笔。
 		// 运行时目录不存在时整个引擎静默失效；观察层自己也不抛异常，这里再兜一层。
 		try {
 			const watched = noteGateRoundTrip({ windowResult: gui, review: (request as { review?: unknown }).review });
 			for (const notice of watched.notices) writeNotice(resolveRuntimeRoot(), notice.component, notice.text);
+			if (!gui.ok) {
+				// 窗口失败：把现场留下来（请求、stderr 开头、退出码与信号），下次出事有据可查
+				saveCrashScene({
+					runtimeRoot: resolveRuntimeRoot(),
+					component: "gui",
+					at: new Date().toISOString(),
+					...(gui.reason ? { reason: gui.reason } : {}),
+					...(gui.exitCode !== undefined ? { exitCode: gui.exitCode } : {}),
+					...(gui.signal !== undefined ? { signal: gui.signal } : {}),
+					...(gui.stderr ? { stderr: gui.stderr } : {}),
+					request: payload,
+				});
+			}
 		} catch {
 			// 观察失败绝不能影响审批
 		}
