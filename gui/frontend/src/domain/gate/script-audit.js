@@ -40,7 +40,8 @@ export function effectSectionsOf(effects) {
   }
   push("tools", "字面上调用的工具", effects.tools);
   push("paths", "路径字面量", effects.paths);
-  push("commands", "命令字面量", (Array.isArray(effects.commands) ? effects.commands : []).map((cmd) => JSON.stringify(cmd)));
+  // 「命令字面量」那行删了：它是一条不换行、不着色的长字符串，读不出东西；
+  // 命令本身在 shell 芯片的弹窗里（PWD / shell(bash) / PreShell）已经摆得清楚得多
   push("opaque", "看不清的地方（值由运行时决定，实际可能更多）", effects.opaque, true);
   push("parseError", "语法问题", effects.parseError ? [String(effects.parseError)] : [], true);
   return sections;
