@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import { formatScriptForDisplay } from "./script-format.ts";
 import { scanScript } from "./ptc-analyze.ts";
 import { foldCallsOf } from "./ptc-audit.ts";
+// @ts-expect-error 前端是 JS，没有类型声明；这里只借它的纯函数验折叠不变量
 import { foldScript } from "../gui/frontend/src/domain/gate/script-fold.js";
 
 const L = (...xs: string[]) => xs.join(String.fromCharCode(10));
