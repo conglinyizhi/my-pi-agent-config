@@ -12,7 +12,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendCrashReport } from "../ab-crash-report.ts";
+import { appendLog, componentPath } from "../ab-tag.ts";
+import { resolveRuntimeRoot } from "../ab-watch.ts";
 import { createKit } from "./kit.ts";
 import { checkFlowSource, formatViolations } from "./source-guard.ts";
 import type { NodeImpl } from "./runner.ts";
@@ -57,13 +58,11 @@ export async function loadKitExtra(dir = flowsDir()): Promise<{ kit: ReturnType<
 		return { kit: extended as ReturnType<typeof createKit>, source: path };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		appendCrashReport({
-			at: new Date().toISOString(),
-			component: "audit",
-			stage: "加载审核流程",
-			summary: `kit 扩展没加载上，流程只能用内置节点：${message}`,
-			module: path,
-			hint: `改好 ${path} 后 /reload；不影响内置节点`,
+		appendLog(componentPath(resolveRuntimeRoot(), "audit"), {
+			event: "note",
+			outcome: "crash",
+			reason: `kit 扩展没加载上，流程只能用内置节点：${message}`,
+			note: `阶段=加载审核流程 模块=${path} 改好后 /reload；不影响内置节点`,
 		});
 		return { kit: createKit(), source: path };
 	}
@@ -157,14 +156,11 @@ export async function loadFlows(dir = flowsDir()): Promise<{ flows: Map<string, 
 		const loaded = await loadFlowFile(id, path, kit);
 		if ("error" in loaded) {
 			problems.push({ id, source: path, error: loaded.error });
-			appendCrashReport({
-				at: new Date().toISOString(),
-				component: "audit",
-				stage: "加载审核流程",
-				summary: `自写流程 ${id} 没加载上，已退回内置那条：${loaded.error.split("\n")[0] ?? ""}`,
-				module: path,
-				context: { 流程: id, 目录: dir },
-				hint: `改好 ${path} 后重开一次会话（或 /reload）；不影响内置流程`,
+			appendLog(componentPath(resolveRuntimeRoot(), "audit"), {
+				event: "note",
+				outcome: "crash",
+				reason: `自写流程 ${id} 没加载上，已退回内置那条：${loaded.error.split("\n")[0] ?? ""}`,
+				note: `阶段=加载审核流程 流程=${id} 目录=${dir} 模块=${path} 改好后 /reload`,
 			});
 			continue;
 		}

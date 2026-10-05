@@ -24,7 +24,7 @@ import { beginSandboxSession } from "./session-access.ts";
 import { takeAllNotices } from "../../lib/ab-notice.ts";
 import { resolveRuntimeRoot } from "../../lib/ab-watch.ts";
 import { compareSpecs, specFromManifest } from "../../lib/gui-spec.ts";
-import { currentSlot, readManifest } from "../../lib/ab-store.ts";
+import { activeDir, componentPath, readManifestOf } from "../../lib/ab-tag.ts";
 import {
 	YOLO_STATUS_KEY,
 	setYolo,
@@ -49,8 +49,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			for (const entry of takeAllNotices(runtimeRoot)) {
 				for (const line of entry.lines) ctx.ui.notify(`[A/B ${entry.component}] ${line}`, "info");
 			}
-			const active = currentSlot(runtimeRoot, "gui");
-			const spec = active ? specFromManifest(readManifest(runtimeRoot, "gui", active)) : undefined;
+			const dir = activeDir(componentPath(runtimeRoot, "gui"));
+			const spec = dir ? specFromManifest(readManifestOf(dir)) : undefined;
 			if (spec) {
 				for (const line of compareSpecs(spec).notices) ctx.ui.notify(`[GUI] ${line}`, "info");
 			}

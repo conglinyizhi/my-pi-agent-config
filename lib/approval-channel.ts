@@ -11,8 +11,7 @@ import { homedir } from "node:os";
 import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runner.ts";
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
 import { noteGateRoundTrip, resolveRuntimeRoot, writeNotice } from "./ab-watch.ts";
-import { saveCrashScene } from "./ab-crash.ts";
-import { appendCrashReport } from "./ab-crash-report.ts";
+import { appendLog, componentPath } from "./ab-tag.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
 import { createHubThenLocalChannel } from "./hub-channel.ts";
 import {
@@ -288,33 +287,20 @@ export function createGuiTuiApprovalChannel(opts: GuiTuiApprovalOptions = {}): A
 			const watched = noteGateRoundTrip({ windowResult: gui, review: (request as { review?: unknown }).review });
 			for (const notice of watched.notices) writeNotice(resolveRuntimeRoot(), notice.component, notice.text);
 			if (!gui.ok) {
-				// 窗口失败：把现场留下来（请求、stderr 开头、退出码与信号），下次出事有据可查
-				const scene = saveCrashScene({
-					runtimeRoot: resolveRuntimeRoot(),
-					component: "gui",
-					at: new Date().toISOString(),
-					...(gui.reason ? { reason: gui.reason } : {}),
-					...(gui.exitCode !== undefined ? { exitCode: gui.exitCode } : {}),
-					...(gui.signal !== undefined ? { signal: gui.signal } : {}),
-					...(gui.stderr ? { stderr: gui.stderr } : {}),
-					request: payload,
-				});
-				// 再写一份给人看的：标题一行说清该修什么，正文带模块与上下文
-				appendCrashReport({
-					at: new Date().toISOString(),
-					component: "gui",
-					stage: "启动窗口",
-					summary: gui.reason ? `窗口失败：${gui.reason}` : "窗口失败：没有给原因",
-					module: "lib/approval-channel.ts（runGui）",
-					...(gui.stderr ? { error: { name: "GuiError", message: gui.stderr.split("\n")[0] ?? "" } } : {}),
-					context: {
-						...(typeof gui.exitCode === "number" ? { 退出码: gui.exitCode } : {}),
-						...(gui.signal ? { 信号: String(gui.signal) } : {}),
-						...((request as { taskId?: string }).taskId ? { 任务: String((request as { taskId?: string }).taskId) } : {}),
-						...(request.kind ? { 请求类型: request.kind } : {}),
-					},
-					files: scene && typeof scene === "object" && "dir" in scene ? [String((scene as { dir: unknown }).dir)] : [],
-					hint: "先 make ab-detach COMPONENT=gui 回到仓库版本，再看现场文件",
+				// 现场与说明并成一条流水：退出码、信号、stderr 开头都带上，出事有据可查
+				appendLog(componentPath(resolveRuntimeRoot(), "gui"), {
+					event: "note",
+					outcome: "crash",
+					reason: gui.reason ? `窗口失败：${gui.reason}` : "窗口失败：没有给原因",
+					note: [
+						"阶段=启动窗口 模块=lib/approval-channel.ts",
+						gui.exitCode !== undefined ? `退出码=${gui.exitCode}` : "",
+						gui.signal ? `信号=${gui.signal}` : "",
+						gui.stderr ? `stderr=${gui.stderr.split("\n")[0] ?? ""}` : "",
+						typeof (payload as { taskId?: string }).taskId === "string" ? `任务=${(payload as { taskId?: string }).taskId}` : "",
+					]
+						.filter(Boolean)
+						.join(" "),
 				});
 			}
 		} catch {
