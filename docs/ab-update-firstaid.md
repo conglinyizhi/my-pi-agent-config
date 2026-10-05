@@ -19,7 +19,8 @@ make ab-tag COMPONENT=gui           # 只看一条
 
 ```sh
 make ab-update COMPONENT=gui FORCE=1        # 强制：打完直接生效
-make ab-update COMPONENT=gui                # 打完挂候选，一次干净授权就自动切
+make ab-update COMPONENT=gui                # 打完先起一次金丝雀，过了才挂候选；一次干净授权自动切
+                                            # 金丝雀没过 = 不挂候选（加 FORCE=1 越过）
 make ab-clean  COMPONENT=gui                # 每次干净授权往返记一笔（看门狗会调）
 ```
 

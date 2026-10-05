@@ -10,6 +10,7 @@
 // 桥接期：产物仍由 scripts/ab-pack.ts 打进 <组件>/dev，这里只维护 tag 那几行状态。
 
 import { execFileSync } from "node:child_process";
+import { runGuiCanary } from "./gui-canary.ts";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -74,6 +75,26 @@ if (command === "status") {
 		],
 		{ stdio: "inherit" },
 	);
+	// 切换前强制金丝雀：真起一次刚打好的这份（gui.sh 按 tag/dir 会去 dev 那份）。
+	// 没验过就不挂候选——A/B 的"干净往返"来自正在跑的那一版，证明不了新构建能跑。
+	// 2026-10-05 的 flowsBridge 崩溃就是这么漏进去的。
+	const canary = await runGuiCanary({
+		repoRoot: join(import.meta.dirname, ".."),
+		env: { ...process.env, PI_RUNTIME_ROOT: runtimeRoot },
+	});
+	const forced = process.argv.includes("--force");
+	if (!canary.ok) {
+		if (!forced) {
+			process.stderr.write(`金丝雀没过：${canary.reason}\n`);
+			if (canary.logTail) process.stderr.write(`--- 日志尾部 ---\n${canary.logTail}\n`);
+			process.stderr.write("没验过就不挂候选。确实要上就加 --force（make ab-update FORCE=1）\n");
+			process.exit(1);
+		}
+		process.stdout.write(`金丝雀没过但 --force，照样上：${canary.reason}\n`);
+	} else {
+		process.stdout.write(`金丝雀通过：${canary.reason}\n`);
+	}
+
 	const manifest = JSON.parse(readFileSync(join(root, "dev", "manifest.json"), "utf8"));
 	const tag = String(manifest.sha ?? "").slice(0, 7);
 	if (!tag) throw new Error("manifest 里没有 sha，构建可能没成功");
