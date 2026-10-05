@@ -259,7 +259,12 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 			line: call.line,
 			endLine: call.endLine,
 			...(body !== undefined
-				? { bytes: Buffer.byteLength(body, "utf8"), lines: body.split("\n").length }
+				? {
+					bytes: Buffer.byteLength(body, "utf8"),
+					lines: body.split("\n").length,
+					// shell 芯片的弹窗要摆命令本身，不是 { command: '…' } 那截实参
+					...(kind === "shell" ? { contentPreview: body } : {}),
+				}
 				: {}),
 			...(() => {
 				const mode = call.args.command;

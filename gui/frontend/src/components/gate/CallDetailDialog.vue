@@ -167,12 +167,14 @@ watch(() => [props.chip, body.value.kind], refreshPreviewTokens, { immediate: tr
  * 断点只是切渲染，文本偏移照旧（每段各自裁 token / mark）。
  */
 const bodyLines = computed(() => {
-  if (body.value.kind !== "source") return [];
+  // content 是"摆正文"（shell 的 command、write 的正文），source 是"照摆实参"
+  if (body.value.kind !== "source" && body.value.kind !== "content") return [];
   const call = props.chip.call;
   const text = body.value.text;
-  const base = call.startOffset ?? 0;
-  const end = call.endOffset ?? base;
-  const marks = clipMarks(props.marks, base, end);
+  const fromContent = body.value.kind === "content";
+  const base = fromContent ? 0 : call.startOffset ?? 0;
+  const end = fromContent ? text.length : call.endOffset ?? base;
+  const marks = fromContent ? [] : clipMarks(props.marks, base, end);
   const paint = (piece, from, to, pieceMarks) => {
     if (props.tokens.length === 0) return renderHighlightedCommand(piece, pieceMarks);
     return composeCodeHtml(piece, clipTokens(props.tokens, from, to), pieceMarks);

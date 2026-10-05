@@ -35,7 +35,7 @@ const SOURCE = [
 	"              content: files.join(', '),",
 	"        });",
 	"  await tools.write({ path: '/tmp/notes-copy.txt', content: 'first line' });",
-	"   const built = await tools.bash({ command: 'node_modules/.bin/tsc --noEmit', cwd: '/home/clyzhi/.pi/agent' });",
+	"   const built = await tools.bash({ command: 'node_modules/.bin/tsc --noEmit | head -20; git status --short && echo 构建通过 || echo 构建失败', cwd: '/home/clyzhi/.pi/agent' });",
 	"  await tools.edit({ path: '/home/clyzhi/.pi/agent/lib/timeline.ts', old: 'const a = 1;', new: 'const a = 2;' });",
 	"      const body = await tools.read({ path: '/tmp/notes.txt' });",
 	"  await tools.write({ path: '/home/clyzhi/.pi/agent/lib/timeline.ts', content: body });",
