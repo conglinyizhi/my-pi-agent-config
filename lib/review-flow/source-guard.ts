@@ -6,7 +6,27 @@
 // 说清它不是安全边界：能绕（eval、从别的包间接拿到、等等）。它的价值是把手滑变成一句明话，
 // 并且让越界在加载时就被拒（fail-closed），而不是等它真的把会话带走。
 
+import { builtinModules } from "node:module";
 import type * as TS from "typescript";
+
+/** 原生模块清单：带不带 node: 前缀都认（"fs" 与 "node:fs" 都能载进来） */
+const BUILTINS = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
+
+/** 这个 import 是不是只借类型（type-only 会被整段擦掉，运行期没有任何耦合） */
+function isTypeOnlyImport(ts: typeof TS, node: TS.ImportDeclaration | TS.ExportDeclaration): boolean {
+	if (ts.isExportDeclaration(node) && node.isTypeOnly) return true;
+	// 注意：没有 importClause 的两种写法都要拒——import "node:fs"（副作用导入，照样执行）
+	// 与 export ... from "..."。它们都不是"只借类型"。
+	const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
+	if (!clause) return false;
+	if (clause.isTypeOnly) return true;
+	// import { type ReviewKit } from "..."：具名里每一项都标了 type，整句就只借类型
+	const named = clause.namedBindings;
+	if (named && ts.isNamedImports(named) && named.elements.length > 0) {
+		return named.elements.every((element) => element.isTypeOnly);
+	}
+	return false;
+}
 
 export interface SourceViolation {
 	line: number;
@@ -65,11 +85,22 @@ export async function checkFlowSource(source: string, fileName = "flow.ts"): Pro
 	};
 
 	const visit = (node: TS.Node): void => {
-		if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text.startsWith("node:")) {
-			found.push({ ...at(node.moduleSpecifier), message: `不许导入原生模块：${node.moduleSpecifier.text}` });
+		if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && !isTypeOnlyImport(ts, node)) {
+			const spec = node.moduleSpecifier;
+			if (spec && ts.isStringLiteral(spec)) {
+				if (BUILTINS.has(spec.text)) {
+					found.push({ ...at(spec), message: `不许导入原生模块：${spec.text}` });
+				} else {
+					found.push({
+						...at(spec),
+						message: `流程是单文件：不许导入别的模块（${spec.text}）——要外部能力就写 pi 扩展`,
+					});
+				}
+			}
 		}
-		if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text.startsWith("node:")) {
-			found.push({ ...at(node.moduleSpecifier), message: `不许从原生模块导出：${node.moduleSpecifier.text}` });
+		// import x = require("fs")：TS 的另一种 require 写法
+		if (ts.isImportEqualsDeclaration(node)) {
+			found.push({ ...at(node), message: "不许用 import ... = require(...)：它绕过这里的检查" });
 		}
 		if (ts.isCallExpression(node)) {
 			if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {

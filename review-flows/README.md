@@ -72,14 +72,19 @@ export default (kit: ReviewKit) => kit.flow({
 
 | 拒绝的东西 | 为什么 |
 | --- | --- |
-| `import ... from "node:*"` | 原生模块：文件系统、进程、网络都在这里 |
-| `require(...)` | CommonJS 载入，绕过导入检查 |
+| 任何**非 type-only** 的导入 | 流程是单文件。`import fs from "fs"` 与 `import ... from "node:fs"` 是同一个东西；`from "lodash"`、`from "./helper.ts"`、`import "x"`（副作用导入）同样拒 |
+| `require(...)` / `import x = require(...)` | CommonJS 载入，绕过导入检查 |
 | `await import(...)` | 动态导入，同上 |
 | `process` | 退出、环境变量、信号 |
 | `global` / `globalThis` | 往全局上挂东西 |
 | `__dirname` / `__filename` | 文件系统路径 |
 
+**只借类型是允许的**：`import type { ReviewKit } from "../lib/review-flow/kit.ts"`（或者具名里逐项写 `type`）——
+type-only 会被整段擦掉，运行期没有任何耦合，编辑器照样有全套提示。
+
 属性的名字（`ctx.settings.process`）与参数的名字不算引用，不会误报。
+
+需要外部库怎么办：**写在 pi 扩展里**，由扩展给流程提供节点（流程本身保持单文件）。
 
 **这不是安全边界，能绕**（`eval`、从别的包间接拿到原生模块，都拦不住）。它拦的是手滑，
 以及把"越界"变成一句明话：*流程只做判定；要碰原生接口，就别写成流程*。
