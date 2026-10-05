@@ -50,7 +50,7 @@
         </div>
         <div v-else class="blk">
           <div class="blk-head">{{ chip.tone === "shell" ? "命令" : "调用" }}</div>
-          <pre class="blk-body" v-html="bodyHtml" @mouseover="onHover" @mouseout="tip = ''"></pre>
+          <pre class="blk-body" @mouseover="onHover" @mouseout="tip = ''"><div v-for="(html, index) in bodyLines" :key="index" :class="{ 'blk-soft': index > 0 }" v-html="html"></div></pre>
         </div>
         <div v-if="body.truncated" class="dlg-note">内容过长，这里只摆了前一段（规模按全文算）</div>
       </div>
@@ -69,6 +69,7 @@ import { watch } from "vue";
 import { callTitle, clipMarks } from "../../domain/gate/script-fold.js";
 import { renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { clipTokens, colorTokens, composeCodeHtml } from "../../domain/gate/code-color.js";
+import { shellBreakPoints } from "../../domain/gate/shell-breaks.js";
 import { blocksOfRows } from "../../domain/gate/diff-render.js";
 import { patchCounts, patchToRows } from "../../domain/gate/patch-rows.js";
 import { collapseContext, lineDiff } from "../../../../../lib/text-diff.ts";
@@ -148,8 +149,9 @@ let previewRequest = 0;
 
 async function refreshPreviewTokens() {
   const request = ++previewRequest;
-  const lang = langFromPath(props.chip?.call?.displayPath);
-  const text = body.value.kind === "diff" ? "" : body.value.kind === "content" ? body.value.text : "";
+  // shell 芯片按 bash 上色（它没有文件路径可猜），其余按文件后缀
+  const lang = props.chip?.tone === "shell" ? "bash" : langFromPath(props.chip?.call?.displayPath);
+  const text = body.value.kind === "diff" ? "" : body.value.text;
   if (!lang || !text) {
     previewTokens.value = [];
     return;
@@ -159,13 +161,34 @@ async function refreshPreviewTokens() {
 }
 watch(() => [props.chip, body.value.kind], refreshPreviewTokens, { immediate: true });
 
-const bodyHtml = computed(() => {
-  if (body.value.kind !== "source") return "";
+/**
+ * 内容区按视觉行渲染。
+ * shell 芯片的 command 是一长条，按 ; | && 折开读起来才清楚；
+ * 断点只是切渲染，文本偏移照旧（每段各自裁 token / mark）。
+ */
+const bodyLines = computed(() => {
+  if (body.value.kind !== "source") return [];
   const call = props.chip.call;
   const text = body.value.text;
-  const marks = clipMarks(props.marks, call.startOffset, call.endOffset);
-  if (props.tokens.length === 0) return renderHighlightedCommand(text, marks);
-  return composeCodeHtml(text, clipTokens(props.tokens, call.startOffset, call.endOffset), marks);
+  const base = call.startOffset ?? 0;
+  const end = call.endOffset ?? base;
+  const marks = clipMarks(props.marks, base, end);
+  const paint = (piece, from, to, pieceMarks) => {
+    if (props.tokens.length === 0) return renderHighlightedCommand(piece, pieceMarks);
+    return composeCodeHtml(piece, clipTokens(props.tokens, from, to), pieceMarks);
+  };
+  if (props.chip?.tone !== "shell") {
+    return [paint(text, base, end, marks)];
+  }
+  const cuts = shellBreakPoints(text).filter((at) => at > 0 && at < text.length);
+  const out = [];
+  let cursor = 0;
+  for (const stop of cuts.concat([text.length])) {
+    const piece = text.slice(cursor, stop);
+    if (piece.length > 0) out.push(paint(piece, base + cursor, base + stop, clipMarks(marks, cursor, stop)));
+    cursor = stop;
+  }
+  return out.length > 0 ? out : [""];
 });
 
 const lineLabel = computed(() => {
@@ -235,4 +258,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 .dlg-foot { padding: 8px 16px; border-top: 1px solid #2a2a4a; background: #14142a; }
 .dlg-hint { font-size: 11px; color: #777; }
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #e67e22; padding: 5px 10px; border-radius: 4px; font-size: 12px; color: #e67e22; z-index: 100; pointer-events: none; white-space: pre-line; max-width: 70vw; }
+/* 软换行的续行：缩一级，看着还是同一行 */
+.blk-soft { padding-left: 24px; opacity: 0.92; }
 </style>

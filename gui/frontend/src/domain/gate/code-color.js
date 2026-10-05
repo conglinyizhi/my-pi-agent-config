@@ -20,7 +20,8 @@ export function getHighlighter() {
     ]);
     return createHighlighterCore({
       themes: [import("shiki/themes/github-dark.mjs")],
-      langs: [import("shiki/langs/javascript.mjs")],
+      // bash 也得注册：不然非脚本体裁（工具的 command 参数）传 lang: "bash" 也上不了色
+      langs: [import("shiki/langs/javascript.mjs"), import("shiki/langs/bash.mjs")],
       engine: createJavaScriptRegexEngine(),
     });
   })();
