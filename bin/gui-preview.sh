@@ -15,15 +15,35 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 agent_dir=$(dirname "$here")
 
 usage() {
-  echo "用法：gui-preview.sh <gate|flows|review|editor|routing|subagents> [请求.json]" >&2
+  echo "用法：gui-preview.sh <窗口> [请求.json]" >&2
+  echo "" >&2
+  window_names >&2
   exit 2
 }
 
+window_names() {
+  cat <<'EOF'
+  gate       权限闸门（审批对话框：批准/拒绝脚本与命令）  ← 平时说的"审核窗"就是它
+  review     审核设置（阈值、维度权重、自动放行那一套）
+  flows      审核流程（流程图：看结构、改源码、点边换目标）
+  editor     编辑器选择窗
+  routing    路由窗
+  subagents  subagent 看板
+别名：settings=review、approve/audit=gate
+EOF
+}
+
 window=${1:-}
-[ -n "$window" ] || usage
 case "$window" in
   -h|--help|help) usage ;;
+  -l|--list|list) window_names; exit 0 ;;
 esac
+# 别名：这几个名字在口语里都指审批窗，指错了容易开错页面
+case "$window" in
+  settings) window=review ;;
+  approve|audit|approval) window=gate ;;
+esac
+[ -n "$window" ] || usage
 
 tmp=$(mktemp -d)
 request=${2:-}
@@ -40,4 +60,17 @@ if [ -z "$request" ]; then
 fi
 
 [ -f "$request" ] || { echo "请求文件不存在：$request" >&2; exit 1; }
+
+# 开之前说一句开的是哪扇，免得指错名字白等一遍
+case "$window" in
+  gate) label="权限闸门（审批对话框）" ;;
+  review) label="审核设置" ;;
+  flows) label="审核流程" ;;
+  editor) label="编辑器选择" ;;
+  routing) label="路由" ;;
+  subagents) label="subagent 看板" ;;
+  *) label="$window" ;;
+esac
+echo "打开：$label" >&2
+
 exec "$here/gui.sh" "$window" "$request" "$tmp/response.json"
