@@ -99,6 +99,7 @@ export function rollback(root: string): AbState {
 	writeLine(join(root, "tag"), before.prevTag);
 	writeLine(join(root, "prev-tag"), before.tag);
 	writeLine(join(root, "count"), "0");
+	writeLine(join(root, "fail"), "0");
 	appendLog(root, { event: "rollback", from: before.tag, to: before.prevTag });
 	return stateOf(root);
 }

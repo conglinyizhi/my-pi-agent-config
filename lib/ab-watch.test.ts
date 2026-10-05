@@ -15,10 +15,20 @@ import {
 	writeNotice,
 } from "./ab-watch.ts";
 
+/**
+ * 新模型：一条产品线一个 tag。真跑时 tag/dir/candidate 都由 deploy 侧写好，
+ * 这里照一份：生效的 live111（目录 dev）、回退目标 old000、待验的 cand222。
+ */
 function setup(): string {
 	const root = mkdtempSync(join(tmpdir(), "ab-watch-"));
-	// 真跑的时候 dev 槽是存在的（dev 就是被晋升的那个）；不只是建组件目录
-	for (const component of ["gui", "audit"]) mkdirSync(join(root, component, "dev"), { recursive: true });
+	for (const component of ["gui", "audit"]) {
+		const at = join(root, component);
+		mkdirSync(join(at, "dev"), { recursive: true });
+		writeFileSync(join(at, "tag"), "live111\n", { mode: 0o600 });
+		writeFileSync(join(at, "prev-tag"), "old000\n", { mode: 0o600 });
+		writeFileSync(join(at, "candidate"), "cand222\n", { mode: 0o600 });
+		writeFileSync(join(at, "dir"), "dev\n", { mode: 0o600 });
+	}
 	return root;
 }
 
@@ -58,18 +68,20 @@ describe("计数与自动晋升", () => {
 			assert.equal(last.noted, true);
 		}
 		assert.equal(last?.promoted, true);
-		assert.equal(last?.clean, 5);
-		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /"event":"promote"/);
+		assert.equal(last?.clean, 0, "切完计数归零，下一轮重新攒");
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /"event":"update"/);
 	});
 
-	it("没有 dev 可晋升时不晋升，也不动现有的 stable（踩过的坑）", () => {
+	it("没有候选时攒满也不晋升，只报干净（踩过的坑）", () => {
 		const root = setup();
-		mkdirSync(join(root, "gui", "stable"), { recursive: true });
-		rmSync(join(root, "gui", "dev"), { recursive: true, force: true });
-		for (let index = 0; index < 5; index += 1) watchRoundTrip({ component: "gui", outcome: "clean", runtimeRoot: root, threshold: 5 });
-		assert.equal(existsSync(join(root, "gui", "stable")), true, "stable 不许被挪走");
-		assert.equal(existsSync(join(root, "gui", "dev")), false);
-		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /没有 dev 槽可晋升/);
+		rmSync(join(root, "gui", "candidate"), { force: true });
+		let last;
+		for (let index = 0; index < 5; index += 1) {
+			last = watchRoundTrip({ component: "gui", outcome: "clean", runtimeRoot: root, threshold: 5 });
+		}
+		assert.equal(last?.promoted, false);
+		assert.equal(last?.action, "keep");
+		assert.equal(readFileSync(join(root, "gui", "tag"), "utf8").trim(), "live111", "生效的 tag 不许被动");
 	});
 
 	it("测试进程不写运行时状态（不给 runtimeRoot 时）", () => {
@@ -85,7 +97,7 @@ describe("计数与自动晋升", () => {
 		assert.equal(failed.noted, true);
 		assert.equal(failed.clean, 0);
 		assert.equal(failed.promoted, false);
-		assert.match(readFileSync(join(root, "gui", "streak.json"), "utf8"), /窗口被叉掉/);
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /窗口被叉掉/);
 	});
 
 	it("关掉自动晋升只给 notify", () => {
@@ -94,7 +106,7 @@ describe("计数与自动晋升", () => {
 		for (let index = 0; index < 5; index += 1) {
 			last = watchRoundTrip({ component: "audit", outcome: "clean", runtimeRoot: root, autoPromote: false });
 		}
-		assert.equal(last?.action, "notify");
+		assert.equal(last?.action, "keep", "关掉自动晋升就只攒着");
 		assert.equal(last?.promoted, false);
 	});
 });
@@ -150,7 +162,7 @@ describe("闸门往返：两个组件的共用观察点", () => {
 		});
 		assert.equal(watched.gui.clean, 0);
 		assert.equal(watched.audit?.clean, 0);
-		assert.match(readFileSync(join(root, "audit", "streak.json"), "utf8"), /这次没走完/);
+		assert.match(readFileSync(join(root, "audit", "promote.log"), "utf8"), /这次没走完/);
 	});
 
 	it("链自己报错：gui 算干净、audit 算失败", () => {
@@ -169,7 +181,7 @@ describe("闸门往返：两个组件的共用观察点", () => {
 		const watched = noteGateRoundTrip({ windowResult: { ok: true, data: { action: "deny" } }, runtimeRoot: root });
 		assert.equal(watched.gui.noted, true);
 		assert.equal(watched.audit, undefined);
-		assert.equal(existsSync(join(root, "audit", "streak.json")), false);
+		assert.equal(existsSync(join(root, "audit", "count")), false, "没跑审核就不该动 audit 的账");
 	});
 
 	it("攒够阈值时给出带组件的提示（用来自动晋升那一下）", () => {
@@ -213,22 +225,20 @@ describe("提示落地", () => {
 
 
 describe("看门狗：连续失败自动回退", () => {
-	it("连续三次失败就退回 previous，并清掉连胜", () => {
+	it("连续三次失败就退回 prev-tag，并清掉连胜", () => {
 		const root = setup();
-		mkdirSync(join(root, "gui", "previous"), { recursive: true });
 		let last;
 		for (let index = 0; index < 3; index += 1) {
 			last = watchRoundTrip({ component: "gui", outcome: "failure", reason: "窗口被叉掉", runtimeRoot: root, failThreshold: 3 });
 		}
 		assert.equal(last?.rolledBack, true);
-		assert.equal(readlinkSync(join(root, "gui", "current")).split("/").pop(), "previous");
-		assert.equal(JSON.parse(readFileSync(join(root, "gui", "streak.json"), "utf8")).failing, 0);
-		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /watchdog-rollback/);
+		assert.equal(readFileSync(join(root, "gui", "tag"), "utf8").trim(), "old000", "退回 prev-tag");
+		assert.equal(readFileSync(join(root, "gui", "fail"), "utf8").trim(), "0", "失败计数清零");
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /"event":"rollback"/);
 	});
 
 	it("中间干净一次就重新数", () => {
 		const root = setup();
-		mkdirSync(join(root, "gui", "previous"), { recursive: true });
 		const options = { runtimeRoot: root, failThreshold: 3 } as const;
 		watchRoundTrip({ component: "gui", outcome: "failure", ...options });
 		watchRoundTrip({ component: "gui", outcome: "failure", ...options });
@@ -238,21 +248,19 @@ describe("看门狗：连续失败自动回退", () => {
 		assert.equal(last.rolledBack, false, "只连续失败两次，不该回退");
 	});
 
-	it("没有 previous 槽时不退，只记账", () => {
+	it("没有 prev-tag 时不退，只记账", () => {
 		const root = setup();
-		rmSync(join(root, "gui", "previous"), { recursive: true, force: true });
+		rmSync(join(root, "gui", "prev-tag"), { force: true });
 		let last;
 		for (let index = 0; index < 4; index += 1) {
 			last = watchRoundTrip({ component: "gui", outcome: "failure", runtimeRoot: root, failThreshold: 3 });
 		}
 		assert.equal(last?.rolledBack, false);
-		assert.match(String(last?.watchdog), /没有可回退的槽/);
+		assert.match(String(last?.watchdog), /失败/);
 	});
 
 	it("闸门往返里回退的提示排在晋升前面（回退更该被看见）", () => {
 		const root = setup();
-		mkdirSync(join(root, "gui", "previous"), { recursive: true });
-		mkdirSync(join(root, "audit", "previous"), { recursive: true });
 		let last;
 		for (let index = 0; index < 3; index += 1) {
 			last = noteGateRoundTrip({
