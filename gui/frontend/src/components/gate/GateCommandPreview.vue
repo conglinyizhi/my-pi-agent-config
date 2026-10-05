@@ -207,12 +207,23 @@ watch(() => props.highlights, scroll, { deep: true });
   text-align: right;
   color: #4a5364;
   user-select: none;
-  background: #0f1319;
-  border-right: 1px solid #1d2431;
 }
 .code-no-bad { color: #e6a23c; font-weight: 600; }
 .code-text { flex: 1 1 auto; min-width: 0; padding: 0 12px 0 10px; }
-.cmd-area { flex: 1; margin: 0; padding: 10px 0; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
+/* 行号那条灰带画在容器上（不是每行各画一段）：代码再短，它也通到上下两头；
+   37px 处那条是分隔线。宽度要和 .code-no 的盒子对齐 */
+.cmd-area {
+  flex: 1;
+  margin: 0;
+  padding: 10px 0;
+  background: linear-gradient(
+    to right,
+    #0f1319 0,
+    #0f1319 37px,
+    #1d2431 37px,
+    #1d2431 38px,
+    transparent 38px
+  ); background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
 /* 芯片：灰=改文件，橙=可执行 shell。字号跟着正文走，别在 <pre> 里跳出来 */
 .fold-chip { font-family: inherit; font-size: inherit; line-height: inherit; padding: 0 6px; margin: 0 1px; border-radius: 3px; border: 1px solid; cursor: pointer; vertical-align: baseline; }
 .fold-chip.chip-file { color: #b9c0d0; background: #2a2a3d55; border-color: #555a6b; }

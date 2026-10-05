@@ -50,9 +50,9 @@
          顶层 review.verdict 是**分类器**的（合并节点以分类器为准，大模型只是顾问），
          挂在 System One 卡上才不会让人以为"一个模型审出两个意见"。 -->
     <div v-if="!isSandboxAllow && !isCapability && review?.chatReview" class="model-card" data-model="chat">
-      <div class="model-head">
+      <div class="model-head" :class="'tone-' + toneOf(chatMeta, true)">
         🤖 LLM 审核
-        <span v-if="chatMeta" class="dot" :class="dotClass(chatMeta, true)" :title="chatMeta.label"></span>
+        <span v-if="chatMeta" class="dot" :class="'dot-' + toneOf(chatMeta, true)" :title="chatMeta.label"></span>
       </div>
       <div v-if="review.chatReview" class="chat-review">
         <div class="chat-reason">{{ review.chatReview.reason }}</div>
@@ -62,11 +62,11 @@
     </div>
 
     <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
-      <div class="model-head">
+      <div class="model-head" :class="'tone-' + toneOf(verdictMeta, false)">
         📊 System One 决策模型意见
-        <span class="dot" :class="dotClass(verdictMeta, false)" :title="verdictMeta.label"></span>
+        <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
         <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
-          {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
+          {{ flaggedCount ? `${flaggedCount}/${weightRows.length} 越线` : `${weightRows.length} 维全在阈值内` }}
         </span>
       </div>
       <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
@@ -279,12 +279,12 @@ const chatMeta = computed(() => {
  * 判定的圆点：绿=安全、黄=要留意、红=严重。
  * 红只给 LLM 那一路——分类器太容易喊危险，一律标红会把注意力耗光。
  */
-function dotClass(meta, allowRed) {
+function toneOf(meta, allowRed) {
   const cls = meta?.cls ?? "";
-  if (cls.includes("dangerous")) return allowRed ? "dot-red" : "dot-yellow";
-  if (cls.includes("risky")) return "dot-yellow";
-  if (cls.includes("safe")) return "dot-green";
-  return "dot-grey";
+  if (cls.includes("dangerous")) return allowRed ? "bad" : "warn";
+  if (cls.includes("risky")) return "warn";
+  if (cls.includes("safe")) return "ok";
+  return "none";
 }
 const decisionSummary = computed(() => gateDecisionSummary({
   kind: props.isCapability ? "capability" : props.isSandboxAllow ? "sandbox-allow" : "audit",
@@ -407,12 +407,16 @@ function removeWorkspace(path) {
 .review-opinion { margin-top: 6px; padding: 6px 10px; background: #0d0d1a; border-left: 2px solid #7aa2f7; border-radius: 3px; font-size: 12.5px; color: #d0d0e0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 /* 权重表：条宽表达数值，底色只表达“越线”。不给命令文本上色。 */
 .weight-count { font-size: 11px; color: #888; margin-left: auto; }
-/* 判定用一个小圆点：绿=安全、黄=要留意、红=严重（红只限 LLM 那一路） */
+/* 判定用一个小圆点，标题跟着它一起变色：绿=安全、黄=要留意、红只限 LLM */
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: auto; }
-.dot-green { background: #4ec9b0; }
-.dot-yellow { background: #e6a23c; }
-.dot-red { background: #ff6b6b; }
-.dot-grey { background: #6b7280; }
+.dot-ok { background: #4ec9b0; }
+.dot-warn { background: #e6a23c; }
+.dot-bad { background: #ff6b6b; }
+.dot-none { background: #6b7280; }
+.tone-ok { color: #4ec9b0; }
+.tone-warn { color: #e6a23c; }
+.tone-bad { color: #ff6b6b; }
+.tone-none { color: #8ea2c8; }
 .count-ok { color: #7bd88f; }
 .count-warn { color: #e6a23c; }
 .weight-table { margin-top: 8px; border-top: 1px dashed #2a2a4a; padding-top: 6px; }
@@ -452,6 +456,8 @@ function removeWorkspace(path) {
 /* 串联模式下对话模型的独立意见块 */
 /* 平铺：判定在卡头上，这一段不再套盒子 */
 .chat-review { margin-top: 6px; padding: 0; background: transparent; border: 0; border-radius: 0; }
+/* 权重行的下边框交给底边那条染色去画，两者不要压在同一个像素上（叠色看着糊） */
+.weight-row { border-bottom: 0; }
 .chat-review-head { font-size: 11.5px; color: #7aa2f7; display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
 .chat-badge { font-size: 10.5px; padding: 0 6px; border-radius: 3px; }
 .chat-badge.c-safe { color: #7ee787; background: #12261a; border: 1px solid #7ee78744; }
