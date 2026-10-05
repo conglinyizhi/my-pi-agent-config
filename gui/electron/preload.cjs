@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("piGui", {
 		list: () => call("flows:list"),
 		get: (id) => call("flows:get", id),
 		save: (patch) => call("flows:save", patch),
+		editEdge: (patch) => call("flows:editEdge", patch),
 	},
 	editor: {
 		list: () => call("editor:list"),

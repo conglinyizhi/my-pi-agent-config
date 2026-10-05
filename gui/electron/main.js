@@ -111,6 +111,19 @@ const flowsBridge = createServeBridge({
 	nodeBin: resolveNodeBin(),
 	oneShotArgs: (cmd, patch) => {
 		if (cmd === "get" || cmd === "save") return [cmd, String(patch?.id ?? "")];
+		if (cmd === "edit-edge") {
+			return [
+				"edit-edge",
+				String(patch?.id ?? ""),
+				"--node",
+				String(patch?.nodeId ?? ""),
+				"--kind",
+				String(patch?.kind ?? "next"),
+				...(patch?.label ? ["--label", String(patch.label)] : []),
+				"--to",
+				String(patch?.to ?? ""),
+			];
+		}
 		return ["list"];
 	},
 	oneShotInput: (cmd, patch) => (cmd === "save" ? String(patch?.content ?? "") : ""),
@@ -207,6 +220,7 @@ function registerIpc(request) {
 	handle("flows:list", () => flowsBridge.request("list"));
 	handle("flows:get", (id) => flowsBridge.request("get", { id }));
 	handle("flows:save", (patch) => flowsBridge.request("save", patch ?? {}));
+	handle("flows:editEdge", (patch) => flowsBridge.request("edit-edge", patch ?? {}));
 
 	// ── 以下四组是 Go 侧还没搬过来的能力 ──
 	// 宁可明确降级（空结果 + 警告一次），也不假装成功：假的成功会让人以为数据存下来了

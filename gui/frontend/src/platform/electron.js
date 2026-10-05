@@ -39,6 +39,7 @@ export function createElectronPlatform(api = globalThis.window?.piGui) {
       list: () => api.flows.list(),
       get: (id) => api.flows.get(id),
       save: (patch) => api.flows.save(patch),
+      editEdge: (patch) => api.flows.editEdge(patch),
     },
     review: {
       load: () => api.review.load(),

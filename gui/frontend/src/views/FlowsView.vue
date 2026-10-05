@@ -30,6 +30,7 @@
 				v-if="mode === 'graph'"
 				v-model:nodes="nodes"
 				v-model:edges="edges"
+				@edge-click="onEdgeClick"
 				:fit-view-on-init="true"
 				:min-zoom="0.3"
 				:max-zoom="1.6"
@@ -59,6 +60,25 @@
 					<button :disabled="!dirty" @click="revert">还原</button>
 					<span class="hint">保存先过越界检查；改完要 /reload 才生效</span>
 				</div>
+			</div>
+			<div v-if="edgeDialog" class="edge-dialog" data-name="edge-dialog">
+				<div class="edge-head">
+					改边：<code>{{ edgeDialog.nodeId }}</code> 的
+					<span class="edge-kind">{{ EDGE_KIND_LABEL[edgeDialog.kind] }}</span>
+					<span v-if="edgeDialog.label" class="edge-label">{{ edgeDialog.label }}</span>
+				</div>
+				<div class="edge-body">
+					<span>改到</span>
+					<select v-model="edgeDialog.to" data-name="edge-target">
+						<option v-for="target in edgeDialog.candidates" :key="target" :value="target">{{ target }}</option>
+					</select>
+					<button data-name="edge-apply" :disabled="edgeSaving || edgeDialog.to === edgeDialog.from" @click="applyEdge">
+						{{ edgeSaving ? "保存中…" : "应用" }}
+					</button>
+					<button @click="edgeDialog = null">取消</button>
+				</div>
+				<div v-if="edgeMsg" class="edge-msg" :class="{ bad: edgeBad }">{{ edgeMsg }}</div>
+				<p class="edge-hint">只改那一个字面量，别的原样不动；改完要 /reload 才生效</p>
 			</div>
 			<div v-if="!graph && mode === 'graph'" class="canvas-empty">
 				<p>{{ selectedProblem || "选中左边一条流程看它的图" }}</p>
@@ -119,7 +139,55 @@ const selectedSource = computed(() => detail.value?.source ?? "");
 const activeLabel = computed(() => (flows.value.find((f) => f.id === selectedId.value)?.active === "authored" ? "你写的那条" : "内置那条"));
 const selectedProblem = computed(() => (dir.value === "" ? "" : "这条流程没有图：先看右边的问题"));
 
+const EDGE_KIND_LABEL = { next: "下一步", branch: "分支", error: "出错", timeout: "超时", empty: "拿不准" };
+
 const mode = ref("graph");
+const edgeDialog = ref(null);
+const edgeSaving = ref(false);
+const edgeMsg = ref("");
+const edgeBad = ref(false);
+
+/** 点一条边：弹出目标选择。候选是所有节点加两个终端，去掉自己。 */
+function onEdgeClick(payload) {
+	const edge = payload?.edge;
+	if (!edge) return;
+	const kind = edge.data?.kind ?? "next";
+	const label = kind === "branch" ? String(edge.label ?? "") : "";
+	const self = edge.source;
+	const candidates = [...new Set([...nodes.value.map((n) => n.id), "allow", "deny"])]
+		.filter((id) => id !== self)
+		.sort();
+	edgeDialog.value = { nodeId: self, kind, label, to: String(edge.target), from: String(edge.target), candidates };
+	edgeMsg.value = "";
+	edgeBad.value = false;
+}
+
+async function applyEdge() {
+	const dialog = edgeDialog.value;
+	if (!dialog || !selectedId.value) return;
+	edgeSaving.value = true;
+	edgeMsg.value = "";
+	try {
+		const result = await platform.flows.editEdge({
+			id: selectedId.value,
+			nodeId: dialog.nodeId,
+			kind: dialog.kind,
+			...(dialog.label ? { label: dialog.label } : {}),
+			to: dialog.to,
+		});
+		if (!result?.ok) {
+			edgeBad.value = true;
+			edgeMsg.value = result?.error ?? "改不动";
+			return;
+		}
+		edgeDialog.value = null;
+		const payload = await platform.flows.list();
+		flows.value = payload?.flows ?? flows.value;
+		await select(selectedId.value);
+	} finally {
+		edgeSaving.value = false;
+	}
+}
 const draft = ref("");
 const dirty = ref(false);
 const saving = ref(false);
@@ -241,6 +309,16 @@ onMounted(async () => {
 .editor-bar button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .editor-bar button:disabled { opacity: 0.45; cursor: default; }
 .editor-bar .hint { color: #69707d; font-size: 12px; }
+.edge-dialog { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); z-index: 5; background: #1f2531; border: 1px solid #39414f; border-radius: 8px; padding: 12px 14px; min-width: 380px; box-shadow: 0 8px 24px #0008; }
+.edge-head { margin-bottom: 8px; }
+.edge-kind, .edge-label { margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #2a3140; color: #9aa3b2; font-size: 12px; }
+.edge-body { display: flex; align-items: center; gap: 8px; }
+.edge-body select { background: #12151c; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 8px; }
+.edge-body button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.edge-body button:disabled { opacity: 0.45; cursor: default; }
+.edge-msg { margin-top: 8px; color: #7bd88f; font-size: 12px; }
+.edge-msg.bad { color: #e6a23c; }
+.edge-hint { color: #69707d; font-size: 12px; margin: 8px 0 0; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #69707d; pointer-events: none; }
 .detail { width: 300px; border-left: 1px solid #262b35; padding: 12px; overflow: auto; }
 .detail h3 { margin: 0 0 10px; }

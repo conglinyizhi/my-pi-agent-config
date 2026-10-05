@@ -9,13 +9,23 @@
 // 协议与 review-settings-cli 一致：请求 {"id":…,"cmd":"list|get|save","patch":{…}}，
 // 响应是同一形状的 payload，带上回显的 id。
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flowsDir, loadFlowFile, loadKitExtra } from "../lib/review-flow/load.ts";
 import { inspectFlows } from "../lib/review-flow/inspect.ts";
 import { checkFlowSource, formatViolations } from "../lib/review-flow/source-guard.ts";
+import { editEdgeInSource, type EdgeEditRequest } from "../lib/review-flow/edit-edge.ts";
 
-interface Options { dir: string; json: boolean; file?: string }
+interface Options {
+	dir: string;
+	json: boolean;
+	file?: string;
+	/** edit-edge 的四个参数（一次性回落时用命令行给，比塞 JSON 好读） */
+	node?: string;
+	kind?: string;
+	label?: string;
+	to?: string;
+}
 
 function parseArgs(argv: string[]): { command: string; id?: string; options: Options } {
 	const options: Options = { dir: flowsDir(), json: false };
@@ -25,9 +35,13 @@ function parseArgs(argv: string[]): { command: string; id?: string; options: Opt
 		const arg = argv[index] as string;
 		if (arg === "--dir") { options.dir = argv[++index] ?? options.dir; continue; }
 		if (arg === "--file") { options.file = argv[++index]; continue; }
+		if (arg === "--node") { options.node = argv[++index]; continue; }
+		if (arg === "--kind") { options.kind = argv[++index]; continue; }
+		if (arg === "--label") { options.label = argv[++index]; continue; }
+		if (arg === "--to") { options.to = argv[++index]; continue; }
 		if (arg === "--json") { options.json = true; continue; }
 		if (command === "") { command = arg; continue; }
-		if (id === undefined && (command === "get" || command === "save")) { id = arg; continue; }
+		if (id === undefined && (command === "get" || command === "save" || command === "edit-edge")) { id = arg; continue; }
 	}
 	return { command, ...(id ? { id } : {}), options };
 }
@@ -87,12 +101,45 @@ async function savePayload(dir: string, id: string, content?: string) {
 	return { ok: true, path, problems: "error" in loaded ? [loaded.error] : [] };
 }
 
+/**
+ * 图上改一条边：定位到那个节点，只替换那一个字面量；写完再校验一遍。
+ * 改动引入越界检查问题（理论上不该）就拒绝落盘。
+ */
+async function editEdgePayload(dir: string, id: string, patch: Record<string, unknown>) {
+	const path = join(dir, `${id}.ts`);
+	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const source = readFileSync(path, "utf8");
+	const request: EdgeEditRequest = {
+		source,
+		fileName: path,
+		nodeId: String(patch.nodeId ?? ""),
+		kind: (patch.kind ?? "next") as EdgeEditRequest["kind"],
+		...(typeof patch.label === "string" ? { label: patch.label } : {}),
+		to: String(patch.to ?? ""),
+	};
+	const result = await editEdgeInSource(request);
+	if (!result.ok) return { ok: false, error: result.error };
+	if (!result.changed) return { ok: true, changed: false, problems: [] };
+	const next = result.source ?? source;
+	const violations = await checkFlowSource(next, path);
+	if (violations.length > 0) return { ok: false, error: formatViolations(violations, path) };
+	writeFileSync(path, next, { mode: 0o600 });
+	const { kit } = await loadKitExtra(dir);
+	const loaded = await loadFlowFile(id, path, kit);
+	return { ok: true, changed: true, problems: "error" in loaded ? [loaded.error] : [] };
+}
+
 async function handleRequest(cmd: string, patch: Record<string, unknown> | undefined, dir: string) {
 	if (cmd === "list") return listPayload(dir);
 	if (cmd === "get") {
 		const id = typeof patch?.id === "string" ? patch.id : undefined;
 		if (!id) return { ok: false, error: "get 需要 id" };
 		return getPayload(dir, id);
+	}
+	if (cmd === "edit-edge") {
+		const id = typeof patch?.id === "string" ? patch.id : undefined;
+		if (!id) return { ok: false, error: "edit-edge 需要 id" };
+		return editEdgePayload(dir, id, patch ?? {});
 	}
 	if (cmd === "save") {
 		const id = typeof patch?.id === "string" ? patch.id : undefined;
@@ -149,6 +196,17 @@ async function main(): Promise<void> {
 	if (command === "serve") { serveStdio(options.dir); return; }
 	if (command === "list") { process.stdout.write(JSON.stringify(await listPayload(options.dir), null, 1) + "\n"); return; }
 	if (command === "get" && id) { process.stdout.write(JSON.stringify(await getPayload(options.dir, id), null, 1) + "\n"); return; }
+	if (command === "edit-edge" && id) {
+		const result = await editEdgePayload(options.dir, id, {
+			nodeId: options.node ?? "",
+			kind: options.kind ?? "next",
+			...(options.label ? { label: options.label } : {}),
+			to: options.to ?? "",
+		});
+		process.stdout.write(JSON.stringify(result, null, 1) + "\n");
+		if (!result.ok) process.exitCode = 1;
+		return;
+	}
 	if (command === "save" && id) {
 		const content = options.file ? readFileSync(options.file, "utf8") : await readStdin();
 		const result = await savePayload(options.dir, id, content);
@@ -156,7 +214,7 @@ async function main(): Promise<void> {
 		if (!result.ok) process.exitCode = 1;
 		return;
 	}
-	process.stderr.write("用法：flows-cli list|get <id>|save <id> --file <路径>|serve [--dir <目录>] [--json]\n");
+	process.stderr.write("用法：flows-cli list|get <id>|save <id> --file <路径>|edit-edge <id> --node <节点> --kind <next|branch|error|timeout|empty> [--label <出口>] --to <目标>|serve [--dir <目录>]" + "\n");
 	process.exitCode = 2;
 }
 

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -91,3 +91,38 @@ describe("流程命令行桥", () => {
 		assert.equal(lines[2].ok, false);
 	});
 });
+
+describe("图上改边的命令", () => {
+	it("改一条边：文件被定点改过，其余原样", () => {
+		const root = dir();
+		const source = [
+			"export default (kit) => kit.flow({",
+			'\tid: "my-flow",',
+			"\tnodes: [",
+			'\t\tkit.custom("judge", async () => ({ status: "ok", terminal: "deny" }), { branches: { yes: "deny", no: "allow" } }),',
+			"\t],",
+			"});",
+		].join("\n");
+		writeFileSync(join(root, "my-flow.ts"), source);
+		const result = run(["edit-edge", "my-flow", "--node", "judge", "--kind", "branch", "--label", "yes", "--to", "allow", "--dir", root]);
+		assert.equal(result.status, 0, result.stdout + result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.equal(payload.ok, true);
+		assert.equal(payload.changed, true);
+		assert.deepEqual(payload.problems, []);
+		const after = readFileSync(join(root, "my-flow.ts"), "utf8");
+		assert.match(after, /branches: \{ yes: "allow", no: "allow" \}/);
+		assert.match(after, /id: "my-flow"/, "别的地方没动");
+	});
+
+	it("节点找不到：拒绝，文件不动", () => {
+		const root = dir();
+		writeFileSync(join(root, "my-flow.ts"), 'export default (kit) => kit.flow({ id: "my-flow", nodes: [] });');
+		const before = readFileSync(join(root, "my-flow.ts"), "utf8");
+		const result = run(["edit-edge", "my-flow", "--node", "没有这个", "--to", "deny", "--dir", root]);
+		assert.notEqual(result.status, 0);
+		assert.match(JSON.parse(result.stdout).error, /找不到节点/);
+		assert.equal(readFileSync(join(root, "my-flow.ts"), "utf8"), before);
+	});
+});
+
