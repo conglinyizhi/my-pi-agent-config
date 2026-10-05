@@ -30,13 +30,6 @@ if [ -s "$gui_root/tag" ] && [ -s "$gui_root/dir" ]; then
     gui_dir="$gui_root/$sub"
   fi
 fi
-# 旧四槽（current 软链）兜底，第 3 批删
-if [ -z "$gui_dir" ] && [ -e "$gui_root/current" ]; then
-  slot=$(readlink -f "$gui_root/current" 2>/dev/null || true)
-  if [ -n "$slot" ] && [ -f "$slot/gui/electron/main.js" ]; then
-    gui_dir="$slot"
-  fi
-fi
 if [ -n "$gui_dir" ]; then
   gui_entry=$gui_dir/gui/electron/main.js
   gui_init=$gui_dir/gui/electron/init-data.js
