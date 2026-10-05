@@ -28,6 +28,7 @@
 		<main class="canvas">
 			<div class="canvas-tools">
 				<button data-name="toggle-edit" @click="toggleMode">{{ mode === "graph" ? "编辑源码" : "回到图" }}</button>
+				<button data-name="add-node" @click="openAdd">加节点</button>
 				<span v-if="dirty" class="dirty">未保存</span>
 				<span v-if="saveMsg" class="save-msg" :class="{ bad: saveBad }">{{ saveMsg }}</span>
 			</div>
@@ -66,6 +67,32 @@
 					<span class="hint">保存先过越界检查；改完要 /reload 才生效</span>
 				</div>
 			</div>
+			<div v-if="addDialog" class="edge-dialog" data-name="add-node-dialog">
+				<div class="edge-head">加一个节点（插进源码，可选顺手接一条边）</div>
+				<div class="edge-body">
+					<input v-model="addDialog.id" data-name="node-id" placeholder="节点 id" />
+					<select v-model="addDialog.kind" data-name="node-kind">
+						<option v-for="kind in ADD_KINDS" :key="kind" :value="kind">{{ kind === "custom" ? "自定义 JS" : kind }}</option>
+					</select>
+					<select v-model="addDialog.before" data-name="node-before">
+						<option value="">（插在末尾）</option>
+						<option v-for="node in addTargets" :key="node" :value="node">插在 {{ node }} 之前</option>
+					</select>
+				</div>
+				<div class="edge-body">
+					<select v-model="addDialog.connect" data-name="node-connect">
+						<option value="">（不接边，校验会提示不可达）</option>
+						<option v-for="node in addTargets" :key="node" :value="node">把 {{ node }} 的 next 接到它</option>
+					</select>
+					<button data-name="add-apply" :disabled="addSaving || !addDialog.id.trim()" @click="applyAdd">
+						{{ addSaving ? "插入中…" : "插入" }}
+					</button>
+					<button @click="addDialog = null">取消</button>
+				</div>
+				<div v-if="addMsg" class="edge-msg" :class="{ bad: addBad }">{{ addMsg }}</div>
+				<p class="edge-hint">只往源码里插这一段；插完会整份校验，不过就整段不动</p>
+			</div>
+
 			<div v-if="edgeDialog" class="edge-dialog" data-name="edge-dialog">
 				<div class="edge-head">
 					改边：<code>{{ edgeDialog.nodeId }}</code> 的
@@ -111,7 +138,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import "@vue-flow/controls/dist/style.css";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -152,7 +179,71 @@ const EDGE_KIND_LABEL = { next: "下一步", branch: "分支", error: "出错", 
 const page = ref("flows");
 
 const mode = ref("graph");
-const edgeDialog = ref(null);
+const ADD_KINDS = ["custom", "chatreview", "classifier", "merge", "autoapprove", "gate", "terminal"];
+
+const addDialog = ref(null);
+const addSaving = ref(false);
+const addMsg = ref("");
+const addBad = ref(false);
+
+/** 能插在谁前面 / 能把谁的 next 接过来：图上的节点 id */
+const addTargets = computed(() => nodes.value.map((node) => node.id).sort());
+
+function openAdd() {
+	addDialog.value = {
+		id: "新节点",
+		kind: "custom",
+		before: "",
+		connect: "",
+	};
+	addMsg.value = "";
+	addBad.value = false;
+}
+
+async function applyAdd() {
+	const dialog = addDialog.value;
+	if (!dialog || !selectedId.value) return;
+	if (!dialog.id.trim()) {
+		addBad.value = true;
+		addMsg.value = "节点要有 id";
+		return;
+	}
+	addSaving.value = true;
+	addMsg.value = "";
+	try {
+		const result = await platform.flows.addNode({
+			id: selectedId.value,
+			nodeId: dialog.id.trim(),
+			kind: dialog.kind,
+			...(dialog.before ? { before: dialog.before } : {}),
+			...(dialog.connect ? { connect: { nodeId: dialog.connect, kind: "next" } } : {}),
+		});
+		if (!result?.ok) {
+			addBad.value = true;
+			addMsg.value = result?.error ?? "插不进去";
+			return;
+		}
+		const added = dialog.id.trim();
+		addDialog.value = null;
+		const payload = await platform.flows.list();
+		flows.value = payload?.flows ?? flows.value;
+		await select(selectedId.value);
+		// 第 ③ 步：插完直接进源码编辑器，把光标落到新节点那段附近
+		mode.value = "edit";
+		draft.value = detail.value?.sourceText ?? "";
+		nextTick(() => {
+			const area = document.querySelector("[data-name=\"flow-source\"]");
+			if (!area) return;
+			area.focus();
+			// 光标落到新节点的 id 上：插完就能接着写函数体
+			const needle = JSON.stringify(added);
+			const at = draft.value.indexOf(needle);
+			if (at >= 0) area.setSelectionRange(at, at + needle.length);
+		});
+	} finally {
+		addSaving.value = false;
+	}
+}
 const edgeSaving = ref(false);
 const edgeMsg = ref("");
 const edgeBad = ref(false);

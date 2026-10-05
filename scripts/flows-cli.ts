@@ -15,6 +15,7 @@ import { flowsDir, loadFlowFile, loadKitExtra } from "../lib/review-flow/load.ts
 import { inspectFlows } from "../lib/review-flow/inspect.ts";
 import { checkFlowSource, formatViolations } from "../lib/review-flow/source-guard.ts";
 import { editEdgeInSource, type EdgeEditRequest } from "../lib/review-flow/edit-edge.ts";
+import { addNodeToSource } from "../lib/review-flow/add-node.ts";
 
 interface Options {
 	dir: string;
@@ -25,6 +26,9 @@ interface Options {
 	kind?: string;
 	label?: string;
 	to?: string;
+	/** add-node：插在谁前面、把谁的 next 接过来 */
+	before?: string;
+	connect?: string;
 }
 
 function parseArgs(argv: string[]): { command: string; id?: string; options: Options } {
@@ -39,9 +43,11 @@ function parseArgs(argv: string[]): { command: string; id?: string; options: Opt
 		if (arg === "--kind") { options.kind = argv[++index]; continue; }
 		if (arg === "--label") { options.label = argv[++index]; continue; }
 		if (arg === "--to") { options.to = argv[++index]; continue; }
+		if (arg === "--before") { options.before = argv[++index]; continue; }
+		if (arg === "--connect") { options.connect = argv[++index]; continue; }
 		if (arg === "--json") { options.json = true; continue; }
 		if (command === "") { command = arg; continue; }
-		if (id === undefined && (command === "get" || command === "save" || command === "edit-edge")) { id = arg; continue; }
+		if (id === undefined && (command === "get" || command === "save" || command === "edit-edge" || command === "add-node")) { id = arg; continue; }
 	}
 	return { command, ...(id ? { id } : {}), options };
 }
@@ -129,12 +135,54 @@ async function editEdgePayload(dir: string, id: string, patch: Record<string, un
 	return { ok: true, changed: true, problems: "error" in loaded ? [loaded.error] : [] };
 }
 
+/**
+ * 往流程里加一个节点：定点插入，可选把一条既有边改接到它，然后整份重新校验。
+ * 与 save / edit-edge 同一条纪律：宁可整段不动，也不落一份校验不过的源码。
+ */
+async function addNodePayload(dir: string, id: string, patch: Record<string, unknown>) {
+	const path = join(dir, `${id}.ts`);
+	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const source = readFileSync(path, "utf8");
+	const connect = patch.connect as { nodeId?: unknown; kind?: unknown; label?: unknown } | undefined;
+	const result = await addNodeToSource({
+		source,
+		fileName: path,
+		id: String(patch.nodeId ?? ""),
+		kind: String(patch.kind ?? "custom"),
+		...(typeof patch.before === "string" && patch.before !== "" ? { before: patch.before } : {}),
+		...(connect && typeof connect.nodeId === "string"
+			? {
+				connect: {
+					nodeId: connect.nodeId,
+					edge: {
+						kind: (connect.kind ?? "next") as EdgeEditRequest["kind"],
+						...(typeof connect.label === "string" ? { label: connect.label } : {}),
+					},
+				},
+			}
+			: {}),
+	});
+	if (!result.ok) return { ok: false, error: result.error };
+	const next = result.source ?? source;
+	const violations = await checkFlowSource(next, path);
+	if (violations.length > 0) return { ok: false, error: formatViolations(violations, path) };
+	writeFileSync(path, next, { mode: 0o600 });
+	const { kit } = await loadKitExtra(dir);
+	const loaded = await loadFlowFile(id, path, kit);
+	return { ok: true, changed: true, problems: "error" in loaded ? [loaded.error] : [] };
+}
+
 async function handleRequest(cmd: string, patch: Record<string, unknown> | undefined, dir: string) {
 	if (cmd === "list") return listPayload(dir);
 	if (cmd === "get") {
 		const id = typeof patch?.id === "string" ? patch.id : undefined;
 		if (!id) return { ok: false, error: "get 需要 id" };
 		return getPayload(dir, id);
+	}
+	if (cmd === "add-node") {
+		const id = typeof patch?.id === "string" ? patch.id : undefined;
+		if (!id) return { ok: false, error: "add-node 需要 id" };
+		return addNodePayload(dir, id, patch ?? {});
 	}
 	if (cmd === "edit-edge") {
 		const id = typeof patch?.id === "string" ? patch.id : undefined;
@@ -196,6 +244,17 @@ async function main(): Promise<void> {
 	if (command === "serve") { serveStdio(options.dir); return; }
 	if (command === "list") { process.stdout.write(JSON.stringify(await listPayload(options.dir), null, 1) + "\n"); return; }
 	if (command === "get" && id) { process.stdout.write(JSON.stringify(await getPayload(options.dir, id), null, 1) + "\n"); return; }
+	if (command === "add-node" && id) {
+		const result = await addNodePayload(options.dir, id, {
+			nodeId: options.node ?? "",
+			kind: options.kind ?? "custom",
+			...(options.before ? { before: options.before } : {}),
+			...(options.connect ? { connect: { nodeId: options.connect, kind: "next" } } : {}),
+		});
+		process.stdout.write(JSON.stringify(result, null, 1) + "\n");
+		if (!result.ok) process.exitCode = 1;
+		return;
+	}
 	if (command === "edit-edge" && id) {
 		const result = await editEdgePayload(options.dir, id, {
 			nodeId: options.node ?? "",

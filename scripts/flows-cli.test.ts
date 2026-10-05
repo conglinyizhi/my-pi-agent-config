@@ -126,3 +126,36 @@ describe("图上改边的命令", () => {
 	});
 });
 
+
+describe("图上加节点（走命令行桥）", () => {
+	it("插一个节点并接上一条边", () => {
+		const root = dir();
+		const source = [
+			"export default (kit) => kit.flow({",
+			'\tid: "my-flow",',
+			"\tnodes: [",
+			'\t\tkit.node("chatreview", { id: "chat" }),',
+			"\t],",
+			"});",
+		].join("\n");
+		writeFileSync(join(root, "my-flow.ts"), source);
+		const result = run(["add-node", "my-flow", "--node", "watchdog", "--kind", "custom", "--dir", root]);
+		assert.equal(result.status, 0, result.stdout + result.stderr);
+		const payload = JSON.parse(result.stdout);
+		assert.equal(payload.ok, true, JSON.stringify(payload));
+		assert.equal(payload.changed, true);
+		const after = readFileSync(join(root, "my-flow.ts"), "utf8");
+		assert.match(after, /kit\.custom\("watchdog"/);
+	});
+
+	it("id 重复：拒绝，文件不动", () => {
+		const root = dir();
+		writeFileSync(join(root, "my-flow.ts"), 'export default (kit) => kit.flow({ id: "f", nodes: [kit.custom("dup", async () => ({ status: "abstain" }))] });');
+		const before = readFileSync(join(root, "my-flow.ts"), "utf8");
+		const result = run(["add-node", "my-flow", "--node", "dup", "--kind", "custom", "--dir", root]);
+		assert.notEqual(result.status, 0);
+		assert.match(JSON.parse(result.stdout).error, /已经有 id/);
+		assert.equal(readFileSync(join(root, "my-flow.ts"), "utf8"), before);
+	});
+});
+
