@@ -14,7 +14,16 @@
         </div>
       </header>
 
-      <div class="dlg-meta">
+      <!-- shell 芯片按提督的画来：先 PWD、再 shell(bash) 正文，读/写/删那一段等 pi 侧给数据 -->
+      <div v-if="isShell && cwdLabel" class="dlg-field">
+        <div class="dlg-field-head">PWD</div>
+        <div class="dlg-field-body">
+          <code>{{ cwdLabel }}</code>
+          <button data-name="copy-cwd" class="dlg-copy" @click="copyCwd">复制</button>
+        </div>
+      </div>
+
+      <div v-if="!isShell" class="dlg-meta">
         <span>{{ lineLabel }}</span>
         <span v-if="chip.label">{{ chip.label }}</span>
         <span v-if="sizeLabel">{{ sizeLabel }}</span>
@@ -49,7 +58,7 @@
           <pre class="blk-body" v-html="previewHtml"></pre>
         </div>
         <div v-else class="blk">
-          <div class="blk-head">{{ chip.tone === "shell" ? "命令" : "调用" }}</div>
+          <div class="blk-head">{{ chip.tone === "shell" ? "shell(bash)" : "调用" }}</div>
           <pre class="blk-body" @mouseover="onHover" @mouseout="tip = ''"><div v-for="(html, index) in bodyLines" :key="index" :class="{ 'blk-soft': index > 0 }" v-html="html"></div></pre>
         </div>
         <div v-if="body.truncated" class="dlg-note">内容过长，这里只摆了前一段（规模按全文算）</div>
@@ -193,6 +202,17 @@ const bodyLines = computed(() => {
   return out.length > 0 ? out : [""];
 });
 
+const isShell = computed(() => props.chip?.tone === "shell");
+/** shell 芯片的 displayPath 记的就是 cwd（写文件那类才是目标路径） */
+const cwdLabel = computed(() => (isShell.value ? props.chip?.call?.displayPath ?? "" : ""));
+async function copyCwd() {
+  try {
+    await navigator.clipboard.writeText(props.chip?.call?.absPath ?? cwdLabel.value);
+  } catch {
+    // 剪贴板拿不到就算了：不弹错，不装作复制成功
+  }
+}
+
 const lineLabel = computed(() => {
   const call = props.chip?.call ?? {};
   if (typeof call.line !== "number") return "";
@@ -262,4 +282,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 .tooltip { position: fixed; background: #1a1a2e; border: 1px solid #e67e22; padding: 5px 10px; border-radius: 4px; font-size: 12px; color: #e67e22; z-index: 100; pointer-events: none; white-space: pre-line; max-width: 70vw; }
 /* 软换行的续行：缩一级，看着还是同一行 */
 .blk-soft { padding-left: 24px; opacity: 0.92; }
+/* PWD 一行：路径在左，复制在右 */
+.dlg-field { padding: 6px 16px 0; }
+.dlg-field-head { font-size: 11px; color: #8ea2c8; margin-bottom: 3px; }
+.dlg-field-body { display: flex; align-items: center; gap: 10px; }
+.dlg-field-body code { color: #d7dbe0; font-size: 12.5px; }
+.dlg-copy { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 3px; padding: 1px 8px; cursor: pointer; font-size: 11px; }
 </style>
