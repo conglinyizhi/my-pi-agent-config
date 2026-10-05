@@ -11,6 +11,7 @@
 import { appendFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { appendCrashReport } from "./ab-crash-report.ts";
 import { noteRoundTrip } from "./ab-store.ts";
 import { componentInitialized } from "./ab-store.ts";
 import type { AbComponent } from "./ab-slots.ts";
@@ -145,6 +146,21 @@ export function noteGateRoundTrip(options: {
 	};
 	const windowVerdict = classifyWindowOutcome(options.windowResult);
 	const gui = watchRoundTrip({ component: "gui", outcome: windowVerdict.outcome, reason: windowVerdict.reason, ...shared });
+	if (windowVerdict.outcome === "failure") {
+		// 窗口没走完不光记一笔，还要写成给人看的报告：标题一行就能看出该修什么
+		appendCrashReport({
+			at: options.at ?? new Date().toISOString(),
+			component: "gui",
+			stage: "审批往返",
+			summary: windowVerdict.reason,
+			module: "lib/ab-watch.ts（classifyWindowOutcome）",
+			context: {
+				...(gui.rolledBack ? { 回退: "连续失败已达门槛，已回退" } : {}),
+				...(gui.clean !== undefined ? { 干净往返: gui.clean } : {}),
+			},
+			hint: "看 ~/.pi/runtime/gui/notice.txt 与 promote.log；要立刻回开发态就 make ab-detach COMPONENT=gui",
+		});
+	}
 
 	let audit: WatchResult | undefined;
 	if (options.review !== undefined && options.review !== null) {
@@ -159,6 +175,17 @@ export function noteGateRoundTrip(options: {
 			reason: auditVerdict.reason,
 			...shared,
 		});
+		if (auditVerdict.outcome === "failure") {
+			appendCrashReport({
+				at: options.at ?? new Date().toISOString(),
+				component: "audit",
+				stage: "审批往返",
+				summary: auditVerdict.reason,
+				module: "lib/ab-watch.ts（classifyAuditOutcome）",
+				context: { 审核结论: verdict ?? "(没给结论)" },
+				hint: "看 ~/.pi/runtime/audit/notice.txt；要立刻回开发态就 make ab-detach COMPONENT=audit",
+			});
+		}
 	}
 
 	const notices: Array<{ component: AbComponent; text: string }> = [];

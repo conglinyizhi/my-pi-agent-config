@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { componentInitialized, currentSlot, readManifest } from "./ab-store.ts";
 import { slotPath, slotToken, type AbComponent } from "./ab-slots.ts";
+import { appendCrashReport } from "./ab-crash-report.ts";
 import { resolveRuntimeRoot, writeNotice } from "./ab-watch.ts";
 
 export interface SlotLoadOutcome<T> {
@@ -96,12 +97,31 @@ export async function loadSlotExtension<T>(
 		if (!hasFactory(loaded)) {
 			const reason = `槽 ${active} 里那份没有可用的 default 工厂`;
 			writeNotice(runtimeRoot, component, `槽 ${active} 的 ${options.extension} ${reason}，已退回仓库版本`);
+			// 退回仓库是"槽坏了"的信号：写一份报告，别让它只躺在状态目录里
+			appendCrashReport({
+				at: new Date().toISOString(),
+				component,
+				stage: "加载扩展",
+				summary: `${options.extension}：${reason}`,
+				module: slotFile,
+				hint: `重打这个槽（make ab-pack COMPONENT=${component} SLOT=dev），或 make ab-detach COMPONENT=${component}`,
+			});
 			return await fallback(reason);
 		}
 		return { module: loaded, source: "slot", slot: active, token };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		writeNotice(runtimeRoot, component, `槽 ${active} 的 ${options.extension} 加载失败，已退回仓库版本：${message}`);
+		appendCrashReport({
+			at: new Date().toISOString(),
+			component,
+			stage: "加载扩展",
+			summary: `${options.extension} 加载失败：${message}`,
+			module: slotFile,
+			error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { message },
+			context: { 槽: active, 扩展: options.extension },
+			hint: `重打这个槽（make ab-pack COMPONENT=${component} SLOT=dev），或 make ab-detach COMPONENT=${component}`,
+		});
 		return await fallback(`槽 ${active} 里那份加载失败：${message}`);
 	}
 }
