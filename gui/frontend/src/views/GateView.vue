@@ -10,6 +10,7 @@
       :capability="capability"
       :command="cmd"
       :highlights="highlights"
+      :issue-lines="issueLines"
       :env-notes="envNotes"
       :var-renders="varRenders"
       :edit-calls="editCalls"
@@ -163,6 +164,15 @@ const title = computed(() =>
 /** 同文件改动合并出来的净变化（显示层推演，pi 侧算好） */
 // 「同文件改动合并」按提督说的删了：日常用不到，占地方
 
+/** 出问题的行号：静态扫描里"看不清"的条目以 `行:列` 开头，取出来给代码区行号栏标黄 */
+const issueLines = computed(() => {
+	const lines = new Set();
+	for (const item of scriptEffects.value?.opaque ?? []) {
+		const match = /^\s*(\d+):/.exec(String(item));
+		if (match) lines.add(Number(match[1]));
+	}
+	return [...lines];
+});
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写",

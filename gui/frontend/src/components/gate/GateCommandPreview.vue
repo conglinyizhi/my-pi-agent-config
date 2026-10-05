@@ -16,7 +16,7 @@
 
     <!-- 这一行不能折：<pre> 里元素之间的空白会被当正文渲染，所以标签必须贴着写 -->
     <div class="cmd-wrap">
-      <pre ref="cmdBox" class="cmd-area" @mouseover="onHover" @mouseout="onLeave"><template v-for="(segment, index) in segments" :key="index"><span v-if="segment.kind === 'text'" v-html="textHtml(segment)"></span><button v-else class="fold-chip" :class="chipClass(segment.chip)" :data-name="'fold-chip-' + segment.chip.index" :title="chipTitle(segment.chip)" @click="openDetail(segment.chip)">{{ segment.chip.warned ? "⚠ " : "" }}{{ segment.chip.label }}</button></template></pre>
+      <pre ref="cmdBox" class="cmd-area" @mouseover="onHover" @mouseout="onLeave"><div v-for="line in displayLines" :key="line.no" class="code-line"><span class="code-no" :class="{ 'code-no-bad': issueLines.includes(line.no) }">{{ line.no }}</span><span class="code-text"><template v-for="(part, index) in line.parts" :key="index"><span v-if="part.kind === 'text'" v-html="partHtml(part)"></span><button v-else class="fold-chip" :class="chipClass(part.chip)" :data-name="'fold-chip-' + part.chip.index" :title="chipTitle(part.chip)" @click="openDetail(part.chip)">{{ part.chip.warned ? "⚠ " : "" }}{{ part.chip.label }}</button></template></span></div></pre>
     </div>
     <div v-if="chips.length" class="fold-legend">
       灰 = 改文件，橙 = 可执行 shell（$$SHELL$$）；点芯片看具体改动
@@ -36,6 +36,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { splitLines } from "../../domain/gate/code-lines.js";
 import { mergeEnvHighlights, renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { envNoteHighlights } from "../../domain/gate/env-notes.js";
 import { mergeVarHighlights, varRenderHighlights } from "../../domain/gate/var-renders.js";
@@ -53,6 +54,8 @@ const props = defineProps({
   capability: { type: String, default: "" },
   command: { type: String, default: "" },
   highlights: { type: Array, default: () => [] },
+  /** 有问题的行号：行号栏里标黄（静态扫描报的那些行） */
+  issueLines: { type: Array, default: () => [] },
   /** pi 侧算好的赋值解析结果：{name, raw, start, end, value?|reason?} */
   envNotes: { type: Array, default: () => [] },
   /** pi 侧算好的变量渲染值：{name, value?, source, target, kind, known, reason?} */
@@ -100,10 +103,12 @@ async function refreshTokens() {
 }
 watch(() => [props.command, props.colorLang], refreshTokens, { immediate: true });
 
-function textHtml(segment) {
-  if (tokens.value.length === 0) return renderHighlightedCommand(segment.text, segment.marks);
-  return composeCodeHtml(segment.text, clipTokens(tokens.value, segment.start, segment.end), segment.marks);
+function partHtml(part) {
+  if (part.tokens.length === 0) return renderHighlightedCommand(part.text, part.marks);
+  return composeCodeHtml(part.text, part.tokens, part.marks);
 }
+/** 显示行：行号栏与静态扫描里的"第 N 行"指的是同一份文本 */
+const displayLines = computed(() => splitLines(segments.value, tokens.value));
 function chipClass(chip) {
   return {
     "chip-file": chip.tone !== "shell",
@@ -192,7 +197,11 @@ watch(() => props.highlights, scroll, { deep: true });
    根是 display:contents，所以这条直接参与 .app 的 flex 布局。 */
 .cmd-wrap { flex: 1 1 auto; min-height: 42vh; position: relative; display: flex; }
 .fold-legend { padding: 4px 16px 8px; font-size: 11px; color: #777; }
-.cmd-area { flex: 1; margin: 0; padding: 16px; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
+.code-line { display: flex; gap: 10px; }
+.code-no { flex: 0 0 auto; width: 2.2em; text-align: right; color: #414a5c; user-select: none; }
+.code-no-bad { color: #e6a23c; font-weight: 600; }
+.code-text { flex: 1 1 auto; min-width: 0; }
+.cmd-area { flex: 1; margin: 0; padding: 12px; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
 /* 芯片：灰=改文件，橙=可执行 shell。字号跟着正文走，别在 <pre> 里跳出来 */
 .fold-chip { font-family: inherit; font-size: inherit; line-height: inherit; padding: 0 6px; margin: 0 1px; border-radius: 3px; border: 1px solid; cursor: pointer; vertical-align: baseline; }
 .fold-chip.chip-file { color: #b9c0d0; background: #2a2a3d55; border-color: #555a6b; }
