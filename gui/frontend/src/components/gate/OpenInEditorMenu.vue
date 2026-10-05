@@ -2,7 +2,12 @@
   <!-- "在编辑器打开"：点开先弹一个小菜单（本机有哪些编辑器、各自能干什么） -->
   <span class="editor-menu">
     <button class="editor-btn" :disabled="items.length === 0" :title="hint" data-name="editor-menu" @click="toggle">
-      🧷 {{ label }}<span class="caret">▾</span>
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M6.5 2.5H4A1.5 1.5 0 0 0 2.5 4v8A1.5 1.5 0 0 0 4 13.5h8A1.5 1.5 0 0 0 13.5 12V9.5" />
+        <path d="M10 2.5h3.5V6" />
+        <path d="M13.5 2.5 7.5 8.5" />
+      </svg>
+      {{ label }}<span class="caret">▾</span>
     </button>
     <div v-if="open" class="editor-pop" @mouseleave="open = false">
       <button
@@ -72,6 +77,8 @@ watch(() => props.request, () => { open.value = false; });
 .editor-btn:hover:not(:disabled) { color: #c0caf5; border-color: #4ec9b055; }
 .editor-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .caret { margin-left: 4px; color: #666; }
+/* 新标签页打开的图标：方框带一个出框箭头（内联 SVG，不吃字体） */
+.icon { width: 13px; height: 13px; margin-right: 6px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 .editor-pop { position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 60; display: flex; flex-direction: column; min-width: 220px; background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; box-shadow: 0 10px 30px #000a; overflow: hidden; }
 .editor-item { padding: 6px 12px; text-align: left; font-size: 12px; color: #ccc; background: transparent; border: 0; cursor: pointer; }
 .editor-item:hover { background: #22223f; color: #fff; }
