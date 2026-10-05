@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { editorItems } from "./editor-items.js";
+import { editorItems, emptyMenuHint } from "./editor-items.js";
 
 const code = { id: "code", label: "VSCode", canOpen: true, canDiff: true };
 const kate = { id: "kate", label: "Kate", canOpen: true, canDiff: false };
@@ -45,3 +45,24 @@ describe("菜单条目", () => {
     assert.deepEqual(editorItems([broken], { path: "/x", left: "a", right: "b" }), []);
   });
 });
+
+describe("空菜单的提示", () => {
+	it("没有可打开的目标时说目标，不甩锅给编辑器", () => {
+		const hint = emptyMenuHint({}, [{ id: "code", label: "VSCode", canOpen: true, canDiff: true }]);
+		assert.match(hint, /没有可打开的目标/);
+	});
+
+	it("目标在但一台编辑器都没有，才说编辑器", () => {
+		assert.match(emptyMenuHint({ path: "/tmp/a.js" }, []), /没找到支持的编辑器/);
+	});
+
+	it("编辑器和目标都在，却一条都拼不出来，说明是能力不够", () => {
+		const hint = emptyMenuHint({ left: "a", right: "b" }, [{ id: "kate", label: "Kate", canOpen: true, canDiff: false }]);
+		assert.match(hint, /干不了这件事/);
+	});
+
+	it("补丁也算目标", () => {
+		assert.match(emptyMenuHint({ patchText: "@@" }, []), /没找到支持的编辑器/);
+	});
+});
+

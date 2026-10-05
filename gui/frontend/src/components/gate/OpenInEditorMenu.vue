@@ -25,7 +25,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { usePlatform } from "../../platform/index.js";
-import { editorItems } from "../../domain/gate/editor-items.js";
+import { editorItems, emptyMenuHint } from "../../domain/gate/editor-items.js";
 
 const props = defineProps({
   label: { type: String, default: "在编辑器打开" },
@@ -40,7 +40,8 @@ const note = ref("");
 const noteBad = ref(false);
 
 const items = computed(() => editorItems(editors.value, props.request));
-const hint = computed(() => (items.value.length === 0 ? "本机没找到能处理这个的编辑器" : "选一个编辑器"));
+// 没条目时把"为什么"说准：没目标 / 没编辑器 / 编辑器干不了这件事，是三回事
+const hint = computed(() => (items.value.length === 0 ? emptyMenuHint(props.request, editors.value) : "选一个编辑器"));
 
 async function load() {
   try {

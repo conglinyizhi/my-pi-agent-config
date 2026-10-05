@@ -28,7 +28,8 @@
       >
         <div class="merged-title">
           <code class="merged-path">{{ entry.path }}</code>
-          <span class="merged-badge">{{ entry.ops }} 处改动</span>
+          <span v-if="entry.ops > 0" class="merged-badge">{{ entry.ops }} 处改动</span>
+          <span v-else class="merged-badge merged-badge-none">{{ statusLabel(entry.status) }}</span>
           <span v-if="entry.added || entry.removed" class="merged-count">+{{ entry.added }} / -{{ entry.removed }}</span>
           <span v-if="entry.baseAssumedEmpty" class="merged-note">改前按空文件算</span>
           <span v-if="entry.truncated" class="merged-note">只摆了前一段</span>
@@ -185,6 +186,12 @@ const title = computed(() =>
 );
 /** 同文件改动合并出来的净变化（显示层推演，pi 侧算好） */
 const mergedRows = computed(() => scriptEffects.value?.mergedChanges ?? []);
+
+// 推演不出改动时（ops = 0）别硬说"N 处改动"：直接摆状态词，原因在下面那行
+const MERGED_STATUS_LABEL = { merged: "已合并", "chain-broken": "推演中断", "unknown-base": "基准不明" };
+function statusLabel(status) {
+  return MERGED_STATUS_LABEL[status] ?? status ?? "";
+}
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
 const effectsDigest = computed(() => digestLine(scriptEffects.value));
 const permLabel = computed(() =>
@@ -330,6 +337,7 @@ onMounted(async () => {
 .merged-path { color: #c0caf5; }
 .merged-item.merged-warn .merged-path { color: #e6a23c; }
 .merged-badge { color: #7aa2f7; }
+.merged-badge-none { color: #e6a23c; }
 .merged-count { color: #888; font-family: monospace; }
 .merged-note { color: #e6a23c; font-size: 11px; }
 .merged-reason { font-size: 11px; color: #e6a23c; margin: 2px 0 4px; }

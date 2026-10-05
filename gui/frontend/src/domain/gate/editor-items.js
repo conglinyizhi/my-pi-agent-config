@@ -37,3 +37,23 @@ export function editorItems(editors, request = {}) {
   }
   return items;
 }
+
+/**
+ * 菜单里一条都没有时，把"为什么"说准。
+ *
+ * 原来一律说"本机没找到编辑器"，但真实原因常常是另一回事：请求里压根没有可打开的目标
+ * （例如 pi 侧还没 reload、合并面板拿不到绝对路径），或者这台编辑器干不了这件事
+ * （kate 没有命令行差异模式）。指错方向比不说话更费时间。
+ */
+export function emptyMenuHint(request = {}, editors = []) {
+	const hasTarget =
+		(typeof request.path === "string" && request.path !== "") ||
+		(typeof request.patchText === "string" && request.patchText !== "") ||
+		(typeof request.left === "string" && typeof request.right === "string");
+	if (!hasTarget) return "这一项没有可打开的目标（路径、补丁、新旧文都没有）";
+	if (!Array.isArray(editors) || editors.length === 0) {
+		return "本机没找到支持的编辑器（code / codium / zed / kate / meld / kompare 都探不到）";
+	}
+	return "这台编辑器干不了这件事（比如 kate 没有命令行差异模式）";
+}
+
