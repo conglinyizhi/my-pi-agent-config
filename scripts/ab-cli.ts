@@ -57,7 +57,23 @@ if (command === "status") {
 } else if (command === "update") {
 	const ref = arg("ref") ?? "HEAD";
 	// 打包沿用现成那条（桥接期写进 dev 目录）
-	execFileSync(join(import.meta.dirname, "..", "bin", "ab-pack.sh"), [component!, "--ref", ref, "--slot", "dev", "--runtime-root", runtimeRoot], { stdio: "inherit" });
+	// 打包器的入口是 scripts/ab-pack.ts（那个 bin/ab-pack.sh 外壳随四槽模型一起删了）。
+	// execFileSync 的第一个参数是二进制，不是命令行——别把整条命令塞进去（踩过）
+	execFileSync(
+		process.execPath,
+		[
+			"--experimental-strip-types",
+			join(import.meta.dirname, "ab-pack.ts"),
+			component!,
+			"--ref",
+			ref,
+			"--dir",
+			"dev",
+			"--runtime-root",
+			runtimeRoot,
+		],
+		{ stdio: "inherit" },
+	);
 	const manifest = JSON.parse(readFileSync(join(root, "dev", "manifest.json"), "utf8"));
 	const tag = String(manifest.sha ?? "").slice(0, 7);
 	if (!tag) throw new Error("manifest 里没有 sha，构建可能没成功");
