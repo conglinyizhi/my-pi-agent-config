@@ -112,5 +112,15 @@ test: test-ab test-ptc test-sandbox test-gui test-lib ## 全部测试（按组�
 gui-canary: ## GUI 启动自检（会弹一个闸门窗，判定后自动关掉）
 	scripts/gui-canary.sh
 
+# ── 新模型：一条产品线一个 tag（四槽那套在退场，见 docs/ab-update-firstaid.md）──
+ab-tag: require-component ## 看这条产品线挂在哪个 tag（新模型）
+	bin/ab.sh status --component $(COMPONENT) --runtime-root $(RT)
+
+ab-update: require-component ## 打一版：FORCE=1 直接生效，否则挂成候选等 5 次干净往返
+	@bin/ab.sh update --component $(COMPONENT) --ref $(REF) --runtime-root $(RT) $(if $(FORCE),--force,)
+
+ab-clean: require-component ## 记一次干净授权往返；攒满 5 次自动切到候选
+	@bin/ab.sh clean --component $(COMPONENT) --runtime-root $(RT)
+
 smoke: ## 壳的三条路径真验（会起真 pi、会花一次极小的模型调用）
 	scripts/ab-smoke.sh

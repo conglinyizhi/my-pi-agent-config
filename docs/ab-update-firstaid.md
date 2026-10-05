@@ -8,11 +8,22 @@
 ## 现在在跑哪一版
 
 ```sh
-make ab-status
+make ab-tag COMPONENT=gui      # 新模型：这条产品线挂在哪个 tag
+make ab-status                 # 旧模型：四个槽与 current（正在退场）
 ```
 
-打印两个组件（gui / audit）、四个槽（stable / previous / dev / head）、current 指向谁、
-连续干净与连续失败的计数、以及"够不够晋升"的判定。
+**新模型：一条产品线一个 tag。** 状态就五样——`tag`（生效的）/ `prev-tag`（回退目标）/
+`candidate`（打好待验）/ `dir`（产物目录）/ `count`（干净往返计数），外加一份
+`promote.log` 追加流水。更新只有两条路：
+
+```sh
+make ab-update COMPONENT=gui FORCE=1        # 强制：打完直接生效
+make ab-update COMPONENT=gui                # 打完挂候选，攒满 5 次干净授权自动切
+make ab-clean  COMPONENT=gui                # 每次干净授权往返记一笔（看门狗会调）
+```
+
+四槽（stable / previous / dev / head）那套与 `current` 软链正在被替换掉：
+它才是"到底在跑哪一份、计数怎么总是 0"说不清的根源。
 
 ## 出事了，先止血
 
