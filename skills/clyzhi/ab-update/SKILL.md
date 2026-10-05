@@ -7,6 +7,23 @@ description: A/B 更新的操作手册：切换槽、回退、晋升、看门狗
 
 把「跑哪一版」和「写哪一版」分开：仓库是你写代码的地方，槽是跑的地方。
 
+## 先说方向：正在从「四类槽」换成「一条产品线一个 tag」
+
+新模型的命令（第 2 批已落地，旧的四槽还在并行、第 3 批删）：
+
+```sh
+make ab-tag COMPONENT=gui               # 这条产品线挂在哪个 tag
+make ab-update COMPONENT=gui FORCE=1    # 强制：打完直接生效
+make ab-update COMPONENT=gui            # 打完挂候选，攒满 5 次干净授权自动切
+make ab-clean COMPONENT=gui             # 每次干净授权往返记一笔（看门狗会调）
+```
+
+状态就五样：`tag` / `prev-tag` / `candidate` / `dir` / `count`，外加 `promote.log` 流水。
+一条产品线一个 tag——四槽（stable/previous/dev/head）+ `current` 软链是
+「到底在跑哪一份、计数为什么总是 0」说不清的根源，正在退场。
+
+下面这些是**旧模型的命令，第 3 批之后会消失**，现在还能用：
+
 ## 两个组件，四类槽
 
 - **组件**：`audit`（审核侧：pi 的扩展与 lib）与 `gui`（窗口产物）。两者坏起来一个静默一个看得见，
