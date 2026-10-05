@@ -196,3 +196,18 @@ describe("看门狗经 CLI 也生效", () => {
 	});
 });
 
+
+describe("脏产物不许晋升", () => {
+	it("dev 的 manifest 记着 dirty 时拒绝晋升，--force 才放行", () => {
+		const root = setup();
+		writeFileSync(join(root, "gui", "dev", "manifest.json"), JSON.stringify({ ref: "HEAD", dirty: true }), "utf8");
+		const refused = run(["promote", "gui", "--runtime-root", root]);
+		assert.equal(refused.status, 0);
+		assert.match(refused.stdout, /脏工作区/);
+		assert.equal(manifestSha(root, "gui", "stable"), "s1", "拒绝时槽位不该动");
+		const forced = run(["promote", "gui", "--force", "--runtime-root", root]);
+		assert.equal(forced.status, 0, forced.stderr);
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /手工强推/);
+	});
+});
+

@@ -34,10 +34,12 @@ import {
 	noteRoundTrip,
 	nowIso,
 	promote,
+	readManifest,
 	rollback,
 	statusOf,
 	tailLog,
 } from "../lib/ab-store.ts";
+import { canPromote } from "../lib/ab-pack.ts";
 
 interface Options {
 	runtimeRoot: string;
@@ -141,6 +143,12 @@ export function runAbSlot(argv: string[]): number {
 		}
 		case "promote": {
 			const component = requireComponent(positional[0]);
+			// 脏产物不许晋升：它复现不出来，推上去之后"回退到这个版本"没有意义
+			const allowed = canPromote(readManifest(runtimeRoot, component, "dev"), { force: options.force });
+			if (!allowed.ok) {
+				print({ ok: false, reason: allowed.reason }, options.json, `不晋升：${allowed.reason}`);
+				return 0;
+			}
 			const status = statusOf(runtimeRoot, component, { threshold: options.threshold, autoPromote: options.autoPromote });
 			if (status.decision.action !== "promote" && !options.force) {
 				print(
