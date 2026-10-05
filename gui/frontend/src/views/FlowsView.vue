@@ -21,9 +21,15 @@
 		</aside>
 
 		<main class="canvas">
+			<div class="canvas-tools">
+				<button data-name="toggle-edit" @click="toggleMode">{{ mode === "graph" ? "编辑源码" : "回到图" }}</button>
+				<span v-if="dirty" class="dirty">未保存</span>
+				<span v-if="saveMsg" class="save-msg" :class="{ bad: saveBad }">{{ saveMsg }}</span>
+			</div>
 			<VueFlow
-				:sng-nodes="nodes"
-				:sng-edges="edges"
+				v-if="mode === 'graph'"
+				v-model:nodes="nodes"
+				v-model:edges="edges"
 				:fit-view-on-init="true"
 				:min-zoom="0.3"
 				:max-zoom="1.6"
@@ -44,7 +50,17 @@
 				<Background :gap="18" pattern-color="#2a2f3a" />
 				<Controls />
 			</VueFlow>
-			<div v-if="!graph" class="canvas-empty">
+			<div v-else class="editor">
+				<textarea v-model="draft" spellcheck="false" data-name="flow-source" @input="dirty = true"></textarea>
+				<div class="editor-bar">
+					<button data-name="save-flow" :disabled="!dirty || saving || !detail?.source" @click="save">
+						{{ saving ? "保存中…" : "保存" }}
+					</button>
+					<button :disabled="!dirty" @click="revert">还原</button>
+					<span class="hint">保存先过越界检查；改完要 /reload 才生效</span>
+				</div>
+			</div>
+			<div v-if="!graph && mode === 'graph'" class="canvas-empty">
 				<p>{{ selectedProblem || "选中左边一条流程看它的图" }}</p>
 			</div>
 		</main>
@@ -103,6 +119,46 @@ const selectedSource = computed(() => detail.value?.source ?? "");
 const activeLabel = computed(() => (flows.value.find((f) => f.id === selectedId.value)?.active === "authored" ? "你写的那条" : "内置那条"));
 const selectedProblem = computed(() => (dir.value === "" ? "" : "这条流程没有图：先看右边的问题"));
 
+const mode = ref("graph");
+const draft = ref("");
+const dirty = ref(false);
+const saving = ref(false);
+const saveMsg = ref("");
+const saveBad = ref(false);
+
+function toggleMode() {
+	mode.value = mode.value === "graph" ? "edit" : "graph";
+	if (mode.value === "edit" && !dirty.value) draft.value = detail.value?.sourceText ?? "";
+}
+
+function revert() {
+	draft.value = detail.value?.sourceText ?? "";
+	dirty.value = false;
+	saveMsg.value = "";
+}
+
+async function save() {
+	if (!selectedId.value) return;
+	saving.value = true;
+	saveMsg.value = "";
+	try {
+		const result = await platform.flows.save({ id: selectedId.value, content: draft.value });
+		if (!result?.ok) {
+			saveBad.value = true;
+			saveMsg.value = result?.error ?? "保存失败";
+			return;
+		}
+		saveBad.value = (result.problems?.length ?? 0) > 0;
+		saveMsg.value = saveBad.value ? "存下来了，但校验没通过（看右边）" : "已保存";
+		dirty.value = false;
+		const payload = await platform.flows.list();
+		flows.value = payload?.flows ?? flows.value;
+		await select(selectedId.value);
+	} finally {
+		saving.value = false;
+	}
+}
+
 function toFlowNodes(laid) {
 	return laid.nodes.map((node) => ({
 		id: node.id,
@@ -132,6 +188,8 @@ function toFlowEdges(laid) {
 
 async function select(id) {
 	selectedId.value = id;
+	dirty.value = false;
+	saveMsg.value = "";
 	const payload = await platform.flows.get(id);
 	if (!payload?.ok) {
 		detail.value = { problems: [payload?.error ?? "取不到这条流程"] };
@@ -140,6 +198,7 @@ async function select(id) {
 		return;
 	}
 	detail.value = payload.flow;
+	draft.value = payload.flow.sourceText ?? "";
 	const laid = payload.flow.graph ? layoutGraph(payload.flow.graph) : null;
 	nodes.value = laid ? toFlowNodes(laid) : [];
 	edges.value = laid ? toFlowEdges(laid) : [];
@@ -169,7 +228,19 @@ onMounted(async () => {
 .list .badge.authored { background: #23402f; color: #7bd88f; }
 .list .warn { color: #e6a23c; font-size: 11px; }
 .list .empty { color: #69707d; padding: 12px; }
-.canvas { flex: 1; position: relative; }
+.canvas { flex: 1; position: relative; display: flex; flex-direction: column; }
+.canvas-tools { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #262b35; }
+.canvas-tools button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.canvas-tools button:disabled { opacity: 0.45; cursor: default; }
+.dirty { color: #e6a23c; font-size: 12px; }
+.save-msg { font-size: 12px; color: #7bd88f; }
+.save-msg.bad { color: #e6a23c; }
+.editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.editor textarea { flex: 1; min-height: 0; resize: none; border: 0; outline: none; background: #12151c; color: #d7dbe0; padding: 12px; font: 12px/1.6 ui-monospace, monospace; tab-size: 2; }
+.editor-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid #262b35; }
+.editor-bar button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.editor-bar button:disabled { opacity: 0.45; cursor: default; }
+.editor-bar .hint { color: #69707d; font-size: 12px; }
 .canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #69707d; pointer-events: none; }
 .detail { width: 300px; border-left: 1px solid #262b35; padding: 12px; overflow: auto; }
 .detail h3 { margin: 0 0 10px; }
