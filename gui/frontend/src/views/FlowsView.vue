@@ -100,13 +100,14 @@
 				<pre v-for="(text, index) in problems" :key="index">{{ text }}</pre>
 			</div>
 			<p v-else class="ok">校验通过</p>
-			<p class="tip">改完流程要 /reload 才生效；图只读，编辑下一步做。</p>
+			<p class="tip">改完流程要 /reload 才生效。点「编辑源码」改文本，点一条边换目标。</p>
 		</aside>
 	</div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import "@vue-flow/controls/dist/style.css";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import { Background } from "@vue-flow/background";
@@ -298,6 +299,10 @@ onMounted(async () => {
 .list .empty { color: #69707d; padding: 12px; }
 .canvas { flex: 1; position: relative; display: flex; flex-direction: column; }
 .canvas-tools { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #262b35; }
+/* Vue Flow 的缩放控件默认是浅色，压在深色画布上会剩一块白 */
+.canvas :deep(.vue-flow__controls-button) { background: #232c3d; border-bottom: 1px solid #39414f; fill: #d7dbe0; }
+.canvas :deep(.vue-flow__controls-button:hover) { background: #2d3646; }
+.canvas :deep(.vue-flow__controls) { box-shadow: 0 2px 8px #0006; }
 .canvas-tools button { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .canvas-tools button:disabled { opacity: 0.45; cursor: default; }
 .dirty { color: #e6a23c; font-size: 12px; }
