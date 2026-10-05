@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -65,3 +65,15 @@ describe("构建 audit 槽", () => {
 		assert.match(result.stderr, /用法/);
 	});
 });
+
+describe("槽要能拿到宿主的依赖", () => {
+	it("槽里带上 node_modules 软链（不然槽内那份 import 不到宿主 pi 的包）", () => {
+		const root = tmpRoot();
+		const result = run(["audit", "--slot", "dev", "--runtime-root", root]);
+		assert.equal(result.status, 0, result.stderr);
+		const link = join(root, "audit", "dev", "node_modules");
+		assert.equal(existsSync(link), true, "槽里该有 node_modules");
+		assert.equal(lstatSync(link).isSymbolicLink(), true, "软链而不是复制");
+	});
+});
+

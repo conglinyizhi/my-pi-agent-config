@@ -14,7 +14,7 @@
 //     那一套（临时 worktree 加 pnpm install）等真需要回滚到老 GUI 时再做，现在不假装支持
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { formatManifest, type SlotManifest, componentPath, slotPath, type AbComponent, type AbSlot } from "../lib/ab-slots.ts";
@@ -131,6 +131,16 @@ function main(argv: string[]): number {
 		extract(repo, options.ref, archivePathsOf(component as AbComponent), target);
 		// 槽里的入口不能是壳：摊平成对 impl 的重导出，否则壳加载壳会无限递归
 		const flattened = component === "audit" ? flattenShellsInSlot(target) : [];
+		// 槽里的代码要 import 宿主 pi 的包（@earendil-works/*）与扩展自己的依赖：
+		// 把仓库的 node_modules 软链进槽，否则槽里那份根本起不来（实测过：
+		// Cannot find package '@earendil-works/pi-coding-agent'）。
+		// 软链而不是复制：两边本来就该用同一套已装依赖，复制既慢又容易走偏。
+		const repoModules = join(repo, "node_modules");
+		if (existsSync(repoModules)) {
+			const link = join(target, "node_modules");
+			rmSync(link, { recursive: true, force: true });
+			symlinkSync(repoModules, link);
+		}
 		if (component === "gui") {
 			const dist = join(repo, "gui", "frontend", "dist");
 			if (existsSync(dist)) cpSync(dist, join(target, "gui", "frontend", "dist"), { recursive: true });
