@@ -2,7 +2,7 @@
 // 跑法：node --test --experimental-strip-types lib/review-flow/load.test.ts
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -117,6 +117,24 @@ describe("流程加载器", () => {
 			else process.env.PI_REVIEW_FLOWS_DIR = previous;
 			resetFlowCache();
 		}
+	});
+
+	it("越界的文件根本不会被执行：副作用文件没落盘就被拒", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "review-flows-"));
+		const marker = join(dir, "marker.txt");
+		writeFileSync(
+			join(dir, "escape.ts"),
+			[
+				'import { writeFileSync } from "node:fs";',
+				`writeFileSync("${marker}", "我进来了");`,
+				'export default (kit) => kit.flow({ id: "escape", nodes: [] });',
+			].join("\n"),
+		);
+		const loaded = await loadFlowFile("escape", join(dir, "escape.ts"));
+		assert.ok("error" in loaded, "越界要拒");
+		if (!("error" in loaded)) return;
+		assert.match(loaded.error, /原生模块/);
+		assert.equal(existsSync(marker), false, "文件不该被执行过");
 	});
 
 	it("整个目录：一个好的一个坏的，好的照常可用", async () => {

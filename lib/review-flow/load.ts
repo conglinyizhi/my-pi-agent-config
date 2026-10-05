@@ -8,12 +8,13 @@
 //
 // 加载失败一律不抛给审核路径：写一条崩溃报告 + 退回内置那条，审核面绝不因为作者的脚本写坏而失守。
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { appendCrashReport } from "../ab-crash-report.ts";
 import { createKit } from "./kit.ts";
+import { checkFlowSource, formatViolations } from "./source-guard.ts";
 import type { NodeImpl } from "./runner.ts";
 import { describeProblems, validateFlow } from "./validate.ts";
 import type { Flow } from "./types.ts";
@@ -59,6 +60,11 @@ export function normalizeExport(exported: unknown): { flow: Flow; nodes: Record<
 /** 加载一个流程文件；任何问题都返回 error，不抛 */
 export async function loadFlowFile(id: string, path: string): Promise<LoadedFlow | { error: string; id: string; source: string }> {
 	try {
+		// 先看源码，再决定要不要执行它：越界的文件根本不会被 import 进来
+		const source = readFileSync(path, "utf8");
+		const violations = await checkFlowSource(source, path);
+		if (violations.length > 0) return { error: formatViolations(violations, path), id, source: path };
+
 		// Node 自带类型擦除（v26 的 process.features.typescript === "strip"），
 		// 所以 .ts 直接 import 就行，不必借 pi 包里那份 jiti。
 		// 带令牌是防缓存：同一个路径改完再加载要拿到新的那份。
