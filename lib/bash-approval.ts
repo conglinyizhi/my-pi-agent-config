@@ -180,6 +180,16 @@ export interface BashPreReviewResult {
  * 自己选择自动放行还是走 capability 请求。判据与 approveBashCommand 里的那一处
  * 是同一个表达式，避免两边规则各写一份、日后漂移。
  */
+/**
+ * 自动放行的唯一判据：判 safe 且档位是 auto。
+ *
+ * 抽出来是为了不漂：旧链（preReviewBashCommand）与审核流 SDK 的自动放行节点
+ * 调的是同一个函数，谁也别再写一遍这个表达式。
+ */
+export function autoApproveDecision(review: ReviewResult | undefined, config: LlmReviewConfig): boolean {
+	return review?.verdict === "safe" && config.mode === "auto";
+}
+
 export async function preReviewBashCommand(options: BashApprovalOptions): Promise<BashPreReviewResult> {
 	const { pi, ctx, command, verdict, signal } = options;
 	const deps = options.deps ?? {};
@@ -204,7 +214,7 @@ export async function preReviewBashCommand(options: BashApprovalOptions): Promis
 		}
 	}
 
-	return { config, review, autoApproved: review?.verdict === "safe" && config.mode === "auto" };
+	return { config, review, autoApproved: autoApproveDecision(review, config) };
 }
 
 export async function approveBashCommand(options: BashApprovalOptions): Promise<BashApprovalResult> {

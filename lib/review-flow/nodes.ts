@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TokenRule } from "../sandbox-check.ts";
 import type { SandboxCheckResult } from "../sandbox-check.ts";
-import { humanConfirm, type ApprovalRequestContext, type BashApprovalDependencies } from "../bash-approval.ts";
+import { autoApproveDecision, humanConfirm, type ApprovalRequestContext, type BashApprovalDependencies } from "../bash-approval.ts";
 import {
 	createReviewCache,
 	loadLlmReviewConfig,
@@ -166,7 +166,8 @@ export function makeAutoApproveNode(deps: ReviewNodeDeps = {}): NodeImpl {
 	return async (ctx) => {
 		const merged = ctx.upstream.merge as ReviewResult | undefined;
 		const cfg = (deps.loadConfig ?? loadLlmReviewConfig)();
-		const autoApproved = merged?.verdict === "safe" && cfg.mode === "auto";
+		// 判据与旧链同一个函数：不各写一份，就不会漂
+		const autoApproved = autoApproveDecision(merged, cfg);
 		if (autoApproved) {
 			return { status: "ok", output: merged, terminal: "allow", verdict: "allow", reason: "预审判安全且档位是自动" };
 		}
