@@ -330,14 +330,14 @@ onMounted(async () => {
 }
 .app.has-review {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
   grid-auto-rows: min-content;
   grid-auto-flow: row dense;
   align-content: start;
 }
-/* 一块一张卡：同底色、同描边、同圆角。
-   默认整宽（要横向空间的块自然横跨整窗，这就是"打通"），
-   只有判定摘要与大模型卡各占左右一格，System One 卡挂到下面的右格。 */
+/* 块默认整宽；下面按设计图给五块钉死位置：
+   第 1 行 header 整宽，第 2-3 行左=代码区、右=LLM 意见 / System One 决策，
+   第 4 行左=图例、右=判定摘要，之后静态扫描结果与底栏整宽。 */
 .app.has-review > *,
 .app :deep(.gate-fragment > *) {
   grid-column: 1 / -1;
@@ -346,34 +346,31 @@ onMounted(async () => {
   border-radius: 6px;
   padding: 6px 10px;
 }
-.app.has-review :deep(.decision-summary) { grid-column: 1; grid-row: 1; align-self: start; padding: 6px 10px 6px 8px; border-left-width: 3px; }
+.app.has-review :deep(.decision-summary) { grid-area: 4 / 2 / 5 / 3; align-self: start; padding: 6px 10px 6px 8px; border-left-width: 3px; }
 .app :deep(.decision-summary.decision-deny) { border-left-color: #ff6b6b; }
 .app :deep(.decision-summary.decision-warn) { border-left-color: #e6a23c; }
 .app :deep(.decision-summary.decision-allow) { border-left-color: #4ec9b0; }
-/* 指令卡：标题 + 代码井 + 图例拼成一张（接缝处不重复描边），不钉行号 */
+/* header 整宽：标题 + 上一个/下一个 */
 .app.has-review :deep(.top-bar) {
-  border-bottom: 0;
-  border-radius: 6px 6px 0 0;
+  grid-area: 1 / 1 / 2 / -1;
   padding: 6px 10px;
 }
+/* 代码区：占左列第 2-3 行，全窗唯一允许出滚动条的地方 */
 .app.has-review :deep(.cmd-wrap) {
+  grid-area: 2 / 1 / 4 / 2;
   background: #0d1014;
-  border-left: 1px solid #262b35;
-  border-right: 1px solid #262b35;
-  border-radius: 0;
   padding: 0;
-  min-height: 120px;
-  max-height: 23vh;
+  min-height: 140px;
+  overflow: auto;
 }
 .app.has-review :deep(.fold-legend) {
-  border-top: 0;
-  border-radius: 0 0 6px 6px;
-  padding: 4px 10px 6px;
+  grid-area: 4 / 1 / 5 / 2;
+  padding: 4px 10px;
 }
-/* 右栏两张卡：上=大模型，中=System One。
-   不钉行号——大模型卡自动落到第 1 行右格；System One 卡因为整宽的指令卡占住了
-   第 2 行起的右格，自然被排到指令卡下方，于是正好是"右中"。 */
-.app.has-review :deep(.model-card) { grid-column: 2; align-self: start; max-height: 22vh; overflow: auto; }
+/* 右栏两块：上=LLM 意见，中=System One 决策。按内容走，不出滚动条 */
+.app.has-review :deep(.model-card) { align-self: stretch; overflow: visible; }
+.app.has-review :deep(.model-card[data-model="chat"]) { grid-area: 2 / 2 / 3 / 3; }
+.app.has-review :deep(.model-card[data-model="system1"]) { grid-area: 3 / 2 / 4 / 3; }
 .app.has-review :deep(.model-head) { font-size: 11px; color: #8ea2c8; display: flex; align-items: center; gap: 6px; }
 /* 底栏：整宽，钉在下沿 */
 .app :deep(.actions),
@@ -384,10 +381,14 @@ onMounted(async () => {
   background: #151922;
   border-color: #2b3140;
 }
-/* 解析结果这些块自己滚，别把整页撑出滚动条 */
-.app.has-review > .merged { max-height: 11vh; overflow: auto; }
-.app.has-review > .effects { max-height: 11vh; overflow: auto; }
-.app.has-review > .var-table { max-height: 9vh; overflow: auto; }
+/* 静态扫描结果按内容走，不设内部滚动（设计图要求：除代码区外别出竖滚动条） */
+.app.has-review > .merged,
+.app.has-review > .effects,
+.app.has-review > .var-table { max-height: none; overflow: visible; }
+/* System One 决策区：名称在左、数值在右，行间发丝线 */
+.app.has-review :deep(.weight-row) { border-top: 1px solid #232833; padding: 3px 0; font-size: 11.5px; }
+.app.has-review :deep(.weight-row:first-of-type) { border-top: 0; }
+.app.has-review :deep(.weight-table) { padding: 2px 0 0; }
 .var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
 .var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
