@@ -64,10 +64,10 @@
     <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
       <div class="model-head" :class="'tone-' + toneOf(verdictMeta, false)">
         📊 System One 决策模型意见
-        <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
         <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
           {{ flaggedCount ? `${flaggedCount}/${weightRows.length} 越线` : `${weightRows.length} 维全在阈值内` }}
         </span>
+        <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
       </div>
       <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
       <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
@@ -409,6 +409,8 @@ function removeWorkspace(path) {
 .weight-count { font-size: 11px; color: #888; margin-left: auto; }
 /* 判定用一个小圆点，标题跟着它一起变色：绿=安全、黄=要留意、红只限 LLM */
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: auto; }
+/* 计数与灯贴在一起：计数推到右边，灯跟在它后面（灯不再单独占位） */
+.weight-count + .dot { margin-left: 6px; }
 .dot-ok { background: #4ec9b0; }
 .dot-warn { background: #e6a23c; }
 .dot-bad { background: #ff6b6b; }

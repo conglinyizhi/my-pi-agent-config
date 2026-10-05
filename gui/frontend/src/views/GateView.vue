@@ -361,6 +361,11 @@ onMounted(async () => {
 .app.has-review :deep(.model-card) { align-self: stretch; overflow: visible; }
 .app.has-review :deep(.model-card[data-model="chat"]) { grid-area: 2 / 2 / 3 / 3; }
 .app.has-review :deep(.model-card[data-model="system1"]) { grid-area: 3 / 2 / 4 / 3; }
+/* 卡头文字跟着判定灯一起变色。配色必须写在这一侧：子组件里的 .tone-* 拼不过
+   这条 :deep() 的特异性，写在那边等于没写（踩过） */
+.app.has-review :deep(.model-head.tone-ok) { color: #4ec9b0; }
+.app.has-review :deep(.model-head.tone-warn) { color: #e6a23c; }
+.app.has-review :deep(.model-head.tone-bad) { color: #ff6b6b; }
 .app.has-review :deep(.model-head) {
   font-size: 11px;
   color: #8ea2c8;
