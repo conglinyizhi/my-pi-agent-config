@@ -8,6 +8,7 @@
 //   gui   有结论、没崩、没超时、没人叉掉窗口
 //   audit 一次审计走完并给出结论（模型判安全或有风险都算成功，链自己报错才算失败）
 
+import { appendFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { noteRoundTrip } from "./ab-store.ts";
@@ -87,6 +88,66 @@ export function classifyWindowOutcome(result: { ok?: boolean; data?: unknown; re
 	if (reason === "spawn") return { outcome: "failure", reason: "窗口进程起不来" };
 	if (reason === "unavailable") return { outcome: "failure", reason: "找不到 GUI 可执行文件" };
 	return { outcome: "failure", reason: reason === "" ? "窗口没给结论" : `窗口异常：${reason}` };
+}
+
+/**
+ * 一次闸门往返：这是两个组件共用的观察点。
+ *
+ * gui 侧看窗口活不活（叉掉/超时/起不来都算失败）；
+ * audit 侧看这次审计有没有走完（窗口失败也算，链自己报错也算）。
+ * 没有 review 字段说明这次根本没跑审核（开关关着），那就不记 audit 的账。
+ */
+export function noteGateRoundTrip(options: {
+	windowResult: { ok?: boolean; data?: unknown; reason?: string };
+	/** 这次请求里带的审核结果（ApprovalRequest.review） */
+	review?: unknown;
+	runtimeRoot?: string;
+	threshold?: number;
+	autoPromote?: boolean;
+	at?: string;
+}): { gui: WatchResult; audit?: WatchResult; notices: Array<{ component: AbComponent; text: string }> } {
+	const shared = {
+		...(options.runtimeRoot ? { runtimeRoot: options.runtimeRoot } : {}),
+		...(options.threshold !== undefined ? { threshold: options.threshold } : {}),
+		...(options.autoPromote !== undefined ? { autoPromote: options.autoPromote } : {}),
+		...(options.at ? { at: options.at } : {}),
+	};
+	const windowVerdict = classifyWindowOutcome(options.windowResult);
+	const gui = watchRoundTrip({ component: "gui", outcome: windowVerdict.outcome, reason: windowVerdict.reason, ...shared });
+
+	let audit: WatchResult | undefined;
+	if (options.review !== undefined && options.review !== null) {
+		const verdict = typeof options.review === "object" ? (options.review as { verdict?: string }).verdict : undefined;
+		const auditVerdict =
+			windowVerdict.outcome === "failure"
+				? { outcome: "failure" as const, reason: `这次没走完：${windowVerdict.reason}` }
+				: classifyAuditOutcome(verdict);
+		audit = watchRoundTrip({
+			component: "audit",
+			outcome: auditVerdict.outcome,
+			reason: auditVerdict.reason,
+			...shared,
+		});
+	}
+
+	const notices: Array<{ component: AbComponent; text: string }> = [];
+	for (const [label, result] of [["gui", gui], ["audit", audit]] as const) {
+		if (!result?.noted) continue;
+		if (result.promoted) notices.push({ component: label, text: `${label} 已自动晋升（连续 ${result.clean} 次干净往返）` });
+		else if (result.action === "notify") notices.push({ component: label, text: `${label} 已攒够 ${result.threshold} 次干净往返，可以晋升` });
+	}
+	return { gui, ...(audit ? { audit } : {}), notices };
+}
+
+/** 把一条提示落到运行时目录，供 TUI 在下次启动时读走（期 3 接上展示） */
+export function writeNotice(runtimeRoot: string, component: AbComponent, text: string, at?: string): void {
+	try {
+		const dir = join(runtimeRoot, component);
+		if (!existsSync(dir)) return;
+		appendFileSync(join(dir, "notice.txt"), `${at ?? new Date().toISOString()} ${text}\n`, "utf8");
+	} catch {
+		// 提示写不进去也不能影响主流程
+	}
 }
 
 /** 一次审计的成败：链自己报错算失败，判安全或有风险都算走完了 */

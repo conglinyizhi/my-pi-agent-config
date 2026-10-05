@@ -10,6 +10,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { runGuiWindow, type GuiRunOptions, type GuiRunResult } from "./gui-runner.ts";
 import { formatReviewNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
+import { noteGateRoundTrip, resolveRuntimeRoot, writeNotice } from "./ab-watch.ts";
 import { buildApprovalTitle } from "../extensions/sandbox-permissions/helpers.ts";
 import { createHubThenLocalChannel } from "./hub-channel.ts";
 import {
@@ -276,6 +277,14 @@ export function createGuiTuiApprovalChannel(opts: GuiTuiApprovalOptions = {}): A
 	const runGui = opts.runGui ?? runGuiWindow;
 	return async (request, ctx) => {
 		const gui = await runGui("gate", toGuiPayload(request), { timeoutMs: GUI_TIMEOUT_MS, signal: request.signal });
+		// A/B 更新引擎的观察点：两个组件的干净往返都在这里记一笔。
+		// 运行时目录不存在时整个引擎静默失效；观察层自己也不抛异常，这里再兜一层。
+		try {
+			const watched = noteGateRoundTrip({ windowResult: gui, review: (request as { review?: unknown }).review });
+			for (const notice of watched.notices) writeNotice(resolveRuntimeRoot(), notice.component, notice.text);
+		} catch {
+			// 观察失败绝不能影响审批
+		}
 		if (gui.ok && gui.data && (gui.data.action === "allow" || gui.data.action === "deny")) {
 			return parseGuiDecision(gui.data);
 		}

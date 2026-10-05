@@ -6,7 +6,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { classifyAuditOutcome, classifyWindowOutcome, resolveRuntimeRoot, watchRoundTrip } from "./ab-watch.ts";
+import {
+	classifyAuditOutcome,
+	classifyWindowOutcome,
+	noteGateRoundTrip,
+	resolveRuntimeRoot,
+	watchRoundTrip,
+	writeNotice,
+} from "./ab-watch.ts";
 
 function setup(): string {
 	const root = mkdtempSync(join(tmpdir(), "ab-watch-"));
@@ -102,3 +109,88 @@ describe("从结果判干净", () => {
 		assert.equal(classifyAuditOutcome(undefined).outcome, "failure");
 	});
 });
+
+describe("闸门往返：两个组件的共用观察点", () => {
+	it("窗口给了结论、审核有 verdict：两侧各记一次干净", () => {
+		const root = setup();
+		const watched = noteGateRoundTrip({
+			windowResult: { ok: true, data: { action: "allow" } },
+			review: { verdict: "safe" },
+			runtimeRoot: root,
+		});
+		assert.equal(watched.gui.noted, true);
+		assert.equal(watched.gui.clean, 1);
+		assert.equal(watched.audit?.noted, true);
+		assert.equal(watched.audit?.clean, 1);
+	});
+
+	it("叉掉窗口：两侧都算失败，audit 的理由里说明是这次没走完", () => {
+		const root = setup();
+		const watched = noteGateRoundTrip({
+			windowResult: { ok: false, reason: "exited" },
+			review: { verdict: "safe" },
+			runtimeRoot: root,
+		});
+		assert.equal(watched.gui.clean, 0);
+		assert.equal(watched.audit?.clean, 0);
+		assert.match(readFileSync(join(root, "audit", "streak.json"), "utf8"), /这次没走完/);
+	});
+
+	it("链自己报错：gui 算干净、audit 算失败", () => {
+		const root = setup();
+		const watched = noteGateRoundTrip({
+			windowResult: { ok: true, data: { action: "allow" } },
+			review: { verdict: "error" },
+			runtimeRoot: root,
+		});
+		assert.equal(watched.gui.clean, 1);
+		assert.equal(watched.audit?.clean, 0);
+	});
+
+	it("没有 review 说明这次没跑审核，就不记 audit 的账", () => {
+		const root = setup();
+		const watched = noteGateRoundTrip({ windowResult: { ok: true, data: { action: "deny" } }, runtimeRoot: root });
+		assert.equal(watched.gui.noted, true);
+		assert.equal(watched.audit, undefined);
+		assert.equal(existsSync(join(root, "audit", "streak.json")), false);
+	});
+
+	it("攒够阈值时给出带组件的提示（用来自动晋升那一下）", () => {
+		const root = setup();
+		let last;
+		for (let index = 0; index < 2; index += 1) {
+			last = noteGateRoundTrip({
+				windowResult: { ok: true, data: { action: "allow" } },
+				review: { verdict: "risky" },
+				runtimeRoot: root,
+				threshold: 2,
+			});
+		}
+		assert.equal(last?.notices.length, 2, "gui 与 audit 各一条");
+		assert.deepEqual(last?.notices.map((notice) => notice.component).sort(), ["audit", "gui"]);
+		assert.match(last?.notices[0].text ?? "", /已自动晋升/);
+	});
+
+	it("未初始化时两侧都不记，也不造目录", () => {
+		const runtimeRoot = join(mkdtempSync(join(tmpdir(), "ab-watch-")), "runtime");
+		const watched = noteGateRoundTrip({
+			windowResult: { ok: true, data: { action: "allow" } },
+			review: { verdict: "safe" },
+			runtimeRoot,
+		});
+		assert.equal(watched.gui.noted, false);
+		assert.equal(watched.audit?.noted, false);
+		assert.deepEqual(watched.notices, []);
+		assert.equal(existsSync(runtimeRoot), false);
+	});
+});
+
+describe("提示落地", () => {
+	it("写进运行时目录的 notice.txt；目录不在就静默跳过", () => {
+		const root = setup();
+		writeNotice(root, "gui", "gui 已自动晋升", "2026-10-05T10:00:00Z");
+		assert.match(readFileSync(join(root, "gui", "notice.txt"), "utf8"), /已自动晋升/);
+		writeNotice(join(root, "不存在"), "gui", "不该写进去");
+	});
+});
+
