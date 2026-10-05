@@ -16,6 +16,7 @@ import { inspectFlows } from "../lib/review-flow/inspect.ts";
 import { checkFlowSource, formatViolations } from "../lib/review-flow/source-guard.ts";
 import { editEdgeInSource, type EdgeEditRequest } from "../lib/review-flow/edit-edge.ts";
 import { addNodeToSource } from "../lib/review-flow/add-node.ts";
+import { removeEdgeInSource } from "../lib/review-flow/edit-edge.ts";
 
 interface Options {
 	dir: string;
@@ -170,6 +171,22 @@ async function addNodePayload(dir: string, id: string, patch: Record<string, unk
 	const { kit } = await loadKitExtra(dir);
 	const loaded = await loadFlowFile(id, path, kit);
 	return { ok: true, changed: true, problems: "error" in loaded ? [loaded.error] : [] };
+}
+
+/** 删一条边：断开是合法中间态（先断再连），所以这里不拦校验，坏在哪图上自己看得见 */
+async function removeEdgePayload(dir: string, id: string, patch: Record<string, unknown>) {
+	const path = join(dir, `${id}.ts`);
+	if (!existsSync(path)) return { ok: false, error: `没有这份流程文件：${path}` };
+	const result = await removeEdgeInSource({
+		source: readFileSync(path, "utf8"),
+		fileName: path,
+		nodeId: String(patch.nodeId ?? ""),
+		kind: (patch.kind ?? "next") as EdgeEditRequest["kind"],
+		...(typeof patch.label === "string" && patch.label !== "" ? { label: patch.label } : {}),
+	});
+	if (!result.ok) return { ok: false, error: result.error };
+	if (result.changed) writeFileSync(path, result.source ?? "", { mode: 0o600 });
+	return { ok: true, changed: result.changed === true };
 }
 
 async function handleRequest(cmd: string, patch: Record<string, unknown> | undefined, dir: string) {

@@ -58,6 +58,16 @@ describe("图上加节点", () => {
 		assert.deepEqual(validateFlow(flow), [], "校验得是干净的：新节点可达、也有出口");
 	});
 
+	it("缩进跟邻居对齐：不能多一层", async () => {
+		const result = await addNodeToSource({ source: SOURCE, id: "extra", kind: "custom" });
+		const lines = (result.source ?? "").split("\n");
+		const at = lines.findIndex((line) => line.includes("kit.custom("));
+		assert.equal(lines[at].startsWith("\t\t"), true, JSON.stringify(lines[at]));
+		assert.equal(lines[at].startsWith("\t\t\t"), false, JSON.stringify(lines[at]));
+		assert.equal(lines[at + 1].startsWith("\t\t\t//"), true, JSON.stringify(lines[at + 1]));
+		assert.equal(lines[at + 3].startsWith("\t\t}, { onEmpty:"), true, JSON.stringify(lines[at + 3]));
+	});
+
 	it("id 重复就拒绝，不动源码", async () => {
 		const result = await addNodeToSource({ source: SOURCE, id: "chat", kind: "custom" });
 		assert.equal(result.ok, false);

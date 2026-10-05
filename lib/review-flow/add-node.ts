@@ -90,11 +90,12 @@ function nodeIdOf(ts: typeof TS, element: TS.Expression): string | undefined {
 function stubFor(kind: string, id: string, indent: string): string {
 	const name = JSON.stringify(id);
 	if (kind === "custom") {
+		// 每行相对缩进一级；真实缩进由 join 统一补，条目里别再写一遍（踩过：多一层）
 		return [
 			"kit.custom(" + name + ", async (ctx) => {",
-			indent + "\t// TODO: 在这里写你的拦截逻辑；ctx.upstream 里有上游节点的产物",
-			indent + "\treturn { status: \"abstain\", reason: \"还没写，交给人\" };",
-			indent + "}, { onEmpty: \"deny\" })",
+			"\t// TODO: 在这里写你的拦截逻辑；ctx.upstream 里有上游节点的产物",
+			"\treturn { status: \"abstain\", reason: \"还没写，交给人\" };",
+			"}, { onEmpty: \"deny\" })",
 		].join("\n" + indent);
 	}
 	return "kit.node(" + JSON.stringify(kind) + ", { id: " + name + " })";
@@ -117,8 +118,9 @@ export async function addNodeToSource(request: AddNodeRequest): Promise<AddNodeR
 	const indent = first && lineStart >= 0 ? sf.text.slice(lineStart, first.getStart(sf)) : "\t\t";
 	const stub = stubFor(String(request.kind ?? "custom"), id, indent);
 
-	// 插点：默认在 ] 之前（追加到末尾），给了 before 就插在那个元素所在行的行首
-	let insertAt = array.getEnd() - 1;
+	// 插点：默认在 ] 那一行的行首（不是 ] 之前——那样会白捡一个缩进，踩过）
+	// 给了 before 就插在目标元素所在行的行首
+	let insertAt = sf.text.lastIndexOf("\n", array.getEnd() - 1) + 1;
 	if (request.before) {
 		const target = array.elements.find((element) => nodeIdOf(ts, element) === request.before);
 		if (!target) return { ok: false, error: "找不到要插在它前面的节点：" + request.before };
