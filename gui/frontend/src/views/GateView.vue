@@ -14,7 +14,7 @@
       :env-notes="envNotes"
       :var-renders="varRenders"
       :edit-calls="editCalls"
-      :color-lang="isScript ? 'javascript' : ''"
+      :color-lang="isScript ? 'javascript' : 'bash'"
       :current="cur"
       @update:current="cur = $event"
     />

@@ -16,7 +16,7 @@
 
     <!-- 这一行不能折：<pre> 里元素之间的空白会被当正文渲染，所以标签必须贴着写 -->
     <div class="cmd-wrap">
-      <pre ref="cmdBox" class="cmd-area" @mouseover="onHover" @mouseout="onLeave"><div v-for="line in displayLines" :key="line.no" class="code-line"><span class="code-no" :class="{ 'code-no-bad': issueLines.includes(line.no) }">{{ line.no }}</span><span class="code-text"><template v-for="(part, index) in line.parts" :key="index"><span v-if="part.kind === 'text'" v-html="partHtml(part)"></span><button v-else class="fold-chip" :class="chipClass(part.chip)" :data-name="'fold-chip-' + part.chip.index" :title="chipTitle(part.chip)" @click="openDetail(part.chip)">{{ part.chip.warned ? "⚠ " : "" }}{{ part.chip.label }}</button></template></span></div></pre>
+      <pre ref="cmdBox" class="cmd-area" @mouseover="onHover" @mouseout="onLeave"><div v-for="(line, lineIndex) in displayLines" :key="lineIndex" class="code-line" :class="{ 'code-line-soft': line.soft }"><span class="code-no" :class="{ 'code-no-bad': issueLines.includes(line.no) }">{{ line.no ?? "" }}</span><span class="code-text"><template v-for="(part, index) in line.parts" :key="index"><span v-if="part.kind === 'text'" v-html="partHtml(part)"></span><button v-else class="fold-chip" :class="chipClass(part.chip)" :data-name="'fold-chip-' + part.chip.index" :title="chipTitle(part.chip)" @click="openDetail(part.chip)">{{ part.chip.warned ? "⚠ " : "" }}{{ part.chip.label }}</button></template></span></div></pre>
     </div>
     <div v-if="chips.length" class="fold-legend">
       灰 = 改文件，橙 = 可执行 shell（$$SHELL$$）；点芯片看具体改动
@@ -37,6 +37,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { splitLines } from "../../domain/gate/code-lines.js";
+import { shellBreakPoints } from "../../domain/gate/shell-breaks.js";
 import { mergeEnvHighlights, renderHighlightedCommand } from "../../domain/gate/highlights.js";
 import { envNoteHighlights } from "../../domain/gate/env-notes.js";
 import { mergeVarHighlights, varRenderHighlights } from "../../domain/gate/var-renders.js";
@@ -108,7 +109,9 @@ function partHtml(part) {
   return composeCodeHtml(part.text, part.tokens, part.marks);
 }
 /** 显示行：行号栏与静态扫描里的"第 N 行"指的是同一份文本 */
-const displayLines = computed(() => splitLines(segments.value, tokens.value));
+const displayLines = computed(() => splitLines(segments.value, tokens.value, softBreaks.value));
+/** 非脚本（bash 命令）才做 shell 软换行：脚本里的 shell 藏在芯片里，不用在这儿断 */
+const softBreaks = computed(() => (props.colorLang === "javascript" ? [] : shellBreakPoints(props.command)));
 function chipClass(chip) {
   return {
     "chip-file": chip.tone === "file",
@@ -210,6 +213,8 @@ watch(() => props.highlights, scroll, { deep: true });
   user-select: none;
 }
 .code-no-bad { color: #e6a23c; font-weight: 600; }
+/* 软换行的续行：左边缩一点，一眼能看出"还是同一行" */
+.code-line-soft .code-text { padding-left: 26px; opacity: 0.92; }
 .code-text { flex: 1 1 auto; min-width: 0; padding: 0 12px 0 10px; }
 /* 行号那条灰带画在容器上（不是每行各画一段）：代码再短，它也通到上下两头；
    37px 处那条是分隔线。宽度要和 .code-no 的盒子对齐 */

@@ -21,7 +21,10 @@ function clip(ranges, from, to) {
  * segments（折叠模型的输出）→ 显示行。
  * 文本分段按换行拆，芯片整颗留在它所在的行里；tokens 是整段文本上的令牌。
  */
-export function splitLines(segments, tokens) {
+export function splitLines(segments, tokens, breaks = []) {
+	// 软换行点（shell 的 ; | && 之后）：另起一行读起来清楚，但不另占行号——
+	// 行号是给"第几行"用的，软换行把它撑开会和别处对不上
+	const breakSet = new Set(Array.isArray(breaks) ? breaks : []);
 	// 行号按"未折叠"的文本数：扫描报的行号是按那份算的，折起来的块照占它的行数，
 	// 否则折一次后面全错位（提督提醒的）
 	let nextNo = 1;
@@ -47,14 +50,27 @@ export function splitLines(segments, tokens) {
 			if (index > 0) current = startLine();
 			if (part.length > 0) {
 				// 两套坐标：tokens 是整段文本上的（要加 base），marks 已被折叠模型平移到片段内
-				const from = base + offset;
-				const to = from + part.length;
-				current.parts.push({
-					kind: "text",
-					text: part,
-					tokens: clip(tokens, from, to),
-					marks: clip(segment?.marks, offset, offset + part.length),
-				});
+				const cuts = [];
+				for (let k = 0; k < part.length; k++) {
+					if (breakSet.has(base + offset + k + 1) && k + 1 < part.length) cuts.push(k + 1);
+				}
+				let cursor = 0;
+				for (const stop of cuts.concat([part.length])) {
+					if (stop > cursor) {
+						current.parts.push({
+							kind: "text",
+							text: part.slice(cursor, stop),
+							tokens: clip(tokens, base + offset + cursor, base + offset + stop),
+							marks: clip(segment?.marks, offset + cursor, offset + stop),
+						});
+					}
+					if (stop < part.length) {
+						const row = { no: null, soft: true, parts: [] };
+						lines.push(row);
+						current = row;
+					}
+					cursor = stop;
+				}
 			}
 			offset += part.length + 1;
 		});
