@@ -28,7 +28,7 @@ import { loadClassifierConfig, reviewViaClassifier, type ClassifierReviewInput }
 import type { ReviewScenario } from "./review-dimensions.ts";
 import { loadTrustedProgramDirs } from "./trusted.ts";
 import { formatFacts, type PreshellFacts } from "../../lib/preshell.ts";
-import { lastUserRequest } from "../../lib/last-user-request.ts";
+import { sessionContextText } from "../../lib/session-context.ts";
 import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
@@ -96,6 +96,13 @@ export interface ModelRef {
 export interface ReviewCallOptions {
 	facts?: PreshellFacts;
 	factsUnavailable?: string;
+	/**
+	 * agent 给这次操作的理由（bash 的 reason、PTC 的 description）。
+	 *
+	 * 两条模型都要看：分类器那维「意图违背」的提示词里明说了"若命令附带了理由"，
+	 * chat 的提示词也需要知道"这命令是干什么用的"。此前这个字段一路都没人消费。
+	 */
+	agentReason?: string;
 	/**
 	 * 本次审核场景：缺省 bash（命令审批）。
 	 * ptc = run_code 脚本审核，该场景下 scripted_edit 不提问、不参与判定
@@ -312,6 +319,7 @@ export function buildReviewPrompt(
 	facts?: PreshellFacts,
 	factsUnavailable?: string,
 	userRequest?: string,
+	agentReason?: string,
 ): { system: string; user: string } {
 	const ruleText =
 		rules.length === 0
@@ -322,8 +330,10 @@ export function buildReviewPrompt(
 	// 用户最近的要求：判「这条命令与要求的关系」靠它。没给就明说没有，
 	// 而不是静默省略——静默省略会让模型默认「与要求无关」，把 intent 判成风险。
 	const requestText = userRequest
-		? `\n\n用户最近的要求（判断意图是否对得上）：\n${userRequest}`
-		: "\n\n用户最近的要求：取不到（无会话上下文），意图判断只能看命令本身";
+		? `\n\n任务上下文（用户最近的要求、任务清单、目标；判断意图是否对得上靠它）：\n${userRequest}`
+		: "\n\n任务上下文：取不到（无会话上下文），意图判断只能看命令本身";
+	// agent 给的理由：它可能是事后编的，所以明说别当依据——但"这命令想干什么"仍是最有用的线索
+	const reasonText = agentReason ? `\n\nagent 给的理由（它可能不实）：\n${agentReason}` : "";
 	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（命令过长已截断）" : command;
 	// 事实层：静态分析出的影响面。有就给，没有就明说读不到（别让它被当成「什么都没碰」）
 	const factsText = facts
@@ -333,7 +343,7 @@ export function buildReviewPrompt(
 			: "";
 	return {
 		system,
-		user: `命令：\n${preview}\n\n命中风险点：\n${ruleText}${factsText}${requestText}`,
+		user: `命令：\n${preview}${reasonText}\n\n命中风险点：\n${ruleText}${factsText}${requestText}`,
 	};
 }
 
@@ -553,10 +563,16 @@ export async function reviewCommand(
 }
 
 /** 从会话里取用户最近一条请求（拿不到就是 undefined，审核侧自行降级） */
+/**
+ * 送进模型的上下文：最近 10 条用户消息 + 当前任务清单 + 全局目标（见 lib/session-context.ts）。
+ *
+ * 早先只取最近一条用户消息，"继续""嗯"这种就等于没给上下文（提督 2026-10-05 要求补全）。
+ * 拿不到就返回 undefined，由调用方明说"取不到"——静默省略会让模型默认"与要求无关"。
+ */
 export function sessionUserRequest(ctx: ExtensionContext): string | undefined {
 	try {
 		const entries = ctx.sessionManager?.getEntries?.() ?? [];
-		return lastUserRequest(entries as never);
+		return sessionContextText(entries as never);
 	} catch {
 		// 会话不可读不该让审核整条挂掉：按「没有上下文」处理，与没有会话时一致
 		return undefined;
@@ -585,7 +601,15 @@ async function runChatReview(
 	if (systemPrompt === null) {
 		return { verdict: "error", reason: "review system prompt missing", suggestion: "" };
 	}
-	const { system, user } = buildReviewPrompt(systemPrompt, command, rules, options?.facts, options?.factsUnavailable, userRequest);
+	const { system, user } = buildReviewPrompt(
+		systemPrompt,
+		command,
+		rules,
+		options?.facts,
+		options?.factsUnavailable,
+		userRequest,
+		options?.agentReason,
+	);
 
 	// ModelRegistry 的 complete 在各版本 pi 上都有，但类型声明滞后过；用窄接口断言，
 	// 运行时行为以实际 pi 版本为准。
@@ -702,6 +726,7 @@ export function buildClassifierReviewInput(args: {
 		preshellUnavailable: options?.factsUnavailable,
 		matchedRules: args.rules.map((r) => r.name).filter(Boolean),
 		userRequestExcerpt: args.userRequest,
+		agentReason: options?.agentReason,
 		// chat 的意见作为参考材料进 state（不参与判决）：
 		// 分类器是判决者，chat 只是多一双眼睛。见 runChainedReview 的说明。
 		advisorReview: args.advisor,

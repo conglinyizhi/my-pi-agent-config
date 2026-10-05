@@ -581,7 +581,17 @@ export async function preReviewPtcScript(options: {
 	// 以前这里另抄了一份 autoApproved 的表达式，现在没有了。
 	try {
 		const result = await preReview({
-			input: { pi, ctx, command: subject, rules: [], scenario: "ptc", ...(signal ? { signal } : {}) },
+			// reason 一并送进去：run_code 必填的那句 description 就是 agent 的理由，
+			// 分类器的「意图违背」维与 chat 的提示词都要看它
+			input: {
+				pi,
+				ctx,
+				command: subject,
+				rules: [],
+				scenario: "ptc",
+				...(input.reason ? { reason: input.reason } : {}),
+				...(signal ? { signal } : {}),
+			},
 			config,
 			cache: ptcReviewCache(),
 			nodes: {

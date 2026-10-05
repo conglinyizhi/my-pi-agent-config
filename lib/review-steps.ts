@@ -107,6 +107,8 @@ function callOptions(input: BashFlowInput): ReviewCallOptions {
 		...(input.facts ? { facts: input.facts } : {}),
 		...(input.factsUnavailable ? { factsUnavailable: input.factsUnavailable } : {}),
 		...(input.scenario ? { scenario: input.scenario } : {}),
+		// 理由要送进模型：bash 那边是命令审批的理由，PTC 那边是 run_code 的 description
+		...(input.reason ? { agentReason: input.reason } : {}),
 	};
 }
 

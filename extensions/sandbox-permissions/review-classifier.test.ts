@@ -65,6 +65,25 @@ describe("reviewViaClassifier", () => {
 	});
 
 	// 2026-10-05 提督改的规矩：置信低于门槛一律不采信（早先是反的：没把握也提醒）
+	it("agent 的理由进送审状态，也进提示词快照", async () => {
+		let body = "";
+		const answers = { ...calmAnswers() };
+		const result = await reviewViaClassifier(
+			{ ...BASE_INPUT, agentReason: "把依赖升到 1.0.2 再跑一遍测试" },
+			config,
+			{
+				classifyOptions: {
+					fetchImpl: (async (_url: unknown, init: { body?: unknown }) => {
+						body = String(init?.body ?? "");
+						return resp({ answers });
+					}) as unknown as typeof fetch,
+				},
+			},
+		);
+		assert.match(body, /agent_reason/, "理由要真的发出去");
+		assert.match(body, /依赖升到 1\.0\.2/, "理由原文在里面");
+		assert.match(String(result.promptDebug?.classifier ?? ""), /依赖升到 1\.0\.2/, "快照里也要有，窗口才看得到");
+	});
 	it("置信度低于门槛 → 该维不采信，不给结论", async () => {
 		const answers = { ...calmAnswers() };
 		// 风险值低（高风险档合计 0.2），且 confidence 0.2 < 0.5：这一维整个不算数
