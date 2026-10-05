@@ -25,6 +25,75 @@ export const bashFlow: Flow = {
 	],
 };
 
+/**
+ * 预审用的流程：与上面同一条链，只是**没有 gate 节点**。
+ *
+ * 问人是调用方那一步（approveBashCommand），预审只回答"能不能自动放行"，
+ * 所以这里 auto 的两个出口都落在终点的两头：allow = 自动放行，deny = 需人工。
+ */
+export const bashPreReviewFlow: Flow = {
+	id: "bash-pre",
+	deadlineMs: 60_000,
+	budget: { calls: 5 },
+	nodes: [
+		{ id: "chat", kind: "chatreview", next: "classify" },
+		{ id: "classify", kind: "classifier", after: ["chat"], next: "merge" },
+		{ id: "merge", kind: "merge", after: ["chat", "classify"], next: "auto" },
+		{ id: "auto", kind: "autoapprove", after: ["merge"], next: "allow", onEmpty: "deny" },
+	],
+};
+
+/**
+ * 按配置档位挑预审流程：只跑对话模型 / 只跑分类器 / 两个都跑。
+ *
+ * 档位是用户能配的（extensions.toml 的 backend），旧链按它选支路，这里也一样：
+ * 档位写 chat 就只问对话模型，别把分类器也拉起来。
+ */
+export function bashPreReviewFlowFor(backend: "chat" | "classifier" | "chain"): Flow {
+	if (backend === "chat") {
+		return {
+			id: "bash-pre-chat",
+			deadlineMs: 60_000,
+			budget: { calls: 5 },
+			nodes: [
+				{ id: "chat", kind: "chatreview", next: "auto" },
+				{ id: "auto", kind: "autoapprove", after: ["chat"], settings: { from: "chat" }, next: "allow", onEmpty: "deny" },
+			],
+		};
+	}
+	if (backend === "classifier") {
+		return {
+			id: "bash-pre-classifier",
+			deadlineMs: 60_000,
+			budget: { calls: 5 },
+			nodes: [
+				{ id: "classify", kind: "classifier", next: "merge" },
+				{ id: "merge", kind: "merge", after: ["classify"], next: "auto" },
+				{ id: "auto", kind: "autoapprove", after: ["merge"], next: "allow", onEmpty: "deny" },
+			],
+		};
+	}
+	return bashPreReviewFlow;
+}
+/**
+ * 预审结论从哪个节点的产物取：
+ *   chat       只有一个模型节点，取它
+ *   classifier 走合并（合并把分类器的判决原样端出来）
+ *   chain      同上
+ */
+export function preReviewReviewId(backend: "chat" | "classifier" | "chain"): string {
+	return backend === "chat" ? "chat" : "merge";
+}
+
+/** 跑一次预审流程；决定 allow 就是自动放行 */
+export async function runBashPreReviewFlow(
+	input: BashFlowInput,
+	deps: ReviewNodeDeps = {},
+	backend: "chat" | "classifier" | "chain" = "chain",
+) {
+	return runFlow(bashPreReviewFlowFor(backend), input, { nodes: bashFlowNodes(deps) });
+}
+
 /** 这条流程用到的节点实现（注入点原样透给节点工厂） */
 export function bashFlowNodes(deps: ReviewNodeDeps = {}) {
 	return {

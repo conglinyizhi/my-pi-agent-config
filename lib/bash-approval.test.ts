@@ -3,10 +3,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createReviewCache } from "../extensions/sandbox-permissions/llm-review.ts";
 import {
 	appendApprovalComment,
 	approveBashCommand,
-	bashApprovalReviewCache,
 	isHardRejected,
 	preReviewBashCommand,
 	rethrowWithApprovalComment,
@@ -40,6 +40,8 @@ describe("只跑预审（worker 守门用的判据）", () => {
 			verdict: risky as any,
 			deps: {
 				loadReviewConfig: () => reviewConfig(over.config),
+				// 每条用例一份干净缓存：缓存是整条链那层的，别让用例之间互相串味
+				reviewCache: createReviewCache(),
 				reviewCommand: (async () => over.review) as any,
 			},
 		});
@@ -89,6 +91,7 @@ describe("共享 bash 审批器", () => {
 			origin: "bash_background",
 			deps: {
 				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				reviewCache: createReviewCache(),
 				runGui: async () => ({ ok: true, data: { action: "allow", comment: "  X  " } }),
 			},
 		});
@@ -110,6 +113,7 @@ describe("共享 bash 审批器", () => {
 			verdict,
 			deps: {
 				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				reviewCache: createReviewCache(),
 				runGui: async () => ({ ok: true, data: { action: "deny", comment: "不要执行" } }),
 			},
 		});
@@ -172,6 +176,7 @@ describe("收窄命令的审批链", () => {
 			verdict: narrowedVerdict as any,
 			deps: {
 				loadReviewConfig: () => reviewConfig,
+				reviewCache: createReviewCache(),
 				reviewCommand: async () => ({ verdict: "safe", reason: "只读程序版本查询", suggestion: "" }),
 				runGui: async () => {
 					guiCalls++;
@@ -194,6 +199,7 @@ describe("收窄命令的审批链", () => {
 			verdict: narrowedVerdict as any,
 			deps: {
 				loadReviewConfig: () => reviewConfig,
+				reviewCache: createReviewCache(),
 				reviewCommand: async () => ({ verdict: "risky", reason: "参数不确定", suggestion: "" }),
 				runGui: async (_kind: string, request: any) => {
 					seen = request;
@@ -215,6 +221,7 @@ describe("收窄命令的审批链", () => {
 			verdict: narrowedVerdict as any,
 			deps: {
 				loadReviewConfig: () => reviewConfig,
+				reviewCache: createReviewCache(),
 				reviewCommand: async () => ({ verdict: "dangerous", reason: "不该跑", suggestion: "" }),
 				runGui: async () => {
 					guiCalls++;
@@ -237,23 +244,29 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 	};
 	const reviewConfig = { backend: "chat" as const, enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
 
-	it("缺省用共享的审核缓存：同一条命令不因换个调用方就再审一遍", async () => {
-		let seenCache: unknown;
-		await approveBashCommand({
+	it("缓存按整条链去重：同一条命令不因换个调用方就再审一遍", async () => {
+		let calls = 0;
+		const cache = createReviewCache();
+		const deps = {
+			loadReviewConfig: () => reviewConfig,
+			reviewCache: cache,
+			reviewCommand: (async () => {
+				calls += 1;
+				return { verdict: "safe", reason: "临时目录清理", suggestion: "" };
+			}) as any,
+			runGui: async () => ({ ok: true, data: { action: "deny" } }),
+		};
+		const options = {
 			pi: { appendEntry: () => {} } as any,
 			ctx: context(),
 			command: "rm -rf /tmp/lx-probe",
 			verdict: tightVerdict as any,
-			deps: {
-				loadReviewConfig: () => reviewConfig,
-				reviewCommand: (async (_pi: unknown, _ctx: unknown, _cmd: unknown, _rules: unknown, _signal: unknown, cache: unknown) => {
-					seenCache = cache;
-					return { verdict: "safe", reason: "临时目录清理", suggestion: "" };
-				}) as any,
-				runGui: async () => ({ ok: true, data: { action: "deny" } }),
-			},
-		});
-		assert.equal(seenCache, bashApprovalReviewCache, "默认缓存必须是主链那一份");
+			deps,
+		};
+		// 同一个调用方连着两次、以及换个调用方（worker 那条链）再问一次：都只该审一次
+		await approveBashCommand({ ...options });
+		await approveBashCommand({ ...options });
+		assert.equal(calls, 1, "同一条命令只审一次");
 	});
 
 	it("buildRequest 换卡片形态：capability 卡片带能力名与范围，预审意见照样透传", async () => {
@@ -276,6 +289,7 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 			}),
 			deps: {
 				loadReviewConfig: () => reviewConfig,
+				reviewCache: createReviewCache(),
 				reviewCommand: async () => ({ verdict: "risky", reason: "目标含变量", suggestion: "写死路径" }),
 				runGui: async (_kind: string, request: any) => {
 					seen = request;
@@ -297,6 +311,7 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 		const pi = { appendEntry: (_name: string, entry: unknown) => records.push(entry as any) } as any;
 		const deps = {
 			loadReviewConfig: () => reviewConfig,
+				reviewCache: createReviewCache(),
 			reviewCommand: async () => ({ verdict: "safe" as const, reason: "临时目录清理", suggestion: "" }),
 			runGui: async () => ({ ok: true, data: { action: "allow" } }),
 		};
@@ -327,6 +342,7 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 			verdict: tightVerdict as any,
 			deps: {
 				loadReviewConfig: () => ({ ...reviewConfig, mode: "strict" as const }),
+				reviewCache: createReviewCache(),
 				reviewCommand: async () => ({ verdict: "safe", reason: "临时目录清理", suggestion: "" }),
 				runGui: async () => {
 					guiCalls++;
@@ -347,6 +363,7 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 			verdict: tightVerdict as any,
 			deps: {
 				loadReviewConfig: () => ({ ...reviewConfig, enabled: false }),
+				reviewCache: createReviewCache(),
 				runGui: async () => {
 					guiCalls++;
 					return { ok: true, data: { action: "deny" } };

@@ -23,9 +23,6 @@ import {
 } from "../../extensions/sandbox-permissions/llm-review.ts";
 import type { NodeImpl, NodeRunContext } from "./runner.ts";
 
-/** 本链共用的 LLM 缓存（与 bash 链同一份，键是命令原文加命中规则） */
-const sharedReviewCache = createReviewCache();
-
 /** 一条 bash 流程需要的东西：运行前一次带齐 */
 export interface BashFlowInput extends Record<string, unknown> {
 	pi: ExtensionAPI;
@@ -86,7 +83,8 @@ export function makeChatReviewNode(deps: ReviewNodeDeps = {}): NodeImpl {
 			input.command,
 			input.rules,
 			input.signal,
-			deps.reviewCache ?? sharedReviewCache,
+			// 缓存归整条链（预审那层）管：这里给个一次性缓存，免得分步结论被当成整链结论写进去
+			deps.reviewCache ?? createReviewCache(),
 			{ ...cfg, backend: "chat" },
 			callOptions(input),
 		);
@@ -164,7 +162,9 @@ export function makeMergeNode(): NodeImpl {
  */
 export function makeAutoApproveNode(deps: ReviewNodeDeps = {}): NodeImpl {
 	return async (ctx) => {
-		const merged = ctx.upstream.merge as ReviewResult | undefined;
+		// 判哪一步的结论由上游决定：两个模型都跑时看合并，只跑一个时看那一个
+		const from = typeof ctx.settings.from === "string" ? ctx.settings.from : "merge";
+		const merged = ctx.upstream[from] as ReviewResult | undefined;
 		const cfg = (deps.loadConfig ?? loadLlmReviewConfig)();
 		// 判据与旧链同一个函数：不各写一份，就不会漂
 		const autoApproved = autoApproveDecision(merged, cfg);

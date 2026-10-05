@@ -16,6 +16,7 @@ import {
 	createReviewCache,
 	loadLlmReviewConfig,
 	reviewCommand as defaultReviewCommand,
+	runClassifierReview,
 	type LlmReviewConfig,
 	type ReviewCache,
 	type ReviewResult,
@@ -48,6 +49,8 @@ export interface BashApprovalDependencies {
 	loadReviewConfig?: () => LlmReviewConfig;
 	/** 测试注入；默认调用真实 LLM 预审。 */
 	reviewCommand?: typeof defaultReviewCommand;
+	/** 测试注入；默认走审核流里分类器那个节点（带 advisor 的支路）。 */
+	classifierReview?: typeof runClassifierReview;
 	/** 测试或隔离调用方注入独立缓存。 */
 	reviewCache?: ReviewCache;
 }
@@ -194,27 +197,36 @@ export async function preReviewBashCommand(options: BashApprovalOptions): Promis
 	const { pi, ctx, command, verdict, signal } = options;
 	const deps = options.deps ?? {};
 	const config = (deps.loadReviewConfig ?? loadLlmReviewConfig)();
-	let review: ReviewResult | undefined;
 
-	if (config.enabled) {
-		try {
-			review = await (deps.reviewCommand ?? defaultReviewCommand)(
+	// 预审现在跑审核流（chat → 分类器 → 合并 → 自动放行）。
+	// 流程反过来要用本模块的判据与问人那一步，静态 import 会成环：延迟导入断开它，
+	// 只在真跑预审时加载一次。
+	const { preReviewViaFlow } = await import("./review-flow/pre-review.ts");
+	try {
+		return await preReviewViaFlow({
+			input: {
 				pi,
 				ctx,
 				command,
-				verdict.rules ?? [],
-				signal,
-				deps.reviewCache ?? bashApprovalReviewCache,
-				config,
+				rules: verdict.rules ?? [],
+				...(verdict.reason ? { reason: verdict.reason } : {}),
 				// 事实层随命令一起给审核模型：它看的是影响面，不只是命令原文
-				{ facts: verdict.facts, factsUnavailable: verdict.factsUnavailable },
-			);
-		} catch {
-			review = undefined;
-		}
+				...(verdict.facts ? { facts: verdict.facts } : {}),
+				...(verdict.factsUnavailable ? { factsUnavailable: verdict.factsUnavailable } : {}),
+				...(signal ? { signal } : {}),
+			},
+			config,
+			cache: deps.reviewCache ?? bashApprovalReviewCache,
+			nodes: {
+				...(deps.reviewCommand ? { reviewCommand: deps.reviewCommand } : {}),
+				...(deps.classifierReview ? { classifierReview: deps.classifierReview } : {}),
+				...(deps.loadReviewConfig ? { loadConfig: deps.loadReviewConfig } : {}),
+			},
+		});
+	} catch {
+		// 与旧行为一致：预审整条挂了就当没有意见，交给人工
+		return { config, review: undefined, autoApproved: false };
 	}
-
-	return { config, review, autoApproved: autoApproveDecision(review, config) };
 }
 
 export async function approveBashCommand(options: BashApprovalOptions): Promise<BashApprovalResult> {
