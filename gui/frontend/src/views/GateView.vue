@@ -311,85 +311,83 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-/* ── 版式：统一卡片 ─────────────────────────────────────────
-   一窗之内只用一套底色/描边/圆角，块与块之间留缝；色彩只用来标"这块是什么语气"，
-   不再让每块自己铺一层不同色调的底，那是之前看着乱的根源。
-   左主区放要横向空间的（指令、解析结果），右侧栏放模型审核。
-   没有模型意见的窗（sandbox-allow、capability）单列，卡片规则一样适用。 */
+/* ── 版式：紧凑、不滚、左右打通 ──────────────────────────────
+   这是一扇"对话框"，不是应用：一屏之内摆下尽量多的信息。
+   所以小圆角（6px）、小内边距、块间 6px 缝；要横向空间的（指令、底栏）横跨整宽，
+   模型审核分上下两张卡挂右栏（上=大模型，中=System One）。
+   每块自己设上限并在内部滚动，页面整体不滚。左列只钉判定摘要一格：
+   块是条件出现的，钉死行号一旦缺块就整条串位（踩过）。 */
 .app {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
   height: 100vh;
   overflow: auto;
-  background: #12141b;
+  background: #11141a;
   color: #dfe3ea;
+  font: 12px/1.55 system-ui, sans-serif;
 }
 .app.has-review {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   grid-auto-rows: min-content;
   grid-auto-flow: row dense;
   align-content: start;
 }
-.app > *,
+/* 一块一张卡：同底色、同描边、同圆角。
+   默认整宽（要横向空间的块自然横跨整窗，这就是"打通"），
+   只有判定摘要与大模型卡各占左右一格，System One 卡挂到下面的右格。 */
+.app.has-review > *,
 .app :deep(.gate-fragment > *) {
-  grid-column: 1;
-  background: #1a1e28;
-  border: 1px solid #262b38;
-  border-radius: 10px;
-  padding: 10px 16px;
+  grid-column: 1 / -1;
+  background: #191d25;
+  border: 1px solid #262b35;
+  border-radius: 6px;
+  padding: 6px 10px;
 }
-/* 判定摘要：语气靠左边一条色带，不铺整屏底 */
-.app :deep(.decision-summary) { padding: 10px 16px 10px 13px; border-left-width: 3px; }
+.app.has-review :deep(.decision-summary) { grid-column: 1; grid-row: 1; align-self: start; padding: 6px 10px 6px 8px; border-left-width: 3px; }
 .app :deep(.decision-summary.decision-deny) { border-left-color: #ff6b6b; }
 .app :deep(.decision-summary.decision-warn) { border-left-color: #e6a23c; }
 .app :deep(.decision-summary.decision-allow) { border-left-color: #4ec9b0; }
-/* 左列只钉一块：判定摘要永远在头一格。
-   其余一律按文档顺序自动排——块是条件出现的，钉死行号一旦缺块就整条串位（踩过）。 */
-.app :deep(.decision-summary) { grid-row: 1; }
-/* 指令卡：标题 + 代码井 + 图例，三段拼成一张（接缝处不重复描边） */
-.app :deep(.top-bar) {
+/* 指令卡：标题 + 代码井 + 图例拼成一张（接缝处不重复描边），不钉行号 */
+.app.has-review :deep(.top-bar) {
   border-bottom: 0;
-  border-radius: 10px 10px 0 0;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 10px;
 }
-.app :deep(.cmd-wrap) {
-  background: #0e1016;
-  border-left: 1px solid #262b38;
-  border-right: 1px solid #262b38;
+.app.has-review :deep(.cmd-wrap) {
+  background: #0d1014;
+  border-left: 1px solid #262b35;
+  border-right: 1px solid #262b35;
   border-radius: 0;
   padding: 0;
-  min-height: 40vh;
+  min-height: 120px;
+  max-height: 23vh;
 }
-.app :deep(.fold-legend) {
+.app.has-review :deep(.fold-legend) {
   border-top: 0;
-  border-radius: 0 0 10px 10px;
-  padding: 8px 16px 10px;
+  border-radius: 0 0 6px 6px;
+  padding: 4px 10px 6px;
 }
-/* 右侧栏：模型审核从上到下一段到底，段内用发丝线分 */
-.app.has-review :deep(.review-block) { display: contents; }
-.app.has-review :deep(.review-header) { grid-column: 2; grid-row: 1; border-radius: 10px 10px 0 0; }
-.app.has-review :deep(.review-reason),
-.app.has-review :deep(.review-suggestion),
-.app.has-review :deep(.review-opinion),
-.app.has-review :deep(.chat-review),
-.app.has-review :deep(.weight-table) {
-  grid-column: 2;
-  border-top: 0;
-  border-radius: 0;
-}
-.app.has-review :deep(.chat-review),
-.app.has-review :deep(.weight-table) { border-top: 1px solid #262b38; }
-/* 底栏：整宽，钉在窗口下沿 */
+/* 右栏两张卡：上=大模型，中=System One。
+   不钉行号——大模型卡自动落到第 1 行右格；System One 卡因为整宽的指令卡占住了
+   第 2 行起的右格，自然被排到指令卡下方，于是正好是"右中"。 */
+.app.has-review :deep(.model-card) { grid-column: 2; align-self: start; max-height: 22vh; overflow: auto; }
+.app.has-review :deep(.model-head) { font-size: 11px; color: #8ea2c8; display: flex; align-items: center; gap: 6px; }
+/* 底栏：整宽，钉在下沿 */
 .app :deep(.actions),
 .app.has-review :deep(.actions) {
   grid-column: 1 / -1;
   position: sticky;
   bottom: 0;
-  background: #171b24;
+  background: #151922;
   border-color: #2b3140;
 }
+/* 解析结果这些块自己滚，别把整页撑出滚动条 */
+.app.has-review > .merged { max-height: 11vh; overflow: auto; }
+.app.has-review > .effects { max-height: 11vh; overflow: auto; }
+.app.has-review > .var-table { max-height: 9vh; overflow: auto; }
 .var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
 .var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }

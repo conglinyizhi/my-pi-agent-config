@@ -44,13 +44,12 @@
       </div>
     </div>
 
-    <div v-if="!isSandboxAllow && !isCapability && review" class="review-block">
-      <div class="review-header">
-        🤖 云端模型审核
+    <!-- 两个角色分两张卡：上=大模型（文本）那一路，中=System One 分类器那一路。
+         以前挤在一块里，右栏看上去只有一个"云端模型"的角色。 -->
+    <div v-if="!isSandboxAllow && !isCapability && review" class="review-block model-card" data-model="chat">
+      <div class="review-header model-head">
+        🤖 大模型审核
         <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
-        <span v-if="weightRows.length" class="weight-count">
-          {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
-        </span>
       </div>
       <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
       <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
@@ -66,9 +65,17 @@
         <div v-if="review.chatReview.suggestion" class="chat-suggestion">💡 {{ review.chatReview.suggestion }}</div>
         <div v-if="review.chatReview.opinion" class="chat-opinion">{{ review.chatReview.opinion }}</div>
       </div>
+    </div>
 
-      <div v-if="weightRows.length" class="weight-table" data-name="dimension-weights">
-        <div class="weight-head">分类模型权重（条宽即风险值；越线行标底色）</div>
+    <div v-if="!isSandboxAllow && !isCapability && weightRows.length" class="model-card" data-model="system1">
+      <div class="model-head">
+        📊 System One 分类器
+        <span class="weight-count">
+          {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
+        </span>
+      </div>
+      <div class="weight-table" data-name="dimension-weights">
+        <div class="weight-head">条宽即风险值；越线行标底色</div>
         <div
           v-for="row in weightRows"
           :key="row.key"

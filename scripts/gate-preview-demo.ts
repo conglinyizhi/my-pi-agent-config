@@ -101,7 +101,24 @@ async function main(): Promise<void> {
 				command: text,
 				taskId: "preview-demo",
 				rules: [{ name: "危险调用", tip: "这个工具会改动系统状态", matched: ["cleanup_everything"] }],
-				review: { verdict: "risky", reason: "脚本要改仓里的文件并跑构建", dimensions: [] },
+				// 两段模型意见都要有，否则右栏只有半截，看不出排版：
+				// chatReview = 大模型（文本模型）那一路，dimensions = System One 分类器那一路
+				review: {
+					verdict: "risky",
+					reason: "脚本要改仓里的文件并跑构建",
+					chatReview: {
+						verdict: "risky",
+						reason: "脚本会改仓库里的文件并跑构建，还调用了一个会动系统状态的工具",
+						suggestion: "确认只改该改的文件，cleanup_everything 的路径是不是你要的",
+						opinion: "看下来像是要把 notes.txt 的内容覆盖到 timeline.ts，顺带跑一次类型检查；风险点是末尾那个 cleanup。",
+					},
+					dimensions: [
+						{ id: "整体可疑", label: "整体可疑", type: "system1", risk: 0.5, confidence: 0.0, above: 0.5, below: null, triggered: true, reason: "有些不对劲，让用户扫一眼更稳妥" },
+						{ id: "副作用面", label: "副作用面", type: "system1", risk: 0.25, confidence: 0.6, above: 0.5, below: null, triggered: false },
+						{ id: "越界", label: "越界", type: "system1", risk: 0.1, confidence: 0.9, above: 0.6, below: null, triggered: false },
+						{ id: "脚本改写", label: "脚本改写", type: "system1", disabled: true, disabledNote: "本次场景没问过" },
+					],
+				},
 				subject: "script",
 				scriptEffects: effects,
 			},
