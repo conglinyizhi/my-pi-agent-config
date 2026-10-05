@@ -11,10 +11,7 @@
 import { appendFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { appendCrashReport } from "./ab-crash-report.ts";
-import { noteRoundTrip } from "./ab-store.ts";
-import { componentInitialized } from "./ab-store.ts";
-import type { AbComponent } from "./ab-slots.ts";
+import { appendLog, noteRoundTrip, stateOf, type AbComponent } from "./ab-tag.ts";
 
 export interface WatchResult {
 	/** 是否真的记上了；false 时看 skipped 的原因 */
@@ -69,27 +66,25 @@ export function watchRoundTrip(options: {
 	}
 	try {
 		const runtimeRoot = resolveRuntimeRoot(options.runtimeRoot);
-		if (!componentInitialized(runtimeRoot, options.component)) {
-			return { noted: false, skipped: "运行时目录未初始化" };
+		const root = join(runtimeRoot, options.component);
+		if (stateOf(root).tag === "") {
+			return { noted: false, skipped: "运行时目录未初始化（没有 tag）" };
 		}
-		const result = noteRoundTrip({
-			runtimeRoot,
-			component: options.component,
+		const result = noteRoundTrip(root, {
 			outcome: options.outcome,
 			...(options.reason ? { reason: options.reason } : {}),
 			...(options.threshold !== undefined ? { threshold: options.threshold } : {}),
 			...(options.failThreshold !== undefined ? { failThreshold: options.failThreshold } : {}),
 			...(options.autoPromote !== undefined ? { autoPromote: options.autoPromote } : {}),
-			...(options.at ? { at: options.at } : {}),
 		});
 		return {
 			noted: true,
-			clean: result.clean,
+			clean: result.count,
 			threshold: result.threshold,
 			promoted: result.promoted,
 			rolledBack: result.rolledBack,
-			watchdog: result.watchdog,
-			action: result.action,
+			watchdog: result.reason,
+			action: result.action === "promote" ? "promote" : result.action === "rollback" ? "notify" : "keep",
 			reason: result.reason,
 		};
 	} catch (error) {
@@ -147,18 +142,12 @@ export function noteGateRoundTrip(options: {
 	const windowVerdict = classifyWindowOutcome(options.windowResult);
 	const gui = watchRoundTrip({ component: "gui", outcome: windowVerdict.outcome, reason: windowVerdict.reason, ...shared });
 	if (windowVerdict.outcome === "failure") {
-		// 窗口没走完不光记一笔，还要写成给人看的报告：标题一行就能看出该修什么
-		appendCrashReport({
-			at: options.at ?? new Date().toISOString(),
-			component: "gui",
-			stage: "审批往返",
-			summary: windowVerdict.reason,
-			module: "lib/ab-watch.ts（classifyWindowOutcome）",
-			context: {
-				...(gui.rolledBack ? { 回退: "连续失败已达门槛，已回退" } : {}),
-				...(gui.clean !== undefined ? { 干净往返: gui.clean } : {}),
-			},
-			hint: "看 ~/.pi/runtime/gui/notice.txt 与 promote.log；要立刻回开发态就 make ab-detach COMPONENT=gui",
+		// 窗口没走完写进流水：一行能看出该修什么（旧的崩溃报告 md 已并到这里）
+		appendLog(join(resolveRuntimeRoot(options.runtimeRoot), "gui"), {
+			event: "note",
+			outcome: "crash",
+			reason: windowVerdict.reason,
+			note: `阶段=审批往返 模块=lib/ab-watch.ts ${gui.rolledBack ? "已回退 " : ""}${gui.clean !== undefined ? `干净=${gui.clean}` : ""}`,
 		});
 	}
 
@@ -176,14 +165,11 @@ export function noteGateRoundTrip(options: {
 			...shared,
 		});
 		if (auditVerdict.outcome === "failure") {
-			appendCrashReport({
-				at: options.at ?? new Date().toISOString(),
-				component: "audit",
-				stage: "审批往返",
-				summary: auditVerdict.reason,
-				module: "lib/ab-watch.ts（classifyAuditOutcome）",
-				context: { 审核结论: verdict ?? "(没给结论)" },
-				hint: "看 ~/.pi/runtime/audit/notice.txt；要立刻回开发态就 make ab-detach COMPONENT=audit",
+			appendLog(join(resolveRuntimeRoot(options.runtimeRoot), "audit"), {
+				event: "note",
+				outcome: "crash",
+				reason: auditVerdict.reason,
+				note: `阶段=审批往返 模块=lib/ab-watch.ts 审核结论=${verdict ?? "(没给结论)"}`,
 			});
 		}
 	}

@@ -16,6 +16,9 @@ import { join } from "node:path";
 /** 攒到这个数就自动切 */
 export const PROMOTE_THRESHOLD = 5;
 
+/** 产品线：两条线坏起来的样子不一样（gui 看得见、audit 静默），所以类型上分开 */
+export type AbComponent = "gui" | "audit";
+
 export interface AbState {
 	/** 当前生效的 tag（短 sha） */
 	tag: string;
@@ -107,6 +110,58 @@ export function bumpClean(root: string, threshold = PROMOTE_THRESHOLD): { count:
 	writeLine(join(root, "count"), String(next));
 	appendLog(root, { event: "note", outcome: "clean", count: String(next), reason: "窗口给出结论" });
 	return { count: next, promote: next >= threshold };
+}
+
+/** 连续失败到这个数就回退（看门狗） */
+export const FAIL_THRESHOLD = 3;
+
+export interface RoundTripInput {
+	outcome: "clean" | "failure";
+	reason?: string;
+	threshold?: number;
+	failThreshold?: number;
+	autoPromote?: boolean;
+}
+
+export interface RoundTripResult {
+	count: number;
+	fail: number;
+	threshold: number;
+	promoted: boolean;
+	rolledBack: boolean;
+	action: "keep" | "promote" | "rollback";
+	reason: string;
+}
+
+/**
+ * 一次往返的记账与决策：干净就攒，攒满切候选；失败就清零，连续失败到阈值回退。
+ * 这是从旧四槽那套里搬过来的状态机——看门狗是安全网，属于"保留"的那部分。
+ */
+export function noteRoundTrip(root: string, input: RoundTripInput): RoundTripResult {
+	mkdirSync(root, { recursive: true });
+	const threshold = input.threshold ?? PROMOTE_THRESHOLD;
+	const failThreshold = input.failThreshold ?? FAIL_THRESHOLD;
+	const state = stateOf(root);
+	if (input.outcome === "clean") {
+		const count = state.count + 1;
+		writeLine(join(root, "fail"), "0");
+		writeLine(join(root, "count"), String(count));
+		appendLog(root, { event: "note", outcome: "clean", count: String(count), reason: input.reason ?? "干净往返" });
+		if (count >= threshold && input.autoPromote !== false && state.candidate !== "") {
+			setTag(root, state.candidate, { dir: state.dir || "dev", note: "攒满干净往返自动切换" });
+			return { count: 0, fail: 0, threshold, promoted: true, rolledBack: false, action: "promote", reason: "攒满干净往返，切到候选" };
+		}
+		return { count, fail: 0, threshold, promoted: false, rolledBack: false, action: "keep", reason: `干净 ${count}/${threshold}` };
+	}
+	const fail = (Number.parseInt(readLine(join(root, "fail")), 10) || 0) + 1;
+	writeLine(join(root, "fail"), String(fail));
+	writeLine(join(root, "count"), "0");
+	appendLog(root, { event: "note", outcome: "failure", count: String(fail), reason: input.reason ?? "往返失败" });
+	if (fail >= failThreshold && state.prevTag !== "") {
+		rollback(root);
+		return { count: 0, fail: 0, threshold, promoted: false, rolledBack: true, action: "rollback", reason: `连续失败 ${fail} 次，回退` };
+	}
+	return { count: 0, fail, threshold, promoted: false, rolledBack: false, action: "keep", reason: `失败 ${fail}/${failThreshold}` };
 }
 
 /** 生效产物所在目录（绝对路径）；状态没立起来就给空串，调用方自己回退 */

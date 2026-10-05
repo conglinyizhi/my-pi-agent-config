@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { PROMOTE_THRESHOLD, bumpClean, rollback, setTag, stateOf } from "./ab-tag.ts";
+import { PROMOTE_THRESHOLD, bumpClean, noteRoundTrip, rollback, setCandidate, setTag, stateOf } from "./ab-tag.ts";
 
 const root = () => mkdtempSync(join(tmpdir(), "ab-tag-"));
 
@@ -43,3 +43,43 @@ describe("一条产品线一个 tag", () => {
 		assert.ok(last.at);
 	});
 });
+
+describe("往返记账与看门狗", () => {
+	it("干净攒到阈值、有候选就切过去", () => {
+		const r = root();
+		setTag(r, "live111");
+		setCandidate(r, "cand222");
+		let last = noteRoundTrip(r, { outcome: "clean", threshold: 2 });
+		assert.equal(last.action, "keep");
+		last = noteRoundTrip(r, { outcome: "clean", threshold: 2 });
+		assert.equal(last.action, "promote");
+		assert.equal(stateOf(r).tag, "cand222");
+	});
+
+	it("没有候选时攒满也不切，只报干净", () => {
+		const r = root();
+		setTag(r, "live111");
+		const last = noteRoundTrip(r, { outcome: "clean", threshold: 1 });
+		assert.equal(last.promoted, false);
+		assert.equal(stateOf(r).tag, "live111");
+	});
+
+	it("连续失败到阈值回退到 prev-tag", () => {
+		const r = root();
+		setTag(r, "old111");
+		setTag(r, "new222");
+		noteRoundTrip(r, { outcome: "failure", failThreshold: 2 });
+		const last = noteRoundTrip(r, { outcome: "failure", failThreshold: 2 });
+		assert.equal(last.action, "rollback");
+		assert.equal(stateOf(r).tag, "old111");
+	});
+
+	it("一次干净把失败计数清零", () => {
+		const r = root();
+		setTag(r, "live111");
+		noteRoundTrip(r, { outcome: "failure" });
+		noteRoundTrip(r, { outcome: "clean" });
+		assert.equal(readFileSync(join(r, "fail"), "utf8").trim(), "0");
+	});
+});
+

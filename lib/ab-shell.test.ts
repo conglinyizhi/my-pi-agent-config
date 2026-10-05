@@ -27,10 +27,14 @@ function setup(): string {
 	return root;
 }
 
+/** 新模型：tag + dir 指向哪份产物。测试里槽名当 tag 使 */
 function pointCurrent(root: string, slot: string): void {
-	const link = join(root, "audit", "current");
+	const at = join(root, "audit");
+	mkdirSync(at, { recursive: true });
+	writeFileSync(join(at, "tag"), `sha-${slot}\n`, { mode: 0o600 });
+	writeFileSync(join(at, "dir"), `${slot}\n`, { mode: 0o600 });
+	const link = join(at, "current");
 	if (existsSync(link)) rmSync(link, { force: true });
-	symlinkSync(join(root, "audit", slot), link);
 }
 
 const fallback = async () => ({ default: () => "repo" });
@@ -42,15 +46,15 @@ describe("槽不在就用仓库", () => {
 		const root = join(mkdtempSync(join(tmpdir(), "ab-shell-")), "runtime");
 		const outcome = await load(root);
 		assert.equal(outcome.source, "repo");
-		assert.match(String(outcome.reason), /还没初始化/);
+		assert.match(String(outcome.reason), /没有 tag 状态/);
 		assert.equal(existsSync(root), false, "不该凭空造目录");
 	});
 
-	it("current 没设置", async () => {
+	it("tag 没设置", async () => {
 		const root = setup();
 		const outcome = await load(root);
 		assert.equal(outcome.source, "repo");
-		assert.match(String(outcome.reason), /current 软链/);
+		assert.match(String(outcome.reason), /没有 tag 状态/);
 	});
 
 	it("槽里没有这个扩展", async () => {
