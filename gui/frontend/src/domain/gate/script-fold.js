@@ -95,6 +95,8 @@ export function foldScript(script, editCalls, marks = [], options = {}) {
     label: labelOf(call),
     tone: call.kind === "literal" ? "literal" : call.kind === "shell" ? "shell" : "file",
     literal: call.literal !== false,
+    // 折起来照占的行数：行号栏不重编号，扫描报的行号才对得上
+    lines: typeof call.lines === "number" ? call.lines : 1,
     hiddenMarks: [],
     warned: false,
   }));

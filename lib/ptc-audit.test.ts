@@ -293,6 +293,13 @@ describe("approvePtcScript 送审", () => {
 			assert.equal(longLiteralSpans(args).length, 0);
 		});
 
+		it("块里有真工具调用就豁免，if 块本身也不算大数组", () => {
+			const withCall = "const a = [\n1,\n2,\ntools.read({ path: '/tmp/x' }),\n3,\n4,\n];";
+			const ifBlock = "if (files.length > 0) {\n  a;\n  b;\n  c;\n  d;\n  e;\n}";
+			assert.equal(longLiteralSpans(withCall).length, 0);
+			assert.equal(longLiteralSpans(ifBlock).length, 0);
+		});
+
 		it("注释与字符串里的括号不参与配对", () => {
 			const source = "// [\n/* ( ] */\nconst s = \"[[[\";\nconst a = [\n1,\n2,\n3,\n];";
 			const spans = longLiteralSpans(source);

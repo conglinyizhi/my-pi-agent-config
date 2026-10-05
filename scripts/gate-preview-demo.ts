@@ -30,7 +30,6 @@ const SOURCE = [
 	"];",
 	BANNER,
 	"",
-	"if (files.length > 0) {",
 	"        const out = await tools.write({",
 	"              path: '/home/clyzhi/.pi/agent/lib/timeline.ts',",
 	"              content: files.join(', '),",
@@ -42,7 +41,6 @@ const SOURCE = [
 	"  await tools.write({ path: '/home/clyzhi/.pi/agent/lib/timeline.ts', content: body });",
 	"  await tools.apply_patch({ patch: \"*** Update File: /tmp/notes.txt\\n@@ -1 +1 @@\\n-old line\\n+new line\\n\" });",
 	"  await tools.cleanup_everything({ path: '/etc/hosts' });",
-	"}",
 ].join("\n");
 
 async function main(): Promise<void> {

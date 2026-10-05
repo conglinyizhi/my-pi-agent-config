@@ -36,7 +36,7 @@ export function splitLines(segments, tokens) {
 	for (const segment of Array.isArray(segments) ? segments : []) {
 		if (segment?.kind === "chip") {
 			current.parts.push({ kind: "chip", chip: segment.chip });
-			const swallowed = Number(segment.chip?.lines ?? 1) - 1;
+			const swallowed = Number(segment.chip?.lines ?? segment.chip?.call?.lines ?? 1) - 1;
 			if (swallowed > 0) nextNo += swallowed;
 			continue;
 		}

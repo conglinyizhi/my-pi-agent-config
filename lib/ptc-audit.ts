@@ -162,6 +162,8 @@ export function longLiteralSpans(text: string): Array<{ startOffset: number; end
 	const source = typeof text === "string" ? text : "";
 	const spans: Array<{ startOffset: number; endOffset: number }> = [];
 	const brackets: Array<{ at: number }> = [];
+	// 代码里真出现的 tools.xxx( —— 字符串里的不算（字符串在上面的分支里已跳过）
+	const toolCalls: number[] = [];
 	let quote = "";
 	let quoteAt = 0;
 	let i = 0;
@@ -187,13 +189,29 @@ export function longLiteralSpans(text: string): Array<{ startOffset: number; end
 			continue;
 		}
 		if (ch === '"' || ch === "'" || ch === "`") { quote = ch; quoteAt = i; i++; continue; }
+		if (/[A-Za-z_$]/.test(ch)) {
+			if (source.startsWith("tools", i) && /^\s*\.\s*[A-Za-z_$][\w$]*\s*\(/.test(source.slice(i + 5))) {
+				toolCalls.push(i);
+			}
+			let k = i;
+			while (k < source.length && /[A-Za-z0-9_$.]/.test(source[k])) k++;
+			i = k;
+			continue;
+		}
 		if (ch === "[" || ch === "{" || ch === "(") { brackets.push({ at: i }); i++; continue; }
 		if (ch === "]" || ch === "}" || ch === ")") {
 			const open = brackets.pop();
 			// 只折数组与对象：圆括号是调用的实参，那块由调用芯片负责
 			if (open && ch !== ")") {
 				const body = source.slice(open.at, i + 1);
-				if (body.split("\n").length >= 5) spans.push({ startOffset: open.at, endOffset: i + 1 });
+				// 块里真有工具调用的豁免：折了就是把主要逻辑藏起来（提督定的规则）。
+				// if/for 这类块也不算"大数组"，它们的长相是代码，不是数据。
+				const hasCall = toolCalls.some((at) => at > open.at && at < i);
+				const head = source.slice(Math.max(0, open.at - 40), open.at);
+				const looksLikeLogic = /\b(if|for|while|switch|try|function|=>)\b[^;]*$/.test(head);
+				if (body.split("\n").length >= 5 && !hasCall && !looksLikeLogic) {
+					spans.push({ startOffset: open.at, endOffset: i + 1 });
+				}
 			}
 			i++;
 			continue;
