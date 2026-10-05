@@ -20,10 +20,13 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
 import { buildEditorCommand, detectEditors } from "./editor-open.js";
 import { resolveCliPath } from "./cli-path.js";
+import { versionLabelFrom } from "./slot-version.js";
 import { createServeBridge } from "./serve-bridge.js";
 import { readStatusSnapshot } from "./status-file.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** 槽根在 gui/electron 的上两级；仓库里跑时没有 manifest，标签为空 */
+const VERSION = versionLabelFrom(resolve(HERE, "..", "..", "manifest.json"));
 /** 前端产物：gui/frontend（Vue 工程，与引擎无关；两个引擎共用一份 dist） */
 const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 /** 审核设置的 JSON 桥（主进程是纯 JS，读不了 .ts，也绝不在主进程重写 TOML 逻辑） */
@@ -138,7 +141,8 @@ function createWindow() {
 		height: config.height,
 		minWidth: config.minWidth,
 		minHeight: config.minHeight,
-		title: config.title,
+		// 标题中间带上槽与短 sha：A/B 切过之后一眼看得出在跑哪一份
+		title: VERSION ? `${config.title} · ${VERSION}` : config.title,
 		// X11 直接读窗口属性；Wayland 下这个不生效，图标靠 desktop 条目（gui/install-desktop.sh）
 		icon: join(HERE, "..", "icons", "pi-gui.png"),
 		backgroundColor: "#1a1a2e",
