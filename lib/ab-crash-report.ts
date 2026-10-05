@@ -99,7 +99,11 @@ export function splitReports(text: string): string[] {
 export function appendCrashReport(
 	report: CrashReport,
 	options: { agentDir?: string; maxBytes?: number } = {},
-): { path: string; bytes: number } {
+): { path: string; bytes: number; skipped?: string } {
+	// 与观察层同一条教训：测试进程默认不写（要写就显式给 agentDir）
+	if (options.agentDir === undefined && process.env.PI_AGENT_DIR === undefined && process.env.NODE_TEST_CONTEXT !== undefined) {
+		return { path: crashReportPath(), bytes: 0, skipped: "测试进程不写崩溃报告" };
+	}
 	const path = crashReportPath(options.agentDir);
 	const maxBytes = options.maxBytes ?? REPORT_MAX_BYTES;
 	const entry = formatCrashReport(report);
