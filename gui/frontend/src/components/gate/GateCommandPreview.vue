@@ -188,7 +188,9 @@ watch(() => props.highlights, scroll, { deep: true });
 .hl-count { color: #888; }
 .hl-btn { padding: 3px 10px; background: #2a2a4a; border: 1px solid #444; border-radius: 3px; color: #ccc; cursor: pointer; font-size: 11px; }
 .hl-btn:disabled { opacity: 0.4; }
-.cmd-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
+/* 脚本区是这扇窗的主体：给它保底高度，窗口拉高时空间归它，而不是空在下面。
+   根是 display:contents，所以这条直接参与 .app 的 flex 布局。 */
+.cmd-wrap { flex: 1 1 auto; min-height: 42vh; position: relative; display: flex; }
 .fold-legend { padding: 4px 16px 8px; font-size: 11px; color: #777; }
 .cmd-area { flex: 1; margin: 0; padding: 16px; background: #0d0d1a; font-family: monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; overflow-wrap: break-word; overflow: auto; color: #e0e0e0; outline: none; }
 /* 芯片：灰=改文件，橙=可执行 shell。字号跟着正文走，别在 <pre> 里跳出来 */
