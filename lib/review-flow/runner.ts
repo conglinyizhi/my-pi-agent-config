@@ -56,6 +56,8 @@ export interface RunResult {
 	decision: Terminal;
 	/** 决定从哪来：节点 id、边名、或 fail 出口 */
 	via: string;
+	/** 各节点产物，按节点 id 取（调用方要拿结论原文，比如预审要看合并那一步的 ReviewResult） */
+	outputs: Record<string, unknown>;
 	trace: TraceRecord[];
 	calls: number;
 	timedOut: boolean;
@@ -249,5 +251,5 @@ export async function runFlow(
 		via = FAIL_EXIT;
 	}
 	skipRest(via);
-	return { decision, via, trace, calls, timedOut, budgetExhausted };
+	return { decision, via, outputs: Object.fromEntries(outputs), trace, calls, timedOut, budgetExhausted };
 }

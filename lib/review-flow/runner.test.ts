@@ -43,6 +43,8 @@ describe("流程运行器", () => {
 		assert.equal(result.decision, "allow");
 		// via 记的是决定怎么来的；是哪条节点给的，看轨迹里谁把 to 写成了 allow
 		assert.equal(result.via, "allow");
+		// 产物要能取回来：预审就是靠合并那一步的结论
+		assert.equal(result.outputs.merge, "merged");
 		assert.equal(result.trace.find((r) => r.to === "allow" && r.status === "ran")?.nodeId, "auto");
 		const gate = result.trace.find((r) => r.nodeId === "gate");
 		assert.equal(gate?.status, "skipped");
