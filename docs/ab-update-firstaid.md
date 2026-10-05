@@ -59,9 +59,12 @@ Electron 完全起不来时它也能用（这就是它为什么故意写得这�
 ## 回到开发态
 
 ```sh
-make ab-switch SLOT=dev          # 指向 dev 槽
-rm ~/.pi/runtime/audit/current   # 或者干脆删掉 current：等于用仓库那份
+make ab-switch SLOT=dev                    # 指向 dev 槽
+make ab-detach COMPONENT=audit             # 摘掉 current：回到仓库版本（不删任何槽）
 ```
+
+`ab-detach` 是开发时最常用的那个：改了仓库里的审核代码、又不想每次都重新打包，
+摘掉 current 就等于"用仓库那份"，槽还留着。
 
 ## 别做
 

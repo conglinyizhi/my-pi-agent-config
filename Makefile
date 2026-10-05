@@ -22,7 +22,7 @@ RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        require-component ab-status ab-pack ab-switch ab-rollback ab-promote ab-log ab-note ab-firstaid \
+        require-component ab-status ab-pack ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-firstaid \
         smoke
 
 help: ## 列出所有目标
@@ -50,6 +50,10 @@ ab-switch: require-component ## 把 current 指向某个槽（必给 COMPONENT�
 
 ab-rollback: require-component ## 应急回退到上一个稳定槽（必给 COMPONENT；纯 shell）
 	bin/ab-rollback.sh $(COMPONENT)
+
+ab-detach: require-component ## 摘掉 current：回到仓库版本（临时开发用，不删任何槽）
+	@rm -f "$(RT)/$(COMPONENT)/current"
+	@printf '已摘掉 %s 的 current：从现在起用仓库那份实现（下一次 reload 生效）\n' "$(COMPONENT)"
 
 ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
 	bin/ab-slot.sh promote $(COMPONENT) --runtime-root $(RT)

@@ -197,6 +197,13 @@
 - 被拒绝时拒绝理由会回传：照着调整路径或换方案，不要原地重试同一条
 - 权限是提督的。林汐可以建议、可以催，但不替他拍板；被驳回就换路，不当成方案不通
 
+## A/B 更新（图形界面与审核链的版本切换）
+
+出问题先读 `docs/ab-update-firstaid.md`：症状 → 一条止血命令。
+命令入口是 Makefile（`make help`），组件 `gui` / `audit` **必须显式指名**——
+默认值被刻意去掉，因为两者坏起来的样子完全不同（一个看得见、一个静默）。
+临时回到仓库版本：`make ab-detach COMPONENT=audit`。
+
 ## 审批 hub（别忘）
 
 人工审批（bash / sandbox-allow / capability）默认问本机 `pi-hub`，不是进程里自己弹窗。一台机器一个守护，Unix socket `~/.pi/agent/run/hub.sock`，systemd --user。hub 在线时闸门窗由 hub 拉起，和已连接的 IM 适配器扇出，先合法应答赢。hub 没起来才回退 GUI→TUI。
