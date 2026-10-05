@@ -1,5 +1,5 @@
 <template>
-  <div v-if="ready" class="app">
+  <div v-if="ready" class="app" :class="{ 'has-review': !isSandboxAllow && !isCapability }">
     <GateCommandPreview
       :title="title"
       :task-id="taskId"
@@ -312,32 +312,49 @@ onMounted(async () => {
 
 <style scoped>
 .app {
-  /* 排版：右上整块模型审核（云端判定 + 对话意见 + 分类器权重）不拆开，作为一个面板；
-     左上是标题、左下是判定摘要；指令与解析结果要横向空间，整宽往下排。
-     两个子组件的根都是 display: contents，所以真正的格子是它们的孩子。 */
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-auto-rows: min-content;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: auto;
   background: #1a1a2e;
   color: #e0e0e0;
 }
-.app > * { grid-column: 1 / -1; }
-.app :deep(.gate-fragment > *) { grid-column: 1 / -1; }
-.app :deep(.review-block) {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  max-height: 46vh;
-  overflow: auto;
-  border-left: 1px solid #2a2a4a;
-  padding: 8px 16px;
+/* 有模型意见时排两栏：右列整根通到顶（header / 文本模型 / 分类），
+   左列是标题、判定摘要、指令、图例、解析结果、规则、路径……
+   两个子组件的根都是 display: contents，所以真正的格子是它们的孩子。
+   没有模型意见的窗（sandbox-allow、capability）保持单列。 */
+.app.has-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-auto-rows: min-content;
+  grid-auto-flow: row dense;
+  align-content: start;
 }
-.app :deep(.top-bar) { grid-column: 1; grid-row: 1; }
-.app :deep(.decision-summary) { grid-column: 1; grid-row: 2; }
-.app :deep(.cmd-wrap) { grid-column: 1 / -1; grid-row: 3; }
+.app.has-review > *,
+.app.has-review :deep(.gate-fragment > *) { grid-column: 1; }
+/* 左列前三块钉住：标题、判定摘要、指令 */
+.app.has-review :deep(.top-bar) { grid-column: 1; grid-row: 1; }
+.app.has-review :deep(.decision-summary) { grid-column: 1; grid-row: 2; }
+.app.has-review :deep(.cmd-wrap) { grid-column: 1; grid-row: 3; }
+/* 右列：模型审核摊平成三段，逐块落右列 */
+.app.has-review :deep(.review-block) { display: contents; }
+.app.has-review :deep(.review-header) { grid-column: 2; grid-row: 1; }
+.app.has-review :deep(.review-reason),
+.app.has-review :deep(.review-suggestion),
+.app.has-review :deep(.review-opinion),
+.app.has-review :deep(.chat-review),
+.app.has-review :deep(.weight-table) { grid-column: 2; }
+.app.has-review :deep(.review-header),
+.app.has-review :deep(.review-reason),
+.app.has-review :deep(.review-suggestion),
+.app.has-review :deep(.review-opinion),
+.app.has-review :deep(.chat-review),
+.app.has-review :deep(.weight-table) { border-left: 1px solid #2a2a4a; padding: 6px 16px; }
+/* 段与段之间来一条线：header / 文本模型 / 分类 */
+.app.has-review :deep(.chat-review),
+.app.has-review :deep(.weight-table) { border-top: 1px solid #2a2a4a; }
+/* 底栏整宽 */
+.app.has-review :deep(.actions) { grid-column: 1 / -1; }
 .var-table { border-bottom: 1px solid #2a2a4a; background: #16162a; padding: 6px 16px 8px; max-height: 22vh; overflow: auto; }
 .var-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .var-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
