@@ -30,10 +30,12 @@ import {
 	createReviewCache,
 	loadLlmReviewConfig,
 	reviewCommand as defaultReviewCommand,
+	runClassifierReview,
 	type LlmReviewConfig,
 	type ReviewCache,
 	type ReviewResult,
 } from "../extensions/sandbox-permissions/llm-review.ts";
+import { preReviewViaFlow } from "./review-flow/pre-review.ts";
 
 /**
  * 审核模型本来就认识的工具：只给名字，不占送审额度。
@@ -310,6 +312,10 @@ export interface PtcAuditOutcome {
  */
 export interface PtcAuditDependencies {
 	reviewCommand?: typeof defaultReviewCommand;
+	/** 测试注入；默认走审核流里分类器那个节点（带 advisor 的支路）。 */
+	classifierReview?: typeof runClassifierReview;
+	/** 测试注入；默认读 extensions.toml 的审核档位。 */
+	loadReviewConfig?: () => LlmReviewConfig;
 	channel?: ApprovalChannel;
 }
 
@@ -394,28 +400,26 @@ export async function preReviewPtcScript(options: {
 	const deps = options.deps ?? {};
 	const subject = buildPtcAuditSubject(input);
 	const digest = ptcScriptDigest(input.script);
-	const config = loadLlmReviewConfig();
-	let review: ReviewResult | undefined;
+	const config = (deps.loadReviewConfig ?? loadLlmReviewConfig)();
 
-	if (config.enabled) {
-		try {
-			review = await (deps.reviewCommand ?? defaultReviewCommand)(
-				pi,
-				ctx,
-				subject,
-				[],
-				signal,
-				ptcReviewCache(),
-				config,
-				// 场景交给审核链：审的本来就是脚本，「这条命令是否用脚本改写文件」不提问、不判定
-				{ scenario: "ptc" },
-			);
-		} catch {
-			review = undefined;
-		}
+	// 预审走审核流：与 bash 那条是同一条链、同一处判据，只是场景是 ptc
+	// （分类器据此不再问「这条命令是否用脚本改写文件」这种没信息量的维度）。
+	// 以前这里另抄了一份 autoApproved 的表达式，现在没有了。
+	try {
+		const result = await preReviewViaFlow({
+			input: { pi, ctx, command: subject, rules: [], scenario: "ptc", ...(signal ? { signal } : {}) },
+			config,
+			cache: ptcReviewCache(),
+			nodes: {
+				...(deps.reviewCommand ? { reviewCommand: deps.reviewCommand } : {}),
+				...(deps.classifierReview ? { classifierReview: deps.classifierReview } : {}),
+				...(deps.loadReviewConfig ? { loadConfig: deps.loadReviewConfig } : {}),
+			},
+		});
+		return { config, subject, digest, review: result.review, autoApproved: result.autoApproved };
+	} catch {
+		return { config, subject, digest, review: undefined, autoApproved: false };
 	}
-
-	return { config, subject, digest, review, autoApproved: review?.verdict === "safe" && config.mode === "auto" };
 }
 
 export async function approvePtcScript(options: {
