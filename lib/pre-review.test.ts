@@ -90,4 +90,26 @@ describe("预审（直连）", () => {
 		const denied = await preReview(options("chain", withRule, createReviewCache()));
 		assert.equal(denied.autoApproved, false, "规则 deny 要拦住自动放行");
 	});
+
+	it("分类器超时但对话模型有结论：按对话模型判（分类器视为绿灯）", async () => {
+		const deps = makeDeps({ verdict: "error", reason: "分类器超时", suggestion: "" }, SAFE);
+		const result = await preReview(options("chain", deps));
+		assert.equal(result.review?.verdict, "safe");
+		assert.match(result.review?.reason ?? "", /分类器没给出结论/);
+		assert.equal(result.autoApproved, true, "对话模型判安全就该放行");
+	});
+
+	it("分类器超时且对话模型判风险：照样问人", async () => {
+		const deps = makeDeps({ verdict: "error", reason: "分类器超时", suggestion: "" }, RISKY);
+		const result = await preReview(options("chain", deps));
+		assert.equal(result.review?.verdict, "risky");
+		assert.equal(result.autoApproved, false);
+	});
+
+	it("两个都失败：没有结论，交给人", async () => {
+		const err = { verdict: "error", reason: "都挂了", suggestion: "" } as ReviewResult;
+		const deps = makeDeps(err, err);
+		const result = await preReview(options("chain", deps));
+		assert.equal(result.autoApproved, false);
+	});
 });

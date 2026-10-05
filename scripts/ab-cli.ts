@@ -24,7 +24,7 @@ const command = process.argv[2] ?? "status";
 const component = arg("component");
 const runtimeRoot = arg("runtime-root") ?? join(homedir(), ".pi", "runtime");
 if (command !== "status" && !component) {
-	process.stderr.write("需要 --component（gui 或 audit）：组件坏起来的样子不一样，不给默认值\n");
+	process.stderr.write("需要 --component（现在只有 gui）：不给默认值，免得退错对象\n");
 	process.exit(2);
 }
 const root = component ? join(runtimeRoot, component) : runtimeRoot;

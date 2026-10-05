@@ -16,7 +16,7 @@ description: A/B 更新的操作手册：一条产线一个 tag、切 tag、回�
 make ab-status                          # 两条产线各挂哪个 tag，带干净/失败计数
 make ab-tag COMPONENT=gui               # 只看一条
 make ab-update COMPONENT=gui FORCE=1    # 强制：打完直接生效
-make ab-update COMPONENT=gui            # 打完挂候选，攒满 5 次干净授权自动切
+make ab-update COMPONENT=gui            # 打完挂候选，一次干净授权就自动切
 make ab-clean COMPONENT=gui             # 每次干净授权往返记一笔（看门狗会调）
 make ab-rollback COMPONENT=gui          # 退回 prev-tag
 make ab-log COMPONENT=gui               # 看流水

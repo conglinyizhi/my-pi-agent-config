@@ -116,20 +116,18 @@ export function classifyWindowOutcome(result: { ok?: boolean; data?: unknown; re
 /**
  * 一次闸门往返：这是两个组件共用的观察点。
  *
- * gui 侧看窗口活不活（叉掉/超时/起不来都算失败）；
- * audit 侧看这次审计有没有走完（窗口失败也算，链自己报错也算）。
- * 没有 review 字段说明这次根本没跑审核（开关关着），那就不记 audit 的账。
+ * 看窗口活不活（叉掉/超时/起不来都算失败）。
+ *
+ * 审核侧那条产线撤了：扩展改动走仓库 + /reload，不再有槽、也没有它的账要记。
  */
 export function noteGateRoundTrip(options: {
 	windowResult: { ok?: boolean; data?: unknown; reason?: string };
-	/** 这次请求里带的审核结果（ApprovalRequest.review） */
-	review?: unknown;
 	runtimeRoot?: string;
 	threshold?: number;
 	failThreshold?: number;
 	autoPromote?: boolean;
 	at?: string;
-}): { gui: WatchResult; audit?: WatchResult; notices: Array<{ component: AbComponent; text: string }> } {
+}): { gui: WatchResult; notices: Array<{ component: AbComponent; text: string }> } {
 	// 同 watchRoundTrip：测试进程默认不写状态
 	if (writeBlocked(options.runtimeRoot)) {
 		return { gui: { noted: false, skipped: "测试进程不写运行时状态" }, notices: [] };
@@ -153,38 +151,14 @@ export function noteGateRoundTrip(options: {
 		});
 	}
 
-	let audit: WatchResult | undefined;
-	if (options.review !== undefined && options.review !== null) {
-		const verdict = typeof options.review === "object" ? (options.review as { verdict?: string }).verdict : undefined;
-		const auditVerdict =
-			windowVerdict.outcome === "failure"
-				? { outcome: "failure" as const, reason: `这次没走完：${windowVerdict.reason}` }
-				: classifyAuditOutcome(verdict);
-		audit = watchRoundTrip({
-			component: "audit",
-			outcome: auditVerdict.outcome,
-			reason: auditVerdict.reason,
-			...shared,
-		});
-		if (auditVerdict.outcome === "failure") {
-			appendLog(join(resolveRuntimeRoot(options.runtimeRoot), "audit"), {
-				event: "note",
-				outcome: "crash",
-				reason: auditVerdict.reason,
-				note: `阶段=审批往返 模块=lib/ab-watch.ts 审核结论=${verdict ?? "(没给结论)"}`,
-			});
-		}
-	}
-
 	const notices: Array<{ component: AbComponent; text: string }> = [];
-	for (const [label, result] of [["gui", gui], ["audit", audit]] as const) {
-		if (!result?.noted) continue;
+	if (gui.noted) {
 		// 回退比晋升更需要被看见：放前面，先报这个
-		if (result.rolledBack) notices.push({ component: label, text: `${label} 连续失败已达门槛，已自动回退到上一版` });
-		if (result.promoted) notices.push({ component: label, text: `${label} 已自动晋升（连续 ${result.clean} 次干净往返）` });
-		else if (result.action === "notify") notices.push({ component: label, text: `${label} 已攒够 ${result.threshold} 次干净往返，可以晋升` });
+		if (gui.rolledBack) notices.push({ component: "gui", text: "gui 连续失败已达门槛，已自动回退到上一版" });
+		if (gui.promoted) notices.push({ component: "gui", text: `gui 已自动晋升（连续 ${gui.clean} 次干净往返）` });
+		else if (gui.action === "notify") notices.push({ component: "gui", text: `gui 已攒够 ${gui.threshold} 次干净往返，可以晋升` });
 	}
-	return { gui, ...(audit ? { audit } : {}), notices };
+	return { gui, notices };
 }
 
 /** 把一条提示落到运行时目录，供 TUI 在下次启动时读走（期 3 接上展示） */

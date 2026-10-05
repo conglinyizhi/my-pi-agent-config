@@ -1,4 +1,4 @@
-// scripts/ab-pack.test.ts — 真跑：从 HEAD 构建一个 audit 槽
+// scripts/ab-pack.test.ts — 真跑：从 HEAD 构建一个 gui 槽
 // 跑法：node --test --experimental-strip-types scripts/ab-pack.test.ts
 
 import assert from "node:assert/strict";
@@ -20,14 +20,14 @@ function tmpRoot(): string {
 	return mkdtempSync(join(tmpdir(), "ab-pack-"));
 }
 
-describe("构建 audit 槽", () => {
-	it("源码与 manifest 都落到槽里", () => {
+describe("构建 gui 槽", () => {
+	it("窗口产物与 manifest 都落到槽里", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--ref", "HEAD", "--dir", "dev", "--runtime-root", root]);
+		const result = run(["gui", "--ref", "HEAD", "--dir", "dev", "--runtime-root", root]);
 		assert.equal(result.status, 0, result.stderr);
-		const slot = join(root, "audit", "dev");
-		assert.equal(existsSync(join(slot, "lib", "ab-tag.ts")), true);
-		assert.equal(existsSync(join(slot, "extensions", "sandbox-permissions", "index.ts")), true);
+		const slot = join(root, "gui", "dev");
+		assert.equal(existsSync(join(slot, "gui", "electron", "main.js")), true);
+		assert.equal(existsSync(join(slot, "gui", "frontend")), true);
 		const manifest = JSON.parse(readFileSync(join(slot, "manifest.json"), "utf8"));
 		assert.equal(manifest.ref, "HEAD");
 		assert.match(String(manifest.sha), /^[0-9a-f]{7,}$/);
@@ -37,22 +37,21 @@ describe("构建 audit 槽", () => {
 
 	it("--json 给结构化结果", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--dir", "dev", "--runtime-root", root, "--json"]);
+		const result = run(["gui", "--dir", "dev", "--runtime-root", root, "--json"]);
 		assert.equal(result.status, 0, result.stderr);
-		const parsed = JSON.parse(result.stdout);
-		assert.equal(parsed.ok, true);
-		assert.equal(existsSync(join(root, "audit", "dev", "manifest.json")), true, "缺省落暂存目录 dev");
+		assert.equal(JSON.parse(result.stdout).ok, true);
+		assert.equal(existsSync(join(root, "gui", "dev", "manifest.json")), true, "缺省落暂存目录 dev");
 	});
 
 	it("拒绝往 stable 构建", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--dir", "stable", "--runtime-root", root]);
+		const result = run(["gui", "--dir", "stable", "--runtime-root", root]);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /只能落暂存目录/);
-		assert.equal(existsSync(join(root, "audit", "stable")), false, "拒绝时不该动盘");
+		assert.equal(existsSync(join(root, "gui", "stable")), false, "拒绝时不该动盘");
 	});
 
-	it("gui 从老 ref 构建时明说暂不支持，不假装支持", () => {
+	it("从老 ref 构建时明说暂不支持，不假装支持", () => {
 		const result = run(["gui", "--ref", "HEAD~1", "--dir", "dev", "--runtime-root", tmpRoot()]);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /暂不支持从老 ref 构建/);
@@ -63,29 +62,32 @@ describe("构建 audit 槽", () => {
 		assert.equal(result.status, 2);
 		assert.match(result.stderr, /用法/);
 	});
+
+	it("audit 不再是合法组件（那条产线撤了）", () => {
+		const result = run(["audit", "--dir", "dev", "--runtime-root", tmpRoot()]);
+		assert.notEqual(result.status, 0);
+	});
 });
 
 describe("槽要能拿到宿主的依赖", () => {
 	it("槽里带上 node_modules 软链（不然槽内那份 import 不到宿主 pi 的包）", () => {
 		const root = tmpRoot();
-		const result = run(["audit", "--dir", "dev", "--runtime-root", root]);
+		const result = run(["gui", "--dir", "dev", "--runtime-root", root]);
 		assert.equal(result.status, 0, result.stderr);
-		const link = join(root, "audit", "dev", "node_modules");
+		const link = join(root, "gui", "dev", "node_modules");
 		assert.equal(existsSync(link), true, "槽里该有 node_modules");
 		assert.equal(lstatSync(link).isSymbolicLink(), true, "软链而不是复制");
 	});
 });
 
-
 describe("自举已删", () => {
-	it("stable / previous 都拒绝构建（没有自举这条路了）", () => {
+	it("stable / previous 都拒绝构建", () => {
 		const root = tmpRoot();
 		for (const dir of ["stable", "previous"]) {
-			const result = run(["audit", "--dir", dir, "--runtime-root", root]);
+			const result = run(["gui", "--dir", dir, "--runtime-root", root]);
 			assert.notEqual(result.status, 0, dir);
 			assert.match(result.stderr, /只能落暂存目录/);
-			assert.equal(existsSync(join(root, "audit", dir)), false);
+			assert.equal(existsSync(join(root, "gui", dir)), false);
 		}
 	});
 });
-

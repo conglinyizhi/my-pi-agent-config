@@ -11,7 +11,7 @@ import { noticePath, takeAllNotices, takeNotices } from "./ab-notice.ts";
 function setup(): string {
 	const root = mkdtempSync(join(tmpdir(), "ab-notice-"));
 	mkdirSync(join(root, "gui"), { recursive: true });
-	mkdirSync(join(root, "audit"), { recursive: true });
+	mkdirSync(join(root, "gui"), { recursive: true });
 	return root;
 }
 
@@ -27,14 +27,14 @@ describe("提示的读取与消费", () => {
 
 	it("文件不在就给空数组，不造文件", () => {
 		const root = setup();
-		assert.deepEqual(takeNotices(root, "audit"), []);
-		assert.equal(existsSync(noticePath(root, "audit")), false);
+		assert.deepEqual(takeNotices(root, "gui"), []);
+		assert.equal(existsSync(noticePath(root, "gui")), false);
 	});
 
 	it("两个组件一起读，没提示的不占位置", () => {
 		const root = setup();
-		writeFileSync(noticePath(root, "audit"), "audit 已攒够 5 次，可以晋升\n", "utf8");
+		writeFileSync(noticePath(root, "gui"), "audit 已攒够 5 次，可以晋升\n", "utf8");
 		const all = takeAllNotices(root);
-		assert.deepEqual(all.map((entry) => entry.component), ["audit"]);
+		assert.deepEqual(all.map((entry) => entry.component), ["gui"]);
 	});
 });

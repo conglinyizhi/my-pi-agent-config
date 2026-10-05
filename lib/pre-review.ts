@@ -57,17 +57,27 @@ async function runChain(
 	signal: AbortSignal,
 ): Promise<ReviewResult | undefined> {
 	// 档位决定跑哪几步：classifier 档不许顺手把对话模型也拉起来（白花钱，用例盯着这条）
-	if (backend === "chat") {
-		return outputOf(await makeChatReviewNode(deps)(context("chat", {}, input, {}, signal)));
+	let chatReview: ReviewResult | undefined;
+	if (backend !== "classifier") {
+		chatReview = outputOf(await makeChatReviewNode(deps)(context("chat", {}, input, {}, signal)));
 	}
-	const upstream: Record<string, unknown> = {};
-	if (backend === "chain") {
-		upstream.chat = outputOf(await makeChatReviewNode(deps)(context("chat", {}, input, {}, signal)));
-	}
+	if (backend === "chat") return chatReview;
+
+	const upstream: Record<string, unknown> = chatReview ? { chat: chatReview } : {};
 	const classify = await makeClassifierNode(deps)(context("classify", {}, input, upstream, signal));
 	upstream.classify = outputOf(classify);
-	const merged = await makeMergeNode()(context("merge", {}, input, upstream, signal));
-	return outputOf(merged);
+	const merged = outputOf(await makeMergeNode()(context("merge", {}, input, upstream, signal)));
+
+	// 分类器超时/挂了但对话模型有结论：视为分类器绿灯，只按对话模型判（提督 2026-10-05 定的）。
+	// 这是有意放宽：分类器打不通时按对话模型的结论走，而不是每次都把人叫来。
+	// 代价记在这里——对话模型比分类器弱，误放行的风险由它的 verdict 兜着（它判 risky 仍会问人）。
+	if (merged?.verdict === "error" && chatReview && chatReview.verdict !== "error") {
+		return {
+			...chatReview,
+			reason: `分类器没给出结论（${merged.reason}），本次按对话模型判：${chatReview.reason}`,
+		};
+	}
+	return merged;
 }
 
 /** 判哪一份结论：两个模型都跑时看合并，只跑对话模型时看它（与原来一致） */

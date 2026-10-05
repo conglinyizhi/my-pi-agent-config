@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-	classifyAuditOutcome,
 	classifyWindowOutcome,
 	noteGateRoundTrip,
 	resolveRuntimeRoot,
@@ -21,7 +20,7 @@ import {
  */
 function setup(): string {
 	const root = mkdtempSync(join(tmpdir(), "ab-watch-"));
-	for (const component of ["gui", "audit"]) {
+	for (const component of ["gui"]) {
 		const at = join(root, component);
 		mkdirSync(join(at, "dev"), { recursive: true });
 		writeFileSync(join(at, "tag"), "live111\n", { mode: 0o600 });
@@ -104,7 +103,7 @@ describe("计数与自动晋升", () => {
 		const root = setup();
 		let last;
 		for (let index = 0; index < 5; index += 1) {
-			last = watchRoundTrip({ component: "audit", outcome: "clean", runtimeRoot: root, autoPromote: false });
+			last = watchRoundTrip({ component: "gui", outcome: "clean", runtimeRoot: root, autoPromote: false });
 		}
 		assert.equal(last?.action, "keep", "关掉自动晋升就只攒着");
 		assert.equal(last?.promoted, false);
@@ -136,58 +135,26 @@ describe("从结果判干净", () => {
 		}
 	});
 
-	it("审计：安全与有风险都算走完，链报错才算失败", () => {
-		assert.equal(classifyAuditOutcome("safe").outcome, "clean");
-		assert.equal(classifyAuditOutcome("risky").outcome, "clean");
-		assert.equal(classifyAuditOutcome("dangerous").outcome, "clean");
-		assert.equal(classifyAuditOutcome("error").outcome, "failure");
-		assert.equal(classifyAuditOutcome(undefined).outcome, "failure");
-	});
 });
 
-describe("闸门往返：两个组件的共用观察点", () => {
-	it("窗口给了结论、审核有 verdict：两侧各记一次干净", () => {
+describe("闸门往返：窗口是唯一要记账的那一半", () => {
+	// 阈值现在是 1：第一次干净往返就晋升，所以 clean 归零、promoted 为真
+	it("窗口走完即记一次干净，并立刻晋升到候选", () => {
 		const root = setup();
 		const watched = noteGateRoundTrip({
 			windowResult: { ok: true, data: { action: "allow" } },
-			review: { verdict: "safe" },
 			runtimeRoot: root,
 		});
 		assert.equal(watched.gui.noted, true);
-		assert.equal(watched.gui.clean, 1);
-		assert.equal(watched.audit?.noted, true);
-		assert.equal(watched.audit?.clean, 1);
+		assert.equal(watched.gui.promoted, true, "阈值 1：一次就切");
+		assert.equal(watched.gui.clean, 0, "晋升之后计数归零");
 	});
 
-	it("叉掉窗口：两侧都算失败，audit 的理由里说明是这次没走完", () => {
+	it("叉掉窗口算失败", () => {
 		const root = setup();
-		const watched = noteGateRoundTrip({
-			windowResult: { ok: false, reason: "exited" },
-			review: { verdict: "safe" },
-			runtimeRoot: root,
-		});
+		const watched = noteGateRoundTrip({ windowResult: { ok: false, reason: "exited" }, runtimeRoot: root });
 		assert.equal(watched.gui.clean, 0);
-		assert.equal(watched.audit?.clean, 0);
-		assert.match(readFileSync(join(root, "audit", "promote.log"), "utf8"), /这次没走完/);
-	});
-
-	it("链自己报错：gui 算干净、audit 算失败", () => {
-		const root = setup();
-		const watched = noteGateRoundTrip({
-			windowResult: { ok: true, data: { action: "allow" } },
-			review: { verdict: "error" },
-			runtimeRoot: root,
-		});
-		assert.equal(watched.gui.clean, 1);
-		assert.equal(watched.audit?.clean, 0);
-	});
-
-	it("没有 review 说明这次没跑审核，就不记 audit 的账", () => {
-		const root = setup();
-		const watched = noteGateRoundTrip({ windowResult: { ok: true, data: { action: "deny" } }, runtimeRoot: root });
-		assert.equal(watched.gui.noted, true);
-		assert.equal(watched.audit, undefined);
-		assert.equal(existsSync(join(root, "audit", "count")), false, "没跑审核就不该动 audit 的账");
+		assert.match(readFileSync(join(root, "gui", "promote.log"), "utf8"), /窗口被关掉/);
 	});
 
 	it("攒够阈值时给出带组件的提示（用来自动晋升那一下）", () => {
@@ -196,25 +163,22 @@ describe("闸门往返：两个组件的共用观察点", () => {
 		for (let index = 0; index < 2; index += 1) {
 			last = noteGateRoundTrip({
 				windowResult: { ok: true, data: { action: "allow" } },
-				review: { verdict: "risky" },
 				runtimeRoot: root,
 				threshold: 2,
 			});
 		}
-		assert.equal(last?.notices.length, 2, "gui 与 audit 各一条");
-		assert.deepEqual(last?.notices.map((notice) => notice.component).sort(), ["audit", "gui"]);
+		assert.equal(last?.notices.length, 1, "只剩 gui 一条产线");
+		assert.deepEqual(last?.notices.map((notice) => notice.component), ["gui"]);
 		assert.match(last?.notices[0].text ?? "", /已自动晋升/);
 	});
 
-	it("未初始化时两侧都不记，也不造目录", () => {
+	it("未初始化时不记账，也不造目录", () => {
 		const runtimeRoot = join(mkdtempSync(join(tmpdir(), "ab-watch-")), "runtime");
 		const watched = noteGateRoundTrip({
 			windowResult: { ok: true, data: { action: "allow" } },
-			review: { verdict: "safe" },
 			runtimeRoot,
 		});
 		assert.equal(watched.gui.noted, false);
-		assert.equal(watched.audit?.noted, false);
 		assert.deepEqual(watched.notices, []);
 		assert.equal(existsSync(runtimeRoot), false);
 	});
@@ -271,7 +235,6 @@ describe("看门狗：连续失败自动回退", () => {
 		for (let index = 0; index < 3; index += 1) {
 			last = noteGateRoundTrip({
 				windowResult: { ok: false, reason: "exited" },
-				review: { verdict: "safe" },
 				runtimeRoot: root,
 				failThreshold: 3,
 			});

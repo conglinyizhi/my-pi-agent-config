@@ -18,7 +18,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFil
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { componentPath, formatManifest, type AbComponent, type BuildManifest } from "../lib/ab-tag.ts";
-import { archivePathsOf, flattenShellsInSlot, planPack } from "../lib/ab-pack.ts";
+import { archivePathsOf, planPack } from "../lib/ab-pack.ts";
 import { assertRuntimeRoot } from "../lib/ab-tag.ts";
 
 interface Options {
@@ -93,7 +93,7 @@ function specOfSlot(slotDir: string): { protocol?: number; windows?: string[] } 
 function main(argv: string[]): number {
 	const { component, options } = parseArgs(argv);
 	if (!component) {
-		console.error("用法：ab-pack <audit|gui> [--ref <tag|sha|HEAD>] [--dir dev] [--runtime-root <dir>] [--json]");
+		console.error("用法：ab-pack gui [--ref <tag|sha|HEAD>] [--dir dev] [--runtime-root <dir>] [--json]");
 		return 2;
 	}
 	const runtimeRoot = assertRuntimeRoot(options.runtimeRoot);
@@ -134,7 +134,7 @@ function main(argv: string[]): number {
 		mkdirSync(target, { recursive: true });
 		extract(repo, options.ref, archivePathsOf(component as AbComponent), target);
 		// 槽里的入口不能是壳：摊平成对 impl 的重导出，否则壳加载壳会无限递归
-		const flattened = component === "audit" ? flattenShellsInSlot(target) : [];
+		const flattened: string[] = [];
 		// 槽里的代码要 import 宿主 pi 的包（@earendil-works/*）与扩展自己的依赖：
 		// 把仓库的 node_modules 软链进槽，否则槽里那份根本起不来（实测过：
 		// Cannot find package '@earendil-works/pi-coding-agent'）。

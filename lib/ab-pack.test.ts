@@ -3,13 +3,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { existsSync as existsSyncForTest, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { archivePathsOf, canPromote, flattenShellsInSlot, planPack } from "./ab-pack.ts";
+import { archivePathsOf, canPromote, planPack } from "./ab-pack.ts";
 
 const AT = "2026-10-05T10:00:00.000Z";
-const base = { component: "audit" as const, ref: "HEAD", dir: "dev", dirty: false, at: AT };
+const base = { component: "gui" as const, ref: "HEAD", dir: "dev", dirty: false, at: AT };
 
 describe("构建请求", () => {
 	it("正常请求给出 manifest", () => {
@@ -33,14 +30,14 @@ describe("构建请求", () => {
 
 	it("组件名不认没见过的值", () => {
 		assert.equal(planPack({ ...base, component: "gui2" as never }).ok, false);
+		// 审核侧那条产线撤了：audit 不再是合法组件
+		assert.equal(planPack({ ...base, component: "audit" as never }).ok, false);
 	});
 
-	it("gui 带上协议信息，audit 不带", () => {
-		const gui = planPack({ ...base, component: "gui", protocol: 1, windows: ["gate"] });
+	it("gui 带上协议信息", () => {
+		const gui = planPack({ ...base, protocol: 1, windows: ["gate"] });
 		assert.equal(gui.manifest?.protocol, 1);
 		assert.deepEqual(gui.manifest?.windows, ["gate"]);
-		const audit = planPack(base);
-		assert.equal(audit.manifest?.protocol, undefined);
 	});
 });
 
@@ -66,26 +63,7 @@ describe("能不能晋升", () => {
 });
 
 describe("取哪些路径", () => {
-	it("audit 要源码，gui 要窗口目录", () => {
-		assert.deepEqual(archivePathsOf("audit"), ["lib", "extensions"]);
+	it("gui 要窗口目录（审核侧不再打包，没有 audit 这一份）", () => {
 		assert.deepEqual(archivePathsOf("gui"), ["gui"]);
 	});
 });
-
-describe("槽里摊平壳入口", () => {
-	it("像壳的入口摊平成重导出，别的入口不碰", () => {
-		const root = mkdtempSync(join(tmpdir(), "ab-pack-flat-"));
-		const shellDir = join(root, "extensions", "ptc");
-		mkdirSync(shellDir, { recursive: true });
-		writeFileSync(join(shellDir, "impl.ts"), "export default function factory() {}\n", "utf8");
-		writeFileSync(join(shellDir, "index.ts"), "import { loadSlotExtension } from \"../../lib/ab-shell.ts\";\nexport default 1;\n", "utf8");
-		const plainDir = join(root, "extensions", "plain");
-		mkdirSync(plainDir, { recursive: true });
-		writeFileSync(join(plainDir, "index.ts"), "export default function factory() {}\n", "utf8");
-		const flattened = flattenShellsInSlot(root, ["ptc", "plain", "missing"]);
-		assert.deepEqual(flattened, ["ptc"]);
-		assert.equal(readFileSync(join(shellDir, "index.ts"), "utf8"), 'export { default } from "./impl.ts";\n');
-		assert.match(readFileSync(join(plainDir, "index.ts"), "utf8"), /export default function factory/, "不是壳就别动它");
-	});
-});
-

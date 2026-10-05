@@ -13,12 +13,23 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-/** 攒到这个数就自动切 */
-export const PROMOTE_THRESHOLD = 5;
+/**
+ * 攒到这个数就自动切。
+ *
+ * 2026-10-05 提督定的：1——一次干净往返就立刻切过去，不等攒五次。
+ * 干净的定义没变：窗口给出结论（允许或拒绝都算），叉窗/超时/起不来才算失败。
+ */
+export const PROMOTE_THRESHOLD = 1;
 
 /** 产品线：两条线坏起来的样子不一样（gui 看得见、audit 静默），所以类型上分开 */
-export type AbComponent = "gui" | "audit";
-export const AB_COMPONENTS: readonly AbComponent[] = ["gui", "audit"];
+/**
+ * A/B 更新的产线。现在只有一条：gui。
+ *
+ * 审核侧（扩展）曾经也是一条——它有槽、有薄壳、有自己的一套干净往返记账。
+ * 撤掉之后扩展改动就是"改仓库那份 + /reload"，不再打包换槽。
+ */
+export type AbComponent = "gui";
+export const AB_COMPONENTS: readonly AbComponent[] = ["gui"];
 
 /** 产物清单：换了 tag 就要跟着变，薄壳拿 ref+builtAt 当缓存令牌 */
 export interface BuildManifest {
@@ -57,7 +68,7 @@ export interface AbState {
 	tag: string;
 	/** 上一个（回退目标） */
 	prevTag: string;
-	/** 已经打好、还没生效的候选：攒满 5 次干净往返就切到它 */
+	/** 已经打好、还没生效的候选：攒够干净往返（现在是 1 次）就切到它 */
 	candidate: string;
 	/** 产物目录名（桥接期仍是 dev） */
 	dir: string;
@@ -116,7 +127,7 @@ export function setTag(root: string, tag: string, options: { dir?: string; note?
 	return stateOf(root);
 }
 
-/** 登记一个候选：已经打好、等 5 次干净往返。强制更新直接调 setTag 越过这一步 */
+/** 登记一个候选：等够干净往返（现在是 1 次）。强制更新直接调 setTag 越过这一步 */
 export function setCandidate(root: string, tag: string, options: { note?: string } = {}): AbState {
 	mkdirSync(root, { recursive: true });
 	writeLine(join(root, "candidate"), tag);

@@ -11,19 +11,18 @@
 
 SHELL := /bin/sh
 
-# A/B 更新的可配项：make ab-pack COMPONENT=audit SLOT=head REF=v1.2.0
+# A/B 更新的可配项：make ab-update COMPONENT=gui FORCE=1
 #
-# COMPONENT **刻意不给默认值**：gui 与 audit 是一对最容易混的东西
-# （一个坏了看得见，一个坏了是静默的），省一次敲键盘换来的可能是退错对象。
-# 读类命令（ab-status）不需要它，会两个都列。
+# 现在只有一条产线（gui）：窗口是"看得见的那一半"，换版要原子。
+# 审核侧（扩展）不走 A/B——改的是仓库那份，/reload 就生效。
+# COMPONENT 仍要显式给：省一次敲键盘换来的可能是退错对象。
 SLOT ?= dev
 REF ?= HEAD
 RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-health ab-firstaid \
-        gui-canary smoke
+        require-component ab-status ab-pack ab-update ab-clean ab-rollback ab-log ab-firstaid
 
 help: ## 列出所有目标
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -33,26 +32,21 @@ help: ## 列出所有目标
 
 require-component:
 	@test -n "$(COMPONENT)" || { \
-		printf '要动哪个组件？二选一（不给默认是故意的，这两个最容易混）：\n'; \
-		printf '  COMPONENT=gui    图形界面：坏了你立刻看得见\n'; \
-		printf '  COMPONENT=audit  审核链：坏了是静默的\n'; \
+		printf '要动哪个组件？现在只有 gui（不给默认是故意的）：\n'; \
+		printf '  COMPONENT=gui  图形界面：坏了你立刻看得见\n'; \
 		exit 2; \
 	}
 
-ab-status: ## 两条产线各挂哪个 tag，带干净/失败计数（读类，不用给组件名）
-	@for c in gui audit; do \
-		printf '[%s] ' "$$c"; \
-		bin/ab.sh status --component $$c --runtime-root $(RT) | tr '\n' ' '; \
-		echo; \
-	done
+ab-status: ## 这条产线挂哪个 tag，带干净/失败计数（读类，不用给组件名）
+	@bin/ab.sh status --component gui --runtime-root $(RT)
 
 ab-tag: require-component ## 看这条产线挂在哪个 tag（必给 COMPONENT）
 	bin/ab.sh status --component $(COMPONENT) --runtime-root $(RT)
 
-ab-update: require-component ## 打一版：FORCE=1 直接生效，否则挂候选等 5 次干净往返
+ab-update: require-component ## 打一版：FORCE=1 直接生效，否则挂候选等 1 次干净往返
 	@bin/ab.sh update --component $(COMPONENT) --ref $(REF) --runtime-root $(RT) $(if $(FORCE),--force,)
 
-ab-clean: require-component ## 记一次干净授权往返；攒满 5 次自动切到候选
+ab-clean: require-component ## 记一次干净授权往返；够数（现在 1 次）就自动切到候选
 	@bin/ab.sh clean --component $(COMPONENT) --runtime-root $(RT)
 
 ab-rollback: require-component ## 退回 prev-tag（应急止血）
@@ -71,7 +65,7 @@ check: ## 类型检查（tsc --noEmit）
 
 # 测试分组跑：一次塞太多会撞沙箱 1 GiB 内存墙（这是实测过的教训，别合并）
 
-test-ab: ## A/B 引擎、槽位、壳、能力探测
+test-ab: ## A/B 引擎、槽位与状态、能力探测
 	node --test --experimental-strip-types lib/ab-*.test.ts lib/gui-spec.test.ts lib/ab-notice.test.ts scripts/ab-*.test.ts
 
 test-ptc: ## PTC 扩展与脚本审核链
@@ -92,6 +86,3 @@ test-lib: ## lib 下其余测试（文件多，撞内存墙就再拆一组）
 	node --test --experimental-strip-types lib/subagent-*.test.ts lib/bash-approval.test.ts lib/review-settings.test.ts lib/text-diff.test.ts lib/script-changes.test.ts lib/script-format.test.ts
 
 test: test-ab test-ptc test-sandbox test-gui test-lib ## 全部测试（按组串行）
-
-smoke: ## 壳的三条路径真验（会起真 pi、会花一次极小的模型调用）
-	scripts/ab-smoke.sh

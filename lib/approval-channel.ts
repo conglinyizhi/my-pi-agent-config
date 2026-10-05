@@ -284,7 +284,7 @@ export function createGuiTuiApprovalChannel(opts: GuiTuiApprovalOptions = {}): A
 		// A/B 更新引擎的观察点：两个组件的干净往返都在这里记一笔。
 		// 运行时目录不存在时整个引擎静默失效；观察层自己也不抛异常，这里再兜一层。
 		try {
-			const watched = noteGateRoundTrip({ windowResult: gui, review: (request as { review?: unknown }).review });
+			const watched = noteGateRoundTrip({ windowResult: gui });
 			for (const notice of watched.notices) writeNotice(resolveRuntimeRoot(), notice.component, notice.text);
 			if (!gui.ok) {
 				// 现场与说明并成一条流水：退出码、信号、stderr 开头都带上，出事有据可查

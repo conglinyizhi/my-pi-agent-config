@@ -73,34 +73,16 @@ export function canPromote(manifest: BuildManifest | undefined, options: { force
 	return { ok: true, reason: "可以晋升" };
 }
 
-/** 槽里需要从 ref 取哪些路径：audit 要源码（jiti 直接跑 ts），gui 要窗口产物 */
-export function archivePathsOf(component: AbComponent): string[] {
-	return component === "audit" ? ["lib", "extensions"] : ["gui"];
-}
-
-/** 会把仓库入口做成壳的扩展：这些入口在槽里必须摊平 */
-export const SHELLED_ENTRIES: readonly string[] = ["ptc", "sandbox-permissions"];
-
 /**
- * 把槽里的壳入口摊平成对 impl 的重导出。
+ * 槽里需要从 ref 取哪些路径。
  *
- * 不摊平会无限递归：壳解析到槽 → 槽里的 index.ts 又是同一个壳 → 壳加载壳。
- * 只在确实看着像壳（提到 loadSlotExtension）且同目录有 impl.ts 时才动，别的入口不碰。
+ * 现在只有 gui 一条产线：它是窗口产物，要整槽原子切换。
+ * 审核侧（扩展）不再走 A/B——改的是仓库那份，/reload 就生效。
  */
-export function flattenShellsInSlot(slotDir: string, entries: readonly string[] = SHELLED_ENTRIES): string[] {
-	const flattened: string[] = [];
-	for (const entry of entries) {
-		const dir = join(slotDir, "extensions", entry);
-		const impl = join(dir, "impl.ts");
-		const index = join(dir, "index.ts");
-		try {
-			if (!existsSync(impl) || !existsSync(index)) continue;
-			if (!readFileSync(index, "utf8").includes("loadSlotExtension")) continue;
-			writeFileSync(index, `export { default } from "./impl.ts";\n`, "utf8");
-			flattened.push(entry);
-		} catch {
-			// 摊平失败就留着原样：壳的自加载护栏会兜住（退回仓库实现，不递归）
-		}
-	}
-	return flattened;
+export function archivePathsOf(component: AbComponent): string[] {
+	void component;
+	return ["gui"];
 }
+
+// 壳（按槽加载实现）已撤：扩展入口直接重导出 impl.ts，槽里不再放带壳的副本。
+// 于是也没有"摊平入口"这一步——那是壳存在时才需要防的自加载递归。
