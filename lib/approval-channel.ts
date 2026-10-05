@@ -88,6 +88,8 @@ export interface FoldCallPayload {
 	lines?: number;
 	/** write：被写入的正文预览（有界） */
 	contentPreview?: string;
+	/** shell：这条命令自己的影响面（读/写/删），由 shell 侧分析给出 */
+	preshell?: { read: string[]; write: string[]; delete: string[] };
 	/** edit / str_replace_editor：旧文与新文预览 */
 	replacement?: { old: string; new: string; truncated: boolean };
 	/** apply_patch / patch：补丁正文（原样带给浮层按 +/- 摆，不重造 patch） */

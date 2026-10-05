@@ -23,6 +23,14 @@
         </div>
       </div>
 
+      <div v-if="isShell && preshellRows.length" class="dlg-field">
+        <div class="dlg-field-head">PreShell</div>
+        <div v-for="row in preshellRows" :key="row.label" class="dlg-field-body">
+          <span class="dlg-op" :class="'op-' + row.tone">{{ row.label }}</span>
+          <code>{{ row.paths.join("  ") }}</code>
+        </div>
+      </div>
+
       <div v-if="!isShell" class="dlg-meta">
         <span>{{ lineLabel }}</span>
         <span v-if="chip.label">{{ chip.label }}</span>
@@ -203,6 +211,16 @@ const bodyLines = computed(() => {
 });
 
 const isShell = computed(() => props.chip?.tone === "shell");
+/** PreShell：这条命令自己会读/写/删什么（pi 侧按 shell 词法算好） */
+const preshellRows = computed(() => {
+  const data = props.chip?.call?.preshell;
+  if (!data) return [];
+  return [
+    { label: "读", tone: "read", paths: data.read ?? [] },
+    { label: "写", tone: "write", paths: data.write ?? [] },
+    { label: "删", tone: "delete", paths: data.delete ?? [] },
+  ].filter((row) => row.paths.length > 0);
+});
 /** shell 芯片的 displayPath 记的就是 cwd（写文件那类才是目标路径） */
 const cwdLabel = computed(() => (isShell.value ? props.chip?.call?.displayPath ?? "" : ""));
 async function copyCwd() {
@@ -288,4 +306,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 .dlg-field-body { display: flex; align-items: center; gap: 10px; }
 .dlg-field-body code { color: #d7dbe0; font-size: 12.5px; }
 .dlg-copy { background: #232c3d; color: #d7dbe0; border: 1px solid #39414f; border-radius: 3px; padding: 1px 8px; cursor: pointer; font-size: 11px; }
+/* PreShell：读/写/删 三档，颜色分开才扫得快 */
+.dlg-op { flex: 0 0 auto; width: 1.4em; text-align: center; border-radius: 3px; font-size: 11px; }
+.op-read { color: #7aa2f7; background: #1a2340; }
+.op-write { color: #e6a23c; background: #30240f; }
+.op-delete { color: #ff6b6b; background: #34181a; }
 </style>

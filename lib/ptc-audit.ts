@@ -153,6 +153,52 @@ function previewFieldsOf(call: LiteralCall): Partial<FoldCallPayload> {
 }
 
 /** 把扫描到的调用整理成折叠芯片（白名单外的丢掉：它们照旧亮原文） */
+const READ_CMDS = new Set(["cat", "less", "more", "head", "tail", "grep", "rg", "find", "ls", "stat", "wc", "file", "awk", "cut", "sort", "uniq", "diff", "du", "df", "tree", "bat", "sed", "md5sum", "sha256sum", "readlink"]);
+const WRITE_CMDS = new Set(["cp", "mv", "touch", "mkdir", "chmod", "chown", "tee", "dd", "ln", "install", "rsync", "truncate", "patch", "npm", "pnpm", "yarn", "make", "git"]);
+const DELETE_CMDS = new Set(["rm", "rmdir", "shred", "unlink"]);
+
+/**
+ * PreShell：这条 shell 命令自己会读 / 写 / 删什么。
+ * 在 PTC 里命令是脚本文本里的字符串，用 JS 那套分析它分析不明白——只能按 shell 的
+ * 词法粗粒度看一眼：认命令名与字面量路径，认不出来的就不写进列表。
+ */
+export function shellPreShell(command: string): { read: string[]; write: string[]; delete: string[] } {
+	const read = new Set<string>();
+	const write = new Set<string>();
+	const del = new Set<string>();
+	for (const segment of String(command ?? "").split(/;|&&|\|\||\||\n/)) {
+		const words = segment.trim().split(/\s+/).filter(Boolean);
+		if (words.length === 0) continue;
+		// 重定向先算：> 与 >> 的目标是写
+		for (let i = 0; i < words.length; i++) {
+			const word = words[i];
+			if (word === ">" || word === ">>") {
+				const target = words[i + 1];
+				if (target && !target.startsWith("-")) write.add(target);
+			} else if (/^>>?[^>]/.test(word)) {
+				write.add(word.replace(/^>>?/, ""));
+			}
+		}
+		let at = 0;
+		while (["sudo", "env", "time", "command", "nohup"].includes(words[at])) at++;
+		const name = (words[at] ?? "").split("/").pop() ?? "";
+		if (name === "") continue;
+		const args = words.slice(at + 1).filter((word) => !word.startsWith("-") && !word.startsWith(">"));
+		const paths = args.filter((word) => word.includes("/") || word.startsWith("~") || word === "." || word === "..");
+		if (DELETE_CMDS.has(name)) for (const path of paths) del.add(path);
+		else if (name === "cp" || name === "mv" || name === "ln" || name === "install") {
+			// 源是读、目标是写：最后一个参数才是目标
+			paths.slice(0, -1).forEach((path) => read.add(path));
+			if (paths.length > 0) write.add(paths[paths.length - 1]);
+		} else if (WRITE_CMDS.has(name)) for (const path of paths) write.add(path);
+		else if (READ_CMDS.has(name)) {
+			const writing = name === "sed" && words.includes("-i");
+			for (const path of paths) (writing ? write : read).add(path);
+		}
+	}
+	return { read: [...read], write: [...write], delete: [...del] };
+}
+
 /**
  * 长字面量的折叠范围：超过 160 字符的字符串，或跨 5 行以上的数组/对象。
  * 为什么折：模型写的常量与数组动辄几十行，把审核窗和人的注意力全吃掉了。
@@ -263,7 +309,9 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 					bytes: Buffer.byteLength(body, "utf8"),
 					lines: body.split("\n").length,
 					// shell 芯片的弹窗要摆命令本身，不是 { command: '…' } 那截实参
-					...(kind === "shell" ? { contentPreview: body } : {}),
+					...(kind === "shell"
+						? { contentPreview: body, preshell: shellPreShell(body) }
+						: {}),
 				}
 				: {}),
 			...(() => {
