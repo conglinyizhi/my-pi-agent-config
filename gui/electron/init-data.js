@@ -5,6 +5,33 @@
 // 前端视图不关心引擎，只吃这个结构，所以两边必须逐字段对齐。
 
 /** 窗口名 → 尺寸与标题（Wails 版已归档到 archive/wails-gui/，不必再与它对表） */
+/**
+ * 协议版本：破坏性字段变更才 +1。
+ *
+ * 换槽（A/B 更新）之后，正在跑的 pi 与磁盘上的 GUI 可能差一代，所以：
+ *   1. pi 侧靠 --spec 探测能力，不靠比对版本号
+ *   2. 版本对不上只在 pi 的 TUI 打一行提示，不拦（拦了它自己就成了新的单点）
+ */
+export const PROTOCOL_VERSION = 1;
+
+/** 这个构建认得、并且真的会渲染的请求字段 */
+export const SUPPORTED_FEATURES = [
+	"scriptEffects",
+	"editCalls",
+	"mergedChanges",
+	"editorOpen",
+	"reviewSettings",
+];
+
+/** 自报家门：窗口清单 + 协议版本 + 能力清单（gui --spec 打这一行 JSON 后退出） */
+export function buildSpec() {
+	return {
+		protocol: PROTOCOL_VERSION,
+		windows: Object.keys(WINDOW_CONFIGS).sort(),
+		features: [...SUPPORTED_FEATURES].sort(),
+	};
+}
+
 export const WINDOW_CONFIGS = {
 	editor: { title: "提示词输入 · pi", width: 900, height: 620, minWidth: 720, minHeight: 480 },
 	gate: { title: "权限闸门 · 命令审批", width: 1280, height: 900, minWidth: 960, minHeight: 640 },

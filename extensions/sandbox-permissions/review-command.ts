@@ -20,6 +20,7 @@ import { readKeyFromAuth, saveKeyToAuth } from "./classifier-key.ts";
 import { REVIEW_LIMITS, formatDimensionsToml, resolveReviewSettingsPaths, saveDimensions } from "../../lib/review-settings.ts";
 import { announceGuiFallback } from "../../lib/gui-diagnosis.ts";
 import { openReviewSettingsGui } from "./review-gui.ts";
+import { readGuiSpec } from "../../lib/gui-spec.ts";
 
 /** 阈值调整步长（与设置窗共用同一份取值范围） */
 export const STEP = REVIEW_LIMITS.step;
@@ -96,6 +97,13 @@ function dimensionsPathHint(): string {
  * 任何一步不可用都只回一句原因，由调用方回退 TUI 面板——这里不报错、不抛。
  */
 async function tryOpenSettingsGui(ctx: ExtensionCommandContext): Promise<boolean> {
+	// 先问一句磁盘上那份 GUI 认不认 review 窗口。问不到（没图形/起不来）就照旧往下试，
+	// 不因为探测失败改变行为；只有明确「认不了」才退回 TUI 面板，省得报一句看不明白的错。
+	const probe = readGuiSpec();
+	if (probe.ok && probe.spec && !probe.spec.windows.includes("review")) {
+		ctx.ui.notify("当前 GUI 不支持审核设置窗（协议不匹配），改用 TUI 面板", "info");
+		return false;
+	}
 	const result = await openReviewSettingsGui();
 	if (result.opened) {
 		ctx.ui.notify("已打开审核设置窗（review）：改完即时生效，不用 reload", "info");

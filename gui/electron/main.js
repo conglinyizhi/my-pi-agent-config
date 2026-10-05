@@ -17,7 +17,7 @@ import { accessSync, constants, existsSync, mkdtempSync, readFileSync, writeFile
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, parseArgv } from "./init-data.js";
+import { DEFAULT_WINDOW, WINDOW_CONFIGS, buildInitData, buildSpec, parseArgv } from "./init-data.js";
 import { buildEditorCommand, detectEditors } from "./editor-open.js";
 import { readStatusSnapshot } from "./status-file.js";
 
@@ -361,13 +361,18 @@ app.on("window-all-closed", () => {
 });
 app.on("will-quit", () => stopReviewServe());
 
-app.whenReady().then(() => {
-	if (!existsSync(FRONTEND_DIST)) {
-		process.stderr.write(`[gui] 找不到前端产物 ${FRONTEND_DIST}，先跑 vite build\n`);
-	}
-	registerIpc(readRequest());
-	createWindow();
-});
+// gui --spec：只打一行能力 JSON 就退出。pi 侧用它探测能力，不靠比对版本号。
+if (process.argv.includes("--spec")) {
+	process.stdout.write(`${JSON.stringify(buildSpec())}\n`, () => app.exit(0));
+} else {
+	app.whenReady().then(() => {
+		if (!existsSync(FRONTEND_DIST)) {
+			process.stderr.write(`[gui] 找不到前端产物 ${FRONTEND_DIST}，先跑 vite build\n`);
+		}
+		registerIpc(readRequest());
+		createWindow();
+	});
+}
 
 /** PATH 里找可执行文件（不 shell out：这个探测要快，也不受 PATH 里怪东西影响） */
 function hasBinary(name) {

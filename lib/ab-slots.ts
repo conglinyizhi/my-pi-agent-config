@@ -67,6 +67,9 @@ export interface SlotManifest {
 	builtAt?: string;
 	/** 该组件的协议能力摘要：换了槽就要跟着变，薄壳拿它当缓存令牌 */
 	spec?: string;
+	/** 构建时的协议版本与窗口清单：会话启动时靠它给提示，不必为了问一句去起 Electron */
+	protocol?: number;
+	windows?: string[];
 }
 
 export function parseManifest(text: string): SlotManifest | undefined {

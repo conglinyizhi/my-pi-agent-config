@@ -20,6 +20,10 @@ import { pathsArgumentCompletions, pathsCommandHandler } from "./paths-command.t
 import { networkArgumentCompletions, networkCommandHandler } from "./network-command.ts";
 import { reviewCommandHandler } from "./review-command.ts";
 import { beginSandboxSession } from "./session-access.ts";
+import { takeAllNotices } from "../../lib/ab-notice.ts";
+import { resolveRuntimeRoot } from "../../lib/ab-watch.ts";
+import { compareSpecs, specFromManifest } from "../../lib/gui-spec.ts";
+import { currentSlot, readManifest } from "../../lib/ab-store.ts";
 import {
 	YOLO_STATUS_KEY,
 	setYolo,
@@ -37,6 +41,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		beginSandboxSession(ctx.sessionManager.getSessionId());
 		setYolo(false);
 		ctx.ui.setStatus(YOLO_STATUS_KEY, undefined);
+		// A/B 更新引擎的消息：晋升、回退、协议不匹配这类事发生时未必有人在看，
+		// 所以落成文件，在这里读一次露个面然后消费掉。整段包起来：提示失败不能影响会话启动。
+		try {
+			const runtimeRoot = resolveRuntimeRoot();
+			for (const entry of takeAllNotices(runtimeRoot)) {
+				for (const line of entry.lines) ctx.ui.notify(`[A/B ${entry.component}] ${line}`, "info");
+			}
+			const active = currentSlot(runtimeRoot, "gui");
+			const spec = active ? specFromManifest(readManifest(runtimeRoot, "gui", active)) : undefined;
+			if (spec) {
+				for (const line of compareSpecs(spec).notices) ctx.ui.notify(`[GUI] ${line}`, "info");
+			}
+		} catch {
+			// 观察与提示都不该挡住会话
+		}
 	});
 	await gate(pi);
 	await allow(pi);
