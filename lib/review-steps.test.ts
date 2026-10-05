@@ -3,9 +3,9 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { toAdvisorNote, type ReviewResult } from "../../extensions/sandbox-permissions/llm-review.ts";
-import { makeAutoApproveNode, makeChatReviewNode, makeClassifierNode, makeGateNode, makeMergeNode } from "./nodes.ts";
-import type { NodeRunContext } from "./runner.ts";
+import { toAdvisorNote, type ReviewResult } from "../extensions/sandbox-permissions/llm-review.ts";
+import { makeAutoApproveNode, makeChatReviewNode, makeClassifierNode, makeGateNode, makeMergeNode } from "./review-steps.ts";
+import type { NodeRunContext } from "./review-steps.ts";
 
 const CTX = { cwd: "/tmp" } as never;
 

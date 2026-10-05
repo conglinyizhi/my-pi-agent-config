@@ -1,4 +1,7 @@
-// lib/review-flow/nodes.ts — 节点库：把已有能力包成节点，不重写任何判定
+// lib/review-steps.ts — 审核步骤：对话模型 / 分类器 / 合并 / 自动放行 / 人工闸门
+//
+// 这些是审核本身（调模型、合并结论、按判据决定），流程那层废掉后仍然在这里。
+// 参数面（档位、阈值、维度开关、规则表）都还在原来的地方，见 skills/clyzhi/which-pi-docs。
 //
 // 设计稿的硬约束 1：模型节点不授予权限。所以这里的 chat / classifier / merge 只产出结论，
 // 能放行的只有 gate（人）与 autoapprove（显式判据）。
@@ -6,10 +9,10 @@
 // 每个工厂都留注入点：测试里换掉 reviewCommand / classifierReview / 审批通道，不碰真模型。
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TokenRule } from "../sandbox-check.ts";
-import type { SandboxCheckResult } from "../sandbox-check.ts";
-import { autoApproveDecision, humanConfirm, type ApprovalRequestContext, type BashApprovalDependencies } from "../bash-approval.ts";
-import { decideWithRules, defaultRulesPath, loadReviewRules, type ReviewRule } from "../review-rules.ts";
+import type { TokenRule } from "./sandbox-check.ts";
+import type { SandboxCheckResult } from "./sandbox-check.ts";
+import { autoApproveDecision, humanConfirm, type ApprovalRequestContext, type BashApprovalDependencies } from "./bash-approval.ts";
+import { decideWithRules, defaultRulesPath, loadReviewRules, type ReviewRule } from "./review-rules.ts";
 
 /** 规则表读不到或坏了 = 没有规则（照旧走内置判据），绝不抛 */
 const defaultLoadRules = () => loadReviewRules(defaultRulesPath());
@@ -24,8 +27,48 @@ import {
 	type ReviewCache,
 	type ReviewCallOptions,
 	type ReviewResult,
-} from "../../extensions/sandbox-permissions/llm-review.ts";
-import type { NodeImpl, NodeRunContext } from "./runner.ts";
+} from "../extensions/sandbox-permissions/llm-review.ts";
+/**
+ * 步骤的入参与产物类型。
+ *
+ * 原来住在流程运行器里；流程那层废掉后留在这里：审核步骤本身还要用。
+ * kind 只当标签，不参与判定——没有流程就没有"哪种节点"这回事了。
+ */
+export interface NodeRunContext {
+	nodeId: string;
+	kind: string;
+	settings: Record<string, unknown>;
+	/** 本次审核的输入（命令、规则、事实……），各步骤共享只读 */
+	input: Record<string, unknown>;
+	/** 上游产物，按步骤 id 取 */
+	upstream: Record<string, unknown>;
+	spend(calls?: number): void;
+	signal?: AbortSignal;
+}
+
+/**
+ * 一步的结果。
+ *   ok       有产物；带 terminal 就是它直接给了决定（闸门这样用）
+ *   abstain  给不出结论（弃权）
+ *   error    失败
+ */
+export type NodeOutcome =
+	| {
+		status: "ok";
+		output?: unknown;
+		terminal?: "allow" | "deny";
+		calls?: number;
+		model?: string;
+		cached?: boolean;
+		inputSummary?: string;
+		outputSummary?: string;
+		verdict?: string;
+		reason?: string;
+	  }
+	| { status: "abstain"; reason?: string; calls?: number }
+	| { status: "error"; message: string; calls?: number };
+
+export type NodeImpl = (ctx: NodeRunContext) => Promise<NodeOutcome>;
 
 /** 一条 bash 流程需要的东西：运行前一次带齐 */
 export interface BashFlowInput extends Record<string, unknown> {

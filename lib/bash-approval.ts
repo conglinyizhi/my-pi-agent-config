@@ -198,12 +198,11 @@ export async function preReviewBashCommand(options: BashApprovalOptions): Promis
 	const deps = options.deps ?? {};
 	const config = (deps.loadReviewConfig ?? loadLlmReviewConfig)();
 
-	// 预审现在跑审核流（chat → 分类器 → 合并 → 自动放行）。
-	// 流程反过来要用本模块的判据与问人那一步，静态 import 会成环：延迟导入断开它，
-	// 只在真跑预审时加载一次。
-	const { preReviewViaFlow } = await import("./review-flow/pre-review.ts");
+	// 预审：对话模型 → 分类器 → 合并 → 自动放行（见 lib/pre-review.ts）。
+	// 预审反过来要用本模块的判据，静态 import 会成环：延迟导入断开它，只在真跑时加载一次。
+	const { preReview } = await import("./pre-review.ts");
 	try {
-		return await preReviewViaFlow({
+		return await preReview({
 			input: {
 				pi,
 				ctx,

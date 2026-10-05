@@ -5,7 +5,7 @@
 //   save [--path <文件>] --file <json>  存：先序列化成 toml，再原样读回来校验，过了才写盘
 //   serve [--path <文件>]              常驻：stdin 一行一个请求，输出一行一个 JSON
 //
-// 协议同 flows-cli：请求 {"id":…,"cmd":"get|save","patch":{…}}，响应带同一个 id。
+// 协议同 review-settings-cli：请求 {"id":…,"cmd":"get|save","patch":{…}}，响应带同一个 id。
 // 界面只交换结构化规则（驼峰），toml 的字段名由这一层负责——省得两边各写一份映射。
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

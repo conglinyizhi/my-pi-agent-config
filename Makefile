@@ -23,7 +23,7 @@ RT ?= $(HOME)/.pi/runtime
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
         require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-health ab-firstaid \
-        gui-canary smoke flows-check
+        gui-canary smoke
 
 help: ## 列出所有目标
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -57,9 +57,6 @@ ab-clean: require-component ## 记一次干净授权往返；攒满 5 次自动�
 
 ab-rollback: require-component ## 退回 prev-tag（应急止血）
 	@bin/ab.sh rollback --component $(COMPONENT) --runtime-root $(RT)
-
-flows-check: ## 检查自写的审核流程（review-flows/*.ts 的类型与形状）
-	npx tsc -p review-flows
 
 ab-log: require-component ## 看流水：切换、回退、干净与失败计数（必给 COMPONENT）
 	@tail -n 30 "$(RT)/$(COMPONENT)/promote.log"

@@ -15,7 +15,7 @@ export function agentRoot(env = process.env, home = homedir()) {
 
 /** 找这份桥脚本：先看自己那棵树，没有就回落仓库
  *
- * @param {string} name 脚本文件名，如 flows-cli.ts
+ * @param {string} name 脚本文件名，如 review-rules-cli.ts
  * @param {{ here: string, env?: any, home?: string, exists?: (p: string) => boolean }} options
  *        here 是调用方所在目录（gui/electron）
  */

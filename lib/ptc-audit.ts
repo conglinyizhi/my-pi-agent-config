@@ -35,7 +35,7 @@ import {
 	type ReviewCache,
 	type ReviewResult,
 } from "../extensions/sandbox-permissions/llm-review.ts";
-import { preReviewViaFlow } from "./review-flow/pre-review.ts";
+import { preReview } from "./pre-review.ts";
 
 /**
  * 审核模型本来就认识的工具：只给名字，不占送审额度。
@@ -580,7 +580,7 @@ export async function preReviewPtcScript(options: {
 	// （分类器据此不再问「这条命令是否用脚本改写文件」这种没信息量的维度）。
 	// 以前这里另抄了一份 autoApproved 的表达式，现在没有了。
 	try {
-		const result = await preReviewViaFlow({
+		const result = await preReview({
 			input: { pi, ctx, command: subject, rules: [], scenario: "ptc", ...(signal ? { signal } : {}) },
 			config,
 			cache: ptcReviewCache(),

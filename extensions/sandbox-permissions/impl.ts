@@ -19,7 +19,6 @@ import { workspaceArgumentCompletions, workspaceCommandHandler } from "./workspa
 import { pathsArgumentCompletions, pathsCommandHandler } from "./paths-command.ts";
 import { networkArgumentCompletions, networkCommandHandler } from "./network-command.ts";
 import { reviewCommandHandler } from "./review-command.ts";
-import { openFlowsGui } from "./flows-gui.ts";
 import { beginSandboxSession } from "./session-access.ts";
 import { takeAllNotices } from "../../lib/ab-notice.ts";
 import { resolveRuntimeRoot } from "../../lib/ab-watch.ts";
@@ -129,17 +128,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// 副工作区管理（持久 allowDirs）：/sandbox:workspaces 列出 / add / remove
 	// GUI 的目录授权是另一路；本命令是 TUI 回退时唯一能管理副工作区的手段，
 	// 只用 ctx.ui（notify/select/input/confirm），不依赖 GUI 窗口。
-	pi.registerCommand("sandbox:flows", {
-		description: "审核流程：开窗看流程图与校验状态（review-flows/*.ts；改完要 /reload）",
-		handler: async (_args, ctx) => {
-			const result = openFlowsGui();
-			if (!result.opened) {
-				ctx.ui.notify(`审核流程窗打不开：${result.reason ?? "未知原因"}`, "warning");
-				return;
-			}
-			ctx.ui.notify("已打开审核流程窗", "info");
-		},
-	});
 
 	pi.registerCommand("sandbox:gui", {
 		description: "审核工作流设置：开设置窗改总开关/档位/后端/超时/缓存/分类器与八个维度的阈值；无图形时回退 TUI 面板。用法 /sandbox:gui [key]",

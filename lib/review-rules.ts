@@ -1,6 +1,6 @@
 // review-rules.ts — 审核判定的条件规则（数据，不是代码）
 //
-// 和流程（review-flows/*.ts）的分工：流程是**写代码**改整条判定链，这里只写**规则**
+// 定位：判定链写死在 lib/pre-review.ts 与 lib/review-steps.ts 里，这里只加**声明式规则**
 // ——「当……则……」的表格。两者不并存：规则喂的是同一个判定函数 autoApproveDecision，
 // 判据仍然只有一份。
 //

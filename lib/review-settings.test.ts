@@ -145,16 +145,17 @@ describe("loadReviewSettings", () => {
 		assert.deepEqual(settings.warnings, []);
 	});
 
-	it("维度行的形状与默认配置一致（id / above / below / action 都在）", () => {
+	// 只比形状，不比数值：文件里的阈值是你调过的，跟代码默认值本来就不该相等
+	it("维度行的形状与已知维度对得上（id / 阈值 / action 都在）", () => {
 		const settings = loadReviewSettings();
-		const defaults = defaultDimensionConfigs();
+		const known = new Set(defaultDimensionConfigs().map((d) => d.id));
+		assert.ok(settings.dimensions.length > 0, "至少要读出一个维度");
 		for (const dim of settings.dimensions) {
-			const spec = defaults.find((d) => d.id === dim.id)!;
-			assert.ok(spec, dim.id);
-			assert.equal(dim.enabled, spec.enabled);
-			assert.equal(dim.above, spec.above);
-			assert.equal(dim.below, spec.below);
-			assert.equal(dim.action, spec.action);
+			assert.ok(known.has(dim.id), `不认识的维度：${dim.id}`);
+			assert.equal(typeof dim.enabled, "boolean", dim.id);
+			assert.ok(dim.above >= 0 && dim.above <= 1, `${dim.id} 的 above 越界`);
+			assert.ok(dim.below >= 0 && dim.below <= 1, `${dim.id} 的 below 越界`);
+			assert.ok(dim.action === "review" || dim.action === "ignore", `${dim.id} 的 action 非法`);
 		}
 	});
 

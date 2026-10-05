@@ -32,7 +32,6 @@ const FRONTEND_DIST = resolve(HERE, "..", "frontend", "dist");
 /** 审核设置的 JSON 桥（主进程是纯 JS，读不了 .ts，也绝不在主进程重写 TOML 逻辑） */
 const REVIEW_CLI = resolveCliPath("review-settings-cli.ts", { here: HERE });
 /** 审核流程的 JSON 桥（数据层：图、体检、存盘） */
-const FLOWS_CLI = resolveCliPath("flows-cli.ts", { here: HERE });
 /** 审核规则表的 JSON 桥（数据层：读、序列化、校验、存盘） */
 const RULES_CLI = resolveCliPath("review-rules-cli.ts", { here: HERE });
 // subagent 状态快照的取数在 status-file.js（纯模块、有单测）：多会话并存时，
@@ -117,31 +116,6 @@ const rulesBridge = createServeBridge({
 	nodeBin: resolveNodeBin(),
 	// 一次性回落只够跑 get：save 要带补丁文件，回落路径给不了（常驻桥才是正路）
 	oneShotArgs: (cmd) => [cmd],
-});
-
-/** 审核流程的桥：list / get / save（数据层在 scripts/flows-cli.ts） */
-const flowsBridge = createServeBridge({
-	cliPath: FLOWS_CLI,
-	nodeBin: resolveNodeBin(),
-	oneShotArgs: (cmd, patch) => {
-		if (cmd === "get" || cmd === "save") return [cmd, String(patch?.id ?? "")];
-		if (cmd === "add-node" || cmd === "remove-edge") return [cmd, String(patch?.id ?? "")];
-		if (cmd === "edit-edge") {
-			return [
-				"edit-edge",
-				String(patch?.id ?? ""),
-				"--node",
-				String(patch?.nodeId ?? ""),
-				"--kind",
-				String(patch?.kind ?? "next"),
-				...(patch?.label ? ["--label", String(patch.label)] : []),
-				"--to",
-				String(patch?.to ?? ""),
-			];
-		}
-		return ["list"];
-	},
-	oneShotInput: (cmd, patch) => (cmd === "save" ? String(patch?.content ?? "") : ""),
 });
 
 let mainWindow = null;
@@ -230,17 +204,10 @@ function registerIpc(request) {
 	handle("review:load", () => reviewRequest("get"));
 	handle("review:save", (patch) => reviewRequest("set", patch ?? {}));
 
-	// ── 审核流程（flows 窗口）──
 	// 读：列流程与体检结果；选中一条再取它的图与源码（图可能不小，分开取）。
 	// 写：save 先过越界检查再落盘，校验结果原样交给前端展示。
 	handle("rules:get", () => rulesBridge.request("get"));
 	handle("rules:save", (patch) => rulesBridge.request("save", patch ?? {}));
-	handle("flows:list", () => flowsBridge.request("list"));
-	handle("flows:get", (id) => flowsBridge.request("get", { id }));
-	handle("flows:save", (patch) => flowsBridge.request("save", patch ?? {}));
-	handle("flows:editEdge", (patch) => flowsBridge.request("edit-edge", patch ?? {}));
-	handle("flows:addNode", (patch) => flowsBridge.request("add-node", patch ?? {}));
-	handle("flows:removeEdge", (patch) => flowsBridge.request("remove-edge", patch ?? {}));
 
 	// ── 以下四组是 Go 侧还没搬过来的能力 ──
 	// 宁可明确降级（空结果 + 警告一次），也不假装成功：假的成功会让人以为数据存下来了

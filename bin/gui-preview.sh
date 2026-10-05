@@ -2,7 +2,6 @@
 # 给某个窗口开个试窗：不用等审批，也不用占着 pi。
 #
 #   gui-preview.sh gate          # 权限闸门（用演示脚本现场生成一份像样的请求）
-#   gui-preview.sh flows         # 审核流程窗
 #   gui-preview.sh review        # 审核设置窗
 #   gui-preview.sh editor|routing|subagents
 #   gui-preview.sh <窗口> <请求.json>   # 自己给请求
@@ -25,7 +24,6 @@ window_names() {
   cat <<'EOF'
   gate       权限闸门（审批对话框：批准/拒绝脚本与命令）  ← 平时说的"审核窗"就是它
   review     审核设置（阈值、维度权重、自动放行那一套）
-  flows      审核流程（流程图：看结构、改源码、点边换目标）
   editor     编辑器选择窗
   routing    路由窗
   subagents  subagent 看板
@@ -65,7 +63,6 @@ fi
 case "$window" in
   gate) label="权限闸门（审批对话框）" ;;
   review) label="审核设置" ;;
-  flows) label="审核流程" ;;
   editor) label="编辑器选择" ;;
   routing) label="路由" ;;
   subagents) label="subagent 看板" ;;

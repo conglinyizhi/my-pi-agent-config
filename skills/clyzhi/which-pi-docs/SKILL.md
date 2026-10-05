@@ -82,6 +82,32 @@ done
 
 新增或改动扩展后要 `/reload` 才会加载；`pi --extension <文件>` 用于临时调试单个扩展；`pi -ne` 可以不带扩展启动，用来区分“pi 本身起不来”还是“某个扩展把它带崩了”。
 
+## 审核参数（沙箱审批那条链）
+
+判定链本身写死在 `lib/pre-review.ts` 与 `lib/review-steps.ts` 里：对话模型 → 分类器 → 合并 →
+自动放行（分类器的判决说了算，对话模型的意见只挂成附注给人看），判不出来才轮到人工闸门。
+要调的参数都在文件里，不用改代码：
+
+| 参数 | 在哪 | 说明 |
+|---|---|---|
+| `enabled` | `extensions.toml` `[sandbox-llm-review]` | 总开关；false = 回到纯规则弹窗 |
+| `mode` | 同上 | `auto` = 判安全直接放行；`strict` = 只给意见，仍然弹窗 |
+| `backend` | 同上 | `chat` 只跑对话模型；`classifier` 只跑分类模型；`chain` 两边都跑 |
+| 超时与缓存 | 同上 `timeout_ms`、`token_idle_ms`、`max_cache` | 单次审核时长、token 停滞上限、内存缓存条数 |
+| 审核模型池 | `extensions/sandbox-permissions/review-pool.toml` | 个人依赖，已 gitignore；`/provider:fast-put`、`/provider:fast-pop` 管 |
+| 分类模型 | `extensions.toml` `[sandbox-review-classifier]` | base_url / model / timeout_ms |
+| 维度阈值 | `extensions/sandbox-permissions/review-dimensions.toml` | 八个维度各自的 above / below |
+| 规则表 | `extensions/sandbox-permissions/review-rules.toml` | 命名条件 + 动作（allow / deny / ask），只修正内置判据 |
+| 送审提示词 | `extensions/sandbox-permissions/review-system-prompt.txt` | 改完即生效，下次审核现读 |
+| 误判样本 | `extensions/sandbox-permissions/review-examples.txt` | 容易误报的命令，随用随加 |
+
+可视化调：`/sandbox:gui`（审核工作流设置窗，别名 `/sandbox:review`；无图形时回退 TUI 面板）。
+规则表另有命令行入口：`node scripts/review-rules-cli.ts get` / `save --file <json>`。
+
+**判据只有一处**：`autoApproveDecision`——判 `safe` 且 `mode = "auto"`。规则表只能修正它：
+`deny` 直接拒，`allow` 仍受总开关管。别在别处另写一份放行条件，两份判据一定会漂。
+
+改完 `extensions.toml` 或规则表**不必** `/reload`（按 mtime 现读）；改判定链代码要 `/reload`。
 ## 插件开发规范（写扩展前必读）
 
 编写 pi 扩展时，同时遵循两条准则：

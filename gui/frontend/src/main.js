@@ -4,7 +4,6 @@ import RoutingView from "./views/RoutingView.vue";
 import GateView from "./views/GateView.vue";
 import EditorView from "./views/EditorView.vue";
 import ReviewView from "./views/ReviewView.vue";
-import FlowsView from "./views/FlowsView.vue";
 import { platformKey } from "./platform/index.js";
 import { createPlatform } from "./platform/detect.js";
 
@@ -15,7 +14,6 @@ const views = {
   gate: GateView,
   editor: EditorView,
   review: ReviewView,
-  flows: FlowsView,
 };
 
 // 全局错误兜底：GetInitData 失败 / 运行时异常时显示错误条，避免白板
