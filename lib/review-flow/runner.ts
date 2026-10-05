@@ -32,6 +32,8 @@ export type NodeOutcome =
 		status: "ok";
 		output?: unknown;
 		terminal?: Terminal;
+		/** 按返回值选边：这个值要在节点的 branches 里声明过 */
+		branch?: string;
 		calls?: number;
 		model?: string;
 		cached?: boolean;
@@ -202,6 +204,29 @@ export async function runFlow(
 				via = outcome.terminal;
 				base.to = outcome.terminal;
 				break;
+			}
+			// 脚本用返回值选边（bool 或枚举）：先在 branches 里找那个出口
+			if (outcome.branch !== undefined) {
+				base.branch = outcome.branch;
+				const target = node.branches?.[outcome.branch];
+				if (target === undefined) {
+					// 没声明的出口不猜：宁可拒绝，也不许悄悄走默认路
+					base.status = "failed";
+					base.reason = `脚本返回了没声明的出口 ${outcome.branch}：${(node.branches ? Object.keys(node.branches) : []).join(" / ") || "（一个都没声明）"}`;
+					trace.push(base);
+					decision = fail();
+					via = FAIL_EXIT;
+					break;
+				}
+				base.to = target;
+				if (isTerminal(target)) {
+					decision = target;
+					via = target;
+					break;
+				}
+				queue.push(target);
+				trace.push(base);
+				continue;
 			}
 			if (node.next) {
 				base.to = node.next;

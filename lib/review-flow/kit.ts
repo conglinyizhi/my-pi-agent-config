@@ -26,6 +26,8 @@ export interface NodeOptions {
 	onError?: string;
 	onTimeout?: string;
 	onEmpty?: string;
+	/** 按脚本返回值选边：出口名 → 目标（bool 写 yes / no，枚举写各个值） */
+	branches?: Record<string, string>;
 	settings?: Record<string, unknown>;
 }
 

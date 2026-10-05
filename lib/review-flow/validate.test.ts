@@ -88,3 +88,13 @@ describe("流程静态校验", () => {
 		assert.match(text, /孤儿/);
 	});
 });
+	it("分支出口指向不存在的节点会被指出来", () => {
+		const problems = validateFlow(flow([{ id: "judge", kind: "custom", branches: { yes: "没有这个", no: "deny" } }]));
+		assert.equal(problems.length, 1);
+		assert.match(problems[0]?.message ?? "", /分支出口 yes 指向不存在/);
+	});
+
+	it("靠分支走到终点的流程能过", () => {
+		assert.deepEqual(validateFlow(flow([{ id: "judge", kind: "custom", branches: { yes: "allow", no: "deny" } }])), []);
+	});
+

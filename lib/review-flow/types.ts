@@ -46,6 +46,15 @@ export interface FlowNode {
 	after?: string[];
 	/** 成功之后去哪（节点 id，或 allow / deny）；不接就看它有没有下游 */
 	next?: string;
+	/**
+	 * 按脚本返回值选边：出口名 → 目标（节点 id，或 allow / deny）。
+	 *
+	 *   bool 二选一：脚本返回 branch: "yes" / "no"
+	 *   枚举多路：脚本返回 branch: "upload" / "fetch-only" / "none"
+	 *
+	 * 没声明的出口是 fail-closed：记一条失败轨迹，走流程的 fail 出口，不猜。
+	 */
+	branches?: Record<string, string>;
 	mode?: NodeMode;
 	/** 节点自己的参数（超时、阈值、合并策略……）：是数据，不是代码里的 if */
 	settings?: Record<string, unknown>;
@@ -83,6 +92,8 @@ export interface TraceRecord {
 	via?: string;
 	/** 从哪条边出去 */
 	to?: string;
+	/** 走了哪个分支出口（脚本返回的那个值） */
+	branch?: string;
 	/** 一句话结论与它的理由原文 */
 	verdict?: string;
 	reason?: string;

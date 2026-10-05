@@ -60,6 +60,20 @@ export default (kit: ReviewKit) => kit.flow({
 - `{ status: "abstain", reason }` — 拿不准，走 `onEmpty`
 - `{ status: "error", message }` — 失败，走 `onError`
 
+## 分支：脚本的返回值选边
+
+```ts
+kit.custom("judge", async (ctx) => {
+	if (isClearlySafe(ctx)) return { status: "ok", branch: "yes" };   // bool 二选一
+	const kind = await kit.my.classify(ctx);                          // "upload" / "fetch-only" / "none"
+	return { status: "ok", branch: kind };                            // 枚举多路
+}, { branches: { yes: "gate", no: "deny", upload: "deny", "fetch-only": "gate", none: "allow" } })
+```
+
+- `branch` 的值必须在 `branches` 里声明过；没声明的出口**不猜**：记一条失败轨迹，走流程的 fail 出口（默认拒绝）
+- 校验器把分支出口算进控制流：指向不存在的节点、或从它走不到终点，加载即报错
+- 二选一与多路是同一个机制：`branches` 是"出口名 → 目标"，两个出口就是 bool，多个就是枚举
+
 ## 生效与排查
 
 - 改完流程要 `/reload`（或重开会话）才生效：目录只在第一次用到时扫一次

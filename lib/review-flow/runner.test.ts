@@ -126,3 +126,46 @@ describe("流程运行器", () => {
 		assert.match(result.trace.find((r) => r.nodeId === "classify")?.reason ?? "", /没有 classifier 节点的实现/);
 	});
 });
+
+describe("脚本返回值选边", () => {
+	const flowWith = (branches: Record<string, string>) => ({
+		id: "b",
+		deadlineMs: 5_000,
+		nodes: [{ id: "judge", kind: "custom" as const, branches }],
+	});
+
+	it("二选一：返回 bool 走对应那条", async () => {
+		const flow = flowWith({ yes: "allow", no: "deny" });
+		const yes = await runFlow(flow, {}, { nodes: {}, byId: { judge: async () => ({ status: "ok", branch: "yes" }) } });
+		assert.equal(yes.decision, "allow");
+		assert.equal(yes.trace.find((r) => r.nodeId === "judge")?.branch, "yes");
+		const no = await runFlow(flow, {}, { nodes: {}, byId: { judge: async () => ({ status: "ok", branch: "no" }) } });
+		assert.equal(no.decision, "deny");
+	});
+
+	it("枚举三路：值选哪条就走哪条", async () => {
+		const flow = {
+			id: "b3",
+			deadlineMs: 5_000,
+			nodes: [
+				{ id: "judge", kind: "custom" as const, branches: { upload: "deny", "fetch-only": "mid", none: "allow" } },
+				{ id: "mid", kind: "gate" as const },
+			],
+		};
+		const mid = await runFlow(flow, {}, { nodes: {}, byId: { judge: async () => ({ status: "ok", branch: "fetch-only" }), gate: async () => ({ status: "ok", terminal: "deny" }) } });
+		assert.equal(mid.decision, "deny");
+		assert.equal(mid.trace.find((r) => r.nodeId === "judge")?.to, "mid");
+		const upload = await runFlow(flow, {}, { nodes: {}, byId: { judge: async () => ({ status: "ok", branch: "upload" }) } });
+		assert.equal(upload.decision, "deny");
+	});
+
+	it("返回没声明的出口：不猜，走 fail 出口", async () => {
+		const flow = flowWith({ yes: "allow", no: "deny" });
+		const result = await runFlow(flow, {}, { nodes: {}, byId: { judge: async () => ({ status: "ok", branch: "maybe" }) } });
+		assert.equal(result.decision, "deny");
+		const record = result.trace.find((r) => r.nodeId === "judge");
+		assert.equal(record?.status, "failed");
+		assert.match(record?.reason ?? "", /没声明/);
+	});
+});
+

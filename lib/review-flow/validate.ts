@@ -18,10 +18,13 @@ function isTerminal(value: string | undefined): value is Terminal {
 	return value === "allow" || value === "deny";
 }
 
-/** 一个节点的出边：成功边、三条失败边 */
+/** 一个节点的出边：成功边、三条失败边、以及分支出口 */
 function outEdgesOf(node: FlowNode): string[] {
 	const out: string[] = [];
 	for (const edge of [node.next, node.onError, node.onTimeout, node.onEmpty]) {
+		if (edge && !isTerminal(edge)) out.push(edge);
+	}
+	for (const edge of Object.values(node.branches ?? {})) {
 		if (edge && !isTerminal(edge)) out.push(edge);
 	}
 	return out;
@@ -69,6 +72,11 @@ export function validateFlow(flow: Flow): FlowProblem[] {
 	for (const node of byId.values()) {
 		for (const dep of node.after ?? []) {
 			if (!byId.has(dep)) problems.push({ nodeId: node.id, message: `after 指向不存在的节点：${dep}` });
+		}
+		for (const [name, target] of Object.entries(node.branches ?? {})) {
+			if (!isTerminal(target) && !byId.has(target)) {
+				problems.push({ nodeId: node.id, message: `分支出口 ${name} 指向不存在的节点：${target}` });
+			}
 		}
 		for (const [field, edge] of [["next", node.next], ["onError", node.onError], ["onTimeout", node.onTimeout], ["onEmpty", node.onEmpty]] as const) {
 			if (edge && !isTerminal(edge) && !byId.has(edge)) {
