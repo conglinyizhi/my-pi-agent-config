@@ -261,12 +261,10 @@ function registerIpc(request) {
 // 单实例锁按 responseFile 归一：同一个窗口重复拉起时不再开第二个
 app.on("window-all-closed", () => {
 	stopReviewServe();
-	flowsBridge.stop();
 	app.quit();
 });
 app.on("will-quit", () => {
 	stopReviewServe();
-	flowsBridge.stop();
 });
 
 app.whenReady().then(() => {
