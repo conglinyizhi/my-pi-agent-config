@@ -22,21 +22,29 @@ function clip(ranges, from, to) {
  * 文本分段按换行拆，芯片整颗留在它所在的行里；tokens 是整段文本上的令牌。
  */
 export function splitLines(segments, tokens) {
-	const lines = [{ no: 1, parts: [] }];
-	let current = lines[0];
+	// 行号按"未折叠"的文本数：扫描报的行号是按那份算的，折起来的块照占它的行数，
+	// 否则折一次后面全错位（提督提醒的）
+	let nextNo = 1;
+	const startLine = () => {
+		const line = { no: nextNo, parts: [] };
+		nextNo += 1;
+		lines.push(line);
+		return line;
+	};
+	const lines = [];
+	let current = startLine();
 	for (const segment of Array.isArray(segments) ? segments : []) {
 		if (segment?.kind === "chip") {
 			current.parts.push({ kind: "chip", chip: segment.chip });
+			const swallowed = Number(segment.chip?.lines ?? 1) - 1;
+			if (swallowed > 0) nextNo += swallowed;
 			continue;
 		}
 		const text = String(segment?.text ?? "");
 		const base = typeof segment?.start === "number" ? segment.start : 0;
 		let offset = 0;
 		text.split("\n").forEach((part, index) => {
-			if (index > 0) {
-				current = { no: lines.length + 1, parts: [] };
-				lines.push(current);
-			}
+			if (index > 0) current = startLine();
 			if (part.length > 0) {
 				// 两套坐标：tokens 是整段文本上的（要加 base），marks 已被折叠模型平移到片段内
 				const from = base + offset;

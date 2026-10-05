@@ -111,14 +111,15 @@ function partHtml(part) {
 const displayLines = computed(() => splitLines(segments.value, tokens.value));
 function chipClass(chip) {
   return {
-    "chip-file": chip.tone !== "shell",
+    "chip-file": chip.tone === "file",
+    "chip-literal": chip.tone === "literal",
     "chip-shell": chip.tone === "shell",
     "chip-warn": chip.warned,
     "chip-vague": !chip.literal,
   };
 }
 function chipTitle(chip) {
-  const what = chip.tone === "shell" ? "这段 shell 命令" : "这次写入/改写";
+  const what = chip.tone === "literal" ? "这段常量/数组" : chip.tone === "shell" ? "这段 shell 命令" : "这次写入/改写";
   return `点击查看${what}的具体内容`;
 }
 function openDetail(chip) {
@@ -229,6 +230,7 @@ watch(() => props.highlights, scroll, { deep: true });
 .fold-chip.chip-file { color: #b9c0d0; background: #2a2a3d55; border-color: #555a6b; }
 .fold-chip.chip-file:hover { background: #3a3a5566; color: #dfe4f0; }
 .fold-chip.chip-shell { color: #e6a23c; background: #3a2a1233; border-color: #e6a23c88; }
+.fold-chip.chip-literal { color: #8ab4d8; background: #17303a55; border-color: #4d7f9a99; border-style: dashed; }
 .fold-chip.chip-shell:hover { background: #4a361688; }
 .fold-chip.chip-warn { box-shadow: inset 0 0 0 1px #ff6b6b; }
 .fold-chip.chip-vague { border-style: dashed; }

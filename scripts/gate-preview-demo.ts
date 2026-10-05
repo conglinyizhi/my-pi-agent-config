@@ -18,8 +18,17 @@ import { scanScript } from "../lib/ptc-analyze.ts";
 import { scriptEffectsOf } from "../lib/ptc-audit.ts";
 import { foldScript } from "../gui/frontend/src/domain/gate/script-fold.js";
 
+// 长常量与几十行的大数组：折叠能力得先有这种样例才看得见。
+// 这里用生成式的写法，免得把几百行样例文本塞进这个文件。
+const DENY_LIST = Array.from({ length: 24 }, (_, i) => "  '/opt/tools/deny-" + (i + 1) + ".txt',").join("\n");
+const BANNER = 'const BANNER = "' + "x".repeat(220) + '";';
+
 const SOURCE = [
 	"const files = await tools.ls({ path: '/home/clyzhi/.pi/agent/lib' });",
+	"const DENY_LIST = [",
+	DENY_LIST,
+	"];",
+	BANNER,
 	"",
 	"if (files.length > 0) {",
 	"        const out = await tools.write({",

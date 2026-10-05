@@ -35,6 +35,12 @@ describe("切行", () => {
 		assert.deepEqual(lines[1].parts[0].marks, []);
 	});
 
+	it("折起来的块照占行号：扫描报的行号按未折叠文本算", () => {
+		const chip = { kind: "chip", chip: { label: "长块 5 行", lines: 5 } };
+		const lines = splitLines([text("a\n", 0), chip, text("\nb", 2)], []);
+		assert.deepEqual(lines.map((line) => line.no), [1, 2, 7]);
+	});
+
 	it("空行不塞空片段，但行号照占", () => {
 		const lines = splitLines([text("a\n\nb", 0)], []);
 		assert.equal(lines.length, 3);

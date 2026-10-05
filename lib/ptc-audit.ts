@@ -153,6 +153,64 @@ function previewFieldsOf(call: LiteralCall): Partial<FoldCallPayload> {
 }
 
 /** 把扫描到的调用整理成折叠芯片（白名单外的丢掉：它们照旧亮原文） */
+/**
+ * 长字面量的折叠范围：超过 160 字符的字符串，或跨 5 行以上的数组/对象。
+ * 为什么折：模型写的常量与数组动辄几十行，把审核窗和人的注意力全吃掉了。
+ * 折起来只是"先不看"——送审文本一个字都不改。
+ */
+export function longLiteralSpans(text: string): Array<{ startOffset: number; endOffset: number }> {
+	const source = typeof text === "string" ? text : "";
+	const spans: Array<{ startOffset: number; endOffset: number }> = [];
+	const brackets: Array<{ at: number }> = [];
+	let quote = "";
+	let quoteAt = 0;
+	let i = 0;
+	while (i < source.length) {
+		const ch = source[i];
+		if (quote !== "") {
+			if (ch === "\\") { i += 2; continue; }
+			if (ch === quote) {
+				if (i + 1 - quoteAt >= 160) spans.push({ startOffset: quoteAt, endOffset: i + 1 });
+				quote = "";
+			}
+			i++;
+			continue;
+		}
+		if (ch === "/" && source[i + 1] === "/") {
+			const nl = source.indexOf("\n", i);
+			i = nl < 0 ? source.length : nl;
+			continue;
+		}
+		if (ch === "/" && source[i + 1] === "*") {
+			const end = source.indexOf("*/", i + 2);
+			i = end < 0 ? source.length : end + 2;
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") { quote = ch; quoteAt = i; i++; continue; }
+		if (ch === "[" || ch === "{" || ch === "(") { brackets.push({ at: i }); i++; continue; }
+		if (ch === "]" || ch === "}" || ch === ")") {
+			const open = brackets.pop();
+			// 只折数组与对象：圆括号是调用的实参，那块由调用芯片负责
+			if (open && ch !== ")") {
+				const body = source.slice(open.at, i + 1);
+				if (body.split("\n").length >= 5) spans.push({ startOffset: open.at, endOffset: i + 1 });
+			}
+			i++;
+			continue;
+		}
+		i++;
+	}
+	// 只留最外层：套在别人里面的丢掉
+	spans.sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
+	const kept: Array<{ startOffset: number; endOffset: number }> = [];
+	for (const span of spans) {
+		const last = kept[kept.length - 1];
+		if (last && span.endOffset <= last.endOffset) continue;
+		kept.push(span);
+	}
+	return kept;
+}
+
 export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 	const out: FoldCallPayload[] = [];
 	// 区间必须落在被显示的那份文本上：有展示文本就按它的扫描结果来
@@ -196,6 +254,25 @@ export function foldCallsOf(input: PtcAuditInput): FoldCallPayload[] {
 				}
 				: {}),
 			...previewFieldsOf(call),
+		});
+	}
+
+	// 长常量与大数组：跟调用芯片同一份载荷，只是没有工具名。
+	// 区间同样落在显示文本上，前端照原样折，不自己猜。
+	const shown = input.display ?? input.script ?? "";
+	for (const span of longLiteralSpans(shown)) {
+		if (out.some((item) => span.startOffset >= item.startOffset && span.endOffset <= item.endOffset)) continue;
+		const body = shown.slice(span.startOffset, span.endOffset);
+		out.push({
+			tool: "literal",
+			kind: "literal",
+			literal: true,
+			startOffset: span.startOffset,
+			endOffset: span.endOffset,
+			line: shown.slice(0, span.startOffset).split("\n").length,
+			endLine: shown.slice(0, span.endOffset).split("\n").length,
+			bytes: Buffer.byteLength(body, "utf8"),
+			lines: body.split("\n").length,
 		});
 	}
 	return out;

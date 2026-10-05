@@ -67,8 +67,8 @@ export type AuditSubject = "script";
  */
 export interface FoldCallPayload {
 	tool: string;
-	/** file = 改文件（灰芯片）；shell = 可执行命令（橙芯片） */
-	kind: "file" | "shell";
+	/** file = 改文件（灰芯片）；shell = 可执行命令（橙芯片）；literal = 长常量/大数组（先不看） */
+	kind: "file" | "shell" | "literal";
 	/** file：目标路径；shell：cwd。都按 ~ / $PWD 缩过；没有就是 undefined */
 	displayPath?: string;
 	/** 目标文件的真实路径（不缩短）："在编辑器打开"要用它，缩短过的打不开 */

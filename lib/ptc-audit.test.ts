@@ -26,6 +26,7 @@ import {
 	ptcScopeForNestedCall,
 	ptcScriptDigest,
 	SELF_EVIDENT_TOOLS,
+	longLiteralSpans,
 	type PtcToolInfo,
 } from "./ptc-audit.ts";
 
@@ -276,3 +277,27 @@ describe("approvePtcScript 送审", () => {
 		assert.equal(typeof outcome.approved, "boolean");
 	});
 });
+
+	describe("长字面量的折叠范围", () => {
+		it("超过 160 字符的字符串要折，短的不管", () => {
+			const long = `"${"x".repeat(200)}"`;
+			const short = '"ok"';
+			assert.deepEqual(longLiteralSpans(long).length, 1);
+			assert.deepEqual(longLiteralSpans(short).length, 0);
+		});
+
+		it("跨 5 行以上的数组要折，圆括号里的实参不折", () => {
+			const array = "const a = [\n1,\n2,\n3,\n4,\n5,\n];";
+			const args = "foo(\n1,\n2,\n3,\n4,\n5,\n)";
+			assert.equal(longLiteralSpans(array).length, 1);
+			assert.equal(longLiteralSpans(args).length, 0);
+		});
+
+		it("注释与字符串里的括号不参与配对", () => {
+			const source = "// [\n/* ( ] */\nconst s = \"[[[\";\nconst a = [\n1,\n2,\n3,\n];";
+			const spans = longLiteralSpans(source);
+			assert.equal(spans.length, 1);
+			assert.equal(source.slice(spans[0].startOffset, spans[0].endOffset).startsWith("["), true);
+		});
+	});
+

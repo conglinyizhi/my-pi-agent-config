@@ -18,6 +18,13 @@ export function callTitle(call) {
  * 文件编辑摆路径，bash 摆 $$SHELL$$（"这里是一段可执行 shell"）。
  */
 function labelOf(call) {
+  // 长常量/大数组：写规模，别写内容——折它就是为了不看内容
+  if (call.kind === "literal") {
+    const lines = typeof call.lines === "number" ? call.lines : 1;
+    if (lines > 1) return `长块 ${lines} 行`;
+    const kb = typeof call.bytes === "number" ? call.bytes / 1024 : 0;
+    return kb >= 1 ? `长字符串 ${kb.toFixed(1)}KB` : `长字符串 ${call.bytes ?? 0} 字节`;
+  }
   const path = typeof call.displayPath === "string" && call.displayPath !== "" ? call.displayPath : "…";
   if (call.kind === "shell") {
     return call.displayPath ? `$$SHELL$$, cwd=${call.displayPath}` : "$$SHELL$$";
@@ -86,7 +93,7 @@ export function foldScript(script, editCalls, marks = [], options = {}) {
     index,
     call,
     label: labelOf(call),
-    tone: call.kind === "shell" ? "shell" : "file",
+    tone: call.kind === "literal" ? "literal" : call.kind === "shell" ? "shell" : "file",
     literal: call.literal !== false,
     hiddenMarks: [],
     warned: false,
