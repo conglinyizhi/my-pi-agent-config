@@ -154,9 +154,9 @@ export function collectGuiDiagnosis(checkCommands = true): GuiDiagnosis {
 export function guiFallbackReasonText(reason: GuiFallbackReason, d: GuiDiagnosis): string {
 	switch (reason) {
 		case "no-binary":
-			return "没找到 GUI 启动器（bin/gui），图形审批窗起不来";
+			return "没找到 GUI 启动器（bin/gui.sh），图形审批窗起不来";
 		case "spawn-failed":
-			return "bin/gui 在，但进程起不来（没装 electron，或脚本不可执行）";
+			return "bin/gui.sh 在，但进程起不来（没装 electron，或脚本不可执行）";
 		case "timeout":
 			return "图形窗没有在时限内给出结果（窗口没显示或卡住了）";
 		case "exited":
@@ -183,7 +183,7 @@ export function guiFallbackFixSteps(reason: GuiFallbackReason, d: GuiDiagnosis):
 		if (stuck) {
 			steps.push(`候选位有文件但不可执行：chmod +x ${stuck.path}`);
 		} else {
-			steps.push("搭出启动器：~/.pi/agent/bin/gui（壳脚本，exec 系统里的 electron）");
+			steps.push("搭出启动器：~/.pi/agent/bin/gui.sh（壳脚本，exec 系统里的 electron）");
 			if (!d.hasElectron) {
 				steps.push("PATH 里没有 electron：装一个（Arch 上 sudo pacman -S electron），或用 PI_GUI_ELECTRON 指向它的路径");
 			}
@@ -198,7 +198,7 @@ export function guiFallbackFixSteps(reason: GuiFallbackReason, d: GuiDiagnosis):
 		if (!d.hasFrontendDist) {
 			steps.push("前端没构建，窗口会白屏：cd ~/.pi/agent/gui/frontend && node_modules/.bin/vite build");
 		}
-		steps.push("手动起一次看报错：PI_GUI_DEV=1 ~/.pi/agent/bin/gui gate <请求.json> <响应.json>");
+		steps.push("手动起一次看报错：PI_GUI_DEV=1 ~/.pi/agent/bin/gui.sh gate <请求.json> <响应.json>");
 	}
 
 	if (reason === "timeout") {

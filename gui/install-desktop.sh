@@ -4,7 +4,7 @@
 # 为什么需要：Wayland 下窗口图标不走窗口属性，KDE 是按 app_id 去找 desktop 文件里的 Icon=。
 # 系统里 Electron 只装了带版本号的条目（electron31.desktop …），窗口的 app_id 默认是不带
 # 版本号的 electron，对不上 → 任务栏与标题栏只好交通用占位图标。给窗口自己的 app_id
-# （bin/gui 传 --class=pi-gui）并装一份同名 desktop 条目，图标才认得出来。
+# （bin/gui.sh 传 --class=pi-gui）并装一份同名 desktop 条目，图标才认得出来。
 #
 # 用法：gui/install-desktop.sh        （改过图标或 desktop 条目后重跑即可）
 set -euo pipefail

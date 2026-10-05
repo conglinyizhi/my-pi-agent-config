@@ -3,12 +3,12 @@
 // 为什么需要：提督会周期性地压缩 + reload 重启核心，于是「磁盘上的 GUI」与「正在跑的 pi」
 // 常常不是同一代。版本号比对会立刻变成一个单点，所以改成问它能干什么，缺什么就降级。
 //
-// 探测方式：bin/gui --spec 由启动器直接问 init-data.js（node 起一下，不拉 Electron），
+// 探测方式：bin/gui.sh --spec 由启动器直接问 init-data.js（node 起一下，不拉 Electron），
 // 既快又不碰 Electron 的启动路径（就绪前退出会崩，2026-10-05 踩过一次）。
 //
 // 两个来源，按代价分：
 //   1. 槽里的 manifest（便宜，不 spawn）：会话启动时的提示用这个
-//   2. bin/gui --spec 真探测（便宜，不拉 Electron）：真要决定降级时才用，进程内缓存
+//   2. bin/gui.sh --spec 真探测（便宜，不拉 Electron）：真要决定降级时才用，进程内缓存
 
 import { spawnSync } from "node:child_process";
 import { findGuiBinary } from "./gui-runner.ts";

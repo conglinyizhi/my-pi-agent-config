@@ -68,10 +68,10 @@ describe("从 manifest 读", () => {
 	});
 });
 
-describe("bin/gui --spec 的端到端", () => {
+describe("bin/gui.sh --spec 的端到端", () => {
 	it("启动器直接吐一行可解析的 spec（不拉 Electron，所以无需图形环境）", () => {
 		const repo = dirname(dirname(fileURLToPath(import.meta.url))); // lib/ 的上两级就是仓根
-		const run = spawnSync(join(repo, "bin", "gui"), ["--spec"], { encoding: "utf8", timeout: 20_000 });
+		const run = spawnSync(join(repo, "bin", "gui.sh"), ["--spec"], { encoding: "utf8", timeout: 20_000 });
 		assert.equal(run.status, 0, run.stderr);
 		const spec = parseSpecOutput(run.stdout ?? "");
 		assert.ok(spec, "输出里应该有一行可解析的 spec");

@@ -1,6 +1,6 @@
 // lib/gui-runner.ts — 统一 GUI 启动器（Electron 版）
 //
-// 二进制是 bin/gui（壳脚本），它把参数原样交给 Electron 主进程：
+// 二进制是 bin/gui.sh（壳脚本），它把参数原样交给 Electron 主进程：
 //   gui <windowName> <requestFile> <responseFile>
 // 这套协议与之前的 Wails 版完全一致，所以调用方一行没改。
 //
@@ -88,10 +88,14 @@ function writeRequestFile(file: string, request: unknown): void {
   fs.writeFileSync(file, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
 }
 
-/** 查找 GUI 启动器：优先安装位 ~/.pi/agent/bin/gui，其次仓库里的 bin/gui */
+/** 查找 GUI 启动器：优先安装位 ~/.pi/agent/bin/gui.sh，其次仓库里的 bin/gui.sh */
 export function findGuiBinary(): string | null {
+  // 带 .sh 的是当前名字（2026-10-05 改名：脚本一眼能认出来）；不带的那两个留着兼容
+  // 老的 desktop 条目与被别处写死的路径，等确认没人用再摘。
   const candidates = [
-    // Electron 宿主（bin/gui）：系统装的 electron，没有编译步骤
+    // Electron 宿主（bin/gui.sh）：系统装的 electron，没有编译步骤
+    path.join(os.homedir(), ".pi", "agent", "bin", "gui.sh"),
+    path.join(__dirname, "..", "bin", "gui.sh"),
     path.join(os.homedir(), ".pi", "agent", "bin", "gui"),
     path.join(__dirname, "..", "bin", "gui"),
   ];

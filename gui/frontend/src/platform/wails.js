@@ -49,10 +49,10 @@ export function createWailsPlatform() {
     // Wails 宿主已归档，这里给一个明说不支持的桩，而不是静默给空值。
     review: {
       async load() {
-        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui）" };
+        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui.sh）" };
       },
       async save() {
-        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui）" };
+        return { ok: false, error: "Wails 宿主不支持审核设置窗，请用 Electron 宿主（bin/gui.sh）" };
       },
     },
     subagents: {

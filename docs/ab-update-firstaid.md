@@ -22,7 +22,7 @@ make ab-status
 | 审核判定明显不对劲（全拒、全放、老是超时） | `make ab-rollback COMPONENT=audit`，然后 `/reload` |
 | 不知道坏在哪一步 | `make ab-log COMPONENT=audit` 看流水 |
 
-回退最终落到 `bin/ab-rollback`：一段**纯 shell**，不依赖 node、不依赖 Electron、不依赖任何扩展。
+回退最终落到 `bin/ab-rollback.sh`：一段**纯 shell**，不依赖 node、不依赖 Electron、不依赖任何扩展。
 Electron 完全起不来时它也能用（这就是它为什么故意写得这么笨）；`make ab-rollback` 只是给它套了个名字。
 
 ## 图形界面全废时的兜底通道
@@ -65,7 +65,7 @@ rm ~/.pi/runtime/audit/current   # 或者干脆删掉 current：等于用仓库�
 
 ## 别做
 
-- **别删 previous**：它是唯一的回退目标，`bin/ab-rollback` 靠它救命
+- **别删 previous**：它是唯一的回退目标，`bin/ab-rollback.sh` 靠它救命
 - **别手工把 current 指向不存在的目录**：壳会退回仓库（不至于坏），但状态会变得难读
 - **别往仓库提交构建产物**：槽里的东西是从 git ref 算出来的，不进 git
 

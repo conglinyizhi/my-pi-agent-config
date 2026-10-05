@@ -79,14 +79,14 @@ describe("guiFallbackFixSteps", () => {
 	});
 
 	it("候选位有文件但不可执行时先 chmod，不去劝重构建", () => {
-		const stuck = { path: "/repo/bin/gui", exists: true, executable: false };
+		const stuck = { path: "/repo/bin/gui.sh", exists: true, executable: false };
 		const steps = guiFallbackFixSteps("no-binary", diag({ candidates: [stuck], binary: null }));
 		assert.match(steps.join("\n"), /chmod \+x \/repo\/bin\/gui/);
 		assert.doesNotMatch(steps.join("\n"), /vite build/);
 	});
 
 	it("没装 electron 时点名它", () => {
-		const steps = guiFallbackFixSteps("spawn-failed", diag({ binary: "/bin/gui", hasElectron: false }));
+		const steps = guiFallbackFixSteps("spawn-failed", diag({ binary: "/bin/gui.sh", hasElectron: false }));
 		assert.match(steps.join("\n"), /PATH 里没有 electron/);
 	});
 
@@ -96,19 +96,19 @@ describe("guiFallbackFixSteps", () => {
 	});
 
 	it("hub-no-channel 不反过来劝人装 hub", () => {
-		const steps = guiFallbackFixSteps("hub-no-channel", diag({ binary: "/bin/gui" }));
+		const steps = guiFallbackFixSteps("hub-no-channel", diag({ binary: "/bin/gui.sh" }));
 		const text = steps.join("\n");
 		assert.doesNotMatch(text, /hub\/install\.sh/);
 		assert.match(text, /lark-cli/);
 	});
 
 	it("timeout 且没有显示变量时点出会话问题", () => {
-		const steps = guiFallbackFixSteps("timeout", diag({ binary: "/bin/gui", hasDisplayEnv: false }));
+		const steps = guiFallbackFixSteps("timeout", diag({ binary: "/bin/gui.sh", hasDisplayEnv: false }));
 		assert.match(steps.join("\n"), /DISPLAY/);
 	});
 
 	it("末尾始终给排查文档路径", () => {
-		const steps = guiFallbackFixSteps("exited", diag({ binary: "/bin/gui" }));
+		const steps = guiFallbackFixSteps("exited", diag({ binary: "/bin/gui.sh" }));
 		assert.match(steps.at(-1) ?? "", /gui-fallback-recovery\.md$/);
 	});
 });

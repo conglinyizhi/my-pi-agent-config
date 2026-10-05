@@ -13,10 +13,10 @@ import { findGuiBinary } from "../lib/gui-runner.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TIMEOUT = 30_000; // 每个 GUI 最多等 30 秒
 
-// 找 GUI 启动器（bin/gui → Electron）
+// 找 GUI 启动器（bin/gui.sh → Electron）
 const guiBin = findGuiBinary();
 if (!guiBin) {
-  console.error("❌ 未找到 GUI 启动器（bin/gui）。Electron 宿主不需要编译，检查 ~/.pi/agent/bin/gui 是否可执行、PATH 里有没有 electron");
+  console.error("❌ 未找到 GUI 启动器（bin/gui.sh）。Electron 宿主不需要编译，检查 ~/.pi/agent/bin/gui.sh 是否可执行、PATH 里有没有 electron");
   process.exit(1);
 }
 

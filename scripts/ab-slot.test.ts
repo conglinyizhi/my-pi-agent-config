@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
 const CLI = join(HERE, "ab-slot.ts");
-const SHIM = join(REPO, "bin", "ab-rollback");
+const SHIM = join(REPO, "bin", "ab-rollback.sh");
 
 function run(args: string[], env: Record<string, string> = {}) {
 	return spawnSync("node", ["--experimental-strip-types", CLI, ...args], {

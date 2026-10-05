@@ -40,25 +40,25 @@ require-component:
 	}
 
 ab-status: ## 看两个组件在跑哪一版（读类，不用给 COMPONENT）
-	bin/ab-slot status $(COMPONENT)
+	bin/ab-slot.sh status $(COMPONENT)
 
 ab-pack: require-component ## 从 git ref 构建到槽（必给 COMPONENT，SLOT=dev|head）
-	bin/ab-pack $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
+	bin/ab-pack.sh $(COMPONENT) --ref $(REF) --slot $(SLOT) --runtime-root $(RT)
 
 ab-switch: require-component ## 把 current 指向某个槽（必给 COMPONENT，SLOT=dev）
-	bin/ab-slot switch $(COMPONENT) $(SLOT) --runtime-root $(RT)
+	bin/ab-slot.sh switch $(COMPONENT) $(SLOT) --runtime-root $(RT)
 
 ab-rollback: require-component ## 应急回退到上一个稳定槽（必给 COMPONENT；纯 shell）
-	bin/ab-rollback $(COMPONENT)
+	bin/ab-rollback.sh $(COMPONENT)
 
 ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
-	bin/ab-slot promote $(COMPONENT) --runtime-root $(RT)
+	bin/ab-slot.sh promote $(COMPONENT) --runtime-root $(RT)
 
 ab-note: require-component ## 手工记一次往返（必给 COMPONENT，OUTCOME=clean|failure）
-	bin/ab-slot note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
+	bin/ab-slot.sh note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
 
 ab-log: require-component ## 看晋升、回退、看门狗与计数的流水（必给 COMPONENT）
-	bin/ab-slot log $(COMPONENT) --runtime-root $(RT)
+	bin/ab-slot.sh log $(COMPONENT) --runtime-root $(RT)
 
 ab-firstaid: ## 打印急救卡
 	@cat docs/ab-update-firstaid.md

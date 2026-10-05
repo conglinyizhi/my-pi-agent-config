@@ -19,7 +19,8 @@ agent_dir=$(cd "$(dirname "$0")/.." && pwd)
 # --spec：自报能力（协议版本 / 窗口清单 / 认得哪些字段）。
 # 刻意不拉起 Electron：只是为了问 init-data.js 一句话，起 Electron 又慢又多一条崩溃路径。
 if [ "${1:-}" = "--spec" ]; then
-  exec node --input-type=module -e "import('$agent_dir/gui/electron/init-data.js').then((m) => console.log(JSON.stringify(m.buildSpec())))"
+  # 用 stdout.write 而不是 console.log：这是程序输出（一行 JSON 给调用方解析），不是日志
+  exec node --input-type=module -e "import('$agent_dir/gui/electron/init-data.js').then((m) => process.stdout.write(JSON.stringify(m.buildSpec()) + String.fromCharCode(10)))"
 fi
 
 electron_bin=${PI_GUI_ELECTRON:-electron}

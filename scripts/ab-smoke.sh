@@ -44,8 +44,8 @@ run_pi() {
 echo "扩展：$EXT"
 echo "临时 runtime：$RT"
 echo "构建槽："
-bin/ab-pack audit --slot dev --runtime-root "$RT" | sed "s/^/  /"
-bin/ab-slot switch audit dev --runtime-root "$RT" >/dev/null
+bin/ab-pack.sh audit --slot dev --runtime-root "$RT" | sed "s/^/  /"
+bin/ab-slot.sh switch audit dev --runtime-root "$RT" >/dev/null
 
 SLOT_ENTRY="$RT/audit/dev/extensions/$EXT/index.ts"
 if head -1 "$SLOT_ENTRY" | grep -q "export { default }"; then
@@ -70,7 +70,7 @@ run_pi "$RT/pi-repo.log"
 if [ -f "$MARKER" ]; then fail "current 删了却还在用槽里的实现"; else pass "退回仓库实现"; fi
 grep -qi "failed to load" "$RT/pi-repo.log" && fail "pi 报了扩展加载失败" || pass "pi 没有扩展加载错误"
 
-bin/ab-slot switch audit dev --runtime-root "$RT" >/dev/null
+bin/ab-slot.sh switch audit dev --runtime-root "$RT" >/dev/null
 printf 'export default function broken( \n' >> "$RT/audit/dev/extensions/$EXT/impl.ts"
 echo ""
 echo "路径三：槽里那份弄坏（该退回仓库且不把 pi 弄死）"
