@@ -87,7 +87,12 @@ onEmpty     拿不到结论时交给谁（默认交给失败分支）
 onBudget    预算用尽时交给谁（默认接流程的 fail 出口）
 ```
 
-合并策略在 merge 节点上选：谁先回 / 投票 / 取最严 / 一致才通过。现在的 chain 就是「取最严」，把它显式化成 merge 的一个参数，行为不变。
+合并策略在 merge 节点上选：谁先回 / 投票 / 取最严 / 一致才通过。
+
+**2026-10-05 修正（读代码之后）**：现在的 chain **不是「取最严」**。真实语义是
+「chat 先给意见，分类器拿它当参考做判决，**分类器的判决就是最终判决**」，
+chat 的结论只挂成 `chatReview` 给人看，不单独触发弹窗（chat 会瞎报，让它一票否决等于把误报变成满屏弹窗）。
+所以 v1 迁移时 merge 节点按这个语义写，策略名另取（`classifier-primary`），别照抄本节原来那句。
 
 ## 4. 失败路径与兜底
 
@@ -141,12 +146,23 @@ export const bashFlow: Flow = {
     { id: "rule", kind: "rule", after: ["facts"] },
     { id: "classify", kind: "classifier", mode: "parallel", settings: { timeoutMs: 3000 }, after: ["facts"] },
     { id: "chat", kind: "chatreview", mode: "parallel", settings: { timeoutMs: 30000 }, after: ["facts"] },
-    { id: "merge", kind: "merge", strategy: "strictest", after: ["classify", "chat", "rule"] },
+    { id: "merge", kind: "merge", strategy: "classifier-primary", after: ["classify", "chat", "rule"] },
+    // 控制流与数据流分开：after 是要哪些上游产物，往哪走由边决定（见下面的修正）
+    { id: "auto", kind: "autoapprove", after: ["merge"], next: "allow", onEmpty: "gate" },
     { id: "gate", kind: "gate", after: ["merge"] },
-    { id: "auto", kind: "autoapprove", mode: "auto", after: ["merge", "gate"] },
   ],
   onError: "deny",
 };
+```
+
+**2026-10-05 修正（实现时发现）**：上面这段草图把顺序写反了——它让 auto 依赖 gate，等于
+自动放行要等人工闸门跑完。真实语义是「自动放行判不出来才轮到闸门」，而且顺序**不该由依赖推出来**，
+否则闸门会提前跑。所以节点长成两件事：
+
+- `after`：数据流，我要用哪些节点的产物
+- `next` / `onError` / `onTimeout` / `onEmpty`：控制流，往哪走
+
+校验器会抓「数据依赖不在控制流上游」这类错。见 `lib/review-flow/types.ts` 与 `validate.ts`。
 ```
 
 声明式文件（TOML 或 JSON）在 v1.5 补上，专门服务于将来的可视化编辑器；
