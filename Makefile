@@ -22,7 +22,7 @@ RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-firstaid \
+        require-component ab-status ab-pack ab-bootstrap ab-switch ab-rollback ab-detach ab-promote ab-log ab-note ab-health ab-firstaid \
         gui-canary smoke
 
 help: ## 列出所有目标
@@ -62,6 +62,9 @@ ab-detach: require-component ## 摘掉 current：回到仓库版本（临时开�
 
 ab-promote: require-component ## 手工晋升 dev（必给 COMPONENT；攒够五次干净会自动晋升）
 	bin/ab-slot.sh promote $(COMPONENT) --runtime-root $(RT)
+
+ab-health: require-component ## 自检槽：成功只清连续失败，不加晋升连胜（必给 COMPONENT）
+	bin/ab-slot.sh health $(COMPONENT) --runtime-root $(RT)
 
 ab-note: require-component ## 手工记一次往返（必给 COMPONENT，OUTCOME=clean|failure）
 	bin/ab-slot.sh note $(COMPONENT) $(OUTCOME) --runtime-root $(RT)
