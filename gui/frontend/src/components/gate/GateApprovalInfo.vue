@@ -65,7 +65,7 @@
       <div class="model-head" :class="'tone-' + toneOf(verdictMeta, false)">
         📊 System One 决策模型意见
         <span class="weight-count" :class="flaggedCount ? 'count-warn' : 'count-ok'">
-          {{ flaggedCount ? `${flaggedCount}/${weightRows.length} 越线` : `${weightRows.length} 维全在阈值内` }}
+          {{ `${flaggedCount}/${weightRows.length} 命中` }}
         </span>
         <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
       </div>

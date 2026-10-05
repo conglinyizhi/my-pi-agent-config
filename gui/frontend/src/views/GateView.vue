@@ -374,8 +374,8 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 2px 6px;
 }
-/* 维度计数单独一行、贴右：栏窄的时候挤在同一行会把「越线」断成两半 */
-.app.has-review :deep(.weight-count) { flex-basis: 100%; text-align: right; margin-left: 0; }
+/* 计数与灯跟在标题同一行、贴右；不许断开（栏窄时宁可挤，也不要把数字断成两半） */
+.app.has-review :deep(.weight-count) { margin-left: auto; white-space: nowrap; }
 /* 底栏：整宽，占自己一行。不 sticky——它一浮起来就会盖住下面那块 */
 .app :deep(.actions),
 .app.has-review :deep(.actions) {
