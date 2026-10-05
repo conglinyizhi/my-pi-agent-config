@@ -116,7 +116,13 @@ describe("从结果判干净", () => {
 		assert.equal(classifyWindowOutcome({ ok: true, data: { action: "allow" } }).outcome, "clean");
 	});
 
-	it("叉掉窗口算失败（对结果不满意就等于投反对票）", () => {
+	it("点拒绝也算走完：结论就是结论，与答不答应无关", () => {
+		const verdict = classifyWindowOutcome({ ok: true, data: { action: "deny" } });
+		assert.equal(verdict.outcome, "clean");
+		assert.match(verdict.reason, /给出结论/);
+	});
+
+	it("叉掉窗口算失败（那是机制没走通）", () => {
 		const verdict = classifyWindowOutcome({ ok: false, reason: "exited" });
 		assert.equal(verdict.outcome, "failure");
 		assert.match(verdict.reason, /叉掉|关掉/);

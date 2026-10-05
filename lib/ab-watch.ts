@@ -95,7 +95,9 @@ export function watchRoundTrip(options: {
 /**
 	* 从窗口往返的结果判干净与否。
 	*
-	* 叉掉窗口按提督的约定算错误信号：对结果不满意就直接关掉，等于投了反对票。
+	* 干净 = 这条链走通了：窗口给出结论（**允许与拒绝都算**）、审核给出 verdict。
+	* 与判断内容无关——拒绝也是人做了判断、机制跑通了。只有叉掉窗口、超时、
+	* 起不来才算失败：那是机制没走通，不是判断不同。
 	*/
 export function classifyWindowOutcome(result: { ok?: boolean; data?: unknown; reason?: string }): {
 	outcome: "clean" | "failure";
