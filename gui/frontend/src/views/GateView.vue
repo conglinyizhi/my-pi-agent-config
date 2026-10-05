@@ -18,28 +18,6 @@
       @update:current="cur = $event"
     />
 
-    <div v-if="mergedRows.length" data-name="script-merged" class="merged">
-      <div class="merged-head">🧩 同文件改动合并（按字面量推演，不是磁盘上的真身）</div>
-      <div
-        v-for="(entry, index) in mergedRows"
-        :key="index"
-        class="merged-item"
-        :class="{ 'merged-warn': entry.status !== 'merged' }"
-      >
-        <div class="merged-title">
-          <code class="merged-path">{{ entry.path }}</code>
-          <span v-if="entry.ops > 0" class="merged-badge">{{ entry.ops }} 处改动</span>
-          <span v-else class="merged-badge merged-badge-none">{{ statusLabel(entry.status) }}</span>
-          <span v-if="entry.added || entry.removed" class="merged-count">+{{ entry.added }} / -{{ entry.removed }}</span>
-          <span v-if="entry.baseAssumedEmpty" class="merged-note">改前按空文件算</span>
-          <span v-if="entry.truncated" class="merged-note">只摆了前一段</span>
-          <OpenInEditorMenu label="打开" :request="{ path: entry.absPath }" />
-        </div>
-        <div v-if="entry.reason" class="merged-reason">{{ entry.reason }}</div>
-        <DiffView v-if="entry.blocks && entry.blocks.length" :blocks="entry.blocks" />
-      </div>
-    </div>
-
     <div v-if="effectRows.length" data-name="script-effects" class="effects">
       <div class="effects-head">📋 静态扫描（只认字面量，看不清的地方已标出）</div>
       <div
@@ -130,7 +108,6 @@ import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow,
 import GateActionBar from "../components/gate/GateActionBar.vue";
 import GateApprovalInfo from "../components/gate/GateApprovalInfo.vue";
 import GateCommandPreview from "../components/gate/GateCommandPreview.vue";
-import DiffView from "../components/gate/DiffView.vue";
 import OpenInEditorMenu from "../components/gate/OpenInEditorMenu.vue";
 
 const platform = usePlatform();
@@ -185,13 +162,8 @@ const title = computed(() =>
     : isSandboxAllow.value ? "🔓 跨沙箱请求（仅此一次）" : isCapability.value ? "🔐 subagent 能力请求" : "⚠️ 危险命令审计",
 );
 /** 同文件改动合并出来的净变化（显示层推演，pi 侧算好） */
-const mergedRows = computed(() => scriptEffects.value?.mergedChanges ?? []);
+// 「同文件改动合并」按提督说的删了：日常用不到，占地方
 
-// 推演不出改动时（ops = 0）别硬说"N 处改动"：直接摆状态词，原因在下面那行
-const MERGED_STATUS_LABEL = { merged: "已合并", "chain-broken": "推演中断", "unknown-base": "基准不明" };
-function statusLabel(status) {
-  return MERGED_STATUS_LABEL[status] ?? status ?? "";
-}
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
 const effectsDigest = computed(() => digestLine(scriptEffects.value));
 const permLabel = computed(() =>
@@ -331,9 +303,13 @@ onMounted(async () => {
 .app.has-review {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  /* 五条轨道：header / LLM 行 / System One 行 / 图例行 / 之后按内容。
+     中间两条给 1fr，剩余高度由它们分掉——代码区就吃这份，整页不出滚动条。 */
+  grid-template-rows: auto minmax(min-content, 1fr) minmax(min-content, 1fr) auto;
   grid-auto-rows: min-content;
   grid-auto-flow: row dense;
   align-content: start;
+  overflow: hidden;
 }
 /* 块默认整宽；下面按设计图给五块钉死位置：
    第 1 行 header 整宽，第 2-3 行左=代码区、右=LLM 意见 / System One 决策，
@@ -360,7 +336,7 @@ onMounted(async () => {
   grid-area: 2 / 1 / 4 / 2;
   background: #0d1014;
   padding: 0;
-  min-height: 140px;
+  min-height: 0;
   overflow: auto;
 }
 .app.has-review :deep(.fold-legend) {
@@ -381,6 +357,39 @@ onMounted(async () => {
   background: #151922;
   border-color: #2b3140;
 }
+/* 图例与"需要人工判断"都去掉：图形界面上点击交互已经够显眼，不用再用文字教一遍 */
+.app.has-review :deep(.fold-legend),
+.app.has-review :deep(.decision-summary) { display: none; }
+/* System One 决策模型意见：细行，名称在左、置信度在右，风险条做成底边染色 */
+.app.has-review :deep(.weight-row) {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border-top: 0;
+  border-bottom: 1px solid #232833;
+  padding: 3px 0 4px;
+  font-size: 11.5px;
+}
+.app.has-review :deep(.weight-row)::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  width: var(--w, 0%);
+  background: #3f4c66;
+  border-radius: 1px;
+}
+.app.has-review :deep(.weight-row.flagged)::after { background: #e6a23c; }
+.app.has-review :deep(.weight-row.disabled)::after { background: transparent; }
+.app.has-review :deep(.weight-label) { min-width: 92px; }
+.app.has-review :deep(.weight-conf) { margin-left: auto; color: #9aa3b2; }
+/* 名称 + 置信度就够；条宽已经画在底边，阈值与原始值进 title */
+.app.has-review :deep(.weight-bar),
+.app.has-review :deep(.weight-risk),
+.app.has-review :deep(.weight-threshold),
+.app.has-review :deep(.weight-raw) { display: none; }
 /* 静态扫描结果按内容走，不设内部滚动（设计图要求：除代码区外别出竖滚动条） */
 .app.has-review > .merged,
 .app.has-review > .effects,

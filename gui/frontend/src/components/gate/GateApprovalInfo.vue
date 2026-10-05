@@ -48,7 +48,7 @@
          以前挤在一块里，右栏看上去只有一个"云端模型"的角色。 -->
     <div v-if="!isSandboxAllow && !isCapability && review" class="review-block model-card" data-model="chat">
       <div class="review-header model-head">
-        🤖 大模型审核
+        🤖 LLM 审核
         <span class="verdict-badge" :class="verdictMeta.cls">{{ verdictMeta.label }}</span>
       </div>
       <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
@@ -69,7 +69,7 @@
 
     <div v-if="!isSandboxAllow && !isCapability && weightRows.length" class="model-card" data-model="system1">
       <div class="model-head">
-        📊 System One 分类器
+        📊 System One 决策模型意见
         <span class="weight-count">
           {{ weightRows.length }} 个维度<span v-if="flaggedCount">，{{ flaggedCount }} 项越线</span>
         </span>
@@ -81,6 +81,7 @@
           :key="row.key"
           class="weight-row"
           :class="{ flagged: row.flagged, disabled: row.disabled }"
+          :style="{ '--w': row.riskWidth + '%' }"
           :title="rowTitle(row)"
         >
           <span class="weight-label">{{ row.label }}</span>
