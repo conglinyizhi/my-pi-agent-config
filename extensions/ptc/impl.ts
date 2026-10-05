@@ -11,7 +11,8 @@
 // `<父 id>/<n>`，所以挂钩点是现成的。
 //
 // 引擎不重写：定义从宿主 pi 的 dist 里取（见 host.ts），我们只改名、换入参、
-// 加理由登记与呈现。
+// 加理由登记与呈现。另外注册一个 read_image：让脚本直接拿到图片块。
+import { IMAGE_BLOCK_SCHEMA, READ_IMAGE_SCHEMA, readImageBlock } from "./read-image.ts";
 //
 // 事前审核走 lib/ptc-audit.ts：批了才执行，批过的脚本登记一个作用域，
 // 内层调用不再逐条弹人工闸门（硬拦与自动判定照旧）。拒了就整段废弃。
@@ -151,6 +152,26 @@ export function registerRunCode(
 	});
 
 	watchNestedCalls(pi);
+
+	// 图片：脚本里直接拿块，别再去 base64 拼 data URL。
+	// exposure: "codemode" —— 只给脚本用，不进模型直接调用的工具列表。
+	pi.registerTool({
+		name: "read_image",
+		label: "read_image",
+		description:
+			"读一张图片并把图片块交给脚本：image(await tools.read_image({ path }))。" +
+			"声明了 outputSchema，所以脚本拿到的是结构化内容，而不是 \"Read image file […]\" 那行文本。",
+		parameters: READ_IMAGE_SCHEMA,
+		outputSchema: IMAGE_BLOCK_SCHEMA,
+		exposure: "codemode",
+		annotations: { readOnlyHint: true },
+		async execute(_toolCallId: string, params: any) {
+			const result = readImageBlock(String(params?.path ?? ""));
+			if (!result.ok) return { content: [{ type: "text", text: result.error }], isError: true, details: undefined };
+			// 运行时形状就是上游认的图片块；静态类型这边比 ImageContent 窄，转一下
+			return { content: [result.block] as any, structuredContent: result.block as any, details: undefined };
+		},
+	});
 
 	pi.registerTool({
 		...definition,

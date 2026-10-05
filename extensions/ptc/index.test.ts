@@ -392,8 +392,8 @@ describe("注册与调用路径", () => {
 		const { host } = stubHost();
 		const { tools, commands, pi } = stubPi();
 		registerRunCode(pi as never, host);
-		assert.equal(tools.length, 1);
-		assert.equal(tools[0].name, "run_code");
+		assert.equal(tools.length, 2);
+		assert.equal(tools.find((t) => t.name === "run_code")!.name, "run_code");
 		assert.deepEqual(commands, ["ptc-reasons"]);
 	});
 
@@ -402,7 +402,7 @@ describe("注册与调用路径", () => {
 		const { host, seen } = stubHost();
 		const { tools, emitted, pi } = stubPi();
 		registerRunCode(pi as never, host);
-		const result = await tools[0].execute("call-empty", { description: "   ", code: "return 1" }, undefined, undefined, {});
+		const result = await tools.find((t) => t.name === "run_code")!.execute("call-empty", { description: "   ", code: "return 1" }, undefined, undefined, {});
 		assert.match(result.content[0].text, /需要一句 description/);
 		assert.equal(seen.length, 0);
 		assert.equal(emitted.length, 0);
@@ -415,7 +415,7 @@ describe("注册与调用路径", () => {
 		const { tools, emitted, pi } = stubPi();
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
 		const code = "return await tools.bash({ command: 'git status' })";
-		const result = await tools[0].execute("call-1", { description: "看看\n仓库\t状态", code }, undefined, undefined, {});
+		const result = await tools.find((t) => t.name === "run_code")!.execute("call-1", { description: "看看\n仓库\t状态", code }, undefined, undefined, {});
 		assert.deepEqual(seen, [{ code }, { code }], "干跑与真跑各调一次宿主引擎，入参都是 { code }");
 		assert.equal(result.content[0].text, "跑完");
 		// 理由在审核侧看到之前就已经洗好、登记好
@@ -435,7 +435,7 @@ describe("注册与调用路径", () => {
 		registerRunCode(pi as never, host, {
 			approve: async () => ({ approved: false, comment: "别碰 /etc", review: { verdict: "risky", reason: "写入工作区外", suggestion: "" } as never }),
 		});
-		const result = await tools[0].execute("call-1", { description: "改系统配置", code: "return 1" }, undefined, undefined, {});
+		const result = await tools.find((t) => t.name === "run_code")!.execute("call-1", { description: "改系统配置", code: "return 1" }, undefined, undefined, {});
 		// 干跑在批准之前（卡上要看预演），所以它会调一次宿主引擎；真跑一次都不能发生
 		assert.equal(seen.length, 1, "被拒时只有干跑跑过，真跑没发生");
 		assert.match(result.content[0].text, /本段未执行/);
@@ -469,7 +469,7 @@ describe("注册与调用路径", () => {
 			}),
 		};
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
-		await tools[0].execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
+		await tools.find((t) => t.name === "run_code")!.execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
 
 		assert.deepEqual(modes, ["dry", "real"], "干跑在前，真跑在后");
 		const executed = recentPtcAudits(5).find((entry) => entry.outcome === "executed");
@@ -504,7 +504,7 @@ describe("注册与调用路径", () => {
 		};
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
 		// 脚本字面量里只写了 read，所以 bash 属于越界
-		await tools[0].execute("call-1", { description: "读一下主机名", code: "return await tools.read({ path: '/etc/hostname' })" }, undefined, undefined, {});
+		await tools.find((t) => t.name === "run_code")!.execute("call-1", { description: "读一下主机名", code: "return await tools.read({ path: '/etc/hostname' })" }, undefined, undefined, {});
 
 		const audits = recentPtcAudits(5);
 		const executed = audits.find((entry) => entry.outcome === "executed");
@@ -537,7 +537,7 @@ describe("注册与调用路径", () => {
 		};
 		const { tools, pi } = stubPi();
 		registerRunCode(pi as never, host, { approve: async () => ({ approved: true }) });
-		await tools[0].execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
+		await tools.find((t) => t.name === "run_code")!.execute("call-1", { description: "读一下", code: "return 1" }, undefined, undefined, {});
 		// 干跑那次还没登记作用域（它在批准之前），真跑那次才有
 		assert.deepEqual(scopesSeen, [undefined, "call-1"]);
 		assert.equal(ptcScopeForNestedCall("call-1/1"), undefined, "执行完作用域要关掉");
