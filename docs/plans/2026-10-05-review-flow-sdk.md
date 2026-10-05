@@ -35,9 +35,8 @@
   - `merge` 节点支持**弃权门限**：置信低于 ε 的维度视为弃权，不计越线、不抬结论（ε 是数据，不是代码里的 if）
   - 弃权必须进轨迹：「这一维被忽略了，因为置信 0.00 < 0.20」——否则人会怀疑是漏看了
   - 哪几个维度免疫这条规则、ε 取多少，属于要反复试的参数——这正是低代码该省下来的地方
-- **不做 SDK 也能先修的一小条**（记录在此，等提督发话）：置信为 0 或低于门限的维度不参与越线计数与
-  结论抬升，只在权重表里以灰态展示。动手前先查清 0 置信是从哪条路进来的（分类器返回、还是解析兜底），
-  别把「解析失败」误当成「模型没把握」
+- **不单独修**（提督 2026-10-05 的判断）：这一条单独打补丁用处有限，等统一改脚本时一起改更快。
+  真要动手前先查清 0 置信是从哪条路进来的（分类器返回、还是解析兜底），别把「解析失败」误当成「模型没把握」
 
 ## 1. 三层边界
 
@@ -77,12 +76,12 @@ mode        serial | parallel | cascade
   serial    等上游结论再决定跑不跑（省调用，慢在关键路径）
   parallel  与同组节点同时开跑（快，调用多）
   cascade   便宜的先跑，判不出来才升级（最坏情况更慢）
-budget      该节点的预算，四个维度分开算：
-              calls     模型调用次数上限（现在 bash 链最多 2 次对话 + 1 次分类）
-              timeoutMs 单节点墙钟（现在分类 3000ms、对话 30000ms）
-              totalMs   单次运行的墙钟上限（现在缺，该补）
-              cost      token / 费用上限（现在只有缓存，没有上限）
-              哪个先到就走 onBudget 分支
+budget      只算两样（提督 2026-10-05 定的口径）：
+              calls  模型调用次数上限，默认 5（现状 3 次乘 1.5 向上取整）
+              cost   token / 费用上限，默认不限
+              用尽就走 onBudget
+deadline    整次运行的硬上限 60 秒：超了就是这次审计脚本失败，走 fail 出口
+            （网络与单模型的超时**不算预算**——那是各家模型自己的设置，留给用户自己折腾）
 onEmpty     拿不到结论时交给谁（默认交给失败分支）
 onBudget    预算用尽时交给谁（默认接流程的 fail 出口）
 ```
@@ -134,11 +133,13 @@ v1 先要 TS 模块，理由是它能被 tsc 检查、能被单测、能直接�
 // flows/bash.ts
 export const bashFlow: Flow = {
   id: "bash",
+  deadlineMs: 60_000,        // 整次运行的硬上限：超了就是审计脚本失败
+  budget: { calls: 5 },      // 只算调用次数与费用；单模型超时是模型自己的设置
   nodes: [
     { id: "facts", kind: "facts", mode: "serial" },
     { id: "rule", kind: "rule", after: ["facts"] },
-    { id: "classify", kind: "classifier", mode: "parallel", budget: { timeoutMs: 3000 }, after: ["facts"] },
-    { id: "chat", kind: "chatreview", mode: "parallel", budget: { timeoutMs: 30000 }, after: ["facts"] },
+    { id: "classify", kind: "classifier", mode: "parallel", settings: { timeoutMs: 3000 }, after: ["facts"] },
+    { id: "chat", kind: "chatreview", mode: "parallel", settings: { timeoutMs: 30000 }, after: ["facts"] },
     { id: "merge", kind: "merge", strategy: "strictest", after: ["classify", "chat", "rule"] },
     { id: "gate", kind: "gate", after: ["merge"] },
     { id: "auto", kind: "autoapprove", mode: "auto", after: ["merge", "gate"] },
