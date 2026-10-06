@@ -22,7 +22,7 @@ RT ?= $(HOME)/.pi/runtime
 
 .DEFAULT_GOAL := help
 .PHONY: help check test test-ab test-ptc test-sandbox test-gui test-lib \
-        require-component ab-status ab-pack ab-update ab-clean ab-rollback ab-log ab-firstaid refs-check
+        require-component ab-status ab-tag ab-update ab-clean ab-rollback ab-log ab-firstaid refs-check
 
 help: ## 列出所有目标
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \

@@ -81,25 +81,24 @@ pi 侧靠它探测能力、缺能力就降级，**不比对版本号**（比对�
 
 ## A/B 更新（GUI 是可切换的组件）
 
-GUI 与审核链各有一套四槽（stable / previous / dev / head），命令入口是 Makefile：
+GUI 走「一条产线一个 tag」（旧的四槽模型已删），命令入口是 Makefile：
 
 ```sh
-make ab-status                       # 两个组件现在各跑哪一版
-make ab-pack COMPONENT=gui          # 从 HEAD 构建 GUI 到 dev 槽（前端产物取自当前工作区）
-make ab-switch COMPONENT=gui SLOT=dev
-make gui-canary                     # 起一个合成闸门窗，看它到底能不能起来
-make ab-rollback COMPONENT=gui      # 应急回退（纯 shell，Electron 起不来也能用）
-make ab-detach COMPONENT=gui        # 摘掉 current：回到仓库版本（开发时最常用）
+make ab-status                       # 这条产线挂哪个 tag、干净/失败计数多少
+make ab-update COMPONENT=gui FORCE=1 # 从当前工作区构建并直接生效
+make ab-update COMPONENT=gui         # 先起一次金丝雀，过了才挂候选
+make ab-rollback COMPONENT=gui       # 应急回退到 prev-tag（纯 shell，Electron 起不来也能用）
 ```
 
 改动 GUI 之后要知道的三件事：
 
-1. **换槽即生效**（GUI 不同于审核链，不需要 reload）：`bin/gui.sh` 每次启动都解析 `current` 软链
-   （槽在就用槽里的 `gui/electron/main.js` 与 `frontend/dist`，槽不在/指坏了就用仓库这份）；
-   `--spec` 也跟着槽走，报的必须是"实际会跑的那份"
+1. **重开窗口即生效**（GUI 不同于审核侧，不需要 reload）：`bin/gui.sh` 每次启动解析
+   `~/.pi/runtime/gui/{tag,dir}`（槽在就用槽里的 `gui/electron/main.js` 与 `frontend/dist`，
+   tag 缺或指坏了就用仓库这份）；`--spec` 也跟着槽走，报的必须是"实际会跑的那份"。
+   开发态就删掉 `tag`
 2. **崩溃现场**在 `~/.pi/runtime/gui/crash/<时间戳>/`：`request.json` + `stderr.txt` + `scene.json`，
    只留最近十份。「起不来但没有转储」先看启动器路径在不在，而不是怀疑 Electron
-3. **自检不进晋升连胜**：`make gui-canary` 成功只清连续失败，失败才累进看门狗（到门槛自动回退）
+3. **金丝雀不算连胜**：`make ab-update` 起的金丝雀成功只清连续失败，失败才累进看门狗（到门槛自动回退）
 
 ## 构建与验证
 

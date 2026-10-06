@@ -8,7 +8,7 @@
 //   /session-switch list 20 shin     文本 + 条数 + 过滤
 //   /session-switch:fast-fork        从当前 session 当前位置 fork 出一个新 session 继续对话
 //
-// 也注册 list_sessions 工具，方便 LLM 在对话里直接列最近 session。
+// 只出命令，不注册工具：早期版本注册过 list_sessions，后来撤了。
 
 import type { ExtensionAPI, ExtensionCommandContext, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {

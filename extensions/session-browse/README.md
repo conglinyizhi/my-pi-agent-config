@@ -31,23 +31,6 @@
 | `/session-switch:fast-fork` | 从当前 session 当前位置 `fork` 出一个新 session 文件继续对话 |
 | `/find-session …` | 同上别名 |
 
-## 工具（LLM）
-
-### `list_sessions`
-
-- `limit`：默认 20，最大 50
-- `filter`：可选关键词
-
-用于停电恢复场景：让模型直接列出「最近活跃的 session + 目录 + 时间」。
-
-### `search_sessions`
-
-- `query`：关键词（空格 AND 逻辑）
-- `limit`：默认 10，最大 20
-- `project`：可选，限制项目目录
-
-全文搜索历史 session 对话内容（逐条 entry 扫描）。用于「我们之前讨论过 XX 吗」场景。
-
 ## 实现
 
 - **懒加载**：`SessionManager.listAll()` 会把每个 `.jsonl` 整个读出来解析（算名称 / 首条消息 / 消息数），
@@ -70,7 +53,7 @@
 | 高亮当前目录 | 天然仅当前目录 | **`●` 高亮 + `(当前目录)` 标注** |
 | 时间显示 | 相对（`3h`） | **绝对 + 相对** |
 | 文本导出 | 无 | `/session-switch list` |
-| LLM 工具 | 无 | `list_sessions` |
+| LLM 工具 | 无 | 无（只出斜杠命令） |
 
 `/session-switch:fast-fork`：以当前 `ctx.sessionManager.getLeafId()` 为入口，
 用 `ctx.fork(leafId, { position: "at", withSession })` 把当前 active path 复制成一个新 session 文件，

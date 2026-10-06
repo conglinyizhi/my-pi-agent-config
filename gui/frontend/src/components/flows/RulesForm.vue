@@ -1,3 +1,5 @@
+<!-- 未接入：审核流程（flows）窗口只到设计稿，前端没有视图引用这个组件，pi 侧也没有调用方。
+     设计稿见 docs/plans/2026-10-05-review-flow-sdk.md；要接的话先补 FlowsView 与 windowName 路由。 -->
 <template>
   <div class="rules">
     <header class="rules-head">

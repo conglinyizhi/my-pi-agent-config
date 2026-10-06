@@ -1,6 +1,6 @@
 ---
 name: ab-update
-description: A/B 更新的操作手册：一条产线一个 tag、切 tag、回退、攒满五次自动切、看门狗与"改了没生效"的排查。当任务涉及 A/B 更新、换版本、回退回滚、自动晋升、ab-tag / ab-update / ab-clean / ab-rollback、审核侧或 GUI 换版时加载。
+description: A/B 更新的操作手册：一条产线一个 tag、切 tag、回退、攒够干净往返自动切、金丝雀与看门狗、"改了没生效"的排查。当任务涉及 A/B 更新、换版本、回退回滚、自动晋升、ab-tag / ab-update / ab-clean / ab-rollback 时加载。
 ---
 
 # A/B 更新
@@ -13,7 +13,7 @@ description: A/B 更新的操作手册：一条产线一个 tag、切 tag、回�
 「到底在跑哪一份、计数为什么总是 0」说不清的根源。现在只有：
 
 ```sh
-make ab-status                          # 两条产线各挂哪个 tag，带干净/失败计数
+make ab-status                          # 这条产线挂哪个 tag，带干净/失败计数
 make ab-tag COMPONENT=gui               # 只看一条
 make ab-update COMPONENT=gui FORCE=1    # 强制：打完直接生效
 make ab-update COMPONENT=gui            # 打完先起一次金丝雀，过了才挂候选（FORCE=1 越过）
@@ -22,11 +22,12 @@ make ab-rollback COMPONENT=gui          # 退回 prev-tag
 make ab-log COMPONENT=gui               # 看流水
 ```
 
-状态就五样：`tag` / `prev-tag` / `candidate` / `dir` / `count`，外加 `promote.log` 流水。
-壳只在 `tag` 指向的产物里跑；要回仓库那份就删掉 `tag`（旧 `ab-detach` 的等价物）。
+状态就五样：`tag` / `prev-tag` / `candidate` / `dir` / `count`，外加 `promote.log` 流水
+与 `notice.txt`（槽加载失败时留给下个会话的提示）。壳只在 `tag` 指向的产物里跑；
+**要回仓库那份就删掉 `tag`**（`rm ~/.pi/runtime/gui/tag`，下次起窗生效）。
 
-**"干净往返"的定义**：窗口给出结论就算——允许、拒绝都算；审核链给出 verdict 也算。
-与判断内容无关，只有叉掉窗口、超时、起不来才算失败（连续三次失败看门狗回退）。
+**"干净往返"的定义**：窗口给出结论就算——允许、拒绝都算。与判断内容无关，
+只有叉掉窗口、超时、起不来才算失败。
 
 ## 历史：四类槽（已删，留作对照）
 
@@ -40,57 +41,39 @@ make ab-log COMPONENT=gui               # 看流水
                       + promote.log + streak.json + notice.txt + crash/<时间戳>/
 ```
 
-## 日常命令（都在仓库根跑）
+## 只有 gui 一条产线
 
-```
-make ab-status                          # 两个组件在跑哪一版（不用给组件名）
-make ab-pack COMPONENT=audit SLOT=dev   # 从仓库 HEAD 构建到槽
-make ab-switch COMPONENT=audit SLOT=dev # current 指向某个槽
-make ab-rollback COMPONENT=audit        # 应急回退到 previous
-make ab-detach COMPONENT=audit          # 摘掉 current，回到仓库那份（开发态）
-make ab-promote COMPONENT=audit         # 手工晋升（攒够五次干净会自动晋升）
-make ab-note COMPONENT=audit OUTCOME=clean|failure   # 手工记一次往返
-make ab-health COMPONENT=gui            # 自检：只清连续失败，不加连胜
-make ab-bootstrap COMPONENT=gui         # 自举：把 HEAD 同时铺成 stable 与 previous
-make ab-log COMPONENT=audit             # 晋升、回退、看门狗流水
-make ab-firstaid                        # 打印急救卡
-```
+`AB_COMPONENTS` 现在只有 `gui`。审核侧（pi 的扩展与 lib）**不走 A/B**：
+改仓库里那份，`/reload` 即生效，不用打包也不用切 tag。
+但命令仍要求显式给 `COMPONENT`——默认值被刻意去掉，不给就是不给。
 
 改动的生效时机不一样，这条最容易误判：
 
 - `gui`：窗口创建时用 `file://` 加载产物 → **重开窗口**生效（开着的窗口握着旧 bundle）
-- `audit`：pi 启动时装载扩展 → **`/reload`** 生效
+- 审核侧：pi 装载扩展 → **`/reload`** 生效
 
 ## 开发态还是基线态
 
-- 改代码时：`ab-detach`，跑的就是仓库那份，改完即时生效，不用每次打包
-- 要验证切换、回退、看门狗时：`ab-switch` 回某个槽
-- 槽不会自己更新：`ab-pack` 之后槽里那份才是新的，否则会"改了没生效"
+- 改代码时：删掉 `tag`，跑的就是仓库那份，改完即时生效，不用每次打包
+- 要验证切换、回退、看门狗时：`make ab-update COMPONENT=gui FORCE=1` 重新挂一版
+- 槽不会自己更新：没重打之前槽里那份还是旧的，否则会"改了没生效"
 
 ## 晋升与看门狗
 
-- 一次干净的审核往返记一次；**连续**攒够五次（阈值可调）才自动晋升 `dev → stable`，
-  晋升时旧 `stable` 挪到 `previous`
+- 一次干净的往返记一次；**连续**攒够 `PROMOTE_THRESHOLD`（现在 1 次）就自动把候选切为生效，
+  旧的生效版本落进 `prev-tag`
 - 失败清零：中间任何一次失败，连胜从头数
-- **自检（`ab-health`）不进连胜**：成功只清连续失败，失败照样累进看门狗
-- 连续失败三次自动回退；三条不退：没到门槛、已经在 `previous`、没有 `previous`
-- `--force` 强推留痕，别把它当默认
-
-## 回退
-
-```
-make ab-rollback COMPONENT=audit   # 回到 previous
-make ab-detach COMPONENT=audit     # 连 previous 都没有时的兜底：摘掉 current，用仓库那份
-```
+- 连续 `FAIL_THRESHOLD`（3 次）自动回退到 `prev-tag`；三条不退：没到门槛、已经在 `prev-tag`、
+  没有 `prev-tag`
+- 脏工作区构建的产物不许晋升；`FORCE=1` 越过金丝雀会留痕
 
 ## 硬约束
 
-- **别手敲安装/构建命令**：走 `ab-pack`、`ab-switch` 这些入口，步骤里的门禁与校验都在里面
-- **组件名必须显式给**：脚本与命令不给 gui / audit 设默认值
+- **别手敲安装/构建命令**：走 Makefile 与 `bin/ab.sh` 的入口，门禁与校验都在里面
+- **组件名必须显式给**：脚本与命令不给默认值
 - **打包要带上 node_modules 软链**，槽内入口要摊平成 `export { default } from "./impl.ts";`，
-  否则槽里起不来或壳加载壳无限递归（`ab-pack` 已经做掉这两件事）
-- **换槽要带令牌**：同路径动态 import 会被 URL 缓存吃掉
-- 脏产物不许晋升；`stable` 与 `previous` 只由晋升、回退、自举来动
+  否则槽里起不来或壳加载壳无限递归（`scripts/ab-pack.ts` 已经做掉这两件事）
+- **别手改 `~/.pi/runtime/*/tag`**：那是 deploy 侧写的，手改会让"在跑哪一份"再次说不清
 
 ## 出问题先看这几处
 
