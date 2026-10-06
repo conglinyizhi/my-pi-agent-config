@@ -134,10 +134,16 @@ planMb = 512
 [sandbox-llm-review]
 enabled = true # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"  # auto=判安全直接放行；strict=仅给意见仍弹窗
-backend = "chain" # chat=只跑对话模型；classifier=只跑分类模型；chain=两边都跑，意见合并（任一判风险就弹窗）
+backend = "chat" # chat=只跑对话模型（decode-only）；classifier=只跑分类模型；chain=两边都跑，意见合并
+# 2026-10-06：System One（分类器 / SiliconFlow systemone）暂时停用，只跑 decode-only 那一路。
+# 切回来把 backend 改成 "classifier" 或 "chain" 即可：分类器代码、维度阈值与面板都还在。
 # 审核模型池独立存放于 extensions/sandbox-permissions/review-pool.toml（个人依赖，已 gitignore）；
 # 用 /provider:fast-put / /provider:fast-pop 管理
 timeout_ms = 30000 # 注册模型单次审核总时长兜底（毫秒）；超时切换下一个模型
+# 低风险放行：判 risky 但档位 ≤ low_risk_budget 时不弹窗（档位是模型的书写预算，
+# 也是严重度刻度；60 那一档是"拦人的"，永远弹窗）。只在 mode = "auto" 下生效。
+low_risk_auto = true # false = 回到"只有 safe 才放行"
+low_risk_budget = 40 # 只接受 20 / 40
 token_idle_ms = 4000 # 免费模型相邻 token 间隔上限（毫秒）；停滞超阈值判失败
 max_cache = 200 # 内存缓存上限（同命令同规则不重复调 API）
 

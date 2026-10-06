@@ -62,6 +62,31 @@ describe("formFromSettings", () => {
   });
 });
 
+describe("低风险放行字段", () => {
+  it("缺字段时按默认走：开关开、阈值 40", () => {
+    const form = formFromSettings({ llm: {} });
+    assert.equal(form.llm.lowRiskAuto, true);
+    assert.equal(form.llm.lowRiskBudget, 40);
+  });
+  it("关掉开关、阈值调 20 都带进 patch", () => {
+    const form = formFromSettings(SETTINGS);
+    form.llm.lowRiskAuto = false;
+    form.llm.lowRiskBudget = 20;
+    const patch = patchFromForm(form);
+    assert.equal(patch.llm.lowRiskAuto, false);
+    assert.equal(patch.llm.lowRiskBudget, 20);
+  });
+  it("阈值只收 20 / 40：60 与乱值在自检就被挡下", () => {
+    const form = formFromSettings(SETTINGS);
+    form.llm.lowRiskBudget = 60;
+    assert.ok(validateForm(form, FALLBACK_LIMITS).some((line) => line.includes("低风险阈值")), "60 该被拒");
+    form.llm.lowRiskBudget = 30;
+    assert.ok(validateForm(form, FALLBACK_LIMITS).some((line) => line.includes("低风险阈值")), "30 该被拒");
+    form.llm.lowRiskBudget = 20;
+    assert.ok(!validateForm(form, FALLBACK_LIMITS).some((line) => line.includes("低风险阈值")));
+  });
+});
+
 describe("patchFromForm", () => {
   it("字段名与后端对齐，数值保持 number", () => {
     const form = formFromSettings(SETTINGS);

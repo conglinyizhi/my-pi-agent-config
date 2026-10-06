@@ -14,11 +14,9 @@ import {
 	formatReviewNote,
 	toAdvisorNote,
 	normalizeConfig,
-	REVIEW_TOOL,
 	reviewCacheKey,
 	reviewCommand,
 } from "./llm-review.ts";
-import type { JsonObject } from "@earendil-works/pi-ai";
 import type { TokenRule } from "./rule-engine.ts";
 
 const rule = (name: string, matched: string[] = []): TokenRule => ({
@@ -35,6 +33,15 @@ describe("normalizeConfig", () => {
 		assert.equal(c.timeoutMs, 30_000);
 		assert.equal(c.tokenIdleMs, 4_000);
 		assert.equal(c.maxCache, 200);
+	});
+	it("低风险放行：默认开、阈值 40；可关可调", () => {
+		const c = normalizeConfig(undefined);
+		assert.equal(c.lowRiskAuto, true);
+		assert.equal(c.lowRiskBudget, 40);
+		assert.equal(normalizeConfig({ low_risk_auto: false }).lowRiskAuto, false);
+		assert.equal(normalizeConfig({ low_risk_budget: 20 }).lowRiskBudget, 20);
+		// 60 是「严重」那一档，不参与低风险放行，配了也不认
+		assert.equal(normalizeConfig({ low_risk_budget: 60 }).lowRiskBudget, 40);
 	});
 	it("覆盖已知字段（toml 下划线风格）、忽略未知字段", () => {
 		const c = normalizeConfig({
@@ -157,7 +164,8 @@ describe("buildReviewPrompt", () => {
 			{ cwd: "/tmp" },
 		);
 		const { user } = buildReviewPrompt(SYSTEM, 'python3 -c \'import os; os.remove("/tmp/x")\'', [], facts);
-		assert.ok(user.includes("命令影响面（静态分析事实，不是裁决）"));
+		assert.ok(user.includes("## 指令影响面"));
+		assert.ok(user.includes("（静态分析事实，不是裁决）"));
 		assert.ok(user.includes("解释器载荷"), "载荷那一段要在 prompt 里");
 		assert.ok(user.includes('import os; os.remove("/tmp/x")'), "载荷原文要在 prompt 里");
 		assert.ok(user.includes("清单不完整"), "截断信号要在 prompt 里");
@@ -166,80 +174,80 @@ describe("buildReviewPrompt", () => {
 	});
 });
 
-describe("extractReviewResult", () => {
-	// arguments 用 JsonObject：pi 0.99.1 的 ToolCall 把它从 Record<string, unknown>
-	// 收紧了（JsonValue 递归类型），裸 Record 不再兼容
-	const toolCall = (args: JsonObject) => ({
-		type: "toolCall" as const,
-		id: "call_1",
-		name: REVIEW_TOOL.name,
-		arguments: args,
-	});
+describe("extractReviewResult（文本协议）", () => {
 	const text = (t: string) => ({ type: "text" as const, text: t });
 
-	it("工具调用后的文本被规整成列表：去标记、限 3 条", () => {
-		const r = extractReviewResult([
-			text("- 路径含通配符\n* 目标不是临时目录\n1. 建议先 ls 确认\n2. 第四条应当被丢掉"),
-			toolCall({ verdict: "risky", reason: "通配符", suggestion: "" }),
-		]);
-		assert.equal(r.opinion, "- 路径含通配符\n- 目标不是临时目录\n- 建议先 ls 确认");
+	it("[ok] → 可行，不带理由 / 档位 / 看法", () => {
+		assert.deepEqual(extractReviewResult([text("[ok]")]), { verdict: "safe", reason: "", suggestion: "" });
 	});
 
-	it("工具调用后的文本是整段长句：按句读切条", () => {
-		const r = extractReviewResult([
-			text("这条命令把远程内容交给 shell，看不出来它要干什么；管道会吞掉退出码。"),
-			toolCall({ verdict: "risky", reason: "管道执行", suggestion: "" }),
-		]);
-		assert.equal(
-			r.opinion,
-			"- 这条命令把远程内容交给 shell，看不出来它要干什么\n- 管道会吞掉退出码",
-		);
+	it("[ok] 大小写不敏感，容忍空白、括号内空格、装饰与收尾标点", () => {
+		for (const raw of ["[OK]", "[Ok]", "  [ok]  ", "[ ok ]", "**[ok]**", "`[ok]`", "[ok]。"]) {
+			assert.equal(extractReviewResult([text(raw)]).verdict, "safe", raw);
+		}
 	});
 
-	it("优先取工具调用参数，工具调用后的文本收集为 opinion（已带列表标记）", () => {
-		const r = extractReviewResult([
-			text("命令拼接方式有隐患，建议人工确认后再执行。"),
-			toolCall({ verdict: "risky", reason: "路径含通配符", suggestion: "先 ls 确认" }),
-		]);
-		assert.deepEqual(r, {
-			verdict: "risky",
-			reason: "路径含通配符",
-			suggestion: "先 ls 确认",
-			opinion: "- 命令拼接方式有隐患，建议人工确认后再执行。",
-		});
+	it("[ok] 后面另有说明 → 按风险处理（协议要求整段只有 [ok]）", () => {
+		const r = extractReviewResult([text("[ok]\n不过建议先备份")]);
+		assert.notEqual(r.verdict, "safe");
 	});
-	it("工具调用无自由文本 → 不带 opinion 字段", () => {
-		const r = extractReviewResult([
-			toolCall({ verdict: "safe", reason: 123, suggestion: null }),
-		]);
-		assert.deepEqual(r, { verdict: "safe", reason: "", suggestion: "" });
+
+	it("[<20] → 轻微风险：risky + 档位 20，标记不进理由", () => {
+		const r = extractReviewResult([text("[<20]\n建议改用绝对路径")]);
+		assert.deepEqual(r, { verdict: "risky", reason: "建议改用绝对路径", suggestion: "", riskBudget: 20 });
+	});
+
+	it("[40] → risky + 档位 40", () => {
+		const r = extractReviewResult([text("[40]\n删除路径含通配符，可能误删目标外的文件")]);
+		assert.equal(r.verdict, "risky");
+		assert.equal(r.riskBudget, 40);
+		assert.equal(r.reason, "删除路径含通配符，可能误删目标外的文件");
 		assert.equal("opinion" in r, false);
 	});
-	it("opinion 超长：先截 500 字符原文，再规整成 3 条以内的短列表", () => {
-		const r = extractReviewResult([
-			text("x".repeat(600)),
-			toolCall({ verdict: "safe", reason: "ok", suggestion: "" }),
-		]);
-		assert.equal((r.opinion ?? "").split("\n").length, 1);
-		assert.ok((r.opinion ?? "").startsWith("- "), r.opinion);
-		assert.ok((r.opinion ?? "").length <= 33, r.opinion);
+
+	it("[60] → dangerous + 档位 60", () => {
+		const r = extractReviewResult([text("[60]\n提权后做破坏性操作，可能损毁系统")]);
+		assert.equal(r.verdict, "dangerous");
+		assert.equal(r.riskBudget, 60);
 	});
-	it("工具调用 verdict 非法值 → error", () => {
-		const r = extractReviewResult([toolCall({ verdict: "maybe", reason: "x", suggestion: "" })]);
-		assert.equal(r.verdict, "error");
+
+	it("[< 20] 这类带空格写法也认", () => {
+		assert.equal(extractReviewResult([text("[< 20]\n小隐患")]).riskBudget, 20);
 	});
-	it("未调用工具时：文本原样作为 opinion，verdict=error（不解析 JSON）", () => {
-		const r = extractReviewResult([
-			text("这条命令用了变量拼接路径，我判断存在注入风险，建议人工确认。"),
-		]);
-		assert.equal(r.verdict, "error");
-		assert.equal(r.reason, "模型未给出结构化结论（未调用审核工具）");
-		assert.equal(r.opinion, "这条命令用了变量拼接路径，我判断存在注入风险，建议人工确认。");
+
+	it("说明写超了档位字数：展示侧照原样给（档位管模型写多长，卡片不按它裁）", () => {
+		const r = extractReviewResult([text(`[<20]\n${"字".repeat(50)}`)]);
+		assert.equal(r.reason.length, 50, r.reason);
+		assert.equal(r.riskBudget, 20);
+		assert.equal(r.verdict, "risky");
 	});
-	it("未调用工具且无文本 → error，不带 opinion", () => {
+
+	it("没写档位标记（协议漂了）→ 按说明字数落档，原文留在 opinion 里", () => {
+		const short = extractReviewResult([text("路径含变量拼接，无法静态确认")]);
+		assert.equal(short.verdict, "risky");
+		assert.equal(short.riskBudget, 20);
+		assert.equal(short.opinion, "路径含变量拼接，无法静态确认");
+
+		const long = extractReviewResult([text("字".repeat(50))]);
+		assert.equal(long.verdict, "dangerous");
+		assert.equal(long.riskBudget, 60);
+	});
+
+	it("多段文本拼接后再判定，换行与空格不影响标记识别", () => {
+		const r = extractReviewResult([text("[40]"), text("\n  目标目录不是临时目录")]);
+		assert.equal(r.verdict, "risky");
+		assert.equal(r.reason, "目标目录不是临时目录");
+	});
+
+	it("空回复 → error（回退弹窗），不带 opinion", () => {
 		const r = extractReviewResult([]);
 		assert.equal(r.verdict, "error");
 		assert.equal("opinion" in r, false);
+	});
+
+	it("只有档位标记、没有说明 → 按档位判，理由留空", () => {
+		const r = extractReviewResult([text("[60]")]);
+		assert.deepEqual(r, { verdict: "dangerous", reason: "", suggestion: "", riskBudget: 60 });
 	});
 });
 
@@ -308,6 +316,16 @@ describe("formatReviewNote", () => {
 		});
 		assert.ok(note.includes("\n- 写法上动态拼接，建议下次显式列出路径"));
 	});
+	it("判可行且没有理由（模型只回了 [ok]）→ 把标记露出来，不显示成空", () => {
+		const note = formatReviewNote({ verdict: "safe", reason: "", suggestion: "" });
+		assert.ok(note.includes("[ok]"), note);
+	});
+	it("带风险档位 → 独立一行写档位（20 档写成 <20 字）", () => {
+		const note = formatReviewNote({ verdict: "risky", reason: "通配符", suggestion: "", riskBudget: 20 });
+		assert.ok(note.includes("风险档位：<20 字"), note);
+		const big = formatReviewNote({ verdict: "dangerous", reason: "提权", suggestion: "", riskBudget: 60 });
+		assert.ok(big.includes("风险档位：60 字"), big);
+	});
 	it("error 结论明确标示审核失败", () => {
 		const note = formatReviewNote({
 			verdict: "error",
@@ -350,24 +368,29 @@ describe("reviewCommand 失败拼装", () => {
 		timeoutMs: 30000,
 		tokenIdleMs: 4000,
 		maxCache: 10,
+		lowRiskAuto: true,
+		lowRiskBudget: 40 as const,
 		models: [
 			{ provider: "zhipu", model: "glm-a" },
 			{ provider: "deepseek", model: "ds-b" },
 		],
 	};
 
-	it("未调用工具的模型：输出附进失败原因", async () => {
-		const ctx = makeCtx((id) => (id === "glm-a" ? [text("这条命令动态拼接路径，建议人工确认。")] : [text("另一条")]));
+	it("模型回了自由文本（没按协议）：按字数落档判风险，不当失败", async () => {
+		const ctx = makeCtx(() => [text("这条命令动态拼接路径，建议人工确认。")]);
 		const r = await reviewCommand({} as any, ctx, "rm -rf x", [], undefined, cache, config);
-		assert.equal(r.verdict, "error");
-		assert.ok(r.reason.includes("模型未给出结构化结论（未调用审核工具）"));
-		assert.ok(r.reason.includes("模型输出：这条命令动态拼接路径"));
+		assert.equal(r.verdict, "risky");
+		assert.equal(r.riskBudget, 20);
+		assert.equal(r.reason, "这条命令动态拼接路径，建议人工确认。");
+		// 协议漂了才需要原文留证
+		assert.equal(r.opinion, "这条命令动态拼接路径，建议人工确认。");
 	});
 
-	it("多个模型失败：每个模型独占一行（换行分隔）", async () => {
-		const ctx = makeCtx(() => [text("模型没调工具")]);
+	it("多个模型都是空回复：判失败，每个模型独占一行（换行分隔）", async () => {
+		const ctx = makeCtx(() => []);
 		const r = await reviewCommand({} as any, ctx, "rm -rf x", [], undefined, createReviewCache(10), config);
 		assert.equal(r.verdict, "error");
+		assert.ok(r.reason.includes("模型没有输出任何内容"));
 		// 换行分隔而非分号拼接：两个模型分布在 2 行（标题+模型1 同行，模型2 换行）
 		assert.equal(r.reason.split("\n").length, 2);
 		assert.ok(!r.reason.includes("；"));
@@ -451,6 +474,11 @@ describe("toAdvisorNote", () => {
 	it("有 opinion 就带上", () => {
 		const note = toAdvisorNote(r("risky", { opinion: "- 一条看法" }), "risky");
 		assert.equal(note?.opinion, "- 一条看法");
+	});
+
+	it("风险档位跟着带过去（审批窗要显示）", () => {
+		const note = toAdvisorNote(r("risky", { riskBudget: 60 }), "risky");
+		assert.equal(note?.riskBudget, 60);
 	});
 
 	it("chat 失败时带 error 说明", () => {

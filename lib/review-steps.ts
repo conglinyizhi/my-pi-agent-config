@@ -17,6 +17,7 @@ import { decideWithRules, defaultRulesPath, loadReviewRules, type ReviewRule } f
 /** 规则表读不到或坏了 = 没有规则（照旧走内置判据），绝不抛 */
 const defaultLoadRules = () => loadReviewRules(defaultRulesPath());
 import {
+	budgetLabel,
 	createReviewCache,
 	loadLlmReviewConfig,
 	reviewCommand as defaultReviewCommand,
@@ -27,6 +28,7 @@ import {
 	type ReviewCache,
 	type ReviewCallOptions,
 	type ReviewResult,
+	type RiskBudget,
 } from "../extensions/sandbox-permissions/llm-review.ts";
 /**
  * 步骤的入参与产物类型。
@@ -238,12 +240,18 @@ export function makeAutoApproveNode(deps: ReviewNodeDeps = {}): NodeImpl {
 			return { status: "ok", output: merged, terminal: "deny", verdict: "deny", reason: decision.reason };
 		}
 		if (decision.approve) {
+			// 低风险放行要写明是「提醒」放行的，别和 safe 混成同一句——翻记录时要能分清
+			const budget = merged?.riskBudget;
+			const lowRisk = merged?.verdict === "risky" && typeof budget === "number";
+			const fallback = lowRisk
+				? `低风险自动放行（风险档位 ${budgetLabel(budget as RiskBudget)}）`
+				: "预审判安全且档位是自动";
 			return {
 				status: "ok",
 				output: merged,
 				terminal: "allow",
 				verdict: "allow",
-				reason: decision.by === "rule" ? decision.reason : "预审判安全且档位是自动",
+				reason: decision.by === "rule" ? decision.reason : fallback,
 			};
 		}
 		const why = merged ? `判为 ${merged.verdict}` : "没有结论";

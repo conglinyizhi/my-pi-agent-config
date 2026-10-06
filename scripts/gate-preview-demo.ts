@@ -117,6 +117,8 @@ async function main(): Promise<void> {
 						verdict: "risky",
 						reason: "脚本会改仓库里的文件并跑构建，还调用了一个会动系统状态的工具",
 						suggestion: "确认只改该改的文件，cleanup_everything 的路径是不是你要的",
+						// decode-only 的文本协议：有风险时带风险档位（<20 / 40 / 60），卡片上单独一行
+						riskBudget: 60,
 						opinion: "看下来像是要把 notes.txt 的内容覆盖到 timeline.ts，顺带跑一次类型检查；风险点是末尾那个 cleanup。",
 					},
 					dimensions: [

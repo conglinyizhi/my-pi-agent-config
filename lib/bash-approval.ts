@@ -189,8 +189,19 @@ export interface BashPreReviewResult {
  * 抽出来是为了不漂：旧链（preReviewBashCommand）与审核流 SDK 的自动放行节点
  * 调的是同一个函数，谁也别再写一遍这个表达式。
  */
+/**
+ * 自动放行判据（全链只有这一处）：
+ *   - safe 且档位 auto → 放行
+ *   - risky 但档位不超过 lowRiskBudget（默认 40）→ 也算「提醒」而不是「拦人」，放行
+ *     （低风险自动放行默认开，配置 low_risk_auto = false 可关）
+ *   - dangerous（60 档）与审核失败永远不放行，照旧弹窗
+ */
 export function autoApproveDecision(review: ReviewResult | undefined, config: LlmReviewConfig): boolean {
-	return review?.verdict === "safe" && config.mode === "auto";
+	if (config.mode !== "auto") return false;
+	if (review?.verdict === "safe") return true;
+	if (!config.lowRiskAuto || review?.verdict !== "risky") return false;
+	const budget = review.riskBudget;
+	return typeof budget === "number" && budget <= config.lowRiskBudget;
 }
 
 export async function preReviewBashCommand(options: BashApprovalOptions): Promise<BashPreReviewResult> {

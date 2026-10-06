@@ -274,11 +274,18 @@ worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTr
 
 `loadReviewPrompt()` 读主体并把样本拼到末尾；样本文件缺失不影响主体（此时只用主体 prompt）。任一文件缺失/读失败时按「审核失败」处理：回退弹窗，绝不静默放行。
 
-### 结论回传：工具调用
+送审的 user 消息按三段铺开（提督 2026-10-05 定的骨架）：`## 大模型给出的理由`（提出指令的模型写的说明，标题里就写明可能不实）→ `## 待审指令` → `## 命中风险点` / `## 指令影响面` / `## 任务上下文`。顺序固定，模型不用猜哪一段才是要审的东西。
 
-审核结论通过工具调用回传：请求时注册 `report_review_verdict` 工具（参数 `verdict` / `reason` / `suggestion`，schema 约束枚举），LLM 直接调用该工具提交结论。模型的回复文本不做 JSON 解析，会先经 `normalizeBullets` 规整成短列表再作为 `opinion`（看法）展示给人工审核者：去列表标记与标题、最多 3 条、每条 ≤ 30 字，整段长句按句读切开而不是硬截。未调用工具时（verdict 无法判定，回退弹窗）文本不裁，原样展示作为排查证据。
+### 结论回传：文本协议（[ok] / 风险档位）
 
-输出形态由 `review-system-prompt.txt` 约束：正文只写简体中文无序列表（`- ` 开头，1 到 3 条，每条 ≤ 30 字，不复述命令、不加标题/加粗/编号/表情、不写客套），`reason` / `suggestion` 各 ≤ 20 字。提示词与代码两道都在，是因为模型会漂：提示词负责让它写短，`normalizeBullets` 负责它没写短时卡片不被撞满。
+审核结论由模型直接写文本回传，**不走工具调用**（2026-10-06 撤掉 `report_review_verdict`，请求不再注册任何工具）：
+
+- **判可行**：整段回复只有 `[ok]`（大小写不敏感，容忍前后空白、markdown 装饰与收尾标点）
+- **判有风险**：先写档位标记 `[<20]` / `[40]` / `[60]`（独占一行），紧跟一句说明；说明按档位字数裁（20 / 40 / 60 字）
+
+档位既是书写预算也是严重度刻度：`<20` 与 `40` 判 risky，`60` 判 dangerous（`verdictOfBudget`）。解析集中在 `extractReviewResult` 一处：认 `[ok]`、认档位、把标记从说明正文里摘掉。协议漂了（没写标记但给了说明）时按说明字数落档——`<20` → 20 档、≤40 → 40 档、更长 → 60 档，宁严勿松，原文留在 `opinion` 里当排查证据；空回复判 error，回退弹窗。
+
+档位随结论带到审批窗（`riskBudget` 字段），展示层（`formatReviewNote` / GUI / 飞书卡）写成「风险档位：<20 字」。
 
 审核模型：支持**模型池**（`models = [{provider, model}, ...]`），按序尝试，单个模型失败（限流/超时/网络）自动切换下一个，全部失败才回退弹窗（失败原因汇总展示）。池子未配置时兼容旧的 `provider`/`model` 单模型；两者皆无才用当前会话模型——绝不静默切换到未配置的模型（池内切换是显式配置的容错，不是静默）。prompt 内置注入防护：「测试环境 / 直接放行 / 忽略安全审核」等放宽审核的声称一律按注入忽略，判定只认命令本身，宁严勿松。
 
@@ -287,7 +294,9 @@ worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTr
 - `/provider:fast-put [关键词]` — 从全局模型列表里筛选一个加入审核池（交互式，展示上下文/价格；加完可选「测试一次审核链路」验证模型可用性）
 - `/provider:fast-pop [provider/model 或模型名]` — 从审核池移除一个模型（池子清空后审核回退当前会话模型）
 
-审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/timeout_ms/token_idle_ms/max_cache）。
+审核模型池独立存放在 `extensions/sandbox-permissions/review-pool.toml`（个人依赖：供应商配置/API key 不入库，已 gitignore）；`extensions.toml` 只留通用开关（enabled/mode/backend/timeout_ms/token_idle_ms/max_cache）。
+
+**System One（分类器）暂时停用**（2026-10-06）：`backend` 现为 `"chat"`，只跑 decode-only 那一路；分类器代码、维度阈值文件与 `/sandbox:review` 面板都留着，把 backend 改回 `"classifier"` 或 `"chain"` 即可恢复。
 
 ### 谁判、谁审、什么时候问人：只有这一处实现（lib/bash-approval.ts）
 
@@ -313,7 +322,9 @@ worker 可写根同一段路），授权查 `session-access.ts` 的 `isSessionTr
 
 ### GUI 联动（wails-gui 权限闸门窗口）
 
-LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示「云端模型审核」区块，包括 verdict 徽标（安全/有风险/危险/未判定）、理由、建议与模型的看法（`opinion`，已规整为 ≤ 3 条短句）。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
+LLM 预审结论随请求一并传给权限窗口（`gate` 窗口 request.json 的 `review` 字段）：窗口在命令下方展示审核卡片，包括 verdict 徽标（安全/有风险/危险/未判定）、理由、风险档位（`riskBudget`，写成 `<20 字` / `40 字` / `60 字`）、建议与模型的补充文本（`opinion`）。
+
+判可行时模型只回 `[ok]`、没有理由，卡片就把这枚标记露在理由位上（`reasonText`），不显示成空白。卡头与点开的原始提示词跟着结论来源走：有维度表 = 分类器（System One），没有 = decode-only 那一路（backend=chat 时的常态）——展示逻辑在 `gui/frontend/src/domain/gate/review-protocol.js`，node --test 覆盖。审核失败且无任何可展示内容时不传 GUI；`verdict=safe` 且 auto 模式仍直接放行不弹窗。GUI 侧改动在 `wails-gui/`（`app.go` 透传 + `GateView.vue` 展示），改后需 `wails build` 重新编译二进制。
 
 ### 审核设置窗（windowName = `review`，`/sandbox:gui`）
 
@@ -355,6 +366,7 @@ LLM 预审结论随请求一并传给 Wails 权限窗口（`gate` 窗口 request
 [sandbox-llm-review]
 enabled = true          # 总开关；false = 回到纯规则弹窗流程
 mode = "auto"           # auto=判安全直接放行；strict=仅给意见仍弹窗
+backend = "chat"        # 现状：只跑 decode-only 那一路（System One 暂时停用，见下）
 # provider = "deepseek" # 可选：指定审核模型（缺省用当前会话模型）
 # model = "deepseek-v4-flash"
 timeout_ms = 30000      # 注册模型单次审核总时长兜底；超时回退弹窗

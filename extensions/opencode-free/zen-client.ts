@@ -159,7 +159,8 @@ export async function probeFreeCatalog(
 interface ZenChatParams {
 	systemPrompt: string;
 	messages: { role: "user"; content: string }[];
-	tools: Tool[];
+	/** 工具声明；不传就不带 tools 字段（审核链的文本协议不需要工具，空数组有些服务端不认） */
+	tools?: Tool[];
 	maxTokens: number;
 	temperature: number;
 	signal?: AbortSignal;
@@ -210,10 +211,14 @@ export async function callZenChat(
 			...(params.systemPrompt ? [{ role: "system", content: params.systemPrompt }] : []),
 			...params.messages.map((m) => ({ role: m.role, content: m.content })),
 		],
-		tools: params.tools.map((t) => ({
-			type: "function",
-			function: { name: t.name, description: t.description, parameters: t.parameters },
-		})),
+		...(params.tools && params.tools.length > 0
+			? {
+					tools: params.tools.map((t) => ({
+						type: "function",
+						function: { name: t.name, description: t.description, parameters: t.parameters },
+					})),
+				}
+			: {}),
 		max_tokens: params.maxTokens,
 		temperature: params.temperature,
 		stream: true,

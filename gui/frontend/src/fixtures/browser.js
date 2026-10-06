@@ -28,6 +28,13 @@ export const browserFixtures = {
         verdict: "risky",
         reason: "提权：风险 0.95 > 0.5（privileged-change）；整体可疑：风险 0.75 > 0.5（3.00）",
         suggestion: "以上维度的判断超过阈值。分类模型精度有限，确认命令与你的意图一致再批准。",
+        // decode-only 那一路的意见（串联模式才挂在这；浏览器预览用它展示 [ok] / 档位的渲染）
+        chatReview: {
+          verdict: "risky",
+          reason: "提权删除变量路径，先确认 $OUT 就是构建目录",
+          suggestion: "",
+          riskBudget: 40,
+        },
         // 分类模型权重表（真实探针的形态）：风险降序，越线的行会标底色
         dimensions: [
           { id: "elevation", label: "提权", type: "choice", risk: 0.95, confidence: 0.72, raw: "privileged-change（直接改系统级权限）", triggered: true, reason: "风险 0.95 > 0.5", above: 0.5, below: 0.5, choice: "privileged-change", probabilities: { none: 0.05, "user-elevation": 0.15, "privileged-change": 0.8 } },

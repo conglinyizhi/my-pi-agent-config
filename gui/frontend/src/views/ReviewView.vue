@@ -45,6 +45,19 @@
             <option v-for="b in backends" :key="b" :value="b">{{ backendLabel(b) }}</option>
           </select>
         </div>
+        <!-- 低风险放行：档位是模型的书写预算，也是严重度刻度。≤ 阈值的那两档算"提醒"，
+             不拦人；60 档（严重）永远弹窗。auto 档位下才生效。 -->
+        <div class="row">
+          <label class="field field-check">
+            <input v-model="form.llm.lowRiskAuto" type="checkbox" data-name="review-low-risk-auto">
+            <span>低风险自动放行（不弹窗）</span>
+          </label>
+          <span class="field-label">阈值</span>
+          <select v-model="form.llm.lowRiskBudget" class="input select" data-name="review-low-risk-budget">
+            <option v-for="b in lowRiskBudgets" :key="b" :value="b">{{ b === 20 ? "<20 字（轻微）" : "40 字（值得注意）" }}</option>
+          </select>
+          <span class="note">判 risky 但档位不超过阈值时直接放行；60 字（严重）仍弹窗。关掉它就回到"只有 safe 放行"</span>
+        </div>
       </section>
 
       <!-- 超时与缓存 -->
@@ -168,6 +181,7 @@ import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import {
   BACKENDS,
+  LOW_RISK_BUDGETS,
   dimensionRows,
   errorLines,
   formFromSettings,
@@ -193,6 +207,7 @@ const status = ref("");
 
 const rows = ref([]);
 const backends = BACKENDS;
+const lowRiskBudgets = LOW_RISK_BUDGETS;
 const dimensionsPath = computed(() => displayPath(paths.value.dimensionsToml));
 const footerNote = computed(() =>
   errors.value.length ? `${errors.value.length} 个字段不合法，没有落盘` : "值不合法会被拒绝，文件不会被改动"

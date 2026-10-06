@@ -15,14 +15,18 @@
 //   - buildReviewPrompt / extractReviewResult / reviewCacheKey /
 //     createReviewCache / normalizeConfig 为纯函数，llm-review.test.ts 覆盖
 //   - reviewCommand / loadLlmReviewConfig / loadReviewSystemPrompt 为副作用，不单测
+//
+// 输出协议（文本）：可行 → 整段只有 [ok]（大小写不敏感）；有风险 → 档位标记
+// [<20] / [40] / [60] 加一句说明，档位既是书写预算也是严重度刻度。
+// 工具调用（report_review_verdict）已撤掉：送审请求不再注册工具，解析只在
+// extractReviewResult 一处，认得 [ok] 与档位（缺标记时按字数落档兜底）。
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseToml } from "smol-toml";
-import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Context, Model, TextContent, Tool, ToolCall } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { callZenChat } from "../opencode-free/zen-client.ts";
 import { loadClassifierConfig, reviewViaClassifier, type ClassifierReviewInput } from "./review-classifier.ts";
 import type { ReviewScenario } from "./review-dimensions.ts";
@@ -33,14 +37,31 @@ import type { TokenRule } from "./rule-engine";
 
 export type ReviewVerdict = "safe" | "risky" | "dangerous" | "error";
 
+/**
+ * 风险档位：模型判有风险时自报的书写预算，同时也是严重度刻度。
+ *   20（提示词写作 [<20]）→ 轻微隐患；40 → 值得人工确认；60 → 严重。
+ * 只在 verdict 为 risky / dangerous 时存在。
+ */
+export type RiskBudget = 20 | 40 | 60;
+
+/** 理由的展示上限（远大于任何档位）：档位管模型写多长，这里只管别把卡片灌爆 */
+export const REASON_DISPLAY_MAX = 300;
+
+/** 档位 → verdict：20/40 判 risky，60 判 dangerous */
+export function verdictOfBudget(budget: RiskBudget): ReviewVerdict {
+	return budget === 60 ? "dangerous" : "risky";
+}
+
 export interface ReviewResult {
 	verdict: ReviewVerdict;
 	/** 一句话理由（中文；verdict=error 时为错误摘要） */
 	reason: string;
 	/** 更安全的替代写法或注意点（无则空字符串） */
 	suggestion: string;
-	/** 模型调用工具后补充的命令质量看法（可选，供人工审核参考） */
+	/** 模型补充的原始文本（可选；协议违约或审核失败时留作排查证据） */
 	opinion?: string;
+	/** 风险档位（可选）：模型自报的 20 / 40 / 60，既是书写预算也是严重度刻度 */
+	riskBudget?: RiskBudget;
 	/**
 	 * 分类后端的各维度权重（可选；chat 后端不产，审批窗据此自动决定要不要渲染权重表）。
 	 * 由 review-dimensions.ts 的 dimensionReport() 产出，已是可 JSON 序列化的原始数据。
@@ -72,6 +93,7 @@ export interface ReviewResult {
 		reason: string;
 		suggestion: string;
 		opinion?: string;
+		riskBudget?: RiskBudget;
 		/** chat 侧的失败原因（verdict=error 时） */
 		error?: string;
 	};
@@ -142,6 +164,15 @@ export interface LlmReviewConfig {
 	tokenIdleMs: number;
 	/** 内存缓存上限（同命令同规则不重复调 API） */
 	maxCache: number;
+	/**
+	 * 低风险自动放行（默认开）。
+	 *
+	 * 判 risky 但档位不超过 lowRiskBudget 时，视为「有句提醒」而不是「要拦人」，
+	 * auto 档位下直接放行、不弹窗；60 档（严重）永远弹窗。关掉它就回到「只有 safe 放行」。
+	 */
+	lowRiskAuto: boolean;
+	/** 低风险阈值：档位 ≤ 它算提醒（20 或 40）。60 档不参与——那是拦人的那一档 */
+	lowRiskBudget: RiskBudget;
 }
 
 const DEFAULT_CONFIG: LlmReviewConfig = {
@@ -151,6 +182,8 @@ const DEFAULT_CONFIG: LlmReviewConfig = {
 	timeoutMs: 30_000,
 	tokenIdleMs: 4_000,
 	maxCache: 200,
+	lowRiskAuto: true,
+	lowRiskBudget: 40,
 };
 
 // ═══════════════════════════════════════════════════
@@ -202,6 +235,9 @@ export function normalizeConfig(raw: unknown): LlmReviewConfig {
 	if (typeof cfg.max_cache === "number" && Number.isFinite(cfg.max_cache) && cfg.max_cache > 0) {
 		out.maxCache = Math.round(cfg.max_cache);
 	}
+	if (typeof cfg.low_risk_auto === "boolean") out.lowRiskAuto = cfg.low_risk_auto;
+	// 只认 20 / 40：60 是「严重」那一档，它不参与低风险放行，配了也没意义
+	if (cfg.low_risk_budget === 20 || cfg.low_risk_budget === 40) out.lowRiskBudget = cfg.low_risk_budget;
 	return out;
 }
 
@@ -246,17 +282,15 @@ export function loadLlmReviewConfig(): LlmReviewConfig {
 // system prompt 独立存放在 review-system-prompt.txt（本插件目录），改完即生效；
 // 读失败返回 null，调用方按 error 回退弹窗，绝不静默放行。
 
-/** 审核结论汇报工具：LLM 通过工具调用提交结构化结论（verdict/reason/suggestion），
- *  替代脆弱的自由文本 JSON 解析；参数由 schema 约束，免去文本容错。 */
-export const REVIEW_TOOL: Tool = {
-	name: "report_review_verdict",
-	description: "汇报对 shell 命令的安全审核结论。",
-	parameters: Type.Object({
-		verdict: Type.Union([Type.Literal("safe"), Type.Literal("risky"), Type.Literal("dangerous")]),
-		reason: Type.String({ description: "一句话理由（简体中文，不超过 20 字）" }),
-		suggestion: Type.String({ description: "更安全的替代写法或注意点（简体中文，不超过 20 字；没有则空字符串）" }),
-	}),
-};
+/**
+ * 输出协议的两个记号（改提示词就得同步改这里，反之亦然）。
+ *
+ *   [ok]        整段回复只有它 → 可行
+ *   [<20] [40] [60]  风险档位标记 → 有风险，档位即严重度（60 → dangerous）
+ */
+export const OK_REPLY = /^\[+\s*ok\s*\]+[。.！!]?$/i;
+/** 档位标记；全局匹配，便于把标记从说明正文里摘掉 */
+export const BUDGET_MARK = /[[［]\s*(<\s*20|40|60)\s*[\]］]/;
 
 /** 读取审核 system prompt（副作用；文件缺失/读失败 → null） */
 export function loadReviewSystemPrompt(): string | null {
@@ -327,23 +361,25 @@ export function buildReviewPrompt(
 			: rules
 					.map((r) => `- ${r.name}：${r.tip}${r.matched?.length ? `（命中：${r.matched.join(" ")}）` : ""}`)
 					.join("\n");
-	// 用户最近的要求：判「这条命令与要求的关系」靠它。没给就明说没有，
+	// 用户最近的要求：判「这条指令与要求的关系」靠它。没给就明说没有，
 	// 而不是静默省略——静默省略会让模型默认「与要求无关」，把 intent 判成风险。
 	const requestText = userRequest
-		? `\n\n任务上下文（用户最近的要求、任务清单、目标；判断意图是否对得上靠它）：\n${userRequest}`
-		: "\n\n任务上下文：取不到（无会话上下文），意图判断只能看命令本身";
-	// agent 给的理由：它可能是事后编的，所以明说别当依据——但"这命令想干什么"仍是最有用的线索
-	const reasonText = agentReason ? `\n\nagent 给的理由（它可能不实）：\n${agentReason}` : "";
-	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（命令过长已截断）" : command;
+		? `\n\n## 任务上下文\n（用户最近的要求、任务清单、目标；判断意图对不对得上靠它）\n${userRequest}`
+		: "\n\n## 任务上下文\n取不到（无会话上下文），意图判断只能看指令本身";
+	// 大模型给的理由：可能是事后编的，所以明说别当依据——但"这条指令想干什么"仍是最有用的线索
+	const reasonText = agentReason && agentReason.trim() ? agentReason : "（提出指令的模型没有给理由）";
+	const preview = command.length > 4000 ? command.slice(0, 4000) + "\n…（指令过长已截断）" : command;
 	// 事实层：静态分析出的影响面。有就给，没有就明说读不到（别让它被当成「什么都没碰」）
 	const factsText = facts
-		? `\n\n命令影响面（静态分析事实，不是裁决）：\n${formatFacts(facts)}`
+		? `\n\n## 指令影响面\n（静态分析事实，不是裁决）\n${formatFacts(facts)}`
 		: factsUnavailable
-			? `\n\n命令影响面：静态分析不可用（${factsUnavailable}），只能按命令原文判断`
+			? `\n\n## 指令影响面\n静态分析不可用（${factsUnavailable}），只能按指令原文判断`
 			: "";
+	// 三段骨架（提督 2026-10-05 定）：大模型给的理由 → 待审指令 → 事实与上下文。
+	// 标题写死，模型不用猜哪一段才是要审的东西。
 	return {
 		system,
-		user: `命令：\n${preview}${reasonText}\n\n命中风险点：\n${ruleText}${factsText}${requestText}`,
+		user: `## 大模型给出的理由\n（提出这条指令的模型写的说明，可能不实，只当线索）\n${reasonText}\n\n## 待审指令\n${preview}\n\n## 命中风险点\n${ruleText}${factsText}${requestText}`,
 	};
 }
 
@@ -351,69 +387,74 @@ export function buildReviewPrompt(
 // 输出解析（纯函数，容错）
 // ═══════════════════════════════════════════════════
 
-const BULLET_LEAD = /^[-*•·]\s+|^#{1,6}\s+|^\d+[.、)]\s*/;
-
 function clip(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-/** 把模型的正文规整成给人工审核者看的无序列表。
- *  提示词已经要求「- 开头、1 到 3 条、每条不超过 30 字」，这里是兜底：
- *  模型写散文或编号列表时，仍然裁成短列表，不让一坨文字把卡片撑满。
- *  单独一段长句会先按句读切开再裁，而不是直接砍成半句话。 */
-export function normalizeBullets(text: string, maxItems = 3, maxCharsPerItem = 30): string {
-	const lines = text
-		.split("\n")
-		.map((line) => line.trim().replace(BULLET_LEAD, "").trim())
-		.filter(Boolean);
-	const pieces =
-		lines.length === 1 && lines[0].length > maxCharsPerItem
-			? lines[0]
-				.split(/[。；;！？!?]+/)
-				.map((s) => s.trim())
-				.filter(Boolean)
-			: lines;
-	return pieces
-		.slice(0, maxItems)
-		.map((s) => `- ${clip(s, maxCharsPerItem)}`)
-		.join("\n");
+/** 摘装饰：首尾空白与 markdown 包装（会漂，但漂的都是外壳） */
+function stripDecoration(text: string): string {
+	return text.replace(/^[*_~`\s]+/, "").replace(/[*_~`\s]+$/, "");
 }
 
-/** 从完整响应中提取审核结论（纯函数；传 response.content）：
- *  结论通过 report_review_verdict 工具调用提交（结构化 verdict，schema 约束）；
- *  模型回复的自由文本作为 opinion（看法）展示给人工审核者，提交给审核者的版本会被
- *  normalizeBullets 裁成短列表（提示词要求的形态，代码兜底）；
- *  未调用工具 → 无法结构化判定（verdict=error，回退弹窗），此时文本**不**裁，
- *  原样附带展示 —— 那种情况下这几行字就是排查证据。 */
+/** 整段回复就是 [ok]（大小写不敏感，容忍装饰与收尾标点）→ 判可行 */
+export function isOkReply(text: string): boolean {
+	return OK_REPLY.test(stripDecoration(text.trim()));
+}
+
+/** 档位标记 → 档位数值（标记里可能有空格与全角括号：`[< 20]`、`［40］`） */
+function budgetOfMark(mark: string): RiskBudget {
+	const bare = mark.replace(/[[\]［］\s<]/g, "");
+	return bare === "20" ? 20 : bare === "40" ? 40 : 60;
+}
+
+/** 说明字数 → 落档：<20 → 20 档；20..40 → 40 档；更长 → 60 档（协议漂了时的兜底，宁严勿松） */
+function budgetOfLength(chars: number): RiskBudget {
+	if (chars < 20) return 20;
+	return chars <= 40 ? 40 : 60;
+}
+
+/** 风险档位与说明正文：显式标记优先，没有标记就按说明字数落档。
+ *  返回 explicit=false 表示模型没按协议写标记（调用方把原文留作排查证据）。 */
+export function readRiskBudget(text: string): { budget: RiskBudget; explicit: boolean; text: string } {
+	const matched = text.match(BUDGET_MARK);
+	const body = text
+		.replace(new RegExp(BUDGET_MARK.source, "g"), " ")
+		.replace(/\s+/g, " ")
+		.replace(/^[\s:：,，。.、\-—]+/, "")
+		.trim();
+	if (matched) return { budget: budgetOfMark(matched[0]), explicit: true, text: body };
+	return { budget: budgetOfLength(body.length), explicit: false, text: body };
+}
+
+/** 从完整响应里提取审核结论（纯函数；传 response.content）：
+ *  协议只有两种形态 —— 整段 [ok]（大小写不敏感）判可行；否则按风险处理，
+ *  档位从 [<20] / [40] / [60] 读，说明按档位字数裁（20 / 40 / 60）。
+ *  认不出形态（空回复）→ verdict=error，回退弹窗；协议漂了的原文留在 opinion 里，供人工排查。 */
 export function extractReviewResult(content: AssistantMessage["content"]): ReviewResult {
 	const raw = content
 		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
 		.join("\n")
 		.trim()
-		.slice(0, 500);
-	const toolCall = content.find((c): c is ToolCall => c.type === "toolCall" && c.name === REVIEW_TOOL.name);
-	if (toolCall) {
-		const { verdict, reason, suggestion } = toolCall.arguments ?? {};
-		if (verdict === "safe" || verdict === "risky" || verdict === "dangerous") {
-			const result: ReviewResult = {
-				verdict,
-				reason: typeof reason === "string" ? reason.slice(0, 300) : "",
-				suggestion: typeof suggestion === "string" ? suggestion.slice(0, 300) : "",
-			};
-			const bullets = raw ? normalizeBullets(raw) : "";
-			if (bullets) result.opinion = bullets;
-			return result;
-		}
-		return { verdict: "error", reason: "invalid tool call arguments", suggestion: "", ...(raw ? { opinion: raw } : {}) };
+		.slice(0, 800);
+	if (!raw) {
+		return { verdict: "error", reason: "模型没有输出任何内容", suggestion: "" };
 	}
-	// 未调用工具：不把文本当 JSON 解析，文本作为看法展示；verdict 按无法判定回退弹窗
-	return {
-		verdict: "error",
-		reason: "模型未给出结构化结论（未调用审核工具）",
+	if (isOkReply(raw)) {
+		return { verdict: "safe", reason: "", suggestion: "" };
+	}
+	const { budget, explicit, text } = readRiskBudget(raw);
+	const result: ReviewResult = {
+		verdict: verdictOfBudget(budget),
+		// 展示侧不按档位裁：档位是提示词给模型的书写预算，理由看不全人就没法判断。
+		// 卡上有折行兜着，这里只留一个防灌屏的宽上限。
+		reason: clip(text, REASON_DISPLAY_MAX),
 		suggestion: "",
-		...(raw ? { opinion: raw } : {}),
+		riskBudget: budget,
 	};
+	// 没写档位标记就是协议漂了：原文附上，人翻记录时能看到模型到底回了什么
+	if (!explicit) result.opinion = raw;
+	return result;
 }
 
 // ═══════════════════════════════════════════════════
@@ -634,10 +675,10 @@ async function runChatReview(
 				// 免费模型：无 key 裸调 OpenCode Zen 流式；token 间隔由 callZenChat 内部
 				// tokenIdleMs 控制（停滞>阈值判失败），此处只传用户 signal + 间隔阈值，
 				// 不并入注册模型的 timeoutSignal（那是总时长兜底，语义不同）。
+				// 新协议是纯文本（[ok] / 档位 + 说明），不再给模型注册任何工具
 				response = await callZenChat(resolved.modelId, {
 					systemPrompt: system,
 					messages: [{ role: "user", content: user }],
-					tools: [REVIEW_TOOL],
 					maxTokens: 512,
 					temperature: 0,
 					signal,
@@ -649,8 +690,7 @@ async function runChatReview(
 					{
 						systemPrompt: system,
 						messages: [{ role: "user", content: user, timestamp: Date.now() }],
-						// 审核结论走工具调用（report_review_verdict），结构化参数免文本解析
-						tools: [REVIEW_TOOL],
+						// 结论只从文本里解析（[ok] / 档位），请求不带 tools
 					},
 					{ signal: merged, maxTokens: 512, temperature: 0 },
 				);
@@ -809,12 +849,18 @@ export function toAdvisorNote(
 		suggestion: chat.suggestion,
 	};
 	if (chat.opinion) note.opinion = chat.opinion;
+	if (chat.riskBudget) note.riskBudget = chat.riskBudget;
 	if (chat.verdict === "error") note.error = chat.reason;
 	// 分类器放行、但 chat 喊了风险：留一行提醒，别让这条完全消失在记录里
 	if (classifierVerdict === "safe" && (chat.verdict === "risky" || chat.verdict === "dangerous")) {
 		note.reason = `（分类器判放行，对话模型持异议）${chat.reason}`;
 	}
 	return note;
+}
+
+/** 风险档位的展示写法：20 → `<20 字`，其余 `40 字` / `60 字` */
+export function budgetLabel(budget: RiskBudget): string {
+	return budget === 20 ? "<20 字" : `${budget} 字`;
 }
 
 /** 审核结论的展示文本（供弹窗 / GUI 展示附加） */
@@ -827,9 +873,12 @@ export function formatReviewNote(review: ReviewResult): string {
 				: review.verdict === "safe"
 					? "安全"
 					: "审核失败";
-	// 结论与理由占第一行；建议与看法各占后面几行。
-	// opinion 已是短列表（extract 里规整过），所以这里不再加「看法：」前缀
-	const lines = [`🤖 LLM 审查：${label}${review.reason ? ` —— ${review.reason}` : ""}`];
+	// 判可行时模型只回 [ok]，没有理由可写——如实把标记露出来，别显示成空
+	const body =
+		review.verdict === "safe" && !review.reason ? "[ok]" : review.reason;
+	// 结论与理由占第一行；档位、建议与原文证据各占后面几行
+	const lines = [`🤖 LLM 审查：${label}${body ? ` —— ${body}` : ""}`];
+	if (review.riskBudget) lines.push(`风险档位：${budgetLabel(review.riskBudget)}`);
 	if (review.suggestion) lines.push(`建议：${review.suggestion}`);
 	if (review.opinion) lines.push(review.opinion);
 	return lines.join("\n");

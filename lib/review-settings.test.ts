@@ -134,10 +134,13 @@ describe("loadReviewSettings", () => {
 		const settings = loadReviewSettings();
 		assert.equal(settings.llm.enabled, true);
 		assert.equal(settings.llm.mode, "auto");
-		assert.equal(settings.llm.backend, "chain");
+		// 后端是随配置切的值（System One 停用期间是 chat）：只钉枚举合法，不钉某个具体值
+		assert.ok(["chat", "classifier", "chain"].includes(settings.llm.backend));
 		assert.equal(settings.llm.timeoutMs, 30000);
 		assert.equal(settings.llm.tokenIdleMs, 4000);
 		assert.equal(settings.llm.maxCache, 200);
+		assert.equal(settings.llm.lowRiskAuto, true);
+		assert.equal(settings.llm.lowRiskBudget, 40);
 		assert.equal(settings.classifier.baseUrl, "https://api.siliconflow.cn");
 		assert.equal(settings.classifier.model, "diffusiongemma");
 		assert.equal(settings.classifier.timeoutMs, 3000);
@@ -232,6 +235,7 @@ describe("planSettingsWrite", () => {
 describe("saveReviewSettings", () => {
 	it("改一个键后，extensions.toml 其余内容逐字不变", () => {
 		const before = readFileSync(extensionsToml, "utf8");
+		const baseline = loadReviewSettings();
 		const result = saveReviewSettings({ llm: { mode: "strict" } });
 		const after = readFileSync(extensionsToml, "utf8");
 
@@ -244,7 +248,8 @@ describe("saveReviewSettings", () => {
 
 		assert.deepEqual(result.changed, ["档位: auto → strict"]);
 		assert.equal(result.settings.llm.mode, "strict");
-		assert.equal(result.settings.llm.backend, "chain", "没碰的键不能变");
+		// 没碰的键不能变：跟改动前那份读出来的值比，别钉死某个枚举
+		assert.equal(result.settings.llm.backend, baseline.llm.backend, "没碰的键不能变");
 	});
 
 	it("一次改多个键：每行只动值，注释与其它段照旧", () => {
@@ -321,7 +326,9 @@ describe("saveReviewSettings", () => {
 
 	it("值没变时不写盘（文件 mtime 与内容都不动）", () => {
 		const before = readFileSync(extensionsToml, "utf8");
-		const result = saveReviewSettings({ llm: { mode: "auto", backend: "chain" } });
+		// 拿文件里现在实际的值回写一遍（后端这类值是随配置切的，别写死）
+		const current = loadReviewSettings();
+		const result = saveReviewSettings({ llm: { mode: current.llm.mode, backend: current.llm.backend } });
 		assert.deepEqual(result.changed, []);
 		assert.equal(readFileSync(extensionsToml, "utf8"), before);
 	});
@@ -414,6 +421,8 @@ describe("与扩展侧读取同源", () => {
 			timeoutMs: fromExtension.timeoutMs,
 			tokenIdleMs: fromExtension.tokenIdleMs,
 			maxCache: fromExtension.maxCache,
+			lowRiskAuto: fromExtension.lowRiskAuto,
+			lowRiskBudget: fromExtension.lowRiskBudget,
 		});
 	});
 

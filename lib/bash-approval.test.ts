@@ -7,6 +7,7 @@ import { createReviewCache } from "../extensions/sandbox-permissions/llm-review.
 import {
 	appendApprovalComment,
 	approveBashCommand,
+	autoApproveDecision,
 	isHardRejected,
 	preReviewBashCommand,
 	rethrowWithApprovalComment,
@@ -19,8 +20,55 @@ const reviewConfig = (over: Record<string, unknown> = {}) => ({
 	timeoutMs: 1,
 	tokenIdleMs: 1,
 	maxCache: 1,
+	lowRiskAuto: true,
+	lowRiskBudget: 40,
 	...over,
 }) as any;
+
+describe("低风险自动放行（档位 ≤ 阈值就不弹窗）", () => {
+	const verdict = (v: string, riskBudget?: number) =>
+		({ verdict: v, reason: "", suggestion: "", ...(riskBudget ? { riskBudget } : {}) }) as any;
+
+	it("safe → 放行", () => {
+		assert.equal(autoApproveDecision(verdict("safe"), reviewConfig()), true);
+	});
+	it("20 档 risky → 放行（轻微提醒）", () => {
+		assert.equal(autoApproveDecision(verdict("risky", 20), reviewConfig()), true);
+	});
+	it("40 档 risky → 放行（阈值默认就是 40）", () => {
+		assert.equal(autoApproveDecision(verdict("risky", 40), reviewConfig()), true);
+	});
+	it("60 档 risky → 不放行：严重那一档永远弹窗", () => {
+		assert.equal(autoApproveDecision(verdict("risky", 60), reviewConfig()), false);
+	});
+	it("dangerous → 不放行（不看档位）", () => {
+		assert.equal(autoApproveDecision(verdict("dangerous", 60), reviewConfig()), false);
+	});
+	it("risky 但没带档位（旧结论 / 协议漂）→ 不放行，宁可弹窗", () => {
+		assert.equal(autoApproveDecision(verdict("risky"), reviewConfig()), false);
+	});
+	it("审核失败（error）→ 不放行", () => {
+		assert.equal(autoApproveDecision(verdict("error"), reviewConfig()), false);
+	});
+	it("关掉 low_risk_auto → 回到只放 safe", () => {
+		const off = reviewConfig({ lowRiskAuto: false });
+		assert.equal(autoApproveDecision(verdict("risky", 20), off), false);
+		assert.equal(autoApproveDecision(verdict("safe"), off), true);
+	});
+	it("阈值调成 20 → 40 档不再放行", () => {
+		const strict20 = reviewConfig({ lowRiskBudget: 20 });
+		assert.equal(autoApproveDecision(verdict("risky", 20), strict20), true);
+		assert.equal(autoApproveDecision(verdict("risky", 40), strict20), false);
+	});
+	it("strict 档位（非 auto）→ 一律不放行", () => {
+		const strict = reviewConfig({ mode: "strict" });
+		assert.equal(autoApproveDecision(verdict("safe"), strict), false);
+		assert.equal(autoApproveDecision(verdict("risky", 20), strict), false);
+	});
+	it("没有结论（undefined）→ 不放行", () => {
+		assert.equal(autoApproveDecision(undefined, reviewConfig()), false);
+	});
+});
 
 describe("只跑预审（worker 守门用的判据）", () => {
 	const risky = {
@@ -90,7 +138,7 @@ describe("共享 bash 审批器", () => {
 			verdict,
 			origin: "bash_background",
 			deps: {
-				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				loadReviewConfig: () => reviewConfig({ enabled: false }),
 				reviewCache: createReviewCache(),
 				runGui: async () => ({ ok: true, data: { action: "allow", comment: "  X  " } }),
 			},
@@ -112,7 +160,7 @@ describe("共享 bash 审批器", () => {
 			command: "sudo echo test",
 			verdict,
 			deps: {
-				loadReviewConfig: () => ({ backend: "chat", enabled: false, mode: "auto", timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 }),
+				loadReviewConfig: () => reviewConfig({ enabled: false }),
 				reviewCache: createReviewCache(),
 				runGui: async () => ({ ok: true, data: { action: "deny", comment: "不要执行" } }),
 			},
@@ -156,7 +204,16 @@ describe("收窄命令的审批链", () => {
 			},
 		],
 	};
-	const reviewConfig = { backend: "chat" as const, enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
+	const reviewConfig = {
+		backend: "chat" as const,
+		enabled: true,
+		mode: "auto" as const,
+		timeoutMs: 1,
+		tokenIdleMs: 1,
+		maxCache: 1,
+		lowRiskAuto: true,
+		lowRiskBudget: 40 as const,
+	};
 
 	it("不是硬拒（autoReject:false）→ 进得来审批器", () => {
 		assert.equal(isHardRejected(narrowedVerdict), false);
@@ -242,7 +299,16 @@ describe("外部通道接点（subagent capability 走同一条链）", () => {
 		reason: "命令需人工确认（命中危险/动态规则）",
 		rules: [{ name: "rm-recursive", tip: "避免递归删除", matched: ["-rf"] }],
 	};
-	const reviewConfig = { backend: "chat" as const, enabled: true, mode: "auto" as const, timeoutMs: 1, tokenIdleMs: 1, maxCache: 1 };
+	const reviewConfig = {
+		backend: "chat" as const,
+		enabled: true,
+		mode: "auto" as const,
+		timeoutMs: 1,
+		tokenIdleMs: 1,
+		maxCache: 1,
+		lowRiskAuto: true,
+		lowRiskBudget: 40 as const,
+	};
 
 	it("缓存按整条链去重：同一条命令不因换个调用方就再审一遍", async () => {
 		let calls = 0;

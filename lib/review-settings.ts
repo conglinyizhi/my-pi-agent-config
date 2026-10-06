@@ -21,7 +21,7 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync }
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse as parseToml } from "smol-toml";
-import { LLM_REVIEW_SECTION, normalizeConfig } from "../extensions/sandbox-permissions/llm-review.ts";
+import { LLM_REVIEW_SECTION, normalizeConfig, type RiskBudget } from "../extensions/sandbox-permissions/llm-review.ts";
 import {
 	CLASSIFIER_SECTION,
 	DIMENSIONS_TOML_PATH,
@@ -84,6 +84,10 @@ export interface ReviewLlmSettings {
 	tokenIdleMs: number;
 	/** 内存缓存上限 */
 	maxCache: number;
+	/** 低风险自动放行：判 risky 但档位 ≤ lowRiskBudget 时不弹窗 */
+	lowRiskAuto: boolean;
+	/** 低风险阈值（20 / 40；60 是拦人的那一档，不参与放行） */
+	lowRiskBudget: RiskBudget;
 }
 
 export interface ReviewClassifierSettings {
@@ -222,6 +226,8 @@ export function loadReviewSettings(paths: ReviewSettingsPaths = resolveReviewSet
 			timeoutMs: llmRaw.timeoutMs,
 			tokenIdleMs: llmRaw.tokenIdleMs,
 			maxCache: llmRaw.maxCache,
+			lowRiskAuto: llmRaw.lowRiskAuto,
+			lowRiskBudget: llmRaw.lowRiskBudget,
 		},
 		classifier: {
 			baseUrl: classifierRaw.baseUrl,
@@ -428,6 +434,8 @@ export interface LlmSettingsPatch {
 	timeoutMs?: number;
 	tokenIdleMs?: number;
 	maxCache?: number;
+	lowRiskAuto?: boolean;
+	lowRiskBudget?: RiskBudget;
 }
 
 export interface ClassifierSettingsPatch {
@@ -514,6 +522,18 @@ function planLlm(current: ReviewLlmSettings, patch: LlmSettingsPatch): KeyWrite[
 			"",
 		);
 		add("max_cache", tomlValue(next), next, current.maxCache, "内存缓存上限");
+	}
+	if (patch.lowRiskAuto !== undefined) {
+		const next = requireBoolean("llm.lowRiskAuto（low_risk_auto，低风险自动放行）", patch.lowRiskAuto);
+		add("low_risk_auto", tomlValue(next), next, current.lowRiskAuto, "低风险自动放行");
+	}
+	if (patch.lowRiskBudget !== undefined) {
+		// 只收 20 / 40：60 是「严重」那一档，低风险放行不碰它
+		if (patch.lowRiskBudget !== 20 && patch.lowRiskBudget !== 40) {
+			fail("llm.lowRiskBudget（low_risk_budget，低风险阈值）", `只接受 20 / 40，收到 ${describe(patch.lowRiskBudget)}`);
+		}
+		const next = patch.lowRiskBudget;
+		add("low_risk_budget", tomlValue(next), next, current.lowRiskBudget, "低风险阈值");
 	}
 	return writes;
 }

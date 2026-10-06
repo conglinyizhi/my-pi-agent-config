@@ -61,22 +61,28 @@
         <span v-if="chatMeta" class="dot" :class="'dot-' + toneOf(chatMeta, true)" :title="chatMeta.label"></span>
       </div>
       <div v-if="review.chatReview" class="chat-review">
-        <div class="chat-reason">{{ review.chatReview.reason }}</div>
+        <div class="chat-reason">{{ reasonText(review.chatReview) }}</div>
+        <div v-if="budgetLabel(review.chatReview.riskBudget)" class="chat-budget">
+          风险档位：{{ budgetLabel(review.chatReview.riskBudget) }}
+        </div>
         <div v-if="review.chatReview.suggestion" class="chat-suggestion">💡 {{ review.chatReview.suggestion }}</div>
         <div v-if="review.chatReview.opinion" class="chat-opinion">{{ review.chatReview.opinion }}</div>
       </div>
     </div>
 
-    <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="system1">
+    <!-- data-model 只当布局锚点（GateView 的栅格按它定位），与"结论来自谁"无关 -->
+    <div v-if="!isSandboxAllow && !isCapability && review" class="model-card" data-model="primary">
       <div
         class="model-head clickable"
         :class="'tone-' + toneOf(verdictMeta, false)"
-        title="点一下看这次送给分类器的原始提示词"
-        @click="openPrompt('classifier')"
+        :title="`点一下看这次送给${cardPromptKind(review) === 'classifier' ? '分类器' : '对话模型'}的原始提示词`"
+        @click="openPrompt(cardPromptKind(review))"
       >
-        📊 System One 决策模型意见
-        <!-- 没拿到维度就别说清一色：模型挂了的时候写"0 命中"是假的全清（踩过） -->
+        {{ cardTitle(review) }}
+        <!-- 没拿到维度就别说清一色：模型挂了的时候写"0 命中"是假的全清（踩过）。
+             chat 单跑时压根没有维度表，那就不摆这枚计数。 -->
         <span
+          v-if="showWeightCount(review)"
           class="weight-count"
           :class="weightRows.length === 0 ? 'count-bad' : flaggedCount ? 'count-warn' : 'count-ok'"
         >
@@ -84,7 +90,10 @@
         </span>
         <span class="dot" :class="'dot-' + toneOf(verdictMeta, false)" :title="verdictMeta.label"></span>
       </div>
-      <div v-if="review.reason" class="review-reason">{{ review.reason }}</div>
+      <div v-if="reasonText(review)" class="review-reason">{{ reasonText(review) }}</div>
+      <div v-if="budgetLabel(review.riskBudget)" class="review-budget">
+        风险档位：{{ budgetLabel(review.riskBudget) }}
+      </div>
       <div v-if="review.suggestion" class="review-suggestion">💡 {{ review.suggestion }}</div>
       <div v-if="review.opinion" class="review-opinion">{{ review.opinion }}</div>
       <div class="weight-table" data-name="dimension-weights">
@@ -257,6 +266,13 @@ import { computed, ref } from "vue";
 import { checkScopeEdit, checkWorkspacePath, scopeRowModel } from "../../domain/gate/path-actions.js";
 import { flaggedCount as countFlagged, weightRows as buildWeightRows } from "../../domain/gate/dimension-weights.js";
 import { gateDecisionSummary } from "../../domain/gate/summary.js";
+import {
+  budgetLabel,
+  cardPromptKind,
+  cardTitle,
+  reasonText,
+  showWeightCount,
+} from "../../domain/gate/review-protocol.js";
 
 const props = defineProps({
   isSandboxAllow: Boolean,
@@ -529,6 +545,9 @@ function removeWorkspace(path) {
 .chat-reason { font-size: 12.5px; color: #d0d0e0; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .chat-suggestion { font-size: 12px; color: #7aa2f7; margin-top: 3px; }
 .chat-opinion { margin-top: 5px; padding: 5px 8px; background: #0d0d1a; border-left: 2px solid #555; border-radius: 3px; font-size: 12px; color: #c0c0d0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+/* 风险档位：模型的书写预算，也是严重度刻度（<20 / 40 / 60）。小字、不抢徽标的视线 */
+.chat-budget, .review-budget { margin-top: 3px; font-size: 11.5px; color: #9a8cff; }
+.chat-budget { font-size: 11px; }
 .rule-row { padding: 3px 6px; margin-bottom: 2px; border-left: 2px solid #ff6b6b44; display: flex; gap: 6px; }
 .rule-pattern { color: #ce9178; background: #0d0d1a; padding: 1px 4px; border-radius: 2px; }
 .rule-matched { color: #e67e22; background: #2a1a0a; padding: 1px 4px; border-radius: 2px; font-family: monospace; font-size: 11px; }

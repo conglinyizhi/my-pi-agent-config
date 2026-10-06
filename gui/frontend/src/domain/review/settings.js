@@ -27,6 +27,8 @@ export const FALLBACK_LIMITS = {
 export const MODES = ["auto", "strict"];
 export const BACKENDS = ["chat", "classifier", "chain"];
 export const ACTIONS = ["review", "ignore"];
+/** 低风险阈值可选项：20 / 40。60 是「严重」那一档，低风险放行不碰它 */
+export const LOW_RISK_BUDGETS = [20, 40];
 
 export function limitsOf(raw) {
   return { ...FALLBACK_LIMITS, ...(raw || {}) };
@@ -44,6 +46,8 @@ export function formFromSettings(settings) {
       timeoutMs: numOr(llm.timeoutMs, 30000),
       tokenIdleMs: numOr(llm.tokenIdleMs, 4000),
       maxCache: numOr(llm.maxCache, 200),
+      lowRiskAuto: llm.lowRiskAuto !== false,
+      lowRiskBudget: LOW_RISK_BUDGETS.includes(llm.lowRiskBudget) ? llm.lowRiskBudget : 40,
     },
     classifier: {
       baseUrl: typeof classifier.baseUrl === "string" ? classifier.baseUrl : "",
@@ -74,6 +78,8 @@ export function patchFromForm(form) {
       timeoutMs: toNumber(form.llm.timeoutMs),
       tokenIdleMs: toNumber(form.llm.tokenIdleMs),
       maxCache: toNumber(form.llm.maxCache),
+      lowRiskAuto: Boolean(form.llm.lowRiskAuto),
+      lowRiskBudget: toNumber(form.llm.lowRiskBudget),
     },
     classifier: {
       baseUrl: String(form.classifier.baseUrl || "").trim(),
@@ -117,6 +123,9 @@ export function validateForm(form, rawLimits) {
   checkRange("审核总时长兜底", toNumber(form.llm.timeoutMs), limits.timeoutMsMin, limits.timeoutMsMax, "毫秒");
   checkRange("相邻 token 间隔上限", toNumber(form.llm.tokenIdleMs), limits.tokenIdleMsMin, limits.tokenIdleMsMax, "毫秒");
   checkRange("内存缓存上限", toNumber(form.llm.maxCache), limits.maxCacheMin, limits.maxCacheMax, "");
+  if (!LOW_RISK_BUDGETS.includes(toNumber(form.llm.lowRiskBudget))) {
+    errors.push(`低风险阈值：只接受 ${LOW_RISK_BUDGETS.join(" / ")}（60 是拦人的那一档，不参与放行）`);
+  }
   checkRange("分类器超时", toNumber(form.classifier.timeoutMs), limits.classifierTimeoutMsMin, limits.classifierTimeoutMsMax, "毫秒");
 
   const baseUrl = String(form.classifier.baseUrl || "").trim();
