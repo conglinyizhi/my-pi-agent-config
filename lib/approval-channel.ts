@@ -168,6 +168,12 @@ export interface AuditApprovalRequest extends ApprovalRequestBase {
 	/** subject = script 时的影响面 */
 	scriptEffects?: ScriptEffectsPayload;
 	/**
+	 * subject = script 时的规范化视图（常量内联回使用处的那一份）。
+	 * 审核模型看的就是它，人审同一段脚本时也该看得到——否则会出现
+	 * "模型说路径是 /x，窗口里显示的是变量 p" 这种对不上的场面。
+	 */
+	scriptCanon?: { code: string; inlined: string[] };
+	/**
 	 * 事实层摘要（lib/preshell.ts 的 formatFacts 输出）：这条命令碰了哪些路径、
 	 * 跑了什么程序、解释器里那段源码是什么、清单完不完整。
 	 * 审核模型看的已经是这一段，看审批的人不该少看一份（TUI 标题里直接列出；
@@ -367,6 +373,7 @@ function buildKindPayload(request: ApprovalRequest): Record<string, unknown> {
 			...(request.factsText ? { factsText: request.factsText } : {}),
 			...(request.subject ? { subject: request.subject } : {}),
 			...(request.scriptEffects ? { scriptEffects: request.scriptEffects } : {}),
+			...(request.scriptCanon ? { scriptCanon: request.scriptCanon } : {}),
 		};
 	}
 	if (request.kind === "sandbox-allow") {

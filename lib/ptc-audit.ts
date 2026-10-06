@@ -7,9 +7,10 @@
 //   3. 批了之后登记一个作用域，让内层调用别再逐条弹人工闸门（硬拦与自动判定照旧）
 //   4. 拒了整段不执行，返回编译失败式的错误（规划 §6.2）
 //
-// 还没做（后续生态）：字面量级影响面扫描、干跑、批准表与 hash 绑定、折叠、GUI 调整。
-// 因此第 2 点现在是"把可调用工具的全集报一遍"，不是"这次真正用到的那些"——
-// 等静态扫描进来再收紧。
+// 送审前会把脚本规范化一遍（lib/ptc-canon.ts）：字面量常量内联回使用处、纯字面量拼接折叠、
+// 不再被引用的声明删掉、格式统一，并做等价性校验（工具序列与字面量参数一个都不许变）。
+// 审核模型看到的就是这份"常量就在调用里"的脚本，不会再因为"用了变量、值只能运行时才知道"
+// 而不敢判。校验不过就退回原文；执行体、digest 与批准作用域始终按原脚本算。
 
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -24,6 +25,7 @@ import {
 import { mergeFileChanges } from "./script-changes.ts";
 import { patchPathsOf } from "./patch-paths.ts";
 import type { LiteralCall, ScriptScan } from "./ptc-analyze.ts";
+import { canonicalizeScript } from "./ptc-canon.ts";
 import { displayPath } from "./path-display.ts";
 import { compareCalls, compareLine, type DryRunResult } from "./ptc-dryrun.ts";
 import {
@@ -434,19 +436,35 @@ export function dryRunSummary(dry: DryRunResult | undefined): string {
 	return `${head}${rendered.length > 0 ? rendered.join("、") : "（没有派发任何调用）"}`;
 }
 
-export function buildPtcAuditSubject(input: PtcAuditInput): string {
+export interface PtcSubjectOptions {
+	/**
+	 * 规范化结果。有改动且校验通过时，脚本段与扫描摘要都换成规范化那份——
+	 * 审核模型看到的是"常量已经内联回使用处"的脚本，不会再因为"用了变量"而不敢判。
+	 * 校验没过（或没得改）就不传，送审材料与以前一模一样。
+	 */
+	canon?: { code: string; inlined: string[]; scan?: ScriptScan };
+}
+
+export function buildPtcAuditSubject(input: PtcAuditInput, options: PtcSubjectOptions = {}): string {
+	const canon = options.canon;
+	// 扫描摘要跟着走：规范化后能看清的东西更多（原来的变量成了字面量），摘要也该是新的
+	const scan = canon?.scan ?? input.scan;
+	const display = canon ? canon.code : input.display;
 	return [
 		"【run_code 事前审核】下面这段 JavaScript 会在沙箱里执行，并可以调用工具。",
 		"",
 		`执行理由（模型自述）：${input.reason}`,
 		"",
-		describeTools(input.tools, input.scan?.tools),
+		describeTools(input.tools, scan?.tools),
 		"",
-		scanSummary(input.scan, input.display),
+		scanSummary(scan, display),
 		dryRunSummary(input.dry),
 		"",
-		"脚本原文：",
-		input.script,
+		canon ? "脚本（已规范化：字面量常量已内联回使用处，语义不变）：" : "脚本原文：",
+		canon ? canon.code : input.script,
+		...(canon
+			? ["", `（规范化说明：内联了 ${canon.inlined.join("、")}。执行体仍是原脚本，这次只搬动了字面量常量，没有改语义）`]
+			: []),
 	].filter((part) => part !== "").join("\n");
 }
 
@@ -554,6 +572,8 @@ export interface PtcPreReviewResult {
 	review?: ReviewResult;
 	/** 判据与主链同款：判 safe 且档位 auto 才算放行 */
 	autoApproved: boolean;
+	/** 这次送审用的规范化视图（有改动且校验通过时才有；审批窗拿它给人看对照） */
+	canon?: { code: string; inlined: string[] };
 }
 
 /**
@@ -572,7 +592,13 @@ export async function preReviewPtcScript(options: {
 }): Promise<PtcPreReviewResult> {
 	const { pi, ctx, input, signal } = options;
 	const deps = options.deps ?? {};
-	const subject = buildPtcAuditSubject(input);
+	// 送审前把脚本规范化一遍（常量内联 + 折叠 + 格式统一）。校验不过就不替换：
+	// 审核看到的东西错了，比看到花哨的东西危险得多（判据见 ptc-canon.ts）。
+	const canonResult = await canonicalizeScript(input.script);
+	const canon = canonResult.changed && canonResult.verified
+		? { code: canonResult.code, inlined: canonResult.inlined, ...(canonResult.scan ? { scan: canonResult.scan } : {}) }
+		: undefined;
+	const subject = buildPtcAuditSubject(input, canon ? { canon } : {});
 	const digest = ptcScriptDigest(input.script);
 	const config = (deps.loadReviewConfig ?? loadLlmReviewConfig)();
 
@@ -600,9 +626,9 @@ export async function preReviewPtcScript(options: {
 				...(deps.loadReviewConfig ? { loadConfig: deps.loadReviewConfig } : {}),
 			},
 		});
-		return { config, subject, digest, review: result.review, autoApproved: result.autoApproved };
+		return { config, subject, digest, review: result.review, autoApproved: result.autoApproved, ...(canon ? { canon } : {}) };
 	} catch {
-		return { config, subject, digest, review: undefined, autoApproved: false };
+		return { config, subject, digest, review: undefined, autoApproved: false, ...(canon ? { canon } : {}) };
 	}
 }
 
@@ -617,7 +643,7 @@ export async function approvePtcScript(options: {
 	const deps = options.deps ?? {};
 
 	// 预审走同一处因子化：判据只有一份
-	const { digest, review, autoApproved } = await preReviewPtcScript(options);
+	const { digest, review, autoApproved, canon } = await preReviewPtcScript(options);
 	if (autoApproved) {
 		appendPtcAudit(pi, { digest, outcome: "approved", via: "preflight", reason: input.reason, review });
 		return { approved: true, review };
@@ -634,6 +660,8 @@ export async function approvePtcScript(options: {
 			reason: input.reason,
 			subject: "script",
 			scriptEffects: scriptEffectsOf(input),
+			// 规范化视图一并给窗口：审核模型看的是它，人也该看得到同一份
+			...(canon ? { scriptCanon: canon } : {}),
 			review,
 			signal,
 		},

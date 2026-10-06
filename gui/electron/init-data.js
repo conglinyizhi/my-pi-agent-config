@@ -39,8 +39,9 @@ export const WINDOW_CONFIGS = {
 	routing: { title: "TODO 调度 · 三叉戟", width: 1000, height: 720, minWidth: 800, minHeight: 540 },
 	// 审核工作流设置：字段多（三组数值 + 八个维度 × 四列），给得比 gate 窄一点但够高
 	review: { title: "审核工作流设置 · pi", width: 1080, height: 860, minWidth: 880, minHeight: 600 },
-	// 审核流程：左边列表、中间图、右边校验与轨迹，要宽
-	flows: { title: "审核流程 · pi", width: 1320, height: 900, minWidth: 1000, minHeight: 640 },
+	// 注：审核流程（flows）窗口只到设计稿（docs/plans/2026-10-05-review-flow-sdk.md），
+	// 前端没有对应视图，pi 侧也没有调用方。这里就不宣告它——宣告了等于给"未知窗口名
+	// 回退 GateView"留坑，谁拿 flows 调一次都会静悄悄拿到审批窗。
 };
 
 /** 未知窗口名时的兜底 */
@@ -92,6 +93,8 @@ export function buildInitData(windowName, request = {}, options = {}) {
 			// 脚本事前审核（PTC）：subject=script 时 command 是 JS 原文，影响面走 scriptEffects
 			base.subject = req.subject;
 			base.scriptEffects = req.scriptEffects;
+			// 规范化视图（PTC）：常量内联回使用处的那一份，审核模型看的就是它
+			base.scriptCanon = req.scriptCanon;
 			base.permission = req.permission;
 			base.writePaths = req.writePaths;
 			base.justification = req.justification;

@@ -14,6 +14,25 @@ export function scriptAuditTitle() {
   return "🧩 脚本事前审核 · run_code";
 }
 
+/**
+ * 规范化视图（pi 侧 ptc-canon 的产出一份）：常量已经内联回使用处的那份脚本。
+ *
+ * 审核模型看的就是这一份，人也该看得到同一份——否则会出现"模型说路径是 /x，
+ * 窗口里显示的却是变量 p"这种对不上的场面。没得改或校验没过时 pi 不发这个字段，
+ * 这里返回 null，窗口就整块不渲染。
+ */
+export function canonViewOf(scriptCanon) {
+  if (!scriptCanon || typeof scriptCanon.code !== "string" || !scriptCanon.code.trim()) return null;
+  const inlined = Array.isArray(scriptCanon.inlined)
+    ? scriptCanon.inlined.filter((name) => typeof name === "string" && name.trim())
+    : [];
+  return {
+    code: scriptCanon.code,
+    label: inlined.length > 0 ? `✨ 规范化视图（内联了 ${inlined.join("、")}）` : "✨ 规范化视图",
+    note: "执行体仍是原脚本；这一份只是把字面量常量搬回使用处，语义没变",
+  };
+}
+
 const MAX_ITEMS = 12;
 
 function cleanItems(items) {

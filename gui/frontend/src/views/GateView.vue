@@ -32,6 +32,13 @@
       </div>
     </div>
 
+    <!-- 规范化视图：审核模型看的就是这一份，人审同一段脚本时不该少看 -->
+    <details v-if="canonView" data-name="script-canon" class="canon-view">
+      <summary>{{ canonView.label }}</summary>
+      <div class="canon-note">{{ canonView.note }}</div>
+      <pre class="canon-code">{{ canonView.code }}</pre>
+    </details>
+
     <div v-if="varRows.length" data-name="var-table" class="var-table">
       <div class="var-head">🔎 命令里的变量（{{ varRows.length }}）</div>
       <div
@@ -102,7 +109,7 @@ import "../gui-theme.css";
 import { computed, onMounted, ref } from "vue";
 import { usePlatform } from "../platform/index.js";
 import { findHighlights } from "../domain/gate/highlights.js";
-import { digestLine, effectSectionsOf, isScriptAudit, scriptAuditTitle } from "../domain/gate/script-audit.js";
+import { canonViewOf, digestLine, effectSectionsOf, isScriptAudit, scriptAuditTitle } from "../domain/gate/script-audit.js";
 import { varRenderRows } from "../domain/gate/var-renders.js";
 import { cancelPathAuthorization, createScopeRows, cyclePathDraft, editScopeRow, appendScopeRow, pathDraftsToActions, pathDraftSummary, removeScopeRow, scopeChanged, scopeIssues, scopeWritePaths, workspaceActions } from "../domain/gate/path-actions.js";
 import GateActionBar from "../components/gate/GateActionBar.vue";
@@ -122,6 +129,7 @@ const kind = ref("");
 const subject = ref("");
 /** 结构化影响面（pi 侧算好）：工具 / 路径 / 命令 / 看不清的地方 */
 const scriptEffects = ref(null);
+const scriptCanon = ref(null);
 /** 要折成芯片的调用（影响面里带过来的显示层事实） */
 const editCalls = ref([]);
 const permission = ref("");
@@ -169,6 +177,8 @@ const title = computed(() =>
 // （踩过：标在空白行上）。等两边的行号口径统一了再打开。
 const issueLines = computed(() => []);
 const effectRows = computed(() => effectSectionsOf(scriptEffects.value));
+// PTC 的规范化视图（常量内联回使用处的那份）：默认折起来，要对照原文时再展开
+const canonView = computed(() => canonViewOf(scriptCanon.value));
 const permLabel = computed(() =>
   permission.value === "full-access" ? "完全取消沙箱" : "保持沙箱 + 额外可写",
 );
@@ -262,6 +272,7 @@ onMounted(async () => {
   kind.value = data.kind || "audit";
   subject.value = data.subject || "";
   scriptEffects.value = data.scriptEffects || null;
+  scriptCanon.value = data.scriptCanon || null;
   editCalls.value = data.scriptEffects?.editCalls || [];
   permission.value = data.permission || "";
   writePaths.value = data.writePaths || [];
@@ -305,7 +316,9 @@ onMounted(async () => {
 }
 .app.has-review {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  /* 右栏（审核卡）宽度：随窗口伸缩——窄窗保底 280px，宽窗最多吃 520px（约占三成半）。
+     固定 340px 那版在长理由上贴边，中文一句话要折三四行还显示不全 */
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 34%, 520px);
   /* 五条轨道：header / LLM 行 / System One 行 / 图例行 / 之后按内容。
      中间两条给 1fr，剩余高度由它们分掉——代码区就吃这份，整页不出滚动条。 */
   grid-template-rows: auto minmax(min-content, 1fr) minmax(min-content, 1fr) auto;
@@ -348,9 +361,13 @@ onMounted(async () => {
   padding: 4px 10px;
 }
 /* 右栏两块：上=LLM 意见，中=System One 决策。按内容走，不出滚动条 */
-.app.has-review :deep(.model-card) { align-self: stretch; overflow: visible; }
+/* min-width:0：grid item 默认 min-width:auto，内容（长中文理由）会把卡片顶宽、
+   溢出列宽后被窗口裁掉（踩过：右侧只剩半列竖排的碎字）。给了它，文本才在列内折行 */
+.app.has-review :deep(.model-card) { align-self: stretch; overflow: visible; min-width: 0; }
+.app.has-review :deep(.model-card .chat-review),
+.app.has-review :deep(.model-card .review-reason) { min-width: 0; }
 .app.has-review :deep(.model-card[data-model="chat"]) { grid-area: 2 / 2 / 3 / 3; }
-.app.has-review :deep(.model-card[data-model="system1"]) { grid-area: 3 / 2 / 4 / 3; }
+.app.has-review :deep(.model-card[data-model="primary"]) { grid-area: 3 / 2 / 4 / 3; }
 /* 卡头文字跟着判定灯一起变色。配色必须写在这一侧：子组件里的 .tone-* 拼不过
    这条 :deep() 的特异性，写在那边等于没写（踩过） */
 .app.has-review :deep(.model-head.tone-ok) { color: #4ec9b0; }
@@ -425,6 +442,11 @@ onMounted(async () => {
 .var-kind { font-size: 10px; color: #666; }
 .var-row-unknown .var-name { color: #9a9ab0; }
 .effects { border-bottom: 1px solid #2a2a4a; background: #141428; padding: 6px 16px 8px; max-height: 26vh; overflow: auto; }
+/* 规范化视图：折叠态只占一行，展开后自己滚，别把底栏顶出屏幕 */
+.canon-view { border-bottom: 1px solid #2a2a4a; background: #131328; padding: 6px 16px 8px; }
+.canon-view > summary { cursor: pointer; font-size: 11px; color: #9a8cff; }
+.canon-note { margin: 4px 0; font-size: 10.5px; color: #7d8598; }
+.canon-code { margin: 0; max-height: 24vh; overflow: auto; font-family: monospace; font-size: 11.5px; line-height: 1.55; color: #d0d0e0; white-space: pre-wrap; word-break: break-word; }
 .effects-head { font-size: 11px; color: #7aa2f7; margin-bottom: 4px; }
 .effect-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.9; flex-wrap: wrap; }
 .effect-label { flex: 0 0 auto; color: #888; font-size: 11px; }

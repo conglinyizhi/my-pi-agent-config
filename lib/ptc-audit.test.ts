@@ -162,6 +162,30 @@ describe("工具面（送审材料）", () => {
 		assert.ok(subject.includes("mcp__notes__write_note"));
 		assert.ok(subject.includes("事前审核"));
 	});
+
+	it("带规范化结果时：脚本段与扫描摘要换成规范化那份，并注明内联了什么", () => {
+		const canon = {
+			code: "await tools.read({ path: '/a/b.txt' });",
+			inlined: ["p"],
+			scan: { calls: [], tools: ["read"], paths: ["/a/b.txt"], commands: [], opaque: [] },
+		};
+		const subject = buildPtcAuditSubject(
+			{ script: "const p = '/a/b.txt';\nawait tools.read({ path: p });", reason: "读一下", tools },
+			{ canon },
+		);
+		assert.ok(subject.includes("已规范化"), subject);
+		assert.ok(subject.includes("await tools.read({ path: '/a/b.txt' })"), subject);
+		assert.ok(!subject.includes("const p ="), "原文的变量声明不该出现在送审材料里");
+		assert.ok(subject.includes("内联了 p"), subject);
+		// 扫描摘要按规范化那份写：路径字面量现在看得见了
+		assert.ok(subject.includes("/a/b.txt"), subject);
+	});
+
+	it("不传规范化结果时，送审材料与以前一字不差（原文 + 脚本原文标题）", () => {
+		const subject = buildPtcAuditSubject({ script: "return 1", reason: "算一下", tools });
+		assert.ok(subject.includes("脚本原文："), subject);
+		assert.ok(!subject.includes("已规范化"), subject);
+	});
 });
 
 describe("拒绝时的返回", () => {

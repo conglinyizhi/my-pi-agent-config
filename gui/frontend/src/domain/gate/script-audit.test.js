@@ -1,7 +1,7 @@
 // 跑法：node --test src/domain/gate/script-audit.test.js
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { digestLine, effectSectionsOf, isScriptAudit, scriptAuditTitle } from "./script-audit.js";
+import { canonViewOf, digestLine, effectSectionsOf, isScriptAudit, scriptAuditTitle } from "./script-audit.js";
 
 describe("脚本事前审核的呈现", () => {
   it("按 subject 认领，别把普通命令审计当脚本", () => {
@@ -64,5 +64,21 @@ describe("脚本事前审核的呈现", () => {
     assert.match(digestLine({ digestShort: "abcdef123456" }), /abcdef123456/);
     assert.equal(digestLine({}), "");
     assert.equal(digestLine(null), "");
+  });
+
+  it("规范化视图：有代码才渲染，标题带上被内联的常量名", () => {
+    const view = canonViewOf({ code: "await tools.read({ path: '/a' });", inlined: ["p", "q"] });
+    assert.equal(view.code, "await tools.read({ path: '/a' });");
+    assert.match(view.label, /内联了 p、q/);
+    assert.match(view.note, /语义没变/);
+  });
+
+  it("规范化视图：没字段 / 空代码 / inlined 不是数组都不渲染", () => {
+    assert.equal(canonViewOf(null), null);
+    assert.equal(canonViewOf(undefined), null);
+    assert.equal(canonViewOf({}), null);
+    assert.equal(canonViewOf({ code: "   " }), null);
+    // inlined 脏数据不炸，只是标题退化成不带名字的那种
+    assert.equal(canonViewOf({ code: "x", inlined: "p" }).label, "✨ 规范化视图");
   });
 });

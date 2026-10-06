@@ -35,6 +35,7 @@ describe("initData 映射", () => {
 			reason: "理由",
 			subject: "script",
 			scriptEffects: { tools: ["bash"], dryRunCalls: ["bash"], dryRunStatus: "ok", digestShort: "abc123456789" },
+			scriptCanon: { code: "await tools.read({ path: '/a' });", inlined: ["p"] },
 			kind: "audit",
 			review: { verdict: "risky" },
 			timeout: 30,
@@ -44,6 +45,7 @@ describe("initData 映射", () => {
 		assert.equal(data.responseFile, "/tmp/resp.json");
 		assert.equal(data.subject, "script");
 		assert.deepEqual(data.scriptEffects.tools, ["bash"]);
+		assert.deepEqual(data.scriptCanon.inlined, ["p"]);
 		assert.equal(data.review.verdict, "risky");
 		assert.equal(data.timeout, 30);
 		assert.deepEqual(data.builtinRoots, ["/tmp"]);
@@ -53,6 +55,7 @@ describe("initData 映射", () => {
 		const data = buildInitData("gate", {}, {});
 		assert.equal(data.command, undefined);
 		assert.equal(data.scriptEffects, undefined);
+		assert.equal(data.scriptCanon, undefined);
 		assert.ok("command" in data, "键要在，值可以是 undefined");
 	});
 
