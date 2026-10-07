@@ -48,10 +48,14 @@ func main() {
 	cardDelay := flag.Duration("card-delay", 2*time.Minute, "决策卡延迟多久再推给 IM；0 = 立刻")
 	// 到点后还要问一句「用户还在电脑前吗」：在就先不推，等 presence-retry 再问。
 	// 这一步只省打扰，不省事——查不到照样推。0 = 关掉这次询问
-	presenceWindow := flag.Duration("presence-window", 5*time.Minute, "本机最近这么久内有键鼠活动就不推卡；0 = 不查在场状态")
-	// 人在电脑前时的重试间隔。注意：用户一直坐着的话，这条 ask 会一直被延到
-	// 过期（pushCards 会跳过过期卡），这是要的行为，不是漏推
-	presenceRetry := flag.Duration("presence-retry", time.Minute, "因本机有人而延后时的重试间隔")
+	//
+	// 这个值是「判定阈值 + 缓冲」：2 分钟没有有效活动就认定人不在，再多等 30 秒确认
+	// 一次才推卡；那 30 秒是给「人其实在看视频」这类假象留的余地——手不碰键鼠，
+	// 人却还坐在屏幕前。
+	presenceWindow := flag.Duration("presence-window", 2*time.Minute+30*time.Second, "本机最近这么久内有键鼠活动就不推卡（2m 无活动判人不在 + 30s 确认缓冲）；0 = 不查在场状态")
+	// 人在电脑前时的重试间隔：hold 说先别推，就等这么久再问一次。注意：用户一直坐着的
+	// 话，这条 ask 会一直被延到过期（pushCards 会跳过过期卡），这是要的行为，不是漏推
+	presenceRetry := flag.Duration("presence-retry", 30*time.Second, "因本机有人而延后时的重试间隔（hold 说先别推，隔这么久再问一次）")
 	flag.Parse()
 
 	bin, err := exec.LookPath(*larkBin)

@@ -105,7 +105,7 @@ func newPresenceID() (string, error) {
 }
 
 // holdWhilePresent 是推卡前的在场闸门，交给 cardQueue 当 hold 用：
-// 本机最近 presence-window 内还有键鼠按动就返回 true（先别推卡），让队列等
+// 本机最近 presence-window 内还有键鼠活动就返回 true（先别推卡），让队列等
 // presence-retry 再问一次。
 //
 // 判不出来的一律当「不在」，照常推卡：这张卡只是可能多余，而压着不发会让一条
