@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# lzc-logs — 读懒猫微服上任意应用的容器日志
+#
+# 微服的 ssh 端口被一个 debug.bridge 接管，只放行它自己的子命令（不含 shell）。
+# 这个脚本把 bridge 的 lzc-docker / info / status 包装成顺手的日志工具。
+#
+# 用法：
+#   lzc-logs set-host <地址>              记住微服的 ssh 地址（只需一次）
+#   lzc-logs apps                         列出微服上带容器的应用
+#   lzc-logs ps                           列出所有容器
+#   lzc-logs info <app-id>                应用状态与版本（JSON）
+#   lzc-logs log <app-id> [service]       读日志
+#       -n <行数>     默认 200
+#       -f            持续跟随
+#       --grep <关键词>  本地过滤（可多次）
+#       --no-color    去掉 compose 前缀着色
+#   lzc-logs sh <app-id> <service>        进入容器（bridge devshell）
+#
+# 环境变量：LZC_BOX_HOST / LZC_DEV_KEY / LZC_SSH_PORT / LZC_SSH_USER / LZC_UID
+set -uo pipefail
+
+CONFIG_DIR="${LZC_TOOLS_CONFIG:-$HOME/.config/lzc-tools}"
+HOST_FILE="$CONFIG_DIR/box-host"
+KEY="${LZC_DEV_KEY:-$HOME/.config/lazycat/lzc-cli-dev-box.key}"
+SSH_PORT="${LZC_SSH_PORT:-22222}"
+SSH_USER="${LZC_SSH_USER:-box}"
+
+die() { printf '错误: %s\n' "$*" >&2; exit 1; }
+
+resolve_host() {
+  if [ -n "${LZC_BOX_HOST:-}" ]; then printf '%s' "$LZC_BOX_HOST"; return; fi
+  if [ -f "$HOST_FILE" ]; then tr -d '[:space:]' < "$HOST_FILE"; return; fi
+  printf ''
+}
+
+bridge() {
+  [ -f "$KEY" ] || die "找不到开发者密钥 $KEY（先跑一次 lzc-cli 让它生成）"
+  local host; host="$(resolve_host)"
+  [ -n "$host" ] || die "还没设置微服地址。先执行：lzc-logs set-host <地址>
+地址可以这样拿：在任意 lzc-cli 项目目录里跑 \`lzc-cli project info\`，
+当它报错时会把完整的 ssh 命令打出来，其中 box@ 后面那串就是。"
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ControlMaster=no -o IdentitiesOnly=yes -i "$KEY" -q \
+      -o ConnectTimeout=10 -p "$SSH_PORT" "$SSH_USER@$host" "$@"
+}
+
+# 应用包名 -> 容器名前缀：cloud.lazycat.app.foo -> cloudlazycatappfoo
+app_prefix() { printf '%s' "$1" | tr -d '.'; }
+
+cmd_set_host() {
+  local host="${1:-}"
+  [ -n "$host" ] || die "用法: lzc-logs set-host <地址>"
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$host" > "$HOST_FILE"
+  echo "已记住微服地址: $host"
+  echo "连通性自检中..."
+  if bridge lzc-docker ps >/dev/null 2>&1; then echo "连通正常"; else echo "连不上，检查地址、密钥和网络"; fi
+}
+
+cmd_apps() {
+  bridge lzc-docker ps 2>/dev/null \
+    | awk 'NR>1 {print $NF}' \
+    | sed -E 's/-[^-]+-[0-9]+$//' \
+    | sort -u
+}
+
+cmd_ps() { bridge lzc-docker ps; }
+
+cmd_info() {
+  [ $# -ge 1 ] || die "用法: lzc-logs info <app-id>"
+  local uid; uid="${LZC_UID:-$(bridge uid 2>/dev/null | tr -d '[:space:]')}"
+  bridge info --uid "$uid" "$1"
+}
+
+cmd_log() {
+  local appid="" service=""
+  appid="${1:-}"; shift || true
+  if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then service="$1"; shift; fi
+  [ -n "$appid" ] || die "用法: lzc-logs log <app-id> [service] [-n 行数] [-f] [--grep 关键词]"
+
+  local tail_n=200 follow=0 greps=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n) tail_n="${2:-200}"; shift 2 ;;
+      -f|--follow) follow=1; shift ;;
+      --grep) greps+=("${2:-}"); shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  local prefix; prefix="$(app_prefix "$appid")"
+  local -a containers=()
+  if [ -n "$service" ]; then
+    containers=("${prefix}-${service}-1")
+  else
+    while IFS= read -r c; do [ -n "$c" ] && containers+=("$c"); done < <(
+      bridge lzc-docker ps 2>/dev/null | awk 'NR>1 {print $NF}' | grep -E "^${prefix}-" || true
+    )
+  fi
+  [ ${#containers[@]} -gt 0 ] || die "没找到 $appid 的容器（应用装了没？名字对不对？）"
+
+  local -a args=(lzc-docker logs --tail "$tail_n")
+  [ "$follow" = "1" ] && args+=(-f)
+  args+=("${containers[@]}")
+
+  if [ ${#greps[@]} -eq 0 ]; then
+    bridge "${args[@]}"
+  else
+    local pattern; pattern="$(IFS='|'; echo "${greps[*]}")"
+    bridge "${args[@]}" 2>&1 | grep -Ei -- "$pattern"
+  fi
+}
+
+cmd_sh() {
+  [ $# -ge 2 ] || die "用法: lzc-logs sh <app-id> <service>"
+  bridge devshell "${1}" "${2}"
+}
+
+case "${1:-}" in
+  set-host) shift; cmd_set_host "$@" ;;
+  apps)     shift; cmd_apps "$@" ;;
+  ps)       shift; cmd_ps "$@" ;;
+  info|status) shift; cmd_info "$@" ;;
+  log|logs) shift; cmd_log "$@" ;;
+  sh|shell) shift; cmd_sh "$@" ;;
+  ""|-h|--help|help)
+    awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
+    ;;
+  *) die "未知命令：$1（试试 lzc-logs help）" ;;
+esac

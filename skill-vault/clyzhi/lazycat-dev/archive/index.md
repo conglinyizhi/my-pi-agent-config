@@ -35,6 +35,22 @@
 
 ---
 
+## 移植第三方应用
+
+### 把现成开源项目打包成 lzcapp（七条实战经验）
+
+> 读日志走 ssh bridge（官方 `/sys/debug/logs` 要微服 cookie）／PostgreSQL 首次 initdb 的临时实例会骗过 healthcheck／
+> `.S.DeployUID` 单实例下是空串、要用 `lzc_uid` 部署参数／上游应用不认懒猫身份时怎么补管理员／
+> inject 的能力边界（同步模型，改不了库）／官方源镜像 GC 风险／`setup_script` 实战
+
+- **经验**：[lessons.md](./lzcapp-porting/lessons.md)（A–G 七个主题，含现象 + 根因 + 可直接抄的配置）
+- **脚本**：[lzc-logs](./lzcapp-porting/lzc-logs)（读**任意**应用的容器日志：`apps / ps / info / log / sh`，带本地 grep 与跟随）
+
+**什么时候用**：把现成的开源项目（尤其带 PostgreSQL/Redis 的多服务应用）移植成 lzcapp 时；
+要给上游应用接懒猫一键登录、但它不认懒猫身份时；应用装上了却起不来、需要看容器日志时
+
+---
+
 ## 调试
 
 ### debug_init：后端推送完整调试面板
@@ -84,3 +100,5 @@
 | [esbuild-bundle.js](./pi-eco-debugger/esbuild-bundle.js) | 代码片段 | esbuild 单文件打包脚本 |
 | [version-reload.ts](./pi-eco-debugger/version-reload.ts) | 代码片段 | 版本检测 + 自动刷新（前后端） |
 | [lessons.md](./pi-eco-debugger/lessons.md) | 经验文档 | 7 个主题的详细踩坑记录 |
+| [lzcapp-porting/lessons.md](./lzcapp-porting/lessons.md) | 经验文档 | 移植第三方应用成 lzcapp 的 7 条实战经验 |
+| [lzcapp-porting/lzc-logs](./lzcapp-porting/lzc-logs) | 脚本 | 经 ssh bridge 读任意应用的容器日志 |
