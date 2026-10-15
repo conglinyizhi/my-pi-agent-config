@@ -1,19 +1,24 @@
-// vault.ts — skill-vault 中技能的过渡期手动注入
+// vault.ts — 技能统一根的扫描与过渡期手动注入
 //
 // 技能发现、可见性、会话开关和列表管理交给 Pi / skillful。
-// 本模块只读取 skill-vault 中由 skill-boot 同步层暴露的技能，作为迁移期间的兼容入口。
+// 2026-10-15 起本机所有技能（本地自写 + 第三方 clone）只放一个根：SKILLS_ROOT_DIR。
+// 本模块只读取该根下的 SKILL.md，作为 /skill-boot <名> 的过渡期手动注入入口。
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, existsSync, readdirSync, type Dirent } from "node:fs";
-import { join, dirname, relative } from "node:path";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
 import { parseFrontmatter } from "./frontmatter.ts";
 
 export const AGENT_DIR = getAgentDir();
-/** 迁移前的兼容入口；只保留本地过渡技能和手动注入兼容。 */
-export const SKILL_VAULT_DIR = join(AGENT_DIR, "skill-vault");
-/** 外部技能的正式 Pi 发现入口。 */
-export const SKILL_EXTERNAL_DIR = join(AGENT_DIR, "skills", "external");
+/** 技能统一根：本机所有技能的唯一落点，同时是 pi 的 `~/.agents/skills` 发现根。 */
+export const SKILLS_ROOT_DIR = join(homedir(), ".agents", "skills");
+/** 旧 skill-vault 根：2026-10-15 起停用，只在迁移清理时引用。 */
+export const LEGACY_SKILL_VAULT_DIR = join(AGENT_DIR, "skill-vault");
+/** 旧 skills/external 软链入口：2026-10-15 起停用，只在迁移清理时引用。 */
+export const LEGACY_SKILL_EXTERNAL_DIR = join(AGENT_DIR, "skills", "external");
+/** 仓库清单：留在 AGENT_DIR（被 git 跟踪），技能的实体都在 SKILLS_ROOT_DIR。 */
 export const REPO_TOML_PATH = join(AGENT_DIR, "skill-repo", "repo.toml");
 
 export interface ManualSkill {
@@ -22,7 +27,7 @@ export interface ManualSkill {
 	path: string;
 }
 
-/** 扫描兼容 vault 与正式外部技能入口，供迁移期 /skill-boot 注入兼容。 */
+/** 扫描技能统一根，供 /skill-boot <名> 手动注入。 */
 function scanVault(): ManualSkill[] {
 	const out: ManualSkill[] = [];
 	const walk = (dir: string, depth: number): void => {
@@ -53,8 +58,7 @@ function scanVault(): ManualSkill[] {
 			}
 		}
 	};
-	walk(SKILL_VAULT_DIR, 0);
-	walk(SKILL_EXTERNAL_DIR, 0);
+	walk(SKILLS_ROOT_DIR, 0);
 	return out;
 }
 
@@ -80,8 +84,7 @@ export function readSkillBody(skill: ManualSkill): string {
 	const content = readFileSync(skill.path, "utf8");
 	const { body } = parseFrontmatter(content);
 	const baseDir = dirname(skill.path);
-	const rel = relative(AGENT_DIR, baseDir);
-	return `[手动注入 skill: ${skill.name}]\n技能目录（相对引用/脚本以此为准）: ${AGENT_DIR}/${rel}\n\n${body.trim()}`;
+	return `[手动注入 skill: ${skill.name}]\n技能目录（相对引用/脚本以此为准）: ${baseDir}\n\n${body.trim()}`;
 }
 
 /** 注入技能：读取正文并送入当前会话下一轮上下文。 */

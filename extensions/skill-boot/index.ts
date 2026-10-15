@@ -1,7 +1,7 @@
 // skill-boot — 技能来源同步 + 过渡期手动注入
 //
 // 职责边界：
-//   - sync.ts 负责 repo.toml 中外部技能仓库的 clone 与正式 skills/external 入口
+//   - sync.ts 负责 repo.toml 中外部技能仓库的 clone 到技能统一根 `~/.agents/skills`
 //   - 本文件只保留按名称读取技能并注入当前会话
 //   - 技能分组规则由 skillful 从 extensions.toml 的 [skillful.skillGroups] 读取，本扩展不管
 //
@@ -58,7 +58,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- /skill-boot [name]：过渡期手动注入 ----
 	pi.registerCommand("skill-boot", {
-		description: "过渡期手动注入 vault 技能：/skill-boot <名>；技能列表与开关由 Pi/skillful 管理",
+		description: "过渡期手动注入技能：/skill-boot <名>；技能列表与开关由 Pi/skillful 管理",
 		getArgumentCompletions: (prefix) => loadManualSkills()
 			.filter((skill) => skill.name.toLowerCase().includes(prefix.toLowerCase()))
 			.map((skill) => ({ value: skill.name, label: skill.name, description: skill.description })),

@@ -1,4 +1,9 @@
-// external-skills — skillful-local 管理 skills/external 的默认隐藏状态
+// external-skills — skillful-local 管理第三方技能包的默认隐藏状态
+//
+// 2026-10-15 起技能只有一个根：SKILLS_ROOT_DIR（`~/.agents/skills`，pi 的发现根之一）。
+// 本模块只登记 repo.toml 里那些第三方包目录：本地自写技能不该因为「新出现」被悄悄隐藏，
+// 这与搬迁前的边界一致（以前扫的是 skills/external，里面只有第三方 clone）。
+// 判定用的 identity 是「相对技能根的路径 + 技能名」，包目录名不变，所以旧状态文件继续有效。
 
 import { existsSync, readFileSync, readdirSync, writeFileSync, type Dirent } from "node:fs";
 import { basename, join, relative } from "node:path";
@@ -9,9 +14,10 @@ import {
 	globalSkillfulPath,
 } from "./config.ts";
 import { parseFrontmatter } from "../../skill-boot/frontmatter.ts";
+import { loadRepoConfig } from "../../skill-boot/sync.ts";
+import { SKILLS_ROOT_DIR } from "../../skill-boot/vault.ts";
 
 const AGENT_DIR = getAgentDir();
-export const EXTERNAL_SKILLS_DIR = join(AGENT_DIR, "skills", "external");
 const STATE_PATH = join(AGENT_DIR, "skillful-discovery-state.json");
 
 interface DiscoveryState {
@@ -20,7 +26,7 @@ interface DiscoveryState {
 }
 
 export interface ExternalSkillDiscovery {
-	/** Pi 应该额外发现的正式入口。 */
+	/** 技能根：第三方包与本地技能都在这里。 */
 	path: string;
 	/** 当前发现到的 skill 名称。 */
 	names: string[];
@@ -60,8 +66,21 @@ function skillNameFromDir(dir: string): string | undefined {
 	}
 }
 
-/** 递归扫描 skills/external；SKILL.md 所在目录是发现边界。 */
-export function scanExternalSkillNames(root = EXTERNAL_SKILLS_DIR): string[] {
+/** repo.toml 登记的第三方包名；读不到就返回空（宁可少管，不乱隐藏）。 */
+export function managedPackageNames(): string[] {
+	try {
+		const entries = loadRepoConfig();
+		return (entries ?? []).map((entry) => entry.name).filter((name) => name.length > 0);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 递归扫描技能根；SKILL.md 所在目录是发现边界。
+ * 传 packages 时只扫这些顶层包（登记第三方技能用），不传则整根扫描。
+ */
+export function scanExternalSkillNames(root: string = SKILLS_ROOT_DIR, packages?: Iterable<string>): string[] {
 	const names: string[] = [];
 	const walk = (dir: string): void => {
 		if (!existsSync(dir)) return;
@@ -81,18 +100,22 @@ export function scanExternalSkillNames(root = EXTERNAL_SKILLS_DIR): string[] {
 			walk(join(dir, entry.name));
 		}
 	};
-	walk(root);
+	if (packages) {
+		for (const pkg of packages) walk(join(root, pkg));
+	} else {
+		walk(root);
+	}
 	return [...new Set(names)].sort();
 }
 
 /**
- * 登记外部技能并把首次发现项加入全局 hiddenSkills。
+ * 登记第三方技能包的技能名，并把首次发现项加入全局 hiddenSkills。
  * 返回值供扩展向用户打印“发现但未启用”的文本提示。
  */
 export async function registerExternalSkills(cwd: string, projectTrusted: boolean): Promise<ExternalSkillDiscovery> {
 	void cwd;
 	void projectTrusted;
-	const names = scanExternalSkillNames();
+	const names = scanExternalSkillNames(SKILLS_ROOT_DIR, managedPackageNames());
 	const previous = readState();
 	const newNames = names.filter((name) => !previous.seen.has(name));
 	const settings = await readSkillfulSettings(globalSkillfulPath());
@@ -101,7 +124,7 @@ export async function registerExternalSkills(cwd: string, projectTrusted: boolea
 	if (newNames.length > 0) await writeHiddenSkills("global", AGENT_DIR, hidden);
 	writeState(names);
 	return {
-		path: EXTERNAL_SKILLS_DIR,
+		path: SKILLS_ROOT_DIR,
 		names: names.map((identity) => identity.split(":").at(-1)!),
 		newNames: newNames.map((identity) => identity.split(":").at(-1)!),
 		initialized: previous.initialized,

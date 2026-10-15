@@ -1,4 +1,7 @@
 // visibility-model.test.ts — 批量显隐与来源分组纯逻辑测试
+//
+// 2026-10-15 技能根收敛到 `~/.agents/skills`：根下每个顶层目录是一个「包」（多技能包与
+// 单技能包都算），根外的技能仍按 Pi 的 source/scope 分组。下面的 fixture 就是这个结构。
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -9,6 +12,8 @@ import {
 	rowState,
 	toggleVisibleNames,
 } from "./visibility-model.ts";
+
+const ROOT = "/home/user/.agents/skills";
 
 function skill(name: string, source: string, scope: "user" | "project" = "user") {
 	return {
@@ -34,9 +39,9 @@ const MOONBIT_RULES: SkillGroupRule[] = [{
 	id: "moonbit-environment",
 	label: "MoonBit 开发环境",
 	match: [
-		"skills/external/moonbit-skills",
-		"skills/external/clyzhi-moonwell-spring",
-		"skills/clyzhi/moonbit-skills-guide",
+		".agents/skills/moonbit-skills",
+		".agents/skills/clyzhi-moonwell-spring",
+		".agents/skills/moonbit-skills-guide",
 	],
 }];
 
@@ -57,11 +62,11 @@ describe("skill visibility model", () => {
 		assert.deepEqual(groups[1]!.skills.map((item) => item.name), ["alpha", "zeta"]);
 	});
 
-	it("规则命中的外部包与本地技能合并为一组", () => {
+	it("规则命中的包与本地技能合并为一组", () => {
 		const groups = groupSkills([
-			atPath("moonbit-agent-guide", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-agent-guide/SKILL.md"),
-			atPath("clyzhi-moonwell-spring", "local", "/home/user/skills/external/clyzhi-moonwell-spring/SKILL.md"),
-			atPath("moonbit-skills-guide", "auto", "/home/user/skills/clyzhi/moonbit-skills-guide/SKILL.md"),
+			atPath("moonbit-agent-guide", "local", `${ROOT}/moonbit-skills/skills/moonbit-agent-guide/SKILL.md`),
+			atPath("clyzhi-moonwell-spring", "local", `${ROOT}/clyzhi-moonwell-spring/SKILL.md`),
+			atPath("moonbit-skills-guide", "auto", `${ROOT}/moonbit-skills-guide/SKILL.md`),
 		], MOONBIT_RULES);
 
 		assert.deepEqual(groups.map((group) => [group.id, group.label, group.skills.map((item) => item.name)]), [
@@ -69,42 +74,43 @@ describe("skill visibility model", () => {
 		]);
 	});
 
-	it("没配规则时按来源和包名分组，不做任何特判", () => {
+	it("没配规则时：技能根下的按包名分组，根外的按来源分组", () => {
 		const groups = groupSkills([
-			atPath("moonbit-agent-guide", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-agent-guide/SKILL.md"),
-			atPath("moonbit-skills-guide", "auto", "/home/user/skills/clyzhi/moonbit-skills-guide/SKILL.md"),
+			atPath("moonbit-agent-guide", "local", `${ROOT}/moonbit-skills/skills/moonbit-agent-guide/SKILL.md`),
+			atPath("moonbit-skills-guide", "auto", `${ROOT}/moonbit-skills-guide/SKILL.md`),
+			atPath("project-only", "auto", "/home/user/work/.pi/skills/project-only/SKILL.md"),
 		]);
 
 		assert.deepEqual(groups.map((group) => [group.id, group.label, group.skills.map((item) => item.name)]), [
-			["auto\0user", "auto (user)", ["moonbit-skills-guide"]],
-			["external:moonbit-skills", "skill 包：moonbit-skills", ["moonbit-agent-guide"]],
+			["auto\0user", "auto (user)", ["project-only"]],
+			["package:moonbit-skills", "skill 包：moonbit-skills", ["moonbit-agent-guide"]],
+			["package:moonbit-skills-guide", "skill 包：moonbit-skills-guide", ["moonbit-skills-guide"]],
 		]);
 	});
 
 	it("单包兜底收单技能包，多技能包保持独立", () => {
 		const rules: SkillGroupRule[] = [{ id: "auxiliary", label: "辅助技能", match: [], singletonPackages: true }];
 		const groups = groupSkills([
-			atPath("creating-aur-packages-skill", "auto", "/home/user/skills/external/creating-aur-packages-skill/SKILL.md"),
-			atPath("fount-char", "auto", "/home/user/skills/external/fount-char/SKILL.md"),
-			atPath("superpowers-a", "auto", "/home/user/skills/external/superpowers/skills/a/SKILL.md"),
-			atPath("superpowers-b", "auto", "/home/user/skills/external/superpowers/skills/b/SKILL.md"),
-			atPath("gui-standards", "auto", "/home/user/skills/clyzhi/gui-standards/SKILL.md"),
+			atPath("creating-aur-packages-skill", "auto", `${ROOT}/creating-aur-packages-skill/SKILL.md`),
+			atPath("fount-char", "auto", `${ROOT}/fount-char/SKILL.md`),
+			atPath("superpowers-a", "auto", `${ROOT}/superpowers/skills/a/SKILL.md`),
+			atPath("superpowers-b", "auto", `${ROOT}/superpowers/skills/b/SKILL.md`),
+			atPath("gui-standards", "auto", `${ROOT}/gui-standards/SKILL.md`),
 		], rules);
 
 		// 不依赖 locale 排序，按组 id 比对
 		assert.deepEqual(
 			Object.fromEntries(groups.map((group) => [group.id, group.skills.map((item) => item.name)])),
 			{
-				auxiliary: ["creating-aur-packages-skill", "fount-char"],
-				"external:superpowers": ["superpowers-a", "superpowers-b"],
-				"auto\0user": ["gui-standards"],
+				auxiliary: ["creating-aur-packages-skill", "fount-char", "gui-standards"],
+				"package:superpowers": ["superpowers-a", "superpowers-b"],
 			},
 		);
 	});
 
 	it("显式规则命中的技能不被单包兜底抢走", () => {
 		const groups = groupSkills(
-			[atPath("moonbit-orientation", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-orientation/SKILL.md")],
+			[atPath("moonbit-orientation", "local", `${ROOT}/moonbit-skills/skills/moonbit-orientation/SKILL.md`)],
 			[...MOONBIT_RULES, { id: "auxiliary", label: "辅助技能", match: [], singletonPackages: true }],
 		);
 
@@ -115,10 +121,10 @@ describe("skill visibility model", () => {
 
 	it("多条规则按顺序先匹配先归组", () => {
 		const groups = groupSkills(
-			[atPath("moonbit-orientation", "local", "/home/user/skills/external/moonbit-skills/skills/moonbit-orientation/SKILL.md")],
+			[atPath("moonbit-orientation", "local", `${ROOT}/moonbit-skills/skills/moonbit-orientation/SKILL.md`)],
 			[
-				{ id: "broad", label: "广组", match: ["skills/external/moonbit-skills"] },
-				{ id: "narrow", label: "窄组", match: ["skills/external/moonbit-skills/skills/moonbit-orientation"] },
+				{ id: "broad", label: "广组", match: [".agents/skills/moonbit-skills"] },
+				{ id: "narrow", label: "窄组", match: [".agents/skills/moonbit-skills/skills/moonbit-orientation"] },
 			],
 		);
 
@@ -129,7 +135,7 @@ describe("skill visibility model", () => {
 
 	it("canonical path 与规则片段的分隔符不一致也能命中", () => {
 		const groups = groupSkills(
-			[atPath("moonbit-orientation", "local", "C:\\Users\\me\\skills\\external\\moonbit-skills\\skills\\moonbit-orientation\\SKILL.md")],
+			[atPath("moonbit-orientation", "local", "C:\\Users\\me\\.agents\\skills\\moonbit-skills\\skills\\moonbit-orientation\\SKILL.md")],
 			MOONBIT_RULES,
 		);
 

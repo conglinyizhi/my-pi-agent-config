@@ -28,13 +28,13 @@ function toPosixPath(value: string): string {
 interface SkillSource {
 	id: string;
 	label: string;
-	/** 由 skills/external 包名得出的分组；单包兜底只对这种来源生效。 */
+	/** 由技能统一根下的包名得出的分组；单包兜底只对这种来源生效。 */
 	packageGroup: boolean;
 }
 
 /**
  * 按来源分组。规则（extensions.toml 的 [skillful.skillGroups]）优先：
- * 命中就按规则给的 id/label 合并；未命中按 skills/external 包名或 Pi 的 source/scope 分组。
+ * 命中就按规则给的 id/label 合并；未命中按技能统一根下的包名或 Pi 的 source/scope 分组。
  * 带 singletonPackages 的兜底规则只收「单技能包」，多技能包保持独立。
  */
 export function groupSkills(skills: LoadedSkillInfo[], rules: readonly SkillGroupRule[] = []): VisibilityGroup[] {
@@ -75,13 +75,13 @@ function skillGroupSource(skill: LoadedSkillInfo, rules: readonly SkillGroupRule
 		}
 	}
 
-	// 未命中规则：skills/external 下的正式入口结构固定，按包名分组
-	const marker = "skills/external/";
+	// 未命中规则：技能统一根（`~/.agents/skills`）下每个顶层目录就是一个包，按包名分组
+	const marker = ".agents/skills/";
 	const externalIndex = path.indexOf(marker);
 	if (externalIndex >= 0) {
 		const suffix = path.slice(externalIndex + marker.length);
 		const packageName = suffix.split("/")[0];
-		if (packageName) return { id: `external:${packageName}`, label: `skill 包：${packageName}`, packageGroup: true };
+		if (packageName) return { id: `package:${packageName}`, label: `skill 包：${packageName}`, packageGroup: true };
 	}
 
 	const source = skill.sourceInfo.source || "local";

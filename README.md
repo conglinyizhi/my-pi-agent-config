@@ -11,7 +11,7 @@ cd ~/.pi/agent && pnpm install
 pi
 ```
 
-第一次启动，`skill-boot` 会自动把第三方 skill 拉到 `skill-repo`，并暴露到正式发现路径 `skills/external`。它们默认不进入模型自动发现提示；看到新增技能提示后，用 `/skillful` 自己开启。
+第一次启动，`skill-boot` 会按 `repo.toml` 把缺的第三方 skill 直接 clone 到技能统一根 `~/.agents/skills/`（2026-10-15 起技能只有一个根：本地技能与第三方 clone 都在这一层，不再有软链接层）。新出现的第三方技能默认不进入模型自动发现提示，看到提示后用 `/skillful` 自己开启。
 
 ## 里面有什么
 
@@ -19,9 +19,9 @@ pi
 
 **for-grok-4-5** — 「强大、实惠、但疯跑的孩子」。grok-4.5 两大顽疾补丁：①空正文自动续跑 ②连续 bash true 空转识别为正常收工。续跑提示还会引导 grok 用 `echo job done already` 主动报完成。
 
-**skill-boot** — 技能来源同步与过渡期手动注入。启动时同步技能仓库（clone → `skills/external` 正式发现入口）；`/skill-boot <名>` 注入指定 SKILL.md。外部技能默认隐藏，技能发现与可见性统一交给 Pi / skillful。
+**skill-boot** — 技能来源同步与过渡期手动注入。启动时按 `skill-repo/repo.toml` 同步技能仓库（缺哪个 clone 哪个，直接落到 `~/.agents/skills/<name>`），并顺手清掉旧结构残留的软链与空目录；`/skill-boot <名>` 注入指定 SKILL.md。技能发现与可见性统一交给 Pi / skillful。
 
-**skillful-local** — 从 `pi-skillful` 迁移的精简核心：发现 Git 仓库外层的 `.agents/skills/` 与 `skills/external` 正式入口，统一管理模型自动发现的技能可见性，并支持在输入任意位置显式调用 `/skill:name`。外部技能及后续新发现技能默认隐藏，只提示用户自行开启；`/skillful` 的来源组规则写在 `extensions.toml` 的 `[skillful.skillGroups]`（`match` 按 canonical path 片段归组、`singletonPackages` 收单包，都不硬编码在源码里），当前分四组：MoonBit 开发环境、华夏技能、辅助技能（单包兑底）、以及按包名/来源自动分的其余项。排除了安装遥测和会话快捷键。许可证与归属见 `extensions/skillful/`。
+**skillful-local** — 从 `pi-skillful` 迁移的精简核心：发现 Git 仓库外层的 `.agents/skills/`（Pi 的发现走到 git 边界就停，祖先目录由它补；全局根 `~/.agents/skills` 由 Pi 自己发现），统一管理模型自动发现的技能可见性，并支持在输入任意位置显式调用 `/skill:name`。新出现的第三方技能（只算 `repo.toml` 登记的包）默认隐藏，只提示用户自行开启；`/skillful` 的来源组规则写在 `extensions.toml` 的 `[skillful.skillGroups]`（`match` 按 canonical path 片段归组、`singletonPackages` 收单包，都不硬编码在源码里），当前没配规则，按技能根下顶层目录的包名自动分组。排除了安装遥测和会话快捷键。许可证与归属见 `extensions/skillful/`。
 
 **settings-sync** — settings.json 里有几个字段是 pi 自己改的（比如 lastChangelogVersion），不适合进 git。这个扩展把它们剔出去，只留干净的到 tracked.json。
 
@@ -232,7 +232,7 @@ with-device-lock.sh --status emulator-5554     # 只看谁占着，不抢锁
 > 需要时主动注入：`/skill:name`（pi 内建，加载并执行）或 `/skill-read <名>`
 > （把 SKILL.md 全文注入会话上下文）。TUI 常驻一行提示当前手动候选数。
 
-自己写的 skill（除 which-pi-docs 外全部在 `skill-vault/clyzhi/`，手动引导注入）：
+自己写的 skill（全部在 `~/.agents/skills/`，手动引导注入）：
 
 **data-name** — 前端元素标注，给关键交互节点加 data-name 属性，AI 定位元素不用猜 class 名。已移至 `~/.agents/skills/data-name`（跨 agent 通用位置）。
 
@@ -244,11 +244,11 @@ with-device-lock.sh --status emulator-5554     # 只看谁占着，不抢锁
 
 **skill-kit** — 技能工具箱，导入外部技能仓库、从零创建新技能。
 
-第三方 skill（详情参阅 [skill-repo/repo.toml](skill-repo/repo.toml)）：
+第三方 skill（清单与来源见 [skill-repo/repo.toml](skill-repo/repo.toml)，clone 都落在 `~/.agents/skills/`）：
 
-华夏技能（瘦身后热装 4 个：nopua / tiangong / bibuzaohua / paoding-jieniu；其余除名，核并入 skills/clyzhi）
+华夏技能（瘦身后热装 4 个：nopua / tiangong / bibuzaohua / paoding-jieniu；其余除名，核并入 `~/.agents/skills/` 下的本地技能）
 
-moonbit 开发套件
+moonbit 开发套件 —— `moonbit-skills/`（官方 9 个，git clone）、`clyzhi-moonwell-spring/`（月井之春热修复层，git clone）、`moonbit-skills-guide/`（索引技能）。这三项已从 `repo.toml` 摘掉，不走 skill-boot 的自动重建：换机器手工 clone，更新用 `git -C ~/.agents/skills/<name> pull`。总览见 `~/.agents/skills/moonbit-skills-guide/SKILL.md`。
 
 fount-char
 

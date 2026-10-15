@@ -1,9 +1,12 @@
-// sync.ts — skill-repo 同步与正式 Pi 技能路径暴露
+// sync.ts — 技能来源同步（repo.toml → 技能统一根）
 //
-// 外部技能本体保存在 skill-repo/，正式发现入口统一暴露到：
-//   skills/external/<来源>/<skill>/
+// 2026-10-15 起技能只有一个落点：SKILLS_ROOT_DIR（`~/.agents/skills`，pi 的发现根之一）。
+// 第三方仓库直接 clone 成该根下的同名目录：以前是「clone 到 skill-repo/ + skills/external
+// 软链暴露」两层，现在没有软链这一层。
 //
-// skill-vault 里的旧外部软链接只在迁移期间兼容处理；技能显隐由 skillful-local 管理。
+// 旧结构（skills/external 软链、skill-vault、skills/_repo）只保留一次性清理，
+// 不再写入任何东西，也不会重建已迁移走的技能。
+// 技能显隐由 skillful-local 管理，本文件不参与。
 
 import {
 	existsSync,
@@ -14,19 +17,24 @@ import {
 	readlinkSync,
 	renameSync,
 	rmSync,
-	symlinkSync,
+	rmdirSync,
 	unlinkSync,
 	type Dirent,
 } from "node:fs";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { join, relative, basename, dirname } from "node:path";
+import { basename, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { AGENT_DIR, REPO_TOML_PATH, SKILL_EXTERNAL_DIR, SKILL_VAULT_DIR } from "./vault.ts";
+import {
+	AGENT_DIR,
+	LEGACY_SKILL_EXTERNAL_DIR,
+	LEGACY_SKILL_VAULT_DIR,
+	REPO_TOML_PATH,
+	SKILLS_ROOT_DIR,
+} from "./vault.ts";
 
 const execAsync = promisify(exec);
 const CLONE_TIMEOUT = 15_000;
-const SKILL_REPO_DIR = join(AGENT_DIR, "skill-repo");
 
 export interface SkillEntry {
 	name: string;
@@ -75,50 +83,49 @@ async function cloneRepoAsync(source: string, targetDir: string): Promise<void> 
 	});
 }
 
-function formalLinkPath(packageName: string): string {
-	return join(SKILL_EXTERNAL_DIR, packageName);
+/** 技能统一根下该包的目录。 */
+function packagePath(packageName: string): string {
+	return join(SKILLS_ROOT_DIR, packageName);
 }
 
-function legacyLinkPath(skillName: string): string {
-	return join(SKILL_VAULT_DIR, skillName);
+/** 一个包在旧架构里可能留下的入口名：包名本身 + bundle 子技能名。 */
+function legacyEntryNames(entry: SkillEntry): string[] {
+	const targets = entry.bundle && entry.link_targets && entry.link_targets.length > 0
+		? entry.link_targets.map((target) => basename(target))
+		: [];
+	return [...new Set([entry.name, ...targets])];
 }
 
-/** 在正式 Pi 技能目录下建立来源仓库根软链接。 */
-function linkFormalPackage(packageName: string, repoDir: string): "linked" | "skipped" {
-	const linkPath = formalLinkPath(packageName);
-	mkdirSync(dirname(linkPath), { recursive: true });
-	const relativeTarget = relative(dirname(linkPath), repoDir);
-	try {
-		const stat = lstatSync(linkPath);
-		if (stat.isSymbolicLink()) {
-			if (readlinkSync(linkPath) === relativeTarget) return "skipped";
-			unlinkSync(linkPath);
-		} else {
-			// 该目录是旧版按 skill 分别建立的运行时入口，只清理这一受管路径。
-			rmSync(linkPath, { recursive: true, force: true });
+/** 旧架构清理：删掉指向 skill-repo 的历史软链（新架构里技能是实体目录，不再建链）。 */
+function removeLegacyEntryLink(name: string): boolean {
+	let removed = false;
+	const legacyLinks = [join(LEGACY_SKILL_EXTERNAL_DIR, name), join(LEGACY_SKILL_VAULT_DIR, name)];
+	for (const link of legacyLinks) {
+		try {
+			if (!lstatSync(link).isSymbolicLink()) continue;
+			const target = readlinkSync(link);
+			if (!target.includes("skill-repo")) continue;
+			unlinkSync(link);
+			removed = true;
+		} catch {
+			// 不存在
 		}
-	} catch {
-		// 不存在
 	}
-	symlinkSync(relativeTarget, linkPath);
-	return "linked";
+	return removed;
 }
 
-/** 只把指向 skill-repo 的旧链接迁走，不碰 skill-vault 内的本地技能。 */
-function removeLegacyLink(skillName: string): boolean {
-	try {
-		const link = legacyLinkPath(skillName);
-		if (!lstatSync(link).isSymbolicLink()) return false;
-		const target = readlinkSync(link);
-		if (!target.includes("skill-repo") && !target.startsWith("../skill-repo")) return false;
-		unlinkSync(link);
-		return true;
-	} catch {
-		return false;
+/** 旧根空了就顺手收掉，免得空目录让人以为还在用。 */
+function pruneLegacyDirs(): void {
+	for (const dir of [LEGACY_SKILL_EXTERNAL_DIR, LEGACY_SKILL_VAULT_DIR]) {
+		try {
+			rmdirSync(dir);
+		} catch {
+			// 不存在或非空
+		}
 	}
 }
 
-/** 旧架构清理：skills/_repo 残留迁入 skill-repo。 */
+/** 旧架构清理：skills/_repo 残留迁入技能统一根。 */
 function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 	const results: SyncResult[] = [];
 	const knownSkills = new Set<string>();
@@ -146,11 +153,10 @@ function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 			continue;
 		}
 		if (!oldStat.isDirectory()) continue;
-		const skillRepoSrc = join(SKILL_REPO_DIR, name);
+		const targetPath = packagePath(name);
 		try {
-			if (!existsSync(skillRepoSrc)) {
-				mkdirSync(SKILL_REPO_DIR, { recursive: true });
-				renameSync(oldPath, skillRepoSrc);
+			if (!existsSync(targetPath)) {
+				renameSync(oldPath, targetPath);
 			} else {
 				rmSync(oldPath, { recursive: true, force: true });
 			}
@@ -166,22 +172,20 @@ function resolveCollisions(entries: SkillEntry[]): SyncResult[] {
 	return results;
 }
 
-/** 后台同步：clone + 正式技能入口软链接 + 旧入口迁移。 */
+/** 后台同步：clone 到技能统一根 + 旧结构清理。 */
 export async function syncSkillsAsync(tick: () => void): Promise<SyncResult[]> {
 	const entries = loadRepoConfig();
 	if (!entries || entries.length === 0) return [];
 
-	mkdirSync(SKILL_REPO_DIR, { recursive: true });
-	mkdirSync(SKILL_EXTERNAL_DIR, { recursive: true });
+	mkdirSync(SKILLS_ROOT_DIR, { recursive: true });
 	const results = resolveCollisions(entries);
 
 	for (const entry of entries) {
-		const repoDirName = entry.source_dir || entry.name;
-		const repoDir = join(SKILL_REPO_DIR, repoDirName);
+		const target = packagePath(entry.name);
 
-		if (!existsSync(repoDir)) {
+		if (!existsSync(target)) {
 			try {
-				await cloneRepoAsync(entry.source, repoDir);
+				await cloneRepoAsync(entry.source, target);
 				results.push({ name: entry.name, action: "cloned" });
 			} catch (e) {
 				results.push({
@@ -194,14 +198,11 @@ export async function syncSkillsAsync(tick: () => void): Promise<SyncResult[]> {
 			}
 		}
 
-		const action = linkFormalPackage(entry.name, repoDir);
-		const legacyNames = entry.bundle && entry.link_targets && entry.link_targets.length > 0
-			? entry.link_targets.map((target) => basename(target))
-			: [entry.name];
-		const migrated = legacyNames.some((name) => removeLegacyLink(name));
-		if (action === "linked" || migrated) results.push({ name: entry.name, action, migrated });
+		const migrated = legacyEntryNames(entry).some((name) => removeLegacyEntryLink(name));
+		if (migrated) results.push({ name: entry.name, action: "linked", migrated });
 		tick();
 	}
 
+	pruneLegacyDirs();
 	return results;
 }

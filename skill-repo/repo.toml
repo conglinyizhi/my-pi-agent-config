@@ -14,7 +14,14 @@
 #
 # 单技能仓库：clone 后通过软链接 `skills/external/<name> -> ../skill-repo/<name>` 暴露
 # 多技能仓库：clone 到 `skill-repo/<name>/`，通过 `skills/external/<name>` 根软链接暴露，Pi 递归发现其中的 SKILL.md
-#   例如 moonbit-skills 的所有子技能都由一个根入口自动发现，仓库新增技能无需改 link_targets
+#   例如 superpowers / baoyu-design 的子技能都由一个根入口自动发现，仓库新增技能无需改 link_targets
+#
+# 2026-10-15 迁出：moonbit-skills 与 clyzhi-moonwell-spring 已连同 clone 本体搬到 `~/.agents/skills/`
+# （pi 的另一个发现根，`~/.agents/skills/` 已经在 sandbox 白名单里），本表不再管理这两个仓库，
+# 本目录也没有它们的 clone。代价是这两套技能少了自动重建这一步：换机器要在 `~/.agents/skills/` 下
+# 手工 clone（git@github.com:moonbitlang/skills.git、conglinyizhi/clyzhi-moonwell-spring），
+# 更新则在那里 `git pull`。要恢复自动重建：把两条 [[skills]] 加回来，并让 sync.ts 支持
+# 直接 clone 到 agents 落点（不建软链）。
 #
 # 2026-07-28 华夏技能瘦身：默认只同步 nopua / tiangong / bibuzaohua / paoding-jieniu。
 # 已除名（有用核并入 skills/clyzhi，clone 可留冷备份）：
@@ -54,36 +61,10 @@ trigger = "面对庞大复杂的代码库/系统需要拆解、重构、梳理�
 
 disable_model_invocation = true
 [[skills]]
-name = "moonbit-skills"
-source = "git@github.com:moonbitlang/skills.git"
-description = "MoonBit 语言与工具链 AI Agent 技能集合"
-tags = ["moonbit", "语言", "官方"]
-bundle = true
-link_targets = [
-  "skills/make-moonbit-c-bindings",
-  "skills/moonbit-agent-guide",
-  "skills/moonbit-c-binding",
-  "skills/moonbit-extract-spec-test",
-  "skills/moonbit-orientation",
-  "skills/moonbit-proof",
-  "skills/moonbit-refactoring",
-  "skills/moonbit-spec-test-development",
-  "skills/ocaml2moonbit-migration",
-]
-
-disable_model_invocation = true
-[[skills]]
 name = "fount-char"
 source = "https://github.com/conglinyizhi/fount-char-skill"
 description = "fount 角色卡创建助手 — 模板、工具范例与交互式角色创建向导"
 tags = ["fount", "character"]
-
-disable_model_invocation = true
-[[skills]]
-name = "clyzhi-moonwell-spring"
-source = "https://github.com/conglinyizhi/clyzhi-moonwell-spring"
-description = "MoonBit官方技能热修复层·月井之春。必须与官方 moonbit-*技能同时加载"
-tags = ["moonbit", "hotfix"]
 
 disable_model_invocation = true
 [[skills]]

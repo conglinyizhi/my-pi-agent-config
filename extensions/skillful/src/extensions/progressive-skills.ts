@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { EXTERNAL_SKILLS_DIR, registerExternalSkills } from "../external-skills.ts";
+import { registerExternalSkills } from "../external-skills.ts";
 
 /**
  * Walks from cwd up through all ancestor directories (no git boundary)
@@ -13,6 +13,9 @@ import { EXTERNAL_SKILLS_DIR, registerExternalSkills } from "../external-skills.
  *
  * This mirrors how AGENTS.md context files are loaded from every parent
  * directory, not just within the repo boundary.
+ *
+ * 全局技能根 `~/.agents/skills` 不在这里登记：Pi 自己的发现已经覆盖它，
+ * 重复登记只会把整根技能标成「扩展临时资源」。本文件只负责 Pi 漏掉的祖先目录。
  */
 export default function progressiveSkills(pi: ExtensionAPI) {
   pi.on("resources_discover", async (event, ctx) => {
@@ -26,10 +29,8 @@ export default function progressiveSkills(pi: ExtensionAPI) {
 
     const gitRoot = findGitRoot(event.cwd);
 
-    // No git repo — Pi already walks to filesystem root; external skills still need to be added.
-    if (!gitRoot) {
-      return existsSync(EXTERNAL_SKILLS_DIR) ? { skillPaths: [EXTERNAL_SKILLS_DIR] } : undefined;
-    }
+    // 没有 git 仓库：没有「祖先目录」要补，Pi 自己的发现已经覆盖全局根。
+    if (!gitRoot) return;
 
     const resolvedGitRoot = resolve(gitRoot);
     const homeAgentsSkills = resolve(homedir(), ".agents", "skills");
@@ -52,7 +53,6 @@ export default function progressiveSkills(pi: ExtensionAPI) {
       dir = parent;
     }
 
-    if (existsSync(EXTERNAL_SKILLS_DIR)) skillPaths.unshift(EXTERNAL_SKILLS_DIR);
     if (skillPaths.length === 0) return;
     return { skillPaths };
   });
